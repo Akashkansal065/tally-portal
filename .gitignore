@@ -1,0 +1,38 @@
+# Virtual environments
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+
+# Node dependencies
+frontend-nextjs/node_modules/
+node_modules/
+
+# Environment files
+.env
+.env.local
+backend/.env
+frontend-nextjs/.env
+frontend-nextjs/.env.local
+
+# Build outputs
+frontend-nextjs/.next/
+frontend-nextjs/out/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.next/
+out/
+build/
+dist/
+
+# IDEs and System files
+.idea/
+.vscode/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
