@@ -124,7 +124,7 @@ def seed_company_defaults(db: Session, company_id: int):
     for a newly created company.
     """
     current_dir = os.path.dirname(__file__)
-    seed_file_path = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'All_files', 'seed_defaults.sql'))
+    seed_file_path = os.path.abspath(os.path.join(current_dir, 'seed_defaults.sql'))
     
     if not os.path.exists(seed_file_path):
         raise FileNotFoundError(f"Seed defaults SQL file not found at: {seed_file_path}")
