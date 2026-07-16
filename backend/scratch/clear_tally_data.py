@@ -4,6 +4,10 @@ from sqlalchemy import text
 from app.core.database import engine
 
 async def clear_data():
+    print("Ensuring databases exist...")
+    from app.core.database import create_databases_if_not_exist
+    await create_databases_if_not_exist()
+    
     print("Connecting to database...")
     async with engine.begin() as conn:
         print("Disabling foreign key checks...")
@@ -62,13 +66,27 @@ async def clear_data():
             "einvoice_metadata"
         ]
         
+        from app.core.config import settings
+        portal_db = settings.DATABASE_URL.rsplit('/', 1)[-1]
+        if '?' in portal_db:
+            portal_db = portal_db.split('?')[0]
+        tally_db = settings.TALLY_DATABASE_NAME
+        
+        portal_tables = {
+            "expenses", "shop_payments", "temp_orders", "temp_order_items",
+            "sales_visits", "sync_queue", "user_sessions", "audit_logs",
+            "payment_links", "gateway_transactions", "payment_gateway_configs", "webhook_events"
+        }
+        
         for table in tables:
-            print(f"Truncating table: {table}...")
+            db_name = portal_db if table in portal_tables else tally_db
+            fq_table = f"`{db_name}`.`{table}`"
+            print(f"Truncating table: {fq_table}...")
             try:
-                await conn.execute(text(f"TRUNCATE TABLE {table};"))
-                print(f" -> Table {table} cleared successfully.")
+                await conn.execute(text(f"TRUNCATE TABLE {fq_table};"))
+                print(f" -> Table {fq_table} cleared successfully.")
             except Exception as e:
-                print(f" -> Error truncating {table}: {e}")
+                print(f" -> Error truncating {fq_table}: {e}")
                 
         print("Enabling foreign key checks...")
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 1;"))

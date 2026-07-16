@@ -6,8 +6,29 @@ from app.core.seed import seed_company_defaults
 from sqlalchemy.orm import Session
 
 async def reset_companies_and_users():
+    print("Ensuring databases exist...")
+    from app.core.database import create_databases_if_not_exist, Base
+    await create_databases_if_not_exist()
+    
+    # Import all SQLAlchemy models to register them in metadata before create_all
+    import app.models.company
+    import app.models.user
+    import app.models.ledger
+    import app.models.voucher
+    import app.models.payment
+    import app.models.inventory
+    import app.models.advanced
+    import app.models.gst
+    import app.models.currency_tds
+    import app.models.payment_gateway
+    import app.models.sync
+    import app.routers.expenses  # loads Expense model
+    
     print("Connecting to database...")
     async with engine.begin() as conn:
+        print("Creating tables if they do not exist...")
+        await conn.run_sync(Base.metadata.create_all)
+        
         print("Disabling foreign key checks...")
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 0;"))
         

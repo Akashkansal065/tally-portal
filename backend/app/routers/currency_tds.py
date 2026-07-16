@@ -7,7 +7,7 @@ from datetime import datetime, date
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.ledger import Currency, Ledger
+from app.models.ledger import Currency, MstLedger
 from app.models.currency_tds import ExchangeRate, TdsSection, LowerDeductionCertificate, TdsTcsEntry
 from app.schemas.currency_tds import (
     CurrencyCreate, CurrencyResponse,
@@ -150,7 +150,7 @@ async def get_ldcs(
     user: User = Depends(require_permission("settings", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(LowerDeductionCertificate).join(Ledger, LowerDeductionCertificate.party_ledger_id == Ledger.ledger_id).where(Ledger.company_id == user.company_id)
+    stmt = select(LowerDeductionCertificate).join(MstLedger, LowerDeductionCertificate.party_ledger_id == MstLedger.ledger_id).where(MstLedger.company_id == user.company_id)
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -168,7 +168,7 @@ async def create_ldc(
         
     # Verify ledger
     ledg_query = await db.execute(
-        select(Ledger).where(Ledger.ledger_id == req.party_ledger_id, Ledger.company_id == user.company_id)
+        select(MstLedger).where(MstLedger.ledger_id == req.party_ledger_id, MstLedger.company_id == user.company_id)
     )
     if not ledg_query.scalars().first():
         raise HTTPException(status_code=400, detail="Party ledger not found.")

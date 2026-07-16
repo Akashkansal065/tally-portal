@@ -9,7 +9,7 @@ from decimal import Decimal
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.voucher import Voucher, VoucherEntry
+from app.models.voucher import TrnVoucher, TrnAccounting
 from app.models.gst import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry
 from app.schemas.gst import (
     GstReturnPeriodCreate, GstReturnPeriodResponse,
@@ -102,11 +102,11 @@ async def generate_gst_snapshot(
     # 1. Fetch Sales Vouchers in the period range
     # Simplification: query all non-optional vouchers for this company
     vouchers_query = await db.execute(
-        select(Voucher)
-        .options(selectinload(Voucher.entries))
+        select(TrnVoucher)
+        .options(selectinload(TrnVoucher.entries))
         .where(
-            Voucher.company_id == user.company_id,
-            Voucher.is_optional == False
+            TrnVoucher.company_id == user.company_id,
+            TrnVoucher.is_optional == False
         )
     )
     vouchers = vouchers_query.scalars().all()
@@ -130,12 +130,9 @@ async def generate_gst_snapshot(
         for e in v.entries:
             # We assume ledger names containing 'CGST', 'SGST', 'IGST' represent tax entries
             # In a real ERP, we look at the ledger group nature.
-            ledg_query = await db.execute(
-                select(VoucherEntry.entry_id).where(VoucherEntry.entry_id == e.entry_id) # dummy lookup
-            )
             # Fetch actual ledger name
-            from app.models.ledger import Ledger
-            l_query = await db.execute(select(Ledger).where(Ledger.ledger_id == e.ledger_id))
+            from app.models.ledger import MstLedger
+            l_query = await db.execute(select(MstLedger).where(MstLedger.ledger_id == e.ledger_id))
             ledger = l_query.scalars().first()
             if not ledger:
                 continue

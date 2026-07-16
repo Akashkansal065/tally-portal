@@ -10,9 +10,9 @@ from sqlalchemy import text
 
 logger = logging.getLogger("uvicorn.error")
 
-from app.models.ledger import AccountGroup, Ledger
-from app.models.voucher import Voucher, VoucherEntry, VoucherType
-from app.models.payment import Bill, BillAllocation
+from app.models.ledger import MstGroup, MstLedger
+from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
+from app.models.payment import TrnBill, BillAllocation
 
 def is_valid_xml_char(cp: int) -> bool:
     return (
@@ -52,10 +52,10 @@ def sanitize_xml(xml_data: str) -> str:
     )
     return invalid_xml_raw_re.sub("", sanitized)
 
-from app.models.inventory import StockGroup, StockCategory, UnitOfMeasure, Godown, StockItem
+from app.models.inventory import MstStockGroup, MstStockCategory, MstUom, MstGodown, MstStockItem
 
-async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> StockGroup:
-    stmt = select(StockGroup).where(StockGroup.company_id == company_id, StockGroup.name == name)
+async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstStockGroup:
+    stmt = select(MstStockGroup).where(MstStockGroup.company_id == company_id, MstStockGroup.name == name)
     res = await db.execute(stmt)
     group = res.scalars().first()
     
@@ -70,7 +70,7 @@ async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str
             await db.flush()
         return group
         
-    group = StockGroup(
+    group = MstStockGroup(
         company_id=company_id,
         name=name,
         parent_id=parent_id
@@ -79,8 +79,8 @@ async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str
     await db.flush()
     return group
 
-async def get_or_create_stock_category(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> StockCategory:
-    stmt = select(StockCategory).where(StockCategory.company_id == company_id, StockCategory.name == name)
+async def get_or_create_stock_category(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstStockCategory:
+    stmt = select(MstStockCategory).where(MstStockCategory.company_id == company_id, MstStockCategory.name == name)
     res = await db.execute(stmt)
     cat = res.scalars().first()
     
@@ -95,7 +95,7 @@ async def get_or_create_stock_category(db: AsyncSession, company_id: int, name: 
             await db.flush()
         return cat
         
-    cat = StockCategory(
+    cat = MstStockCategory(
         company_id=company_id,
         name=name,
         parent_id=parent_id
@@ -104,8 +104,8 @@ async def get_or_create_stock_category(db: AsyncSession, company_id: int, name: 
     await db.flush()
     return cat
 
-async def get_or_create_uom(db: AsyncSession, company_id: int, symbol: str, name: Optional[str] = None, decimal_places: int = 0) -> UnitOfMeasure:
-    stmt = select(UnitOfMeasure).where(UnitOfMeasure.company_id == company_id, UnitOfMeasure.symbol == symbol)
+async def get_or_create_uom(db: AsyncSession, company_id: int, symbol: str, name: Optional[str] = None, decimal_places: int = 0) -> MstUom:
+    stmt = select(MstUom).where(MstUom.company_id == company_id, MstUom.symbol == symbol)
     res = await db.execute(stmt)
     uom = res.scalars().first()
     if uom:
@@ -113,7 +113,7 @@ async def get_or_create_uom(db: AsyncSession, company_id: int, symbol: str, name
             uom.name = name
             await db.flush()
         return uom
-    uom = UnitOfMeasure(
+    uom = MstUom(
         company_id=company_id,
         symbol=symbol,
         name=name or symbol,
@@ -123,8 +123,8 @@ async def get_or_create_uom(db: AsyncSession, company_id: int, symbol: str, name
     await db.flush()
     return uom
 
-async def get_or_create_godown(db: AsyncSession, company_id: int, name: str, address: Optional[str] = None) -> Godown:
-    stmt = select(Godown).where(Godown.company_id == company_id, Godown.name == name)
+async def get_or_create_godown(db: AsyncSession, company_id: int, name: str, address: Optional[str] = None) -> MstGodown:
+    stmt = select(MstGodown).where(MstGodown.company_id == company_id, MstGodown.name == name)
     res = await db.execute(stmt)
     godown = res.scalars().first()
     if godown:
@@ -132,7 +132,7 @@ async def get_or_create_godown(db: AsyncSession, company_id: int, name: str, add
             godown.address = address
             await db.flush()
         return godown
-    godown = Godown(
+    godown = MstGodown(
         company_id=company_id,
         name=name,
         address=address
@@ -141,9 +141,9 @@ async def get_or_create_godown(db: AsyncSession, company_id: int, name: str, add
     await db.flush()
     return godown
 
-async def get_or_create_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> AccountGroup:
+async def get_or_create_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstGroup:
     # Check if group exists
-    stmt = select(AccountGroup).where(AccountGroup.company_id == company_id, AccountGroup.name == name)
+    stmt = select(MstGroup).where(MstGroup.company_id == company_id, MstGroup.name == name)
     res = await db.execute(stmt)
     group = res.scalars().first()
     if group:
@@ -155,7 +155,7 @@ async def get_or_create_group(db: AsyncSession, company_id: int, name: str, pare
         parent_grp = await get_or_create_group(db, company_id, parent_name)
         parent_id = parent_grp.group_id
         
-    group = AccountGroup(
+    group = MstGroup(
         company_id=company_id,
         name=name,
         parent_group_id=parent_id,
@@ -348,7 +348,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         else:
             uom = await get_or_create_uom(db, company_id, "PCS")
             
-        stmt = select(StockItem).where(StockItem.company_id == company_id, StockItem.name == name)
+        stmt = select(MstStockItem).where(MstStockItem.company_id == company_id, MstStockItem.name == name)
         res = await db.execute(stmt)
         item = res.scalars().first()
         
@@ -366,7 +366,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 item.gst_rate_percent = gst_rate
             await db.flush()
         else:
-            item = StockItem(
+            item = MstStockItem(
                 company_id=company_id,
                 name=name,
                 stock_group_id=stock_group.stock_group_id if stock_group else None,
@@ -406,7 +406,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         group = await get_or_create_group(db, company_id, parent_name)
         
         # Check if ledger exists
-        stmt = select(Ledger).where(Ledger.company_id == company_id, Ledger.name == name)
+        stmt = select(MstLedger).where(MstLedger.company_id == company_id, MstLedger.name == name)
         res = await db.execute(stmt)
         ledger = res.scalars().first()
         
@@ -461,7 +461,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         alter_id = int(alter_id_str)
 
         if not ledger:
-            ledger = Ledger(
+            ledger = MstLedger(
                 company_id=company_id,
                 name=name,
                 group_id=group.group_id,
@@ -515,12 +515,12 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             
         narration = v_node.findtext("NARRATION")
         
-        # Get or create VoucherType
-        vt_stmt = select(VoucherType).where(VoucherType.company_id == company_id, VoucherType.name == vtype_name)
+        # Get or create MstVoucherType
+        vt_stmt = select(MstVoucherType).where(MstVoucherType.company_id == company_id, MstVoucherType.name == vtype_name)
         vt_res = await db.execute(vt_stmt)
         vtype = vt_res.scalars().first()
         if not vtype:
-            vtype = VoucherType(
+            vtype = MstVoucherType(
                 company_id=company_id,
                 name=vtype_name,
                 is_system_defined=False,
@@ -530,7 +530,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             await db.flush()
             
         # Check if voucher already exists by GUID (idempotency/update)
-        stmt = select(Voucher).where(Voucher.company_id == company_id, Voucher.tally_guid == guid)
+        stmt = select(TrnVoucher).where(TrnVoucher.company_id == company_id, TrnVoucher.tally_guid == guid)
         res = await db.execute(stmt)
         voucher = res.scalars().first()
         
@@ -539,11 +539,12 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             if voucher.tally_alter_id and voucher.tally_alter_id >= alter_id:
                 continue
             # Delete old entries to rebuild (must delete child bill_allocations first)
-            await db.execute(text(f"DELETE FROM bill_allocations WHERE voucher_entry_id IN (SELECT entry_id FROM voucher_entries WHERE voucher_id = {voucher.voucher_id})"))
-            await db.execute(text(f"DELETE FROM voucher_entries WHERE voucher_id = {voucher.voucher_id}"))
+            from app.core.config import settings
+            await db.execute(text(f"DELETE FROM `{settings.TALLY_DATABASE_NAME}`.bill_allocations WHERE voucher_entry_id IN (SELECT entry_id FROM `{settings.TALLY_DATABASE_NAME}`.voucher_entries WHERE voucher_id = {voucher.voucher_id})"))
+            await db.execute(text(f"DELETE FROM `{settings.TALLY_DATABASE_NAME}`.voucher_entries WHERE voucher_id = {voucher.voucher_id}"))
             await db.flush()
         else:
-            voucher = Voucher(
+            voucher = TrnVoucher(
                 company_id=company_id,
                 voucher_type_id=vtype.voucher_type_id,
                 voucher_number=v_num,
@@ -571,13 +572,13 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 continue
                 
             # Get ledger
-            l_stmt = select(Ledger).where(Ledger.company_id == company_id, Ledger.name == led_name)
+            l_stmt = select(MstLedger).where(MstLedger.company_id == company_id, MstLedger.name == led_name)
             l_res = await db.execute(l_stmt)
             ledger = l_res.scalars().first()
             if not ledger:
                 # Auto create missing ledger under standard suspense/current group
                 grp = await get_or_create_group(db, company_id, "Suspense Accounts")
-                ledger = Ledger(
+                ledger = MstLedger(
                     company_id=company_id,
                     name=led_name,
                     group_id=grp.group_id,
@@ -602,7 +603,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             else:
                 cr_amt = amt_val
                 
-            entry = VoucherEntry(
+            entry = TrnAccounting(
                 voucher_id=voucher.voucher_id,
                 ledger_id=ledger.ledger_id,
                 debit_amount=dr_amt,
@@ -635,12 +636,12 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                     
                     b_ref = b_ref[:50]  # Truncate to avoid String(50) overflow
                     
-                    # Get or create Bill
-                    b_stmt = select(Bill).where(Bill.company_id == company_id, Bill.bill_reference == b_ref)
+                    # Get or create TrnBill
+                    b_stmt = select(TrnBill).where(TrnBill.company_id == company_id, TrnBill.bill_reference == b_ref)
                     b_res = await db.execute(b_stmt)
                     bill = b_res.scalars().first()
                     if not bill:
-                        bill = Bill(
+                        bill = TrnBill(
                             company_id=company_id,
                             party_ledger_id=ledger.ledger_id,
                             voucher_id=voucher.voucher_id,
@@ -720,12 +721,12 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             except Exception:
                 inv_amt = Decimal("0.00")
                 
-            # Get or create UnitOfMeasure
-            uom_stmt = select(UnitOfMeasure).where(UnitOfMeasure.company_id == company_id, UnitOfMeasure.symbol == uom_name)
+            # Get or create MstUom
+            uom_stmt = select(MstUom).where(MstUom.company_id == company_id, MstUom.symbol == uom_name)
             uom_res = await db.execute(uom_stmt)
             uom = uom_res.scalars().first()
             if not uom:
-                uom = UnitOfMeasure(
+                uom = MstUom(
                     company_id=company_id,
                     name=uom_name,
                     symbol=uom_name,
@@ -742,11 +743,11 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 elif group_name == "Nirvaan Metaliks" or group_name == "NIRVAAN METALIKS":
                     group_name = "NIRVAAN METALIKAS"
 
-            # Get or create StockItem
+            # Get or create MstStockItem
             is_deemed_pos = inv_node.findtext("ISDEEMEDPOSITIVE") or "No"
             is_inward = is_deemed_pos.strip().lower() == "yes"
 
-            item_stmt = select(StockItem).where(StockItem.company_id == company_id, StockItem.name == item_name)
+            item_stmt = select(MstStockItem).where(MstStockItem.company_id == company_id, MstStockItem.name == item_name)
             item_res = await db.execute(item_stmt)
             item = item_res.scalars().first()
             
@@ -767,7 +768,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 stock_group = await get_or_create_stock_group(db, company_id, group_name)
                 init_qty = qty_val if is_inward else -qty_val
                 init_val = inv_amt if is_inward else -inv_amt
-                item = StockItem(
+                item = MstStockItem(
                     company_id=company_id,
                     name=item_name,
                     stock_group_id=stock_group.stock_group_id,
@@ -819,9 +820,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                     item.gst_rate_percent = gst_rate
                 await db.flush()
 
-            # Insert StockEntry
-            from app.models.inventory import StockEntry
-            stock_entry = StockEntry(
+            # Insert TrnInventory
+            from app.models.inventory import TrnInventory
+            stock_entry = TrnInventory(
                 voucher_id=voucher.voucher_id,
                 stock_item_id=item.stock_item_id,
                 quantity=qty_val,

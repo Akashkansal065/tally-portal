@@ -2,9 +2,11 @@ from sqlalchemy import Column, Integer, String, Date, Boolean, DateTime, Foreign
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
+from app.core.config import settings
 
 class Company(Base):
     __tablename__ = "companies"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
     
     company_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(150), nullable=False)
@@ -27,9 +29,10 @@ class Company(Base):
 
 class FinancialYear(Base):
     __tablename__ = "financial_years"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
     
     fy_id = Column(Integer, primary_key=True, index=True)
-    company_id = Column(Integer, ForeignKey("companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     is_locked = Column(Boolean, default=False)

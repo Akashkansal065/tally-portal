@@ -13,8 +13,8 @@ from datetime import datetime, date
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.voucher import Voucher, VoucherEntry
-from app.models.ledger import Ledger
+from app.models.voucher import TrnVoucher, TrnAccounting
+from app.models.ledger import MstLedger
 
 router = APIRouter(prefix="/reports", tags=["Reports Hub"])
 
@@ -67,18 +67,19 @@ async def get_sales_register(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve all Sales vouchers within the period."""
-    query = select(Voucher).where(Voucher.company_id == user.company_id, Voucher.type == "Sales")
+    query = select(TrnVoucher).where(TrnVoucher.company_id == user.company_id)
     if from_date:
-        query = query.where(Voucher.date >= date.fromisoformat(from_date))
+        query = query.where(TrnVoucher.date >= date.fromisoformat(from_date))
     if to_date:
-        query = query.where(Voucher.date <= date.fromisoformat(to_date))
-
-    result = await db.execute(query.order_by(desc(Voucher.date)).limit(100))
+        query = query.where(TrnVoucher.date <= date.fromisoformat(to_date))
+    
+    result = await db.execute(query.order_by(desc(TrnVoucher.date)).limit(100))
     vouchers = result.scalars().all()
-
+    
+    # Enrich with entries
     output = []
     for v in vouchers:
-        entries_query = await db.execute(select(VoucherEntry).where(VoucherEntry.voucher_id == v.voucher_id))
+        entries_query = await db.execute(select(TrnAccounting).where(TrnAccounting.voucher_id == v.voucher_id))
         entries = entries_query.scalars().all()
         amount = 0.0
         party_name = "Generic Party"
@@ -102,14 +103,14 @@ async def get_outstanding_payables(
     db: AsyncSession = Depends(get_db),
 ):
     """Return outstanding purchase/supplier payable bills."""
-    from app.models.payment import Bill
+    from app.models.payment import TrnBill
     from sqlalchemy.orm import selectinload
 
-    # Retrieve all Open/Partially Settled purchase bills (normally bills from Suppliers)
+    # Outstanding
     stmt = (
-        select(Bill)
-        .options(selectinload(Bill.party))
-        .where(Bill.company_id == user.company_id, Bill.status != "Settled")
+        select(TrnBill)
+        .options(selectinload(TrnBill.party))
+        .where(TrnBill.company_id == user.company_id, TrnBill.status != "Settled")
     )
     res = await db.execute(stmt)
     bills = res.scalars().all()
@@ -134,7 +135,7 @@ async def get_trial_balance(
 ):
     """Return group-level ledger trial balance."""
     # List all ledgers and their opening/closing balances grouped by group name
-    stmt = select(Ledger).where(Ledger.company_id == user.company_id)
+    stmt = select(MstLedger).where(MstLedger.company_id == user.company_id)
     res = await db.execute(stmt)
     ledgers = res.scalars().all()
 
@@ -164,57 +165,57 @@ async def get_dashboard_summary(
     if cached:
         return cached
 
-    from app.models.payment import Bill
-    from app.models.voucher import Voucher, VoucherType
+    from app.models.payment import TrnBill
+    from app.models.voucher import TrnVoucher, MstVoucherType
     
-    # Total Sales (from Vouchers)
+    # Total Sales
     sales_query = await db.execute(
-        select(func.sum(Voucher.total_amount))
-        .join(VoucherType, Voucher.voucher_type_id == VoucherType.voucher_type_id)
+        select(func.sum(TrnVoucher.total_amount))
+        .join(MstVoucherType, TrnVoucher.voucher_type_id == MstVoucherType.voucher_type_id)
         .where(
-            Voucher.company_id == user.company_id,
-            VoucherType.name == "Sales",
-            Voucher.is_cancelled == False
+            TrnVoucher.company_id == user.company_id,
+            MstVoucherType.name == "Sales",
+            TrnVoucher.is_cancelled == False
         )
     )
     total_sales = sales_query.scalar() or 0.0
 
     # Total Receipts
     receipts_query = await db.execute(
-        select(func.sum(Voucher.total_amount))
-        .join(VoucherType, Voucher.voucher_type_id == VoucherType.voucher_type_id)
+        select(func.sum(TrnVoucher.total_amount))
+        .join(MstVoucherType, TrnVoucher.voucher_type_id == MstVoucherType.voucher_type_id)
         .where(
-            Voucher.company_id == user.company_id,
-            VoucherType.name == "Receipt",
-            Voucher.is_cancelled == False
+            TrnVoucher.company_id == user.company_id,
+            MstVoucherType.name == "Receipt",
+            TrnVoucher.is_cancelled == False
         )
     )
-    total_receipts = receipts_query.scalar() or 0.0
+    total_receipts = receipts_query.scalar() or 0
     
-    from app.models.ledger import Ledger, AccountGroup
+    from app.models.ledger import MstLedger, MstGroup
     
-    # Outstanding Receivables (Sundry Debtors Bills)
+    # Receivables
     receivables_query = await db.execute(
-        select(func.sum(Bill.bill_amount - Bill.settled_amount))
-        .join(Ledger, Bill.party_ledger_id == Ledger.ledger_id)
-        .join(AccountGroup, Ledger.group_id == AccountGroup.group_id)
+        select(func.sum(TrnBill.bill_amount - TrnBill.settled_amount))
+        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
+        .join(MstGroup, MstLedger.group_id == MstGroup.group_id)
         .where(
-            Bill.company_id == user.company_id,
-            AccountGroup.name == "Sundry Debtors",
-            Bill.status != "Settled"
+            TrnBill.company_id == user.company_id,
+            MstGroup.name == "Sundry Debtors",
+            TrnBill.status != "Settled"
         )
     )
-    outstanding_receivables = receivables_query.scalar() or 0.0
+    outstanding_receivables = receivables_query.scalar() or 0
     
-    # Outstanding Payables (Sundry Creditors Bills)
+    # Payables
     payables_query = await db.execute(
-        select(func.sum(Bill.bill_amount - Bill.settled_amount))
-        .join(Ledger, Bill.party_ledger_id == Ledger.ledger_id)
-        .join(AccountGroup, Ledger.group_id == AccountGroup.group_id)
+        select(func.sum(TrnBill.bill_amount - TrnBill.settled_amount))
+        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
+        .join(MstGroup, MstLedger.group_id == MstGroup.group_id)
         .where(
-            Bill.company_id == user.company_id,
-            AccountGroup.name == "Sundry Creditors",
-            Bill.status != "Settled"
+            TrnBill.company_id == user.company_id,
+            MstGroup.name == "Sundry Creditors",
+            TrnBill.status != "Settled"
         )
     )
     outstanding_payables = payables_query.scalar() or 0.0

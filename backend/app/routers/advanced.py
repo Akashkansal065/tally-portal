@@ -9,8 +9,8 @@ from decimal import Decimal
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.ledger import Ledger
-from app.models.voucher import Voucher, VoucherEntry, VoucherType
+from app.models.ledger import MstLedger
+from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
 from app.models.advanced import (
     Employee, SalaryComponent, SalaryStructure, SalaryStructureComponent,
     PayrollPeriod, Payslip, PayslipComponent, PosPayment, EinvoiceMetadata
@@ -41,7 +41,7 @@ async def create_employee(
         
     # Verify ledger exists
     ledg_query = await db.execute(
-        select(Ledger).where(Ledger.ledger_id == req.payment_ledger_id, Ledger.company_id == user.company_id)
+        select(MstLedger).where(MstLedger.ledger_id == req.payment_ledger_id, MstLedger.company_id == user.company_id)
     )
     if not ledg_query.scalars().first():
         raise HTTPException(status_code=400, detail="Payment ledger not found.")
@@ -97,7 +97,7 @@ async def create_salary_component(
 ):
     # Verify ledger exists
     ledg_query = await db.execute(
-        select(Ledger).where(Ledger.linked_ledger_id == req.linked_ledger_id, Ledger.company_id == user.company_id) if hasattr(Ledger, 'linked_ledger_id') else select(Ledger).where(Ledger.ledger_id == req.linked_ledger_id, Ledger.company_id == user.company_id)
+        select(MstLedger).where(MstLedger.linked_ledger_id == req.linked_ledger_id, MstLedger.company_id == user.company_id) if hasattr(MstLedger, 'linked_ledger_id') else select(MstLedger).where(MstLedger.ledger_id == req.linked_ledger_id, MstLedger.company_id == user.company_id)
     )
     if not ledg_query.scalars().first():
         raise HTTPException(status_code=400, detail="Linked ledger not found.")
@@ -337,9 +337,9 @@ async def approve_payroll(
     
     # Fetch Journal Voucher Type
     vtype_query = await db.execute(
-        select(VoucherType).where(
-            VoucherType.company_id == user.company_id,
-            VoucherType.name == "Journal"
+        select(MstVoucherType).where(
+            MstVoucherType.company_id == user.company_id,
+            MstVoucherType.name == "Journal"
         )
     )
     vtype = vtype_query.scalars().first()
@@ -349,7 +349,7 @@ async def approve_payroll(
     vnum = f"{vtype.prefix or ''}{vtype.next_number}"
     vtype.next_number += 1
     
-    voucher = Voucher(
+    voucher = TrnVoucher(
         company_id=user.company_id,
         voucher_type_id=vtype.voucher_type_id,
         voucher_number=vnum,
@@ -363,7 +363,7 @@ async def approve_payroll(
     await db.flush()
     
     # Debit Salary Expense
-    e1 = VoucherEntry(
+    e1 = TrnAccounting(
         voucher_id=voucher.voucher_id,
         ledger_id=salary_expense_ledger_id,
         debit_amount=total_gross,
@@ -373,7 +373,7 @@ async def approve_payroll(
     db.add(e1)
     
     # Credit Salaries Payable
-    e2 = VoucherEntry(
+    e2 = TrnAccounting(
         voucher_id=voucher.voucher_id,
         ledger_id=salaries_payable_ledger_id,
         debit_amount=Decimal("0.00"),
@@ -384,7 +384,7 @@ async def approve_payroll(
     
     # Credit Deductions
     if total_deductions > 0:
-        e3 = VoucherEntry(
+        e3 = TrnAccounting(
             voucher_id=voucher.voucher_id,
             ledger_id=salaries_payable_ledger_id,
             debit_amount=Decimal("0.00"),
@@ -412,7 +412,7 @@ async def create_pos_payment(
     db: AsyncSession = Depends(get_db)
 ):
     v_query = await db.execute(
-        select(Voucher).where(Voucher.voucher_id == req.voucher_id, Voucher.company_id == user.company_id)
+        select(TrnVoucher).where(TrnVoucher.voucher_id == req.voucher_id, TrnVoucher.company_id == user.company_id)
     )
     if not v_query.scalars().first():
         raise HTTPException(status_code=400, detail="Voucher not found.")
@@ -451,7 +451,7 @@ async def create_einvoice_metadata(
     db: AsyncSession = Depends(get_db)
 ):
     v_query = await db.execute(
-        select(Voucher).where(Voucher.voucher_id == req.voucher_id, Voucher.company_id == user.company_id)
+        select(TrnVoucher).where(TrnVoucher.voucher_id == req.voucher_id, TrnVoucher.company_id == user.company_id)
     )
     if not v_query.scalars().first():
         raise HTTPException(status_code=400, detail="Voucher not found.")

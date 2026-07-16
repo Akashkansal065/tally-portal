@@ -30,9 +30,24 @@ def main():
         mysql_url = mysql_url.replace("mysql+aiomysql", "mysql+pymysql")
         
     try:
+        # Resolve base URL and database names to ensure they exist
+        base_url, portal_db = mysql_url.rsplit('/', 1)
+        if '?' in portal_db:
+            portal_db = portal_db.split('?')[0]
+        tally_db = env.get("TALLY_DATABASE_NAME", "tally_sync")
+        
+        # Connect to MySQL server base to create databases synchronously
+        temp_engine = create_engine(base_url)
+        with temp_engine.connect() as temp_conn:
+            temp_conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {portal_db}"))
+            temp_conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {tally_db}"))
+        temp_engine.dispose()
+        
         engine = create_engine(mysql_url)
         with engine.connect() as conn:
-            print("Connecting to mytally_db...")
+            from app.core.config import settings
+            print(f"Connecting and switching to sync database '{settings.TALLY_DATABASE_NAME}'...")
+            conn.execute(text(f"USE {settings.TALLY_DATABASE_NAME};"))
             
             # Disable FK checks to allow safe truncation/deletion of Tally-linked tables
             conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))

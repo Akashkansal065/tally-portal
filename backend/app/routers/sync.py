@@ -9,8 +9,8 @@ from decimal import Decimal
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.ledger import Ledger, AccountGroup
-from app.models.voucher import Voucher, VoucherEntry
+from app.models.ledger import MstLedger, MstGroup
+from app.models.voucher import TrnVoucher, TrnAccounting
 from app.models.sync import SyncQueue
 from app.services.tally_xml_importer import import_tally_xml
 
@@ -65,14 +65,14 @@ async def get_outbound_queue(
         xml_envelope = ""
         # 1. Map Ledger Creation
         if item.record_type == "Ledger":
-            l_stmt = select(Ledger).where(Ledger.ledger_id == item.record_id).options(
+            l_stmt = select(MstLedger).where(MstLedger.ledger_id == item.record_id).options(
                 # selectinload group if needed
             )
             l_res = await db.execute(l_stmt)
             ledger = l_res.scalars().first()
             if ledger:
                 # Find group name
-                g_stmt = select(AccountGroup).where(AccountGroup.group_id == ledger.group_id)
+                g_stmt = select(MstGroup).where(MstGroup.group_id == ledger.group_id)
                 g_res = await db.execute(g_stmt)
                 group = g_res.scalars().first()
                 group_name = group.name if group else "Sundry Debtors"
@@ -106,18 +106,18 @@ async def get_outbound_queue(
                 
         # 2. Map Voucher Creation
         elif item.record_type == "Voucher":
-            v_stmt = select(Voucher).where(Voucher.voucher_id == item.record_id)
+            v_stmt = select(TrnVoucher).where(TrnVoucher.voucher_id == item.record_id)
             v_res = await db.execute(v_stmt)
             voucher = v_res.scalars().first()
             if voucher:
                 # Get entries
-                ent_stmt = select(VoucherEntry).where(VoucherEntry.voucher_id == voucher.voucher_id)
+                ent_stmt = select(TrnAccounting).where(TrnAccounting.voucher_id == voucher.voucher_id)
                 ent_res = await db.execute(ent_stmt)
                 entries = ent_res.scalars().all()
                 
                 entries_xml = ""
                 for ent in entries:
-                    l_stmt = select(Ledger).where(Ledger.ledger_id == ent.ledger_id)
+                    l_stmt = select(MstLedger).where(MstLedger.ledger_id == ent.ledger_id)
                     l_res = await db.execute(l_stmt)
                     ledger = l_res.scalars().first()
                     led_name = ledger.name if ledger else "Suspense A/c"
@@ -195,12 +195,12 @@ async def get_last_alter_id(
     """
     from sqlalchemy.sql import func
     # Get max alter_id from ledgers
-    ledger_stmt = select(func.max(Ledger.tally_alter_id)).where(Ledger.company_id == user.company_id)
+    ledger_stmt = select(func.max(MstLedger.tally_alter_id)).where(MstLedger.company_id == user.company_id)
     ledger_res = await db.execute(ledger_stmt)
     max_ledger_alter = ledger_res.scalar() or 0
     
     # Get max alter_id from vouchers
-    voucher_stmt = select(func.max(Voucher.tally_alter_id)).where(Voucher.company_id == user.company_id)
+    voucher_stmt = select(func.max(TrnVoucher.tally_alter_id)).where(TrnVoucher.company_id == user.company_id)
     voucher_res = await db.execute(voucher_stmt)
     max_voucher_alter = voucher_res.scalar() or 0
     

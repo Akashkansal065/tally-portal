@@ -14,14 +14,16 @@ from datetime import datetime, date
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.user import User
+from app.core.config import settings
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 
 class Expense(Base):
     __tablename__ = "expenses"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     amount = Column(Float, nullable=False)
     expense_date = Column(Date, nullable=False)
     category = Column(String(128), nullable=False)

@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
 from app.models.inventory import (
-    UnitOfMeasure, StockGroup, StockCategory, Godown, StockItem,
+    MstUom, MstStockGroup, MstStockCategory, MstGodown, MstStockItem,
     BillOfMaterials, BomItem, Batch, SerialNumber
 )
 from app.schemas.inventory import (
@@ -33,7 +33,7 @@ async def create_uom(
     user: User = Depends(require_permission("inventory", "create")),
     db: AsyncSession = Depends(get_db)
 ):
-    uom = UnitOfMeasure(
+    uom = MstUom(
         company_id=user.company_id,
         name=req.name,
         symbol=req.symbol,
@@ -49,7 +49,7 @@ async def get_uoms(
     user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(UnitOfMeasure).where(UnitOfMeasure.company_id == user.company_id)
+    stmt = select(MstUom).where(MstUom.company_id == user.company_id)
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -63,15 +63,15 @@ async def create_stock_group(
 ):
     if req.parent_id:
         p_query = await db.execute(
-            select(StockGroup).where(
-                StockGroup.stock_group_id == req.parent_id,
-                StockGroup.company_id == user.company_id
+            select(MstStockGroup).where(
+                MstStockGroup.stock_group_id == req.parent_id,
+                MstStockGroup.company_id == user.company_id
             )
         )
         if not p_query.scalars().first():
             raise HTTPException(status_code=400, detail="Parent group not found.")
             
-    group = StockGroup(
+    group = MstStockGroup(
         company_id=user.company_id,
         name=req.name,
         parent_id=req.parent_id
@@ -86,7 +86,7 @@ async def get_stock_groups(
     user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(StockGroup).where(StockGroup.company_id == user.company_id)
+    stmt = select(MstStockGroup).where(MstStockGroup.company_id == user.company_id)
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -100,15 +100,15 @@ async def create_stock_category(
 ):
     if req.parent_id:
         p_query = await db.execute(
-            select(StockCategory).where(
-                StockCategory.stock_category_id == req.parent_id,
-                StockCategory.company_id == user.company_id
+            select(MstStockCategory).where(
+                MstStockCategory.stock_category_id == req.parent_id,
+                MstStockCategory.company_id == user.company_id
             )
         )
         if not p_query.scalars().first():
             raise HTTPException(status_code=400, detail="Parent category not found.")
             
-    cat = StockCategory(
+    cat = MstStockCategory(
         company_id=user.company_id,
         name=req.name,
         parent_id=req.parent_id
@@ -123,7 +123,7 @@ async def get_stock_categories(
     user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(StockCategory).where(StockCategory.company_id == user.company_id)
+    stmt = select(MstStockCategory).where(MstStockCategory.company_id == user.company_id)
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -135,7 +135,7 @@ async def create_godown(
     user: User = Depends(require_permission("inventory", "create")),
     db: AsyncSession = Depends(get_db)
 ):
-    g = Godown(
+    g = MstGodown(
         company_id=user.company_id,
         name=req.name,
         address=req.address
@@ -150,7 +150,7 @@ async def get_godowns(
     user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(Godown).where(Godown.company_id == user.company_id)
+    stmt = select(MstGodown).where(MstGodown.company_id == user.company_id)
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -164,9 +164,9 @@ async def create_stock_item(
 ):
     # Verify UOM exists
     uom_query = await db.execute(
-        select(UnitOfMeasure).where(
-            UnitOfMeasure.unit_id == req.unit_id,
-            UnitOfMeasure.company_id == user.company_id
+        select(MstUom).where(
+            MstUom.unit_id == req.unit_id,
+            MstUom.company_id == user.company_id
         )
     )
     if not uom_query.scalars().first():
@@ -175,9 +175,9 @@ async def create_stock_item(
     # Verify group if provided
     if req.stock_group_id:
         g_query = await db.execute(
-            select(StockGroup).where(
-                StockGroup.stock_group_id == req.stock_group_id,
-                StockGroup.company_id == user.company_id
+            select(MstStockGroup).where(
+                MstStockGroup.stock_group_id == req.stock_group_id,
+                MstStockGroup.company_id == user.company_id
             )
         )
         if not g_query.scalars().first():
@@ -186,15 +186,15 @@ async def create_stock_item(
     # Verify category if provided
     if req.stock_category_id:
         c_query = await db.execute(
-            select(StockCategory).where(
-                StockCategory.stock_category_id == req.stock_category_id,
-                StockCategory.company_id == user.company_id
+            select(MstStockCategory).where(
+                MstStockCategory.stock_category_id == req.stock_category_id,
+                MstStockCategory.company_id == user.company_id
             )
         )
         if not c_query.scalars().first():
             raise HTTPException(status_code=400, detail="Stock category not found.")
             
-    item = StockItem(
+    item = MstStockItem(
         company_id=user.company_id,
         name=req.name,
         stock_group_id=req.stock_group_id,
@@ -221,20 +221,20 @@ async def get_stock_items(
 ):
     from decimal import Decimal
     stmt = (
-        select(StockItem)
-        .options(selectinload(StockItem.unit), selectinload(StockItem.group))
-        .where(StockItem.company_id == user.company_id)
+        select(MstStockItem)
+        .options(selectinload(MstStockItem.unit), selectinload(MstStockItem.group))
+        .where(MstStockItem.company_id == user.company_id)
     )
     res = await db.execute(stmt)
     items = res.scalars().all()
 
     # Fetch all stock entries for this company
-    from app.models.inventory import StockEntry
-    from app.models.voucher import Voucher
+    from app.models.inventory import TrnInventory
+    from app.models.voucher import TrnVoucher
     entry_stmt = (
-        select(StockEntry)
-        .join(Voucher, StockEntry.voucher_id == Voucher.voucher_id)
-        .where(Voucher.company_id == user.company_id)
+        select(TrnInventory)
+        .join(TrnVoucher, TrnInventory.voucher_id == TrnVoucher.voucher_id)
+        .where(TrnVoucher.company_id == user.company_id)
     )
     entry_res = await db.execute(entry_stmt)
     entries = entry_res.scalars().all()
@@ -376,9 +376,9 @@ async def create_bom(
 ):
     # Verify stock item exists
     item_query = await db.execute(
-        select(StockItem).where(
-            StockItem.stock_item_id == req.stock_item_id,
-            StockItem.company_id == user.company_id
+        select(MstStockItem).where(
+            MstStockItem.stock_item_id == req.stock_item_id,
+            MstStockItem.company_id == user.company_id
         )
     )
     if not item_query.scalars().first():
@@ -396,9 +396,9 @@ async def create_bom(
     for bi in req.bom_items:
         # Verify ingredient stock item
         ing_query = await db.execute(
-            select(StockItem).where(
-                StockItem.stock_item_id == bi.stock_item_id,
-                StockItem.company_id == user.company_id
+            select(MstStockItem).where(
+                MstStockItem.stock_item_id == bi.stock_item_id,
+                MstStockItem.company_id == user.company_id
             )
         )
         if not ing_query.scalars().first():
@@ -443,9 +443,9 @@ async def create_batch(
 ):
     # Verify stock item
     item_query = await db.execute(
-        select(StockItem).where(
-            StockItem.stock_item_id == req.stock_item_id,
-            StockItem.company_id == user.company_id
+        select(MstStockItem).where(
+            MstStockItem.stock_item_id == req.stock_item_id,
+            MstStockItem.company_id == user.company_id
         )
     )
     if not item_query.scalars().first():
@@ -491,9 +491,9 @@ async def create_serial(
 ):
     # Verify stock item
     item_query = await db.execute(
-        select(StockItem).where(
-            StockItem.stock_item_id == req.stock_item_id,
-            StockItem.company_id == user.company_id
+        select(MstStockItem).where(
+            MstStockItem.stock_item_id == req.stock_item_id,
+            MstStockItem.company_id == user.company_id
         )
     )
     if not item_query.scalars().first():

@@ -6,13 +6,13 @@ from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import json
 
-from app.models.payment import Bill
+from app.models.payment import TrnBill
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user
 from app.models.user import User, Module
-from app.models.voucher import VoucherType, Voucher, VoucherEntry, ApprovalRule, ApprovalRequest, AuditLog
-from app.models.ledger import Ledger
+from app.models.voucher import MstVoucherType, TrnVoucher, TrnAccounting, ApprovalRule, ApprovalRequest, AuditLog
+from app.models.ledger import MstLedger
 from app.models.sync import SyncQueue
 from app.schemas.voucher import (
     VoucherCreate, VoucherResponse,
@@ -42,7 +42,7 @@ async def get_voucher_types(
     db: AsyncSession = Depends(get_db)
 ):
     res = await db.execute(
-        select(VoucherType).where(VoucherType.company_id == user.company_id)
+        select(MstVoucherType).where(MstVoucherType.company_id == user.company_id)
     )
     return res.scalars().all()
 
@@ -71,9 +71,9 @@ async def create_voucher(
         
     # Get voucher type
     vtype_query = await db.execute(
-        select(VoucherType).where(
-            VoucherType.voucher_type_id == req.voucher_type_id,
-            VoucherType.company_id == user.company_id
+        select(MstVoucherType).where(
+            MstVoucherType.voucher_type_id == req.voucher_type_id,
+            MstVoucherType.company_id == user.company_id
         )
     )
     vtype = vtype_query.scalars().first()
@@ -122,7 +122,7 @@ async def create_voucher(
     if matching_rule:
         is_held_for_approval = True
         
-    voucher = Voucher(
+    voucher = TrnVoucher(
         company_id=user.company_id,
         voucher_type_id=req.voucher_type_id,
         voucher_number=vnum,
@@ -140,13 +140,13 @@ async def create_voucher(
     for e in req.entries:
         # Verify ledger exists and load group
         ledg_query = await db.execute(
-            select(Ledger).options(selectinload(Ledger.group)).where(Ledger.ledger_id == e.ledger_id, Ledger.company_id == user.company_id)
+            select(MstLedger).options(selectinload(MstLedger.group)).where(MstLedger.ledger_id == e.ledger_id, MstLedger.company_id == user.company_id)
         )
         ledger = ledg_query.scalars().first()
         if not ledger:
             raise HTTPException(status_code=400, detail=f"Ledger ID {e.ledger_id} not found in this company.")
             
-        entry = VoucherEntry(
+        entry = TrnAccounting(
             voucher_id=voucher.voucher_id,
             ledger_id=e.ledger_id,
             cost_center_id=e.cost_center_id,
@@ -165,7 +165,7 @@ async def create_voucher(
             due = vdate + timedelta(days=days)
             amount = e.debit_amount if e.debit_amount > 0 else e.credit_amount
             
-            bill = Bill(
+            bill = TrnBill(
                 company_id=user.company_id,
                 party_ledger_id=ledger.ledger_id,
                 voucher_id=voucher.voucher_id,
@@ -218,9 +218,9 @@ async def create_voucher(
     
     # Fetch completed object with entries loaded
     final_query = await db.execute(
-        select(Voucher)
-        .options(selectinload(Voucher.entries))
-        .where(Voucher.voucher_id == voucher.voucher_id)
+        select(TrnVoucher)
+        .options(selectinload(TrnVoucher.entries))
+        .where(TrnVoucher.voucher_id == voucher.voucher_id)
     )
     final_voucher = final_query.scalars().first()
     
@@ -235,10 +235,10 @@ async def get_vouchers(
     user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(Voucher).options(selectinload(Voucher.entries)).where(Voucher.company_id == user.company_id)
+    stmt = select(TrnVoucher).options(selectinload(TrnVoucher.entries)).where(TrnVoucher.company_id == user.company_id)
     if is_optional is not None:
-        stmt = stmt.where(Voucher.is_optional == is_optional)
-    stmt = stmt.order_by(Voucher.voucher_date.desc(), Voucher.voucher_id.desc())
+        stmt = stmt.where(TrnVoucher.is_optional == is_optional)
+    stmt = stmt.order_by(TrnVoucher.voucher_date.desc(), TrnVoucher.voucher_id.desc())
     res = await db.execute(stmt)
     return res.scalars().all()
 

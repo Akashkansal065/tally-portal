@@ -8,7 +8,11 @@ from app.routers import auth, ledgers, vouchers, currency_tds, payment, inventor
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Create tables if they do not exist
+    # 1. Ensure databases exist
+    from app.core.database import create_databases_if_not_exist
+    await create_databases_if_not_exist()
+    
+    # 2. Create tables if they do not exist
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         

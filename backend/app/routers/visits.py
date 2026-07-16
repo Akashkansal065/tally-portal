@@ -15,15 +15,17 @@ from datetime import datetime
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.user import User
+from app.core.config import settings
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 
 class SalesVisit(Base):
     __tablename__ = "sales_visits"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
-    ledger_id = Column(Integer, ForeignKey("ledgers.ledger_id"), nullable=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=True)
     custom_shop_name = Column(String(256), nullable=True)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
@@ -99,7 +101,7 @@ async def get_recent_visits(
     db: AsyncSession = Depends(get_db),
 ):
     """Return last 15 visits for current user."""
-    from app.models.ledger import Ledger
+    from app.models.ledger import MstLedger
     result = await db.execute(
         select(SalesVisit)
         .where(SalesVisit.user_id == user.user_id)
@@ -113,7 +115,7 @@ async def get_recent_visits(
     for v in visits:
         shop_name = v.custom_shop_name
         if v.ledger_id and not shop_name:
-            lr = await db.execute(select(Ledger).where(Ledger.ledger_id == v.ledger_id))
+            lr = await db.execute(select(MstLedger).where(MstLedger.ledger_id == v.ledger_id))
             l = lr.scalars().first()
             if l:
                 shop_name = l.name

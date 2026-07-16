@@ -10,8 +10,8 @@ import json
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.payment import Bill, BillAllocation
-from app.models.voucher import Voucher, VoucherEntry, VoucherType
+from app.models.payment import TrnBill, BillAllocation
+from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
 from app.models.payment_gateway import PaymentGatewayConfig, PaymentLink, GatewayTransaction, WebhookEvent
 from app.schemas.payment_gateway import (
     PaymentGatewayConfigCreate, PaymentGatewayConfigResponse,
@@ -27,7 +27,7 @@ async def recalculate_bill_settlement(db: AsyncSession, bill_id: int):
     allocs = allocs_query.scalars().all()
     settled = sum(a.amount for a in allocs)
     
-    bill_query = await db.execute(select(Bill).where(Bill.bill_id == bill_id))
+    bill_query = await db.execute(select(TrnBill).where(TrnBill.bill_id == bill_id))
     bill = bill_query.scalars().first()
     if bill:
         bill.settled_amount = settled
@@ -75,7 +75,7 @@ async def create_payment_link(
     db: AsyncSession = Depends(get_db)
 ):
     bill_query = await db.execute(
-        select(Bill).where(Bill.bill_id == req.bill_id, Bill.company_id == user.company_id)
+        select(TrnBill).where(TrnBill.bill_id == req.bill_id, TrnBill.company_id == user.company_id)
     )
     bill = bill_query.scalars().first()
     if not bill:
@@ -160,9 +160,9 @@ async def razorpay_webhook(
         plink = res.scalars().first()
         if plink:
             vtype_query = await db.execute(
-                select(VoucherType).where(
-                    VoucherType.company_id == plink.company_id,
-                    VoucherType.name == "Receipt"
+                select(MstVoucherType).where(
+                    MstVoucherType.company_id == plink.company_id,
+                    MstVoucherType.name == "Receipt"
                 )
             )
             vtype = vtype_query.scalars().first()
@@ -170,7 +170,7 @@ async def razorpay_webhook(
                 vnum = f"{vtype.prefix or ''}{vtype.next_number}"
                 vtype.next_number += 1
                 
-                voucher = Voucher(
+                voucher = TrnVoucher(
                     company_id=plink.company_id,
                     voucher_type_id=vtype.voucher_type_id,
                     voucher_number=vnum,
@@ -183,10 +183,10 @@ async def razorpay_webhook(
                 db.add(voucher)
                 await db.flush()
                 
-                bill_query = await db.execute(select(Bill).where(Bill.bill_id == plink.bill_id))
+                bill_query = await db.execute(select(TrnBill).where(TrnBill.bill_id == plink.bill_id))
                 bill = bill_query.scalars().first()
                 if bill:
-                    e1 = VoucherEntry(
+                    e1 = TrnAccounting(
                         voucher_id=voucher.voucher_id,
                         ledger_id=2,
                         debit_amount=amount,
@@ -196,7 +196,7 @@ async def razorpay_webhook(
                     db.add(e1)
                     await db.flush()
                     
-                    e2 = VoucherEntry(
+                    e2 = TrnAccounting(
                         voucher_id=voucher.voucher_id,
                         ledger_id=bill.party_ledger_id,
                         debit_amount=Decimal("0.00"),

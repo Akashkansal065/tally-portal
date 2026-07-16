@@ -142,7 +142,8 @@ def seed_company_defaults(db: Session, company_id: int):
         if stripped.endswith(';'):
             statements.append(' '.join(current_stmt))
             current_stmt = []
-            
+    from app.core.config import settings
+    db.execute(text(f"USE {settings.TALLY_DATABASE_NAME};"))
     db.execute(text("SET FOREIGN_KEY_CHECKS = 0;"))
     for statement in statements:
         stmt = statement.strip()

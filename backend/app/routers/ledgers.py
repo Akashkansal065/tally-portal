@@ -10,8 +10,8 @@ from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, get_effective_permission
 from app.models.user import User
 from app.models.sync import SyncQueue
-from app.models.ledger import AccountGroup, Ledger, CostCenter
-from app.models.voucher import VoucherEntry
+from app.models.ledger import MstGroup, MstLedger, CostCenter
+from app.models.voucher import TrnAccounting
 from app.schemas.ledger import (
     AccountGroupCreate, AccountGroupResponse,
     LedgerCreate, LedgerResponse,
@@ -31,9 +31,9 @@ async def check_cyclical_parent(db: AsyncSession, company_id: int, parent_id: in
             break
         visited.add(curr_parent)
         res = await db.execute(
-            select(AccountGroup.parent_group_id).where(
-                AccountGroup.group_id == curr_parent,
-                AccountGroup.company_id == company_id
+            select(MstGroup.parent_group_id).where(
+                MstGroup.group_id == curr_parent,
+                MstGroup.company_id == company_id
             )
         )
         curr_parent = res.scalar()
@@ -47,9 +47,9 @@ async def is_ancestor_group(group_id: int, target_name: str, company_id: int, db
             break
         visited.add(curr_parent)
         group_query = await db.execute(
-            select(AccountGroup).where(
-                AccountGroup.group_id == curr_parent,
-                AccountGroup.company_id == company_id
+            select(MstGroup).where(
+                MstGroup.group_id == curr_parent,
+                MstGroup.company_id == company_id
             )
         )
         group = group_query.scalars().first()
@@ -68,7 +68,7 @@ async def get_groups(
     db: AsyncSession = Depends(get_db)
 ):
     query = await db.execute(
-        select(AccountGroup).where(AccountGroup.company_id == user.company_id)
+        select(MstGroup).where(MstGroup.company_id == user.company_id)
     )
     return query.scalars().all()
 
@@ -80,9 +80,9 @@ async def create_group(
 ):
     if req.parent_group_id:
         parent_query = await db.execute(
-            select(AccountGroup).where(
-                AccountGroup.group_id == req.parent_group_id,
-                AccountGroup.company_id == user.company_id
+            select(MstGroup).where(
+                MstGroup.group_id == req.parent_group_id,
+                MstGroup.company_id == user.company_id
             )
         )
         if not parent_query.scalars().first():
@@ -91,7 +91,7 @@ async def create_group(
                 detail="Parent group not found in this company."
             )
             
-    group = AccountGroup(
+    group = MstGroup(
         company_id=user.company_id,
         name=req.name,
         parent_group_id=req.parent_group_id,
@@ -128,17 +128,17 @@ async def get_ledgers(
         )
         
     query = await db.execute(
-        select(Ledger).options(selectinload(Ledger.group)).where(Ledger.company_id == user.company_id)
+        select(MstLedger).options(selectinload(MstLedger.group)).where(MstLedger.company_id == user.company_id)
     )
     all_ledgers = query.scalars().all()
 
-    # Aggregate total debits and credits from VoucherEntry for all ledgers in a single query
-    sums_stmt = select(
-        VoucherEntry.ledger_id,
-        func.sum(VoucherEntry.debit_amount).label("total_debit"),
-        func.sum(VoucherEntry.credit_amount).label("total_credit")
-    ).group_by(VoucherEntry.ledger_id)
-    sums_res = await db.execute(sums_stmt)
+    # Aggregate total debits and credits from TrnAccounting for all ledgers in a single query
+    balance_stmt = select(
+        TrnAccounting.ledger_id,
+        func.sum(TrnAccounting.debit_amount).label("total_debit"),
+        func.sum(TrnAccounting.credit_amount).label("total_credit")
+    ).group_by(TrnAccounting.ledger_id)
+    sums_res = await db.execute(balance_stmt)
     sums_dict = {row.ledger_id: (row.total_debit or Decimal("0.00"), row.total_credit or Decimal("0.00")) for row in sums_res}
     
     filtered = []
@@ -195,9 +195,9 @@ async def create_ledger(
 ):
     # Validate group
     group_query = await db.execute(
-        select(AccountGroup).where(
-            AccountGroup.group_id == req.group_id,
-            AccountGroup.company_id == user.company_id
+        select(MstGroup).where(
+            MstGroup.group_id == req.group_id,
+            MstGroup.company_id == user.company_id
         )
     )
     if not group_query.scalars().first():
@@ -226,9 +226,9 @@ async def create_ledger(
         
     # Check if duplicate name in company
     dup_query = await db.execute(
-        select(Ledger).where(
-            Ledger.name == req.name,
-            Ledger.company_id == user.company_id
+        select(MstLedger).where(
+            MstLedger.name == req.name,
+            MstLedger.company_id == user.company_id
         )
     )
     if dup_query.scalars().first():
@@ -237,7 +237,7 @@ async def create_ledger(
             detail="A ledger with this name already exists in the company."
         )
         
-    ledger = Ledger(
+    ledger = MstLedger(
         company_id=user.company_id,
         **req.model_dump()
     )
@@ -266,9 +266,9 @@ async def update_ledger(
     db: AsyncSession = Depends(get_db)
 ):
     ledger_query = await db.execute(
-        select(Ledger).where(
-            Ledger.ledger_id == ledger_id,
-            Ledger.company_id == user.company_id
+        select(MstLedger).where(
+            MstLedger.ledger_id == ledger_id,
+            MstLedger.company_id == user.company_id
         )
     )
     ledger = ledger_query.scalars().first()
@@ -280,9 +280,9 @@ async def update_ledger(
         
     # Validate group
     group_query = await db.execute(
-        select(AccountGroup).where(
-            AccountGroup.group_id == req.group_id,
-            AccountGroup.company_id == user.company_id
+        select(MstGroup).where(
+            MstGroup.group_id == req.group_id,
+            MstGroup.company_id == user.company_id
         )
     )
     if not group_query.scalars().first():
@@ -325,9 +325,9 @@ async def delete_ledger(
     db: AsyncSession = Depends(get_db)
 ):
     ledger_query = await db.execute(
-        select(Ledger).where(
-            Ledger.ledger_id == ledger_id,
-            Ledger.company_id == user.company_id
+        select(MstLedger).where(
+            MstLedger.ledger_id == ledger_id,
+            MstLedger.company_id == user.company_id
         )
     )
     ledger = ledger_query.scalars().first()

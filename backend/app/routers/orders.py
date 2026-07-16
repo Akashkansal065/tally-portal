@@ -14,37 +14,40 @@ from datetime import datetime
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.user import User
+from app.core.config import settings
 
 # ─── Models ──────────────────────────────────────────────────────────────────
 
 class TempOrder(Base):
     __tablename__ = "temp_orders"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
-    ledger_id = Column(Integer, ForeignKey("ledgers.ledger_id"), nullable=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=True)
     custom_customer_name = Column(String(256), nullable=True)
     status = Column(String(32), default="pending")  # pending, done, cancelled
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", foreign_keys=[user_id])
-    ledger = relationship("Ledger", foreign_keys=[ledger_id])
+    ledger = relationship("MstLedger", foreign_keys=[ledger_id])
     items = relationship("TempOrderItem", back_populates="order", cascade="all, delete-orphan")
 
 
 class TempOrderItem(Base):
     __tablename__ = "temp_order_items"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
 
     id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("temp_orders.id", ondelete="CASCADE"), nullable=False)
-    stock_item_id = Column(Integer, ForeignKey("stock_items.stock_item_id"), nullable=False)
+    order_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.temp_orders.id", ondelete="CASCADE"), nullable=False)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id"), nullable=False)
     qty = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
     has_gst = Column(Boolean, default=True)
 
     order = relationship("TempOrder", back_populates="items")
-    stock_item = relationship("StockItem", foreign_keys=[stock_item_id])
+    stock_item = relationship("MstStockItem", foreign_keys=[stock_item_id])
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -70,8 +73,8 @@ async def create_order(
     user: User = Depends(require_permission("orders", "create")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models.ledger import Ledger
-    from app.models.inventory import StockItem
+    from app.models.ledger import MstLedger
+    from app.models.inventory import MstStockItem
 
     if not req.ledger_id and not req.custom_customer_name:
         raise HTTPException(status_code=400, detail="Either ledger_id or custom_customer_name is required.")
@@ -79,7 +82,7 @@ async def create_order(
     # Verify customer ledger if provided
     if req.ledger_id:
         ledger_query = await db.execute(
-            select(Ledger).where(Ledger.ledger_id == req.ledger_id, Ledger.company_id == user.company_id)
+            select(MstLedger).where(MstLedger.ledger_id == req.ledger_id, MstLedger.company_id == user.company_id)
         )
         ledger = ledger_query.scalars().first()
         if not ledger:
@@ -101,7 +104,7 @@ async def create_order(
     for item in req.items:
         # Verify stock item exists
         stock_query = await db.execute(
-            select(StockItem).where(StockItem.item_id == item.stock_item_id, StockItem.company_id == user.company_id)
+            select(MstStockItem).where(MstStockItem.stock_item_id == item.stock_item_id, MstStockItem.company_id == user.company_id)
         )
         stock = stock_query.scalars().first()
         if not stock:
@@ -125,8 +128,8 @@ async def list_orders(
     user: User = Depends(require_permission("orders", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models.ledger import Ledger
-    from app.models.inventory import StockItem
+    from app.models.ledger import MstLedger
+    from app.models.inventory import MstStockItem
     from sqlalchemy.orm import selectinload
 
     result = await db.execute(

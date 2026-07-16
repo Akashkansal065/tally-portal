@@ -8,9 +8,9 @@ from datetime import date, datetime
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.ledger import Ledger
-from app.models.payment import Bill, BillAllocation, ShopPayment
-from app.models.voucher import Voucher, VoucherEntry
+from app.models.ledger import MstLedger
+from app.models.payment import TrnBill, BillAllocation, ShopPayment
+from app.models.voucher import TrnVoucher, TrnAccounting
 from app.schemas.payment import (
     BillResponse, BillAllocationCreate, BillAllocationResponse,
     OutstandingBill, AgingBucket
@@ -26,7 +26,7 @@ async def recalculate_bill_settlement(db: AsyncSession, bill_id: int):
     allocs = allocs_query.scalars().all()
     settled = sum(a.amount for a in allocs)
     
-    bill_query = await db.execute(select(Bill).where(Bill.bill_id == bill_id))
+    bill_query = await db.execute(select(TrnBill).where(TrnBill.bill_id == bill_id))
     bill = bill_query.scalars().first()
     if bill:
         bill.settled_amount = settled
@@ -46,7 +46,7 @@ async def allocate_payment(
 ):
     # Verify voucher entry
     entry_query = await db.execute(
-        select(VoucherEntry).where(VoucherEntry.entry_id == req.voucher_entry_id)
+        select(TrnAccounting).where(TrnAccounting.entry_id == req.voucher_entry_id)
     )
     entry = entry_query.scalars().first()
     if not entry:
@@ -55,7 +55,7 @@ async def allocate_payment(
     # Verify bill
     if req.bill_id:
         bill_query = await db.execute(
-            select(Bill).where(Bill.bill_id == req.bill_id, Bill.company_id == user.company_id)
+            select(TrnBill).where(TrnBill.bill_id == req.bill_id, TrnBill.company_id == user.company_id)
         )
         bill = bill_query.scalars().first()
         if not bill:
@@ -91,15 +91,15 @@ async def get_outstanding_bills(
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
-        select(Bill)
-        .options(selectinload(Bill.party))
+        select(TrnBill)
+        .options(selectinload(TrnBill.party))
         .where(
-            Bill.company_id == user.company_id,
-            Bill.status != "Settled"
+            TrnBill.company_id == user.company_id,
+            TrnBill.status != "Settled"
         )
     )
     if party_ledger_id:
-        stmt = stmt.where(Bill.party_ledger_id == party_ledger_id)
+        stmt = stmt.where(TrnBill.party_ledger_id == party_ledger_id)
         
     res = await db.execute(stmt)
     bills = res.scalars().all()
