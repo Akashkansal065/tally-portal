@@ -12,6 +12,8 @@ from app.models.voucher import AuditLog
 
 router = APIRouter(prefix="/admin", tags=["Admin Panel"])
 
+from typing import Optional
+
 class AdminUserResponse(BaseModel):
     user_id: int
     username: str
@@ -19,6 +21,22 @@ class AdminUserResponse(BaseModel):
     is_active: bool
     role_id: int
     role_name: str
+    showLedger: bool
+    showSalesLedgers: bool
+    showPurchaseLedgers: bool
+    showReceipts: bool
+    showPayments: bool
+    showExpenses: bool
+    showAttendance: bool
+    showStocks: bool
+    showReports: bool
+    showOrders: bool
+    showCheckIn: bool
+    ledgerScope: str
+    stockScope: str
+    allowedStockGroups: Optional[str] = None
+    allowedLedgerGroups: Optional[str] = None
+    allowedReportCategories: Optional[str] = None
 
 class AdminUserCreate(BaseModel):
     username: str
@@ -92,7 +110,23 @@ async def get_users(
             email=u.email,
             is_active=u.is_active,
             role_id=u.role_id,
-            role_name=role.name if role else "Unknown"
+            role_name=role.name if role else "Unknown",
+            showLedger=u.show_ledger,
+            showSalesLedgers=u.show_sales_ledgers,
+            showPurchaseLedgers=u.show_purchase_ledgers,
+            showReceipts=u.show_receipts,
+            showPayments=u.show_payments,
+            showExpenses=u.show_expenses,
+            showAttendance=u.show_attendance,
+            showStocks=u.show_stocks,
+            showReports=u.show_reports,
+            showOrders=u.show_orders,
+            showCheckIn=u.show_check_in,
+            ledgerScope=u.ledger_scope,
+            stockScope=u.stock_scope,
+            allowedStockGroups=u.allowed_stock_groups,
+            allowedLedgerGroups=u.allowed_ledger_groups,
+            allowedReportCategories=u.allowed_report_categories,
         ))
     return response
 
@@ -120,13 +154,27 @@ async def create_user(
         )
         
     password_hash = get_password_hash(payload.password)
+    is_new_admin = role.name == "Admin"
     user = User(
         company_id=admin.company_id,
         username=payload.username,
         email=payload.email,
         password_hash=password_hash,
         role_id=payload.role_id,
-        is_active=True
+        is_active=True,
+        show_ledger=True if is_new_admin else False,
+        show_stocks=True if is_new_admin else False,
+        show_reports=True if is_new_admin else False,
+        show_orders=True if is_new_admin else True, # Default True for both Admin and User
+        show_check_in=True if is_new_admin else True, # Default True for both Admin and User
+        show_sales_ledgers=True if is_new_admin else False,
+        show_purchase_ledgers=True if is_new_admin else False,
+        show_receipts=True if is_new_admin else False,
+        show_payments=True if is_new_admin else True, # Default True for both Admin and User
+        show_expenses=True if is_new_admin else False,
+        show_attendance=True if is_new_admin else True, # Default True for both Admin and User
+        ledger_scope='full' if is_new_admin else 'none',
+        stock_scope='full' if is_new_admin else 'none'
     )
     db.add(user)
     await db.commit()
@@ -138,16 +186,73 @@ async def create_user(
         email=user.email,
         is_active=user.is_active,
         role_id=user.role_id,
-        role_name=role.name
+        role_name=role.name,
+        showLedger=user.show_ledger,
+        showSalesLedgers=user.show_sales_ledgers,
+        showPurchaseLedgers=user.show_purchase_ledgers,
+        showReceipts=user.show_receipts,
+        showPayments=user.show_payments,
+        showExpenses=user.show_expenses,
+        showAttendance=user.show_attendance,
+        showStocks=user.show_stocks,
+        showReports=user.show_reports,
+        showOrders=user.show_orders,
+        showCheckIn=user.show_check_in,
+        ledgerScope=user.ledger_scope,
+        stockScope=user.stock_scope,
+        allowedStockGroups=user.allowed_stock_groups,
+        allowedLedgerGroups=user.allowed_ledger_groups,
+        allowedReportCategories=user.allowed_report_categories,
     )
+
+
+class UserPasswordReset(BaseModel):
+    password: str
+
+@router.put("/users/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: int,
+    payload: UserPasswordReset,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    if len(payload.password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 6 characters long."
+        )
+
+    # Verify user belongs to same company
+    user_q = await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
+    )
+    user = user_q.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+
+    password_hash = get_password_hash(payload.password)
+    user.password_hash = password_hash
+    await db.commit()
+    return {"success": True, "message": f"Password reset successfully for user: {user.username}"}
+
+class UserRoleToggle(BaseModel):
+    role: str
 
 @router.put("/users/{user_id}/role")
 async def update_user_role(
     user_id: int,
-    payload: UserRoleUpdate,
+    payload: UserRoleToggle,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
+    if user_id == admin.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot change your own admin role."
+        )
     # Verify user belongs to same company
     user_q = await db.execute(
         select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
@@ -159,8 +264,9 @@ async def update_user_role(
             detail="User not found."
         )
         
+    role_name = "Admin" if payload.role.lower() == "admin" else "Sales"
     # Verify role exists
-    role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id))
+    role_q = await db.execute(select(Role).where(Role.name.ilike(role_name)))
     role = role_q.scalars().first()
     if not role:
         raise HTTPException(
@@ -168,7 +274,7 @@ async def update_user_role(
             detail="Role not found."
         )
         
-    user.role_id = payload.role_id
+    user.role_id = role.role_id
     await db.commit()
     return {"detail": f"User role updated to {role.name} successfully."}
 
@@ -299,33 +405,113 @@ async def get_user_permissions(
     overrides = query.scalars().all()
     return overrides
 
+class UserPermissionsToggle(BaseModel):
+    showSalesLedgers: bool
+    showPurchaseLedgers: bool
+    showReceipts: bool
+    showPayments: bool
+    showExpenses: bool
+    showAttendance: bool
+    showStocks: bool
+    showReports: bool
+    showOrders: bool
+    showCheckIn: bool
+
+class UserScopesToggle(BaseModel):
+    ledgerScope: str
+    stockScope: str
+    allowedLedgerGroups: Optional[str] = None
+    allowedStockGroups: Optional[str] = None
+    allowedReportCategories: Optional[str] = None
+
+class UserStatusToggle(BaseModel):
+    isActive: bool
+
 @router.put("/users/{user_id}/permissions")
 async def update_user_permissions(
     user_id: int,
-    payload: List[UserPermissionOverrideItem],
+    payload: UserPermissionsToggle,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    # Clear existing
-    await db.execute(
-        UserPermissionOverride.__table__.delete().where(UserPermissionOverride.user_id == user_id)
+    user_q = await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
     )
-    
-    # Insert new
-    for item in payload:
-        override = UserPermissionOverride(
-            user_id=user_id,
-            module_id=item.module_id,
-            can_create=item.can_create,
-            can_read=item.can_read,
-            can_update=item.can_update,
-            can_delete=item.can_delete,
-            granted_by=admin.user_id
+    user = user_q.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
         )
-        db.add(override)
         
+    user.show_sales_ledgers = payload.showSalesLedgers
+    user.show_purchase_ledgers = payload.showPurchaseLedgers
+    user.show_receipts = payload.showReceipts
+    user.show_payments = payload.showPayments
+    user.show_expenses = payload.showExpenses
+    user.show_attendance = payload.showAttendance
+    user.show_stocks = payload.showStocks
+    user.show_reports = payload.showReports
+    user.show_orders = payload.showOrders
+    user.show_check_in = payload.showCheckIn
+    
+    # Derived show_ledger
+    user.show_ledger = payload.showSalesLedgers or payload.showPurchaseLedgers or payload.showReceipts or payload.showPayments
+    
     await db.commit()
-    return {"detail": "User permissions updated successfully."}
+    return {"success": True}
+
+@router.put("/users/{user_id}/scopes")
+async def update_user_scopes(
+    user_id: int,
+    payload: UserScopesToggle,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    user_q = await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
+    )
+    user = user_q.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+        
+    user.ledger_scope = payload.ledgerScope
+    user.stock_scope = payload.stockScope
+    user.allowed_ledger_groups = payload.allowedLedgerGroups
+    user.allowed_stock_groups = payload.allowedStockGroups
+    user.allowed_report_categories = payload.allowedReportCategories
+    
+    await db.commit()
+    return {"success": True}
+
+@router.put("/users/{user_id}/status")
+async def update_user_status(
+    user_id: int,
+    payload: UserStatusToggle,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    if user_id == admin.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot toggle active status on your own admin account."
+        )
+    user_q = await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
+    )
+    user = user_q.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+        
+    user.is_active = payload.isActive
+    await db.commit()
+    return {"success": True}
 
 @router.get("/audit-logs")
 async def get_audit_logs(

@@ -354,3 +354,82 @@ async def delete_ledger(
     from app.core.cache import clear_company_cache
     clear_company_cache(user.company_id)
     return {"detail": "Ledger deleted successfully."}
+
+@router.get("/{ledger_id}/statement")
+async def get_ledger_statement(
+    ledger_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    from app.models.ledger import MstLedger
+    ledger_stmt = select(MstLedger).options(selectinload(MstLedger.group)).where(
+        MstLedger.ledger_id == ledger_id,
+        MstLedger.company_id == user.company_id
+    )
+    ledger_res = await db.execute(ledger_stmt)
+    ledger = ledger_res.scalars().first()
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+        
+    addr = ledger.address or ""
+    mobile_val = ""
+    if addr and " | Mobile: " in addr:
+        parts = addr.split(" | Mobile: ")
+        addr = parts[0]
+        mobile_val = parts[1]
+        
+    ledger_info = {
+        "ledger_id": ledger.ledger_id,
+        "name": ledger.name,
+        "parent": ledger.group.name if ledger.group else "Unknown",
+        "gstn": ledger.gstin,
+        "address": addr,
+        "state": ledger.state,
+        "mobile": mobile_val,
+    }
+
+    from app.models.voucher import TrnAccounting, TrnVoucher, MstVoucherType
+    
+    stmt = select(
+        TrnAccounting.voucher_id,
+        TrnAccounting.debit_amount,
+        TrnAccounting.credit_amount,
+        TrnVoucher.voucher_date,
+        TrnVoucher.voucher_number,
+        TrnVoucher.reference_number,
+        TrnVoucher.narration,
+        MstVoucherType.name.label("voucher_type_name")
+    ).join(
+        TrnVoucher, TrnAccounting.voucher_id == TrnVoucher.voucher_id
+    ).join(
+        MstVoucherType, TrnVoucher.voucher_type_id == MstVoucherType.voucher_type_id
+    ).where(
+        TrnAccounting.ledger_id == ledger_id,
+        TrnVoucher.company_id == user.company_id
+    ).order_by(
+        TrnVoucher.voucher_date.desc()
+    )
+    
+    tx_res = await db.execute(stmt)
+    transactions = []
+    for row in tx_res.all():
+        deb = float(row.debit_amount or 0)
+        cred = float(row.credit_amount or 0)
+        amt = -deb if deb > 0 else cred
+        
+        transactions.append({
+            "id": row.voucher_id,
+            "date": str(row.voucher_date),
+            "voucherType": row.voucher_type_name,
+            "voucherNumber": row.voucher_number,
+            "referenceNumber": row.reference_number,
+            "narration": row.narration,
+            "partyName": "",
+            "amount": str(amt),
+        })
+        
+    return {
+        "success": True,
+        "ledgerInfo": ledger_info,
+        "transactions": transactions,
+    }

@@ -4,17 +4,18 @@ Reports Router — comprehensive date-filtered reports.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, desc
-from sqlalchemy.sql import func
+from sqlalchemy import desc, func
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, date
+from decimal import Decimal
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
-from app.models.voucher import TrnVoucher, TrnAccounting
-from app.models.ledger import MstLedger
+from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
+from app.models.ledger import MstLedger, MstGroup
 
 router = APIRouter(prefix="/reports", tags=["Reports Hub"])
 
@@ -27,32 +28,35 @@ async def get_daybook(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve all vouchers for the company within the date range."""
-    query = select(Voucher).where(Voucher.company_id == user.company_id)
+    query = select(TrnVoucher).options(
+        selectinload(TrnVoucher.voucher_type),
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger)
+    ).where(TrnVoucher.company_id == user.company_id)
+    
     if from_date:
-        query = query.where(Voucher.date >= date.fromisoformat(from_date))
+        query = query.where(TrnVoucher.voucher_date >= date.fromisoformat(from_date))
     if to_date:
-        query = query.where(Voucher.date <= date.fromisoformat(to_date))
+        query = query.where(TrnVoucher.voucher_date <= date.fromisoformat(to_date))
 
-    result = await db.execute(query.order_by(desc(Voucher.date)).limit(100))
+    result = await db.execute(query.order_by(desc(TrnVoucher.voucher_date)).limit(100))
     vouchers = result.scalars().all()
 
     output = []
     for v in vouchers:
-        # Load entries / amount info
-        entries_query = await db.execute(select(VoucherEntry).where(VoucherEntry.voucher_id == v.voucher_id))
-        entries = entries_query.scalars().all()
-        # Choose amount of first debit or credit entry
-        amount = 0.0
+        amount = float(v.total_amount)
         party_name = "Generic Party"
-        if entries:
-            amount = float(entries[0].amount)
-            party_name = entries[0].ledger_name
+        if v.entries:
+            # Try to find a ledger name from entries
+            for entry in v.entries:
+                if entry.ledger:
+                    party_name = entry.ledger.name
+                    break
 
         output.append({
             "id": v.voucher_id,
             "voucher_number": v.voucher_number,
-            "date": v.date.isoformat() if v.date else None,
-            "type": v.type,
+            "date": v.voucher_date.isoformat() if v.voucher_date else None,
+            "type": v.voucher_type.name if v.voucher_type else "Unknown",
             "party_name": party_name,
             "amount": amount,
         })
@@ -67,30 +71,36 @@ async def get_sales_register(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve all Sales vouchers within the period."""
-    query = select(TrnVoucher).where(TrnVoucher.company_id == user.company_id)
+    query = select(TrnVoucher).join(MstVoucherType).options(
+        selectinload(TrnVoucher.voucher_type),
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger)
+    ).where(
+        TrnVoucher.company_id == user.company_id,
+        MstVoucherType.name == "Sales"
+    )
+    
     if from_date:
-        query = query.where(TrnVoucher.date >= date.fromisoformat(from_date))
+        query = query.where(TrnVoucher.voucher_date >= date.fromisoformat(from_date))
     if to_date:
-        query = query.where(TrnVoucher.date <= date.fromisoformat(to_date))
-    
-    result = await db.execute(query.order_by(desc(TrnVoucher.date)).limit(100))
+        query = query.where(TrnVoucher.voucher_date <= date.fromisoformat(to_date))
+
+    result = await db.execute(query.order_by(desc(TrnVoucher.voucher_date)).limit(100))
     vouchers = result.scalars().all()
-    
-    # Enrich with entries
+
     output = []
     for v in vouchers:
-        entries_query = await db.execute(select(TrnAccounting).where(TrnAccounting.voucher_id == v.voucher_id))
-        entries = entries_query.scalars().all()
-        amount = 0.0
+        amount = float(v.total_amount)
         party_name = "Generic Party"
-        if entries:
-            amount = float(entries[0].amount)
-            party_name = entries[0].ledger_name
+        if v.entries:
+            for entry in v.entries:
+                if entry.ledger:
+                    party_name = entry.ledger.name
+                    break
 
         output.append({
             "id": v.voucher_id,
             "voucher_number": v.voucher_number,
-            "date": v.date.isoformat() if v.date else None,
+            "date": v.voucher_date.isoformat() if v.voucher_date else None,
             "party_name": party_name,
             "amount": amount,
         })
@@ -104,9 +114,8 @@ async def get_outstanding_payables(
 ):
     """Return outstanding purchase/supplier payable bills."""
     from app.models.payment import TrnBill
-    from sqlalchemy.orm import selectinload
 
-    # Outstanding
+    # Retrieve all Open/Partially Settled purchase bills (normally bills from Suppliers)
     stmt = (
         select(TrnBill)
         .options(selectinload(TrnBill.party))
@@ -135,19 +144,22 @@ async def get_trial_balance(
 ):
     """Return group-level ledger trial balance."""
     # List all ledgers and their opening/closing balances grouped by group name
-    stmt = select(MstLedger).where(MstLedger.company_id == user.company_id)
+    stmt = select(MstLedger).options(selectinload(MstLedger.group)).where(MstLedger.company_id == user.company_id)
     res = await db.execute(stmt)
     ledgers = res.scalars().all()
 
     groups = {}
     for l in ledgers:
-        bal = float(l.closing_balance if l.closing_balance is not None else l.opening_balance or 0.0)
-        groups[l.group_name] = groups.get(l.group_name, 0.0) + bal
+        # Use opening balance as fallback
+        bal = float(l.opening_balance or 0.0)
+        group_name = l.group.name if l.group else "Other Accounts"
+        groups[group_name] = groups.get(group_name, 0.0) + bal
 
     return [
-        {"name": group_name or "Other Accounts", "balance": bal}
+        {"name": group_name, "balance": bal}
         for group_name, bal in groups.items()
     ]
+
 
 class DashboardSummaryResponse(BaseModel):
     total_sales: float
@@ -155,69 +167,94 @@ class DashboardSummaryResponse(BaseModel):
     outstanding_receivables: float
     outstanding_payables: float
 
+
 @router.get("/dashboard-summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     from app.core.cache import get_cached_response, set_cached_response
-    cached = get_cached_response(user.company_id, "dashboard-summary")
-    if cached:
-        return cached
+    # cached = get_cached_response(user.company_id, "dashboard-summary")
+    # if cached:
+    #     return cached
 
-    from app.models.payment import TrnBill
-    from app.models.voucher import TrnVoucher, MstVoucherType
+    # Calculate exact closing balances for Ledgers
+    from sqlalchemy import text
     
-    # Total Sales
-    sales_query = await db.execute(
-        select(func.sum(TrnVoucher.total_amount))
-        .join(MstVoucherType, TrnVoucher.voucher_type_id == MstVoucherType.voucher_type_id)
-        .where(
-            TrnVoucher.company_id == user.company_id,
-            MstVoucherType.name == "Sales",
-            TrnVoucher.is_cancelled == False
-        )
-    )
+    # Total Sales (from Sales Accounts, Net Credit Balance)
+    sales_query = await db.execute(text("""
+        SELECT SUM(
+            CASE WHEN l.opening_balance_type = 'Cr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
+            + COALESCE(sub.net_bal, 0)
+        ) as final_bal
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        LEFT JOIN (
+            SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
+            FROM tally_sync.voucher_entries e
+            JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            GROUP BY ledger_id
+        ) sub ON l.ledger_id = sub.ledger_id
+        WHERE g.name = 'Sales Accounts' AND l.company_id = :comp_id
+    """), {"comp_id": user.company_id})
     total_sales = sales_query.scalar() or 0.0
 
-    # Total Receipts
-    receipts_query = await db.execute(
-        select(func.sum(TrnVoucher.total_amount))
-        .join(MstVoucherType, TrnVoucher.voucher_type_id == MstVoucherType.voucher_type_id)
-        .where(
-            TrnVoucher.company_id == user.company_id,
-            MstVoucherType.name == "Receipt",
-            TrnVoucher.is_cancelled == False
-        )
-    )
-    total_receipts = receipts_query.scalar() or 0
+    # Total Receipts (Cash/Bank Accounts, Net Debit Balance)
+    receipts_query = await db.execute(text("""
+        SELECT SUM(
+            CASE WHEN l.opening_balance_type = 'Dr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
+            + COALESCE(sub.net_bal, 0)
+        ) as final_bal
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        LEFT JOIN (
+            SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
+            FROM tally_sync.voucher_entries e
+            JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            GROUP BY ledger_id
+        ) sub ON l.ledger_id = sub.ledger_id
+        WHERE g.name IN ('Cash-in-hand', 'Bank Accounts') AND l.company_id = :comp_id
+    """), {"comp_id": user.company_id})
+    total_receipts = receipts_query.scalar() or 0.0
     
-    from app.models.ledger import MstLedger, MstGroup
+    # Receivables: Sum of (Dr Balances) for Sundry Debtors
+    receivables_query = await db.execute(text("""
+        SELECT SUM(
+            CASE WHEN l.opening_balance_type = 'Dr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
+            + COALESCE(sub.net_bal, 0)
+        ) as final_bal
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        LEFT JOIN (
+            SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
+            FROM tally_sync.voucher_entries e
+            JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            GROUP BY ledger_id
+        ) sub ON l.ledger_id = sub.ledger_id
+        WHERE g.name = 'Sundry Debtors' AND l.company_id = :comp_id
+    """), {"comp_id": user.company_id})
+    outstanding_receivables = receivables_query.scalar() or 0.0
     
-    # Receivables
-    receivables_query = await db.execute(
-        select(func.sum(TrnBill.bill_amount - TrnBill.settled_amount))
-        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
-        .join(MstGroup, MstLedger.group_id == MstGroup.group_id)
-        .where(
-            TrnBill.company_id == user.company_id,
-            MstGroup.name == "Sundry Debtors",
-            TrnBill.status != "Settled"
-        )
-    )
-    outstanding_receivables = receivables_query.scalar() or 0
-    
-    # Payables
-    payables_query = await db.execute(
-        select(func.sum(TrnBill.bill_amount - TrnBill.settled_amount))
-        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
-        .join(MstGroup, MstLedger.group_id == MstGroup.group_id)
-        .where(
-            TrnBill.company_id == user.company_id,
-            MstGroup.name == "Sundry Creditors",
-            TrnBill.status != "Settled"
-        )
-    )
+    # Payables: Sum of (Cr Balances) for Sundry Creditors
+    payables_query = await db.execute(text("""
+        SELECT SUM(
+            CASE WHEN l.opening_balance_type = 'Cr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
+            + COALESCE(sub.net_bal, 0)
+        ) as final_bal
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        LEFT JOIN (
+            SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
+            FROM tally_sync.voucher_entries e
+            JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            GROUP BY ledger_id
+        ) sub ON l.ledger_id = sub.ledger_id
+        WHERE g.name = 'Sundry Creditors' AND l.company_id = :comp_id
+    """), {"comp_id": user.company_id})
     outstanding_payables = payables_query.scalar() or 0.0
 
     res = {
@@ -228,4 +265,3 @@ async def get_dashboard_summary(
     }
     set_cached_response(user.company_id, "dashboard-summary", res)
     return res
-

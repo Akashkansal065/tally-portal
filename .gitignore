@@ -36,3 +36,8 @@ dist/
 *.njsproj
 *.sln
 *.sw?
+
+# Database certs
+ca.pem
+backend/ca.pem
+

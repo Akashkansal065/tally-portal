@@ -13,7 +13,56 @@ The application contains three core components:
 2. **Tally Sync Daemon (`tally_sync_daemon.py`)**: A lightweight background service running locally that queries Tally collections using TDL/XML, converts payloads, and pushes incremental data to the ERP backend.
 3. **ERP Cloud Platform (FastAPI & Next.js)**: 
    - **Backend**: A Python FastAPI REST API connected to a MySQL database that parses Tally XML messages and updates accounts, transactions, and inventory.
-   - **Frontend**: A Next.js Web App featuring a rich, responsive interface for viewing stocks, invoices, ledgers, and tracking orders.
+    - **Frontend**: A Next.js Web App featuring a rich, responsive interface for viewing stocks, invoices, ledgers, and tracking orders.
+
+---
+
+## 🚀 Key Features
+
+* **🔄 Bidirectional Tally Sync**: Incremental ledger, transaction voucher, and stock group synchronization with offline Tally Prime setups.
+* **📅 Attendance Log Portal**: Daily salesperson clock-in and checkout system. Features live session durations, geolocation verification, and watermarked webcam selfie stamping.
+* **📍 GPS Shop Check-In**: GPS-verified client site check-ins with camera proofing and reverse-geocoded map watermarking overlays.
+* **💼 Expense & Order Management**: Submit and review sales orders and expense claims directly from the field with receipt attachments.
+* **🛡️ Admin Oversight Console**: User access role toggles, granular ledger/stock access scope scopes, and administrator password resets.
+
+---
+
+## 🛡️ Roles & Permissions Matrix
+
+The portal initializes 2 standard system roles with the following default module authorization scopes:
+
+| Module / Feature | Admin | User (Default) |
+| :--- | :---: | :---: |
+| **User Directory** | CRUD | None |
+| **Tally Sync** | CRUD | None |
+| **Ledgers & Groups** | CRUD | None |
+| **Vouchers & Invoices** | CRUD | None |
+| **Inventory & Stocks** | CRUD | None |
+| **Orders & Expenses** | CRUD | CRUD (Orders Only) |
+| **Reports (P&L, Balance)** | CRUD | None |
+| **Shop GPS Check-In** | CRUD | CRUD |
+| **Attendance Portal** | CRUD | CRUD |
+
+> *Legend: **C** = Create, **R** = Read, **U** = Update, **D** = Delete*
+
+### ⚙️ Granular User Scope Visibility Settings
+Administrators can override these standard roles with granular user-specific permission flags and data visibility scopes:
+
+* **Menu Access Visibility**:
+  - `showLedger` (Ledger Directory menu item visibility)
+  - `showSalesLedgers` (Debit balances / Customer ledgers visibility)
+  - `showPurchaseLedgers` (Credit balances / Supplier ledgers visibility)
+  - `showReceipts` (Cash & bank receipt records visibility)
+  - `showPayments` (Cash & bank payment records visibility)
+  - `showExpenses` (Expenses submission & approval visibility)
+  - `showStocks` (Stock item list and stock groups visibility)
+  - `showReports` (P&L Statement & Balance Sheet visibility)
+  - `showOrders` (Sales order submission visibility)
+  - `showCheckIn` (GPS-verified Shop Check-In visibility)
+* **Data Limit Scopes**:
+  - `ledgerScope`: Filter ledger accounts visibility (`full` / `dr_only` / `cr_only` / `none`).
+  - `stockScope`: Filter stock inventory visibility (`full` / `none`).
+  - `allowedStockGroups` / `allowedLedgerGroups`: Limit user data query scopes to specific stock/ledger groups only.
 
 ---
 
@@ -55,31 +104,38 @@ The application contains three core components:
      DATABASE_URL=mysql+aiomysql://YOUR_DB_USER:YOUR_DB_PASSWORD@localhost:3306/mytally_db
      JWT_SECRET=change-this-to-a-very-secure-secret-key
      ACCESS_TOKEN_EXPIRE_MINUTES=1440
-     
-     # Tally Synchronization Settings
-     TALLY_URL=http://127.0.0.1:9000
-     ERP_URL=http://127.0.0.1:8000
-     ERP_EMAIL=admin_test@test.com
-     ERP_PASSWORD=securepassword123
-     SYNC_FREQUENCY=120
-     ```
+          # Tally Database Name
+      TALLY_DATABASE_NAME=tally_sync
+      
+      # SSL Connection (Set to true if using Aiven/cloud databases requiring SSL/TLS)
+      DB_SSL=true
+      
+      # Tally Synchronization Settings
+      TALLY_URL=http://127.0.0.1:9000
+      ERP_URL=http://127.0.0.1:8000
+      ERP_EMAIL=admin_test@test.com
+      ERP_PASSWORD=securepassword123
+      SYNC_FREQUENCY=120
+      ```
+    - **SSL CA Certificate (For Cloud/Aiven Databases)**: 
+      If your MySQL database requires certificate-validated SSL connections (e.g., Aiven MySQL), place your `ca.pem` certificate file directly inside the `backend/` folder. The application is configured to automatically detect and load it, and `.gitignore` ensures it is never pushed to Git.
 
-5. Initialize the Database and Seed Roles:
-   Create the database schema and run the seed script:
-   ```bash
-   python3 -m app.core.seed
-   ```
+ 5. Initialize the Database and Seed Roles:
+    Create the database schema and run the seed script:
+    ```bash
+    python3 -m app.core.seed
+    ```
 
-6. Seed default Company and Admin:
-   Run the company recreation utility to create company `Sneh Distributors` and the default admin user:
-   ```bash
-   python3 scratch/reset_companies.py
-   ```
+ 6. Seed default Company and Admin:
+    Run the company recreation utility to create company `Sneh Distributors` and the default admin user:
+    ```bash
+    python3 scratch/reset_companies.py
+    ```
 
-7. Start the FastAPI backend:
-   ```bash
-   uvicorn app.main:app --reload --port 8000
-   ```
+ 7. Start the FastAPI backend:
+    ```bash
+    uvicorn app.main:app --reload --port 8000
+    ```
 
 ---
 
@@ -116,10 +172,16 @@ To run the background sync utility that automatically queries your local Tally P
 
 ---
 
-## 🔐 Logging In
+## 🔐 First-time Setup & Logging In
 
-For your initial login to the web portal, use the seeded admin credentials:
+### Option A: Auto-Bootstrap (Recommended for New Installations)
+If the database has zero registered administrator accounts (e.g., brand-new deployment), navigating to `http://localhost:3000/login` will automatically activate the **Bootstrap Setup Wizard**:
+1. Provide your Company Name, Books Start Date, Administrator Name, Email, and Password.
+2. Click **Register & Log In**. This initializes company defaults and registers your main administrator profile.
+3. Once completed, public registration is automatically blocked on both backend and frontend layers.
 
+### Option B: Use Seeded Credentials (If database was seeded)
+If you ran seed scripts, log in using the default administrative credentials:
 * **URL**: [http://localhost:3000/login](http://localhost:3000/login)
 * **Email**: `admin_test@test.com`
 * **Password**: `securepassword123`

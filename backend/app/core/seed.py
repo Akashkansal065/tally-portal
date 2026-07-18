@@ -13,10 +13,7 @@ def seed_global_data(db: Session):
         db.execute(text("""
             INSERT INTO roles (name, description) VALUES
             ('Admin', 'Full access to all modules including user management'),
-            ('Accountant', 'Can create/edit vouchers and ledgers, view all reports'),
-            ('DataEntry', 'Can create vouchers only, no edit/delete after posting'),
-            ('Auditor', 'Read-only access to all ledgers, vouchers and reports'),
-            ('Viewer', 'Read-only access to reports only')
+            ('User', 'Standard user with check-in, payments, orders, and attendance access')
         """))
         db.commit()
         print("Roles seeded successfully.")
@@ -40,7 +37,8 @@ def seed_global_data(db: Session):
             ('settings',  'Company Settings',      'Company profile, GST config, gateway config, feature toggles', 1),
             ('payroll',   'Payroll Management',    'Employees, salary components, structures, payslips', 1),
             ('visits',    'Shop Check-In',         'GPS check-in records for sales visits', 1),
-            ('expenses',  'Expenses',              'Expense claim submission and approval', 1)
+            ('expenses',  'Expenses',              'Expense claim submission and approval', 1),
+            ('attendance', 'Attendance',            'Daily check-in and check-out logs', 1)
         """))
         db.commit()
         print("Modules seeded successfully.")
@@ -62,59 +60,20 @@ def seed_global_data(db: Session):
                 VALUES ({roles['Admin']}, {mod_id}, 1, 1, 1, 1)
             """))
             
-        # Accountant permissions
-        accountant_perms = {
-            'ledgers': (1, 1, 1, 0),
-            'ledger_customer': (1, 1, 1, 0),
-            'ledger_supplier': (1, 1, 1, 0),
-            'vouchers': (1, 1, 1, 0),
-            'inventory': (1, 1, 1, 0),
-            'orders': (1, 1, 1, 0),
-            'payments': (1, 1, 1, 0),
-            'reports': (0, 1, 0, 0),
-            'settings': (0, 1, 0, 0),
+        # User role permissions (check-in/visits, payments, orders, attendance)
+        user_perms = {
             'visits': (1, 1, 1, 1),
-            'expenses': (1, 1, 1, 1),
+            'payments': (1, 1, 1, 1),
+            'orders': (1, 1, 1, 1),
+            'attendance': (1, 1, 1, 1),
         }
-        for mod_code, (c, r, u, d) in accountant_perms.items():
+        for mod_code, (c, r, u, d) in user_perms.items():
             if mod_code in modules:
                 db.execute(text(f"""
                     INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
-                    VALUES ({roles['Accountant']}, {modules[mod_code]}, {c}, {r}, {u}, {d})
+                    VALUES ({roles['User']}, {modules[mod_code]}, {c}, {r}, {u}, {d})
                 """))
                 
-        # DataEntry permissions
-        dataentry_perms = {
-            'vouchers': (1, 1, 0, 0),
-            'ledgers': (0, 1, 0, 0),
-            'ledger_customer': (0, 1, 0, 0),
-            'ledger_supplier': (0, 1, 0, 0),
-            'inventory': (0, 1, 0, 0),
-            'orders': (1, 1, 0, 0),
-            'visits': (1, 1, 0, 0),
-            'expenses': (1, 1, 0, 0),
-        }
-        for mod_code, (c, r, u, d) in dataentry_perms.items():
-            if mod_code in modules:
-                db.execute(text(f"""
-                    INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
-                    VALUES ({roles['DataEntry']}, {modules[mod_code]}, {c}, {r}, {u}, {d})
-                """))
-                
-        # Auditor permissions (Read all except security)
-        for mod_code, mod_id in modules.items():
-            if mod_code not in ['users', 'roles', 'settings']:
-                db.execute(text(f"""
-                    INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
-                    VALUES ({roles['Auditor']}, {mod_id}, 0, 1, 0, 0)
-                """))
-                
-        # Viewer permissions (Reports only)
-        db.execute(text(f"""
-            INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
-            VALUES ({roles['Viewer']}, {modules['reports']}, 0, 1, 0, 0)
-        """))
-        
         db.commit()
         print("Permissions matrix seeded successfully.")
 

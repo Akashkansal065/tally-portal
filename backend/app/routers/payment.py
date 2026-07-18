@@ -199,10 +199,11 @@ async def get_payment_history(
     user: User = Depends(require_permission("payments", "read")),
     db: AsyncSession = Depends(get_db),
 ):
+    from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(ShopPayment)
         .where(ShopPayment.user_id == user.user_id)
-        .options(selectinload(ShopPayment.ledger))
+        .options(selectinload(ShopPayment.ledger), selectinload(ShopPayment.user))
         .order_by(ShopPayment.created_at.desc())
         .limit(100)
     )
@@ -216,7 +217,61 @@ async def get_payment_history(
             "comments": p.comments,
             "status": p.status,
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            "user_name": p.user.username if p.user else "Salesperson",
         }
         for p in payments
     ]
+
+
+@router.get("/all")
+async def get_all_payments(
+    current_user: User = Depends(require_permission("admin", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(ShopPayment)
+        .options(selectinload(ShopPayment.ledger), selectinload(ShopPayment.user))
+        .order_by(ShopPayment.created_at.desc())
+        .limit(500)
+    )
+    payments = result.scalars().all()
+    return [
+        {
+            "id": p.id,
+            "ledger_name": p.ledger.name if p.ledger else "Unknown Party",
+            "amount": float(p.amount),
+            "payment_mode": p.payment_mode,
+            "comments": p.comments,
+            "status": p.status,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "user_name": p.user.username if p.user else "Salesperson",
+        }
+        for p in payments
+    ]
+
+
+class PaymentStatusUpdate(BaseModel):
+    status: str  # success | cancelled
+    reason: Optional[str] = None
+
+
+@router.put("/{payment_id}/status")
+async def update_payment_status(
+    payment_id: int,
+    req: PaymentStatusUpdate,
+    user: User = Depends(require_permission("admin", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(ShopPayment).where(ShopPayment.id == payment_id))
+    payment = result.scalars().first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    if req.status not in {"success", "cancelled", "pending"}:
+        raise HTTPException(status_code=400, detail="Status must be 'success', 'cancelled', or 'pending'")
+
+    payment.status = req.status
+    await db.commit()
+    return {"success": True, "status": payment.status}
 

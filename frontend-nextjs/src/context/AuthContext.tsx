@@ -5,12 +5,16 @@ import { API_BASE, authHeaders } from '@/lib/utils'
 
 export interface UserPermissions {
   showLedger: boolean
-  showStocks: boolean
-  showReports: boolean
-  showCheckIn: boolean
-  showOrders: boolean
+  showSalesLedgers: boolean
+  showPurchaseLedgers: boolean
+  showReceipts: boolean
   showPayments: boolean
   showExpenses: boolean
+  showAttendance: boolean
+  showStocks: boolean
+  showReports: boolean
+  showOrders: boolean
+  showCheckIn: boolean
   ledgerScope: 'all' | 'dr_only' | 'restricted'
   stockScope: 'full' | 'restricted'
   isAdmin: boolean
@@ -38,13 +42,17 @@ interface AuthContextValue {
 
 const DEFAULT_PERMISSIONS: UserPermissions = {
   showLedger: true,
-  showStocks: true,
-  showReports: true,
-  showCheckIn: true,
-  showOrders: true,
+  showSalesLedgers: true,
+  showPurchaseLedgers: false,
+  showReceipts: true,
   showPayments: true,
   showExpenses: false,
-  ledgerScope: 'all',
+  showAttendance: true,
+  showStocks: true,
+  showReports: false,
+  showOrders: false,
+  showCheckIn: true,
+  ledgerScope: 'dr_only',
   stockScope: 'full',
   isAdmin: false,
 }
@@ -66,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchMe = useCallback(async (tok: string) => {
     try {
-const res = await fetch(`${API_BASE}/auth/me`, {
+      const res = await fetch(`${API_BASE}/auth/me`, {
         headers: authHeaders(tok),
       })
       if (!res.ok) throw new Error('Unauthorized')
@@ -87,13 +95,17 @@ const res = await fetch(`${API_BASE}/auth/me`, {
         username: data.email?.split('@')[0] ?? data.email ?? 'User',
         permissions: {
           showLedger: isAdmin ? true : (data.showLedger ?? true),
+          showSalesLedgers: isAdmin ? true : (data.showSalesLedgers ?? true),
+          showPurchaseLedgers: isAdmin ? true : (data.showPurchaseLedgers ?? false),
+          showReceipts: isAdmin ? true : (data.showReceipts ?? true),
+          showPayments: isAdmin ? true : (data.showPayments ?? true),
+          showExpenses: isAdmin ? true : (data.showExpenses ?? false),
+          showAttendance: isAdmin ? true : (data.showAttendance ?? true),
           showStocks: isAdmin ? true : (data.showStocks ?? true),
           showReports: isAdmin ? true : (data.showReports ?? false),
-          showCheckIn: true,
-          showOrders: true,
-          showPayments: true,
-          showExpenses: isAdmin ? true : (data.showExpenses ?? false),
-          ledgerScope: isAdmin ? 'all' : (data.ledgerScope ?? 'all'),
+          showOrders: isAdmin ? true : (data.showOrders ?? false),
+          showCheckIn: isAdmin ? true : (data.showCheckIn ?? true),
+          ledgerScope: isAdmin ? 'all' : (data.ledgerScope ?? 'dr_only'),
           stockScope: isAdmin ? 'full' : (data.stockScope ?? 'full'),
           isAdmin,
         },

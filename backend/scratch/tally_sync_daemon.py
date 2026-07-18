@@ -6,8 +6,16 @@ import sys
 import os
 import argparse
 
-def load_env_file(filepath=".env"):
+def load_env_file(filepath=None):
     """Loads key-value pairs from a local .env file into os.environ if the file exists."""
+    if filepath is None:
+        # First try parent directory of the script (backend/.env), then the current working directory
+        parent_env = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+        if os.path.exists(parent_env):
+            filepath = parent_env
+        else:
+            filepath = ".env"
+            
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
@@ -108,6 +116,11 @@ def run_sync_cycle(token):
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
             queue = json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        print(f"Error fetching sync queue from ERP: {str(e)}")
+        if e.code == 401:
+            raise e
+        return
     except Exception as e:
         print(f"Error fetching sync queue from ERP: {str(e)}")
         return
@@ -457,6 +470,21 @@ def main():
             print(f"\n--- Sync Cycle Started at {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
             run_sync_cycle(token)
             print("--- Sync Cycle Completed ---")
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                print("Session token expired or revoked (401 Unauthorized). Attempting to re-authenticate...")
+                new_token = get_erp_token(email, password)
+                if new_token:
+                    token = new_token
+                    print("Re-authenticated successfully. Retrying cycle...")
+                    try:
+                        run_sync_cycle(token)
+                    except Exception as err:
+                        print(f"Retry failed: {str(err)}")
+                else:
+                    print("Re-authentication failed. Will retry in next cycle.")
+            else:
+                print(f"HTTP Error in sync cycle: {e.code} {e.reason}")
         except KeyboardInterrupt:
             print("\nSync Daemon stopped by user. Exiting.")
             break

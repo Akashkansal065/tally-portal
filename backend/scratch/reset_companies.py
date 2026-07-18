@@ -52,12 +52,22 @@ async def reset_companies_and_users():
         role_row = res.fetchone()
         admin_role_id = role_row[0] if role_row else 1
         
-        # 4. Insert default admin user
+        # 4. Insert default admin user with full access/scopes
         print("Recreating admin user 'admin_test@test.com' linked to company 1...")
         pwd_hash = get_password_hash("securepassword123")
         await conn.execute(text(f"""
-            INSERT INTO users (user_id, company_id, username, email, password_hash, role_id, is_active, created_at)
-            VALUES (1, 1, 'admin_test', 'admin_test@test.com', '{pwd_hash}', {admin_role_id}, 1, NOW());
+            INSERT INTO users (
+                user_id, company_id, username, email, password_hash, role_id, is_active, 
+                show_ledger, show_stocks, show_reports, show_orders, show_check_in, 
+                show_sales_ledgers, show_purchase_ledgers, show_receipts, show_payments, 
+                show_expenses, show_attendance, ledger_scope, stock_scope, created_at
+            )
+            VALUES (
+                1, 1, 'admin_test', 'admin_test@test.com', '{pwd_hash}', {admin_role_id}, 1,
+                1, 1, 1, 1, 1,
+                1, 1, 1, 1,
+                1, 1, 'full', 'full', NOW()
+            );
         """))
         
         # 5. Link user to company access

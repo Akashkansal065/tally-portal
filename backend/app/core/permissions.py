@@ -65,56 +65,91 @@ async def get_effective_permission(
 ) -> dict:
     """
     Resolves the effective permission for a user on a given module.
-    Resolution order:
-    1. user_permission_overrides: Any non-NULL fields win.
-    2. permissions (Role-level): Fall back if override is missing or has NULL fields.
-    3. Fail-safe: read-only (can_read=True, others=False).
+    Resolves using User permission columns directly, mapping them from tally-web permissions schema.
     """
+    from sqlalchemy.orm import selectinload
+    
     effective = {
         "can_create": False,
-        "can_read": True,  # Fail-safe read
+        "can_read": False,
         "can_update": False,
         "can_delete": False
     }
     
-    module_query = await db.execute(select(Module).where(Module.code == module_code))
-    module = module_query.scalars().first()
-    if not module:
-        return effective
-        
-    # Check override
-    override_query = await db.execute(
-        select(UserPermissionOverride).where(
-            UserPermissionOverride.user_id == user_id,
-            UserPermissionOverride.module_id == module.module_id,
-            (UserPermissionOverride.expires_at == None) | (UserPermissionOverride.expires_at > datetime.now(timezone.utc))
-        )
-    )
-    override = override_query.scalars().first()
-    
-    # Check role-level permission
+    # Eagerly load user and role
     user_query = await db.execute(
-        select(User).where(User.user_id == user_id)
+        select(User).options(selectinload(User.role)).where(User.user_id == user_id)
     )
     user = user_query.scalars().first()
     
-    permission = None
-    if user:
-        perm_query = await db.execute(
-            select(Permission).where(
-                Permission.role_id == user.role_id,
-                Permission.module_id == module.module_id
-            )
-        )
-        permission = perm_query.scalars().first()
+    if not user:
+        return effective
+
+    # Admin role gets full access to everything
+    is_admin = False
+    if user.role and user.role.name.lower() == "admin":
+        is_admin = True
         
-    # Evaluate permissions (Override wins first, then role)
-    for field in ["can_create", "can_read", "can_update", "can_delete"]:
-        if override and getattr(override, field) is not None:
-            effective[field] = getattr(override, field)
-        elif permission is not None:
-            effective[field] = getattr(permission, field)
-            
+    if is_admin:
+        return {
+            "can_create": True,
+            "can_read": True,
+            "can_update": True,
+            "can_delete": True
+        }
+
+    m_code = module_code.lower()
+    
+    # 1. Ledgers / Customers / Suppliers
+    if "ledger" in m_code:
+        # showLedger is derived from show_sales_ledgers or show_purchase_ledgers or show_receipts or show_payments
+        has_access = user.show_sales_ledgers or user.show_purchase_ledgers or user.show_receipts or user.show_payments
+        effective["can_read"] = has_access
+        effective["can_create"] = has_access
+        effective["can_update"] = has_access
+        effective["can_delete"] = has_access
+        
+    # 2. Inventory / Stocks
+    elif "inventory" in m_code or "stock" in m_code:
+        effective["can_read"] = user.show_stocks
+        effective["can_create"] = user.show_stocks
+        effective["can_update"] = user.show_stocks
+        effective["can_delete"] = user.show_stocks
+        
+    # 3. Reports
+    elif "report" in m_code:
+        effective["can_read"] = user.show_reports
+        effective["can_create"] = user.show_reports
+        effective["can_update"] = user.show_reports
+        effective["can_delete"] = user.show_reports
+        
+    # 4. Orders
+    elif "order" in m_code:
+        effective["can_read"] = user.show_orders
+        effective["can_create"] = user.show_orders
+        effective["can_update"] = user.show_orders
+        effective["can_delete"] = user.show_orders
+        
+    # 5. Check-In / Shop Visits
+    elif "visit" in m_code or "check" in m_code:
+        effective["can_read"] = user.show_check_in
+        effective["can_create"] = user.show_check_in
+        effective["can_update"] = user.show_check_in
+        effective["can_delete"] = user.show_check_in
+        
+    # 6. Payments / Receipts / Expenses
+    elif "payment" in m_code:
+        # User has payments or receipts enabled
+        has_access = user.show_payments or user.show_receipts or user.show_expenses
+        effective["can_read"] = has_access
+        effective["can_create"] = has_access
+        effective["can_update"] = has_access
+        effective["can_delete"] = has_access
+        
+    else:
+        # Fail-safe read
+        effective["can_read"] = True
+        
     return effective
 
 def require_permission(module_code: str, action: str):

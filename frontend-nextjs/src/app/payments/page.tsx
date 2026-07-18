@@ -1,10 +1,21 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate } from '@/lib/utils'
-import { IndianRupee, Clock, CheckCircle, XCircle, Plus, X, Camera } from 'lucide-react'
+import { 
+  IndianRupee, 
+  Clock, 
+  Check, 
+  X, 
+  Plus, 
+  Camera, 
+  Eye, 
+  ChevronLeft, 
+  User as UserIcon,
+  Calendar
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type Payment = {
@@ -12,155 +23,250 @@ type Payment = {
   ledger_name?: string
   amount: number
   payment_mode: string
-  status: string
+  status: 'pending' | 'success' | 'cancelled'
   comments?: string
   created_at: string
+  user_name: string
+  photo_url?: string
 }
 
-type Ledger = { ledger_id: number; name: string }
-
-const MODES = ['Cash', 'Cheque', 'Online']
-
 export default function PaymentsPage() {
-  const { user, token } = useAuth()
+  const { user, token, permissions } = useAuth()
   const router = useRouter()
+  
   const [payments, setPayments] = useState<Payment[]>([])
-  const [ledgers, setLedgers] = useState<Ledger[]>([])
   const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-
-  const [ledgerId, setLedgerId] = useState('')
-  const [amount, setAmount] = useState('')
-  const [mode, setMode] = useState('Cash')
-  const [comments, setComments] = useState('')
-  const [photo, setPhoto] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'pending' | 'success' | 'cancelled'>('pending')
+  const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null)
 
   const fetchData = async () => {
-    const [ps, ls] = await Promise.all([
-      fetch(`${API_BASE}/payment/history`, { headers: authHeaders(token) }).then(r => r.json()).catch(() => []),
-      fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()).catch(() => []),
-    ])
-    setPayments(Array.isArray(ps) ? ps : (ps?.data ?? []))
-    setLedgers(Array.isArray(ls) ? ls.slice(0, 200) : [])
+    setLoading(true)
+    try {
+      const isAdmin = permissions.isAdmin
+      const url = isAdmin ? `${API_BASE}/payment/all` : `${API_BASE}/payment/history`
+      const res = await fetch(url, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setPayments(Array.isArray(data) ? data : [])
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    fetchData().finally(() => setLoading(false))
+    fetchData()
   }, [user, token, router])
 
-  const handlePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return
-    const reader = new FileReader(); reader.onload = ev => setPhoto(ev.target?.result as string); reader.readAsDataURL(file)
-  }
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!ledgerId || !amount || parseFloat(amount) <= 0) { setError('Select a party and enter a valid amount.'); return }
-    setSubmitting(true); setError(''); setSuccess('')
+  const handleStatusChange = async (paymentId: number, nextStatus: 'success' | 'cancelled') => {
     try {
-      const res = await fetch(`${API_BASE}/payment/collect`, {
-        method: 'POST',
+      const res = await fetch(`${API_BASE}/payment/${paymentId}/status`, {
+        method: 'PUT',
         headers: authHeaders(token),
-        body: JSON.stringify({ ledger_id: parseInt(ledgerId), amount: parseFloat(amount), payment_mode: mode, comments, photo_base64: photo }),
+        body: JSON.stringify({ status: nextStatus })
       })
-      if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
-      setSuccess('Payment recorded!'); setShowForm(false); setLedgerId(''); setAmount(''); setMode('Cash'); setComments(''); setPhoto(null)
-      await fetchData()
-    } catch (err: any) { setError(err.message) } finally { setSubmitting(false) }
+      if (!res.ok) throw new Error('Failed to update status')
+      setPayments(prev => prev.map(p => p.id === paymentId ? { ...p, status: nextStatus } : p))
+    } catch (err: any) {
+      alert(err.message)
+    }
   }
 
-  const statusIcon = (s: string) => {
-    if (s === 'success') return <CheckCircle className="h-4 w-4 text-emerald-600" />
-    if (s === 'cancelled') return <XCircle className="h-4 w-4 text-destructive" />
-    return <Clock className="h-4 w-4 text-amber-500" />
-  }
+  // Grouped payments
+  const pendingPayments = useMemo(() => payments.filter(p => p.status === 'pending'), [payments])
+  const successPayments = useMemo(() => payments.filter(p => p.status === 'success'), [payments])
+  const cancelledPayments = useMemo(() => payments.filter(p => p.status === 'cancelled'), [payments])
 
-  const statusColor = (s: string) => s === 'success' ? 'text-emerald-600' : s === 'cancelled' ? 'text-destructive' : 'text-amber-500'
+  const currentList = useMemo(() => {
+    if (activeTab === 'success') return successPayments
+    if (activeTab === 'cancelled') return cancelledPayments
+    return pendingPayments
+  }, [activeTab, pendingPayments, successPayments, cancelledPayments])
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-4 pt-4 pb-3 border-b border-border flex items-center justify-between">
-        <h1 className="text-xl font-extrabold flex items-center gap-2"><IndianRupee className="h-5 w-5 text-teal-500" /> Payments</h1>
-        <button onClick={() => setShowForm(v => !v)} className="flex items-center gap-1.5 px-3 py-2 bg-primary text-white rounded-xl text-xs font-bold">
-          {showForm ? <X className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-          {showForm ? 'Close' : 'New'}
-        </button>
-      </div>
+    <div className="flex flex-col h-full bg-background font-sans">
+      {/* Top Header */}
+      <header className="shrink-0 border-b border-border bg-emerald-500 text-white h-14 flex items-center px-4 justify-between shadow-sm">
+        <div className="flex items-center gap-3">
+          <button onClick={() => router.push('/')} className="p-1 hover:bg-emerald-600 rounded-lg transition-colors">
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-white/20 flex items-center justify-center text-xs font-bold">S</div>
+            <span className="font-bold text-sm">Sneh Distributors</span>
+          </div>
+        </div>
+      </header>
 
-      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-2 space-y-4">
-        {success && <div className="p-3 rounded-xl bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-sm">{success}</div>}
-        {error && <div className="p-3 rounded-xl bg-destructive/10 text-destructive text-sm">{error}</div>}
+      {/* Main Content */}
+      <div className="flex-1 overflow-y-auto px-4 py-5 max-w-xl mx-auto w-full space-y-4">
+        {/* Title and CTA */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-extrabold tracking-tight flex items-center gap-1.5 text-foreground">
+              <IndianRupee className="h-5.5 w-5.5 text-emerald-500" /> Payments Log
+            </h1>
+            <p className="text-[11px] text-muted-foreground mt-0.5">Collect and validate customer outstanding payments</p>
+          </div>
+          <button 
+            onClick={() => router.push('/payments/new')}
+            className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all active:scale-[0.98] shadow-md shadow-emerald-500/10 cursor-pointer"
+          >
+            <Plus className="h-3.5 w-3.5" /> Collect
+          </button>
+        </div>
 
-        {showForm && (
-          <form onSubmit={handleSubmit} className="bg-card border border-border rounded-2xl p-4 space-y-3">
-            <h2 className="font-bold text-sm">Record Payment</h2>
-            <div>
-              <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Party / Ledger</label>
-              <select className="mt-1 w-full px-3 py-2.5 rounded-xl border border-border bg-muted/40 text-sm" value={ledgerId} onChange={e => setLedgerId(e.target.value)}>
-                <option value="">— Select Party —</option>
-                {ledgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>)}
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Amount (₹)</label>
-                <input type="number" min="0" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" className="mt-1 w-full px-3 py-2.5 rounded-xl border border-border bg-muted/40 text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Mode</label>
-                <select className="mt-1 w-full px-3 py-2.5 rounded-xl border border-border bg-muted/40 text-sm" value={mode} onChange={e => setMode(e.target.value)}>
-                  {MODES.map(m => <option key={m}>{m}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Comments</label>
-              <input type="text" value={comments} onChange={e => setComments(e.target.value)} placeholder="Optional notes..." className="mt-1 w-full px-3 py-2.5 rounded-xl border border-border bg-muted/40 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Proof Photo (Optional)</label>
-              {photo ? (
-                <div className="relative rounded-xl overflow-hidden border border-border mt-1"><img src={photo} alt="proof" className="w-full h-28 object-cover" /><button type="button" onClick={() => setPhoto(null)} className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1 text-xs"><X className="h-3 w-3" /></button></div>
-              ) : (
-                <label className="mt-1 w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed border-border hover:border-primary/50 cursor-pointer text-xs text-muted-foreground">
-                  <Camera className="h-4 w-4" />Capture receipt
-                  <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhoto} />
-                </label>
-              )}
-            </div>
-            <button type="submit" disabled={submitting} className="w-full py-3 bg-primary text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 disabled:opacity-50">
-              {submitting && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-              Record Payment
-            </button>
-          </form>
-        )}
+        {/* Status Tab Headers */}
+        <div className="grid w-full grid-cols-3 bg-muted/40 p-1 rounded-xl border border-border/80 h-10 items-center">
+          <button
+            onClick={() => setActiveTab('pending')}
+            className={cn(
+              'h-8 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5',
+              activeTab === 'pending'
+                ? 'bg-amber-500 text-white shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Pending
+            <span className={cn('text-[9px] px-1.5 py-0.5 rounded-full font-black', activeTab === 'pending' ? 'bg-white text-amber-600' : 'bg-amber-500 text-white')}>
+              {pendingPayments.length}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('success')}
+            className={cn(
+              'h-8 text-xs font-bold rounded-lg transition-all',
+              activeTab === 'success'
+                ? 'bg-emerald-500 text-white shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Success
+          </button>
+          <button
+            onClick={() => setActiveTab('cancelled')}
+            className={cn(
+              'h-8 text-xs font-bold rounded-lg transition-all',
+              activeTab === 'cancelled'
+                ? 'bg-rose-500 text-white shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Cancelled
+          </button>
+        </div>
 
+        {/* Payments List */}
         {loading ? (
-          <div className="flex justify-center py-8"><div className="w-7 h-7 border-4 border-primary border-t-transparent rounded-full animate-spin" /></div>
-        ) : payments.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground"><IndianRupee className="h-10 w-10 mx-auto mb-3 opacity-30" /><p className="text-sm">No payments recorded yet</p></div>
+          <div className="flex justify-center py-10">
+            <div className="w-6 h-6 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : currentList.length === 0 ? (
+          <div className="text-center py-12 bg-card border border-border rounded-2xl border-dashed">
+            <IndianRupee className="h-10 w-10 mx-auto mb-3 opacity-25 text-muted-foreground" />
+            <p className="text-sm font-bold text-muted-foreground">No payments found</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">There are no records in this category</p>
+          </div>
         ) : (
-          <div className="space-y-2">
-            {payments.map(p => (
-              <div key={p.id} className="bg-card border border-border rounded-2xl p-4 flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-teal-100 dark:bg-teal-900/30 flex items-center justify-center">{statusIcon(p.status)}</div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-sm">{p.ledger_name || 'Unknown Party'}</p>
-                  <p className="text-xs text-muted-foreground">{p.payment_mode} • {formatDate(p.created_at)}</p>
+          <div className="space-y-3">
+            {currentList.map(p => (
+              <div key={p.id} className="bg-card border border-border rounded-2xl p-4 shadow-sm hover:border-emerald-500/30 transition-all flex flex-col gap-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="font-extrabold text-sm text-foreground break-words leading-tight">
+                      {p.ledger_name || 'Unknown Party'}
+                    </h3>
+                    <div className="flex gap-2 items-center mt-1.5 text-[10px] text-muted-foreground font-semibold">
+                      <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {formatDate(p.created_at)}</span>
+                      {permissions.isAdmin && (
+                        <span className="flex items-center gap-1 uppercase bg-muted px-1.5 py-0.5 rounded tracking-wider text-[8px]">
+                          {p.user_name}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="text-right shrink-0">
+                    <p className="font-black text-sm text-emerald-600 dark:text-emerald-400 font-mono">
+                      ₹{p.amount.toLocaleString('en-IN')}
+                    </p>
+                    <span className="inline-flex mt-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded bg-muted/65 text-muted-foreground border border-border/80">
+                      {p.payment_mode}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-right shrink-0">
-                  <p className="font-bold text-sm">{formatCurrency(p.amount)}</p>
-                  <p className={cn('text-[10px] font-bold capitalize', statusColor(p.status))}>{p.status}</p>
+
+                {p.comments && (
+                  <p className="text-[11px] text-muted-foreground bg-muted/30 p-2 rounded-xl italic leading-relaxed">
+                    <span className="font-extrabold not-italic text-[8px] uppercase tracking-wider text-muted-foreground mr-1.5">Note:</span>
+                    {p.comments}
+                  </p>
+                )}
+
+                {/* Proof Dialog Trigger & Admin Actions */}
+                <div className="flex items-center justify-between border-t border-border/40 pt-3 mt-0.5 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-1">
+                    <span className="font-extrabold text-[9px] uppercase tracking-wider">Receipt:</span>
+                    {p.photo_url ? (
+                      <button 
+                        onClick={() => setSelectedPhoto(p.photo_url || null)}
+                        className="text-emerald-500 hover:text-emerald-600 font-bold underline flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <Camera className="h-3.5 w-3.5" /> View Photo
+                      </button>
+                    ) : (
+                      <span className="text-[11px] italic">N/A</span>
+                    )}
+                  </div>
+
+                  {permissions.isAdmin && p.status === 'pending' && (
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => handleStatusChange(p.id, 'success')}
+                        className="h-8 w-8 bg-green-500/10 hover:bg-green-500 text-green-600 hover:text-white rounded-lg transition-colors flex items-center justify-center cursor-pointer border border-green-500/20"
+                        title="Approve Payment"
+                      >
+                        <Check className="h-4 w-4" />
+                      </button>
+                      <button 
+                        onClick={() => handleStatusChange(p.id, 'cancelled')}
+                        className="h-8 w-8 bg-destructive/10 hover:bg-destructive text-destructive hover:text-white rounded-lg transition-colors flex items-center justify-center cursor-pointer border border-destructive/20"
+                        title="Cancel Payment"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
           </div>
         )}
+
+        <div className="h-16" />
       </div>
+
+      {/* Selected Photo Viewer Modal */}
+      {selectedPhoto && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="relative max-w-lg w-full bg-card rounded-3xl overflow-hidden shadow-2xl p-2 animate-in zoom-in-95 duration-200">
+            <button 
+              onClick={() => setSelectedPhoto(null)}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 transition-colors z-10"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <img 
+              src={selectedPhoto} 
+              alt="Payment Receipt" 
+              className="w-full h-auto max-h-[80vh] object-contain rounded-2xl"
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

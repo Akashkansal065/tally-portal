@@ -14,14 +14,16 @@ import {
   XCircle,
   ArrowLeft,
   User as UserIcon,
-  Laptop,
   Bell,
   MapPin,
   Plus,
   Upload,
-  CheckCircle2
+  CheckCircle2,
+  Landmark
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
+import rolesConfig from '@/lib/roles.json'
 
 type UserItem = {
   user_id: number
@@ -31,6 +33,22 @@ type UserItem = {
   role_id: number
   role_name: string
   created_at?: string
+  showLedger: boolean
+  showSalesLedgers: boolean
+  showPurchaseLedgers: boolean
+  showReceipts: boolean
+  showPayments: boolean
+  showExpenses: boolean
+  showAttendance: boolean
+  showStocks: boolean
+  showReports: boolean
+  showOrders: boolean
+  showCheckIn: boolean
+  ledgerScope: string
+  stockScope: string
+  allowedStockGroups: string | null
+  allowedLedgerGroups: string | null
+  allowedReportCategories: string | null
 }
 
 type AuditLog = {
@@ -90,30 +108,53 @@ export default function AdminPage() {
   const [editUserCompanies, setEditUserCompanies] = useState<number[]>([])
   const [editUserOverrides, setEditUserOverrides] = useState<any[]>([])
   
+  // Permissions Modal and Scopes from tally-web
+  const [permissionsModalUser, setPermissionsModalUser] = useState<UserItem | null>(null)
+  const [availableStockGroups, setAvailableStockGroups] = useState<string[]>([])
+  const [availableLedgerGroups, setAvailableLedgerGroups] = useState<string[]>([])
+  
   // Create user form state
   const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role_id: 2 })
   const [createUserError, setCreateUserError] = useState('')
   const [createUserLoading, setCreateUserLoading] = useState(false)
+
+  // Company registration form state
+  const [showRegisterCompany, setShowRegisterCompany] = useState(false)
+  const [companyName, setCompanyName] = useState('')
+  const [booksBeginDate, setBooksBeginDate] = useState('2026-04-01')
+  const [regUsername, setRegUsername] = useState('')
+  const [regEmail, setRegEmail] = useState('')
+  const [regPassword, setRegPassword] = useState('')
+  const [regError, setRegError] = useState('')
+  const [regLoading, setRegLoading] = useState(false)
 
   const fetchData = async () => {
     if (!permissions.isAdmin) return
     setLoading(true)
     try {
       if (tab === 'users') {
-        const [uRes, rRes, cRes, mRes] = await Promise.all([
+        const [uRes, rRes, cRes, mRes, sgRes, lgRes] = await Promise.all([
           fetch(`${API_BASE}/admin/users`, { headers: authHeaders(token) }),
           fetch(`${API_BASE}/admin/roles`, { headers: authHeaders(token) }),
           fetch(`${API_BASE}/admin/companies`, { headers: authHeaders(token) }),
-          fetch(`${API_BASE}/admin/modules`, { headers: authHeaders(token) })
+          fetch(`${API_BASE}/admin/modules`, { headers: authHeaders(token) }),
+          fetch(`${API_BASE}/inventory/groups`, { headers: authHeaders(token) }),
+          fetch(`${API_BASE}/ledgers/groups`, { headers: authHeaders(token) })
         ])
         const uData = await uRes.json()
         const rData = await rRes.json()
         const cData = await cRes.json()
         const mData = await mRes.json()
+        const sgData = await sgRes.json()
+        const lgData = await lgRes.json()
+        
         setUsers(Array.isArray(uData) ? uData : [])
         setRoles(Array.isArray(rData) ? rData : [])
         setAdminCompanies(Array.isArray(cData) ? cData : [])
         setAdminModules(Array.isArray(mData) ? mData : [])
+        
+        if (Array.isArray(sgData)) setAvailableStockGroups(sgData.map((g: any) => g.name))
+        if (Array.isArray(lgData)) setAvailableLedgerGroups(lgData.map((g: any) => g.name))
       } else if (tab === 'logs') {
         const res = await fetch(`${API_BASE}/admin/audit-logs`, { headers: authHeaders(token) })
         const data = await res.json()
@@ -138,14 +179,174 @@ export default function AdminPage() {
 
   const toggleUser = async (u: UserItem) => {
     try {
-      await fetch(`${API_BASE}/admin/users/${u.user_id}`, {
-        method: 'PATCH',
+      await fetch(`${API_BASE}/admin/users/${u.user_id}/status`, {
+        method: 'PUT',
         headers: authHeaders(token),
-        body: JSON.stringify({ is_active: !u.is_active }),
+        body: JSON.stringify({ isActive: !u.is_active }),
       })
       setUsers(v => v.map(x => x.user_id === u.user_id ? { ...x, is_active: !u.is_active } : x))
     } catch (err) {
       console.error(err)
+    }
+  }
+
+  const handleRoleChange = async (userId: number, newRole: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/role`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify({ role: newRole }),
+      })
+      if (!res.ok) throw new Error('Failed to update role')
+      setUsers(prev => prev.map(u => u.user_id === userId ? { ...u, role_name: newRole.charAt(0).toUpperCase() + newRole.slice(1) } : u))
+      setPermissionsModalUser(prev => prev && prev.user_id === userId ? { ...prev, role_name: newRole.charAt(0).toUpperCase() + newRole.slice(1) } : prev)
+    } catch (e: any) {
+      alert(e.message)
+    }
+  }
+
+  const handleStatusChange = async (userId: number, currentStatus: boolean) => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/status`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify({ isActive: !currentStatus }),
+      })
+      if (!res.ok) throw new Error('Failed to update status')
+      setUsers(prev => prev.map(u => u.user_id === userId ? { ...u, is_active: !currentStatus } : u))
+      setPermissionsModalUser(prev => prev && prev.user_id === userId ? { ...prev, is_active: !currentStatus } : prev)
+    } catch (e: any) {
+      alert(e.message)
+    }
+  }
+
+  const handleResetPassword = async (userId: number, newPassword: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/reset-password`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify({ password: newPassword }),
+      })
+      if (!res.ok) {
+        const errorData = await res.json()
+        throw new Error(errorData.detail || 'Failed to reset password')
+      }
+      alert('Password reset successfully.')
+      return { success: true }
+    } catch (e: any) {
+      alert(e.message || 'Failed to reset password')
+      return { error: e.message }
+    }
+  }
+
+  const handlePermissionToggle = async (userId: number, field: string, value: boolean) => {
+    const user = users.find(u => u.user_id === userId)
+    if (!user) return
+
+    const updatedUser = { ...user, [field]: value }
+    const payload = {
+      showSalesLedgers: field === 'showSalesLedgers' ? value : user.showSalesLedgers,
+      showPurchaseLedgers: field === 'showPurchaseLedgers' ? value : user.showPurchaseLedgers,
+      showReceipts: field === 'showReceipts' ? value : user.showReceipts,
+      showPayments: field === 'showPayments' ? value : user.showPayments,
+      showExpenses: field === 'showExpenses' ? value : user.showExpenses,
+      showAttendance: field === 'showAttendance' ? value : user.showAttendance,
+      showStocks: field === 'showStocks' ? value : user.showStocks,
+      showReports: field === 'showReports' ? value : user.showReports,
+      showOrders: field === 'showOrders' ? value : user.showOrders,
+      showCheckIn: field === 'showCheckIn' ? value : user.showCheckIn,
+    }
+    
+    // Optimistic
+    setUsers(prev => prev.map(u => u.user_id === userId ? updatedUser : u))
+    setPermissionsModalUser(prev => prev && prev.user_id === userId ? { ...prev, [field]: value } : prev)
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/permissions`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error('Failed to update permissions')
+    } catch (e: any) {
+      alert(e.message)
+      // Rollback
+      setUsers(prev => prev.map(u => u.user_id === userId ? user : u))
+      setPermissionsModalUser(prev => prev && prev.user_id === userId ? user : prev)
+    }
+  }
+
+  const handleScopeChange = async (userId: number, field: "ledgerScope" | "stockScope", value: string) => {
+    const user = users.find(u => u.user_id === userId)
+    if (!user) return
+
+    const updatedUser = { ...user, [field]: value }
+    const payload = {
+      ledgerScope: field === 'ledgerScope' ? value : user.ledgerScope,
+      stockScope: field === 'stockScope' ? value : user.stockScope,
+      allowedLedgerGroups: user.allowedLedgerGroups,
+      allowedStockGroups: user.allowedStockGroups,
+      allowedReportCategories: user.allowedReportCategories,
+    }
+
+    setUsers(prev => prev.map(u => u.user_id === userId ? updatedUser : u))
+    setPermissionsModalUser(prev => prev && prev.user_id === userId ? { ...prev, [field]: value } : prev)
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/scopes`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error('Failed to update scope')
+    } catch (e: any) {
+      alert(e.message)
+      setUsers(prev => prev.map(u => u.user_id === userId ? user : u))
+      setPermissionsModalUser(prev => prev && prev.user_id === userId ? user : prev)
+    }
+  }
+
+  const handleAllowedGroupsChange = async (
+    userId: number,
+    field: "allowedLedgerGroups" | "allowedStockGroups" | "allowedReportCategories",
+    groupName: string,
+    isChecked: boolean
+  ) => {
+    const user = users.find(u => u.user_id === userId)
+    if (!user) return
+
+    const currentList = user[field] ? user[field]!.split(',').filter(Boolean) : []
+    let newList
+    if (isChecked) {
+      newList = [...new Set([...currentList, groupName])]
+    } else {
+      newList = currentList.filter(g => g !== groupName)
+    }
+    const val = newList.join(',') || null
+
+    const updatedUser = { ...user, [field]: val }
+    const payload = {
+      ledgerScope: user.ledgerScope,
+      stockScope: user.stockScope,
+      allowedLedgerGroups: field === 'allowedLedgerGroups' ? val : user.allowedLedgerGroups,
+      allowedStockGroups: field === 'allowedStockGroups' ? val : user.allowedStockGroups,
+      allowedReportCategories: field === 'allowedReportCategories' ? val : user.allowedReportCategories,
+    }
+
+    setUsers(prev => prev.map(u => u.user_id === userId ? updatedUser : u))
+    setPermissionsModalUser(prev => prev && prev.user_id === userId ? { ...prev, [field]: val } : prev)
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/scopes`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error('Failed to update allowed list')
+    } catch (e: any) {
+      alert(e.message)
+      setUsers(prev => prev.map(u => u.user_id === userId ? user : u))
+      setPermissionsModalUser(prev => prev && prev.user_id === userId ? user : prev)
     }
   }
 
@@ -160,6 +361,47 @@ export default function AdminPage() {
       } catch (err) {
         console.error(err)
       }
+    }
+  }
+
+  const handleRegisterCompany = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setRegError('')
+    setRegLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/auth/register-company`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          company_name: companyName,
+          books_begin_date: booksBeginDate,
+          username: regUsername,
+          email: regEmail,
+          password: regPassword
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Registration failed.')
+      }
+      alert('Company registered successfully!')
+      setShowRegisterCompany(false)
+      
+      // Reset form
+      setCompanyName('')
+      setRegUsername('')
+      setRegEmail('')
+      setRegPassword('')
+      
+      // Fetch latest lists
+      fetchData()
+    } catch (err: any) {
+      setRegError(err.message || 'Failed to register company.')
+    } finally {
+      setRegLoading(false)
     }
   }
 
@@ -286,6 +528,14 @@ const handleSavePermissions = async () => {
     }
   }
 
+  const modalUser = permissionsModalUser ? {
+    ...permissionsModalUser,
+    id: permissionsModalUser.user_id,
+    isActive: permissionsModalUser.is_active,
+    role: permissionsModalUser.role_name.toLowerCase(),
+    createdAt: new Date(permissionsModalUser.created_at || Date.now())
+  } : null
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Top green header */}
@@ -315,14 +565,22 @@ const handleSavePermissions = async () => {
           </div>
         </div>
 
-        {/* Create User button (only shown when in users directory tab) */}
+        {/* Create User & Register Company buttons (only shown when in users directory tab) */}
         {tab === 'users' && (
-          <button 
-            onClick={() => setShowCreateUser(true)}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-emerald-500/10"
-          >
-            <Plus className="h-4 w-4" /> Create User
-          </button>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setShowRegisterCompany(true)}
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-sky-500 hover:bg-sky-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-sky-500/10 cursor-pointer"
+            >
+              <Landmark className="h-4 w-4" /> Register Company
+            </button>
+            <button 
+              onClick={() => setShowCreateUser(true)}
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-emerald-500/10 cursor-pointer"
+            >
+              <Plus className="h-4 w-4" /> Create User
+            </button>
+          </div>
         )}
 
         {/* Admin Alerts Switch Block */}
@@ -450,26 +708,23 @@ const handleSavePermissions = async () => {
                     </div>
 
                     <div className="flex items-center justify-end gap-2 pt-1">
-<button 
-                        onClick={async () => {
-                          setShowRoleEdit(u)
-                          setPermissionsTab('role')
-                          // Fetch companies and overrides
-                          const [cRes, oRes] = await Promise.all([
-                            fetch(`${API_BASE}/admin/users/${u.user_id}/companies`, { headers: authHeaders(token) }),
-                            fetch(`${API_BASE}/admin/users/${u.user_id}/permissions`, { headers: authHeaders(token) })
-                          ])
-                          const cData = await cRes.json()
-                          const oData = await oRes.json()
-                          setEditUserCompanies(Array.isArray(cData) ? cData : [])
-                          setEditUserOverrides(Array.isArray(oData) ? oData : [])
-                        }}
+                      <button 
+                        onClick={() => setPermissionsModalUser(u)}
                         className="h-8 px-3 text-[11px] font-bold border border-border hover:bg-muted text-foreground rounded-lg transition-colors flex items-center gap-1"
                       >
                         <Shield className="w-3.5 h-3.5" /> Permissions
                       </button>
-                      <button className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors flex items-center justify-center">
-                        <Laptop className="w-4 h-4" />
+                      <button 
+                        onClick={async () => {
+                          setShowRoleEdit(u)
+                          setPermissionsTab('companies')
+                          const cRes = await fetch(`${API_BASE}/admin/users/${u.user_id}/companies`, { headers: authHeaders(token) })
+                          const cData = await cRes.json()
+                          setEditUserCompanies(Array.isArray(cData) ? cData : [])
+                        }}
+                        className="h-8 px-3 text-[11px] font-bold border border-border hover:bg-muted text-foreground rounded-lg transition-colors flex items-center gap-1"
+                      >
+                        <Users className="w-3.5 h-3.5" /> Companies
                       </button>
                       <button
                         onClick={() => deleteUserItem(u)}
@@ -690,14 +945,111 @@ const handleSavePermissions = async () => {
         </div>
       )}
 
-{/* Edit Role Modal */}
+      {/* Register Company Modal */}
+      {showRegisterCompany && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-sm rounded-3xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-6 py-5 border-b border-border flex justify-between items-center">
+              <div>
+                <h3 className="font-black text-lg text-foreground">Register Company</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Create a new company database and admin user.</p>
+              </div>
+              <button 
+                onClick={() => setShowRegisterCompany(false)}
+                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <form onSubmit={handleRegisterCompany} className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              {regError && (
+                <div className="p-3 bg-destructive/10 text-destructive text-xs font-bold rounded-xl">
+                  {regError}
+                </div>
+              )}
+              
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Company Name</label>
+                <input 
+                  type="text" 
+                  required
+                  value={companyName}
+                  onChange={e => setCompanyName(e.target.value)}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
+                  placeholder="e.g. Sneh Distributors Pvt Ltd"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Books Beginning Date</label>
+                <input 
+                  type="date" 
+                  required
+                  value={booksBeginDate}
+                  onChange={e => setBooksBeginDate(e.target.value)}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Admin Username</label>
+                <input 
+                  type="text" 
+                  required
+                  value={regUsername}
+                  onChange={e => setRegUsername(e.target.value)}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
+                  placeholder="e.g. Akash Kansal"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Admin Email Address</label>
+                <input 
+                  type="email" 
+                  required
+                  value={regEmail}
+                  onChange={e => setRegEmail(e.target.value)}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
+                  placeholder="admin@example.com"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Admin Password</label>
+                <input 
+                  type="password" 
+                  required
+                  value={regPassword}
+                  onChange={e => setRegPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
+                  placeholder="Minimum 6 characters"
+                />
+              </div>
+
+              <div className="pt-2">
+                <button 
+                  type="submit"
+                  disabled={regLoading}
+                  className="w-full py-3 bg-sky-500 hover:bg-sky-600 active:scale-[0.98] text-white font-bold rounded-xl text-sm transition-all shadow-md disabled:opacity-70"
+                >
+                  {regLoading ? 'Registering...' : 'Register Company'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+{/* Edit Allowed Companies Modal */}
       {showRoleEdit && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4">
           <div className="bg-card w-full max-w-md rounded-3xl shadow-xl overflow-hidden animate-in slide-in-from-bottom-10 sm:zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
             <div className="px-6 py-5 border-b border-border flex justify-between items-center shrink-0">
               <div>
-                <h3 className="font-black text-lg text-foreground">Permissions</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">Manage access for <span className="font-bold text-foreground">{showRoleEdit.username}</span></p>
+                <h3 className="font-black text-lg text-foreground">Company Access</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Manage accessible companies for <span className="font-bold text-foreground">{showRoleEdit.username}</span></p>
               </div>
               <button 
                 onClick={() => setShowRoleEdit(null)}
@@ -706,89 +1058,24 @@ const handleSavePermissions = async () => {
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
-            
-            <div className="flex gap-2 px-6 pt-3 border-b border-border shrink-0">
-              <button onClick={() => setPermissionsTab('role')} className={`pb-3 text-xs font-bold border-b-2 transition-all ${permissionsTab === 'role' ? 'border-emerald-500 text-emerald-500' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>Base Role</button>
-              <button onClick={() => setPermissionsTab('companies')} className={`pb-3 text-xs font-bold border-b-2 transition-all ${permissionsTab === 'companies' ? 'border-emerald-500 text-emerald-500' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>Company Access</button>
-              <button onClick={() => setPermissionsTab('modules')} className={`pb-3 text-xs font-bold border-b-2 transition-all ${permissionsTab === 'modules' ? 'border-emerald-500 text-emerald-500' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>Module Overrides</button>
-            </div>
 
-            <div className="p-4 space-y-2 overflow-y-auto flex-1">
-              {permissionsTab === 'role' && roles.map(r => {
-                const isActive = showRoleEdit.role_id === r.role_id;
-                return (
-                  <button
-                    key={r.role_id}
-                    onClick={() => handleUpdateRole(r.role_id)}
-                    className={`w-full text-left p-4 rounded-2xl border transition-all flex items-start gap-3 ${isActive ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600" : "bg-card border-border hover:bg-muted/50 text-foreground"}`}
-                  >
-                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5 ${isActive ? "border-emerald-500" : "border-muted-foreground"}`}>
-                      {isActive && <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />}
-                    </div>
-                    <div>
-                      <p className="font-bold text-sm">{r.name}</p>
-                      <p className="text-xs opacity-70 mt-0.5 leading-relaxed">{r.description}</p>
-                    </div>
-                  </button>
-                )
-              })}
-
-              {permissionsTab === 'companies' && (
-                <div className="space-y-2 mt-2">
-                  <p className="text-xs text-muted-foreground px-1 mb-3">Select the companies this user is allowed to access and view data for.</p>
-                  {adminCompanies.map(c => (
-                    <label key={c.company_id} className="flex items-center gap-3 p-3 rounded-xl border border-border hover:bg-muted/50 cursor-pointer transition-colors">
-                      <input 
-                        type="checkbox" 
-                        checked={editUserCompanies.includes(c.company_id)}
-                        onChange={(e) => {
-                          if (e.target.checked) setEditUserCompanies([...editUserCompanies, c.company_id]);
-                          else setEditUserCompanies(editUserCompanies.filter(id => id !== c.company_id));
-                        }}
-                        className="w-4 h-4 rounded text-emerald-500 focus:ring-emerald-500/20 bg-card border-border"
-                      />
-                      <div className="text-sm font-semibold">{c.name}</div>
-                    </label>
-                  ))}
-                  {adminCompanies.length === 0 && <p className="text-xs text-muted-foreground">No companies found.</p>}
-                </div>
-              )}
-
-              {permissionsTab === 'modules' && (
-                <div className="space-y-3 mt-2">
-                  <p className="text-xs text-muted-foreground px-1 mb-3">Override permissions for specific modules. This will take precedence over their base role.</p>
-                  {adminModules.map(m => {
-                    const override = editUserOverrides.find(o => o.module_id === m.module_id) || { module_id: m.module_id, can_create: false, can_read: false, can_update: false, can_delete: false };
-                    
-                    const toggle = (field: string) => {
-                      const newOverrides = editUserOverrides.filter(o => o.module_id !== m.module_id);
-                      newOverrides.push({ ...override, [field]: !override[field] });
-                      setEditUserOverrides(newOverrides);
-                    };
-
-                    return (
-                      <div key={m.module_id} className="p-3 rounded-xl border border-border space-y-3 bg-muted/20">
-                        <div className="font-bold text-sm text-foreground flex items-center justify-between">
-                          {m.name}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {['read', 'create', 'update', 'delete'].map(action => (
-                            <label key={action} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-card border border-border text-xs cursor-pointer hover:bg-muted transition-colors">
-                              <input 
-                                type="checkbox"
-                                checked={override[`can_${action}`]}
-                                onChange={() => toggle(`can_${action}`)}
-                                className="rounded-sm w-3 h-3 text-emerald-500"
-                              />
-                              <span className="capitalize">{action}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+            <div className="p-5 space-y-3 overflow-y-auto flex-1">
+              <p className="text-xs text-muted-foreground px-1 mb-3">Select the companies this user is allowed to access and view data for.</p>
+              {adminCompanies.map(c => (
+                <label key={c.company_id} className="flex items-center gap-3 p-3 rounded-xl border border-border hover:bg-muted/50 cursor-pointer transition-colors">
+                  <input 
+                    type="checkbox" 
+                    checked={editUserCompanies.includes(c.company_id)}
+                    onChange={(e) => {
+                      if (e.target.checked) setEditUserCompanies([...editUserCompanies, c.company_id]);
+                      else setEditUserCompanies(editUserCompanies.filter(id => id !== c.company_id));
+                    }}
+                    className="w-4 h-4 rounded text-emerald-500 focus:ring-emerald-500/20 bg-card border-border"
+                  />
+                  <div className="text-sm font-semibold">{c.name}</div>
+                </label>
+              ))}
+              {adminCompanies.length === 0 && <p className="text-xs text-muted-foreground">No companies found.</p>}
             </div>
             
             <div className="p-4 border-t border-border bg-muted/20 flex gap-2 shrink-0">
@@ -798,17 +1085,32 @@ const handleSavePermissions = async () => {
               >
                 Close
               </button>
-              {permissionsTab !== 'role' && (
-                <button 
-                  onClick={handleSavePermissions}
-                  className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-sm transition-all shadow-md"
-                >
-                  Save Changes
-                </button>
-              )}
+              <button 
+                onClick={handleSavePermissions}
+                className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-sm transition-all shadow-md"
+              >
+                Save Access
+              </button>
             </div>
           </div>
         </div>
+      )}
+
+      {permissionsModalUser && (
+        <AdminUserPermissionsModal
+          user={modalUser}
+          open={!!permissionsModalUser}
+          onOpenChange={(open) => !open && setPermissionsModalUser(null)}
+          isPending={false}
+          availableLedgerGroups={availableLedgerGroups}
+          availableStockGroups={availableStockGroups}
+          onRoleChange={handleRoleChange}
+          onPermissionToggle={handlePermissionToggle}
+          onScopeChange={handleScopeChange}
+          onAllowedGroupsChange={handleAllowedGroupsChange}
+          onStatusChange={handleStatusChange}
+          onResetPassword={handleResetPassword}
+        />
       )}
     </div>
   )

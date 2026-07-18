@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
-from app.routers import auth, ledgers, vouchers, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports
+from app.routers import auth, ledgers, vouchers, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -60,6 +60,7 @@ app.include_router(visits.router)
 app.include_router(expenses.router)
 app.include_router(orders.router)
 app.include_router(reports.router)
+app.include_router(attendance.router)
 
 @app.get("/")
 def read_root():

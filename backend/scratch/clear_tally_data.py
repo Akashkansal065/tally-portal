@@ -1,13 +1,19 @@
 import asyncio
 import os
+import sys
 from sqlalchemy import text
+
+# Add parent directory of scratch to sys.path to enable app module imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from app.core.database import engine
 
-async def clear_data():
+async def clear_data(target_db: str = "all"):
     print("Ensuring databases exist...")
     from app.core.database import create_databases_if_not_exist
     await create_databases_if_not_exist()
     
+    print(f"Target database selection: {target_db}")
     print("Connecting to database...")
     async with engine.begin() as conn:
         print("Disabling foreign key checks...")
@@ -75,11 +81,23 @@ async def clear_data():
         portal_tables = {
             "expenses", "shop_payments", "temp_orders", "temp_order_items",
             "sales_visits", "sync_queue", "user_sessions", "audit_logs",
-            "payment_links", "gateway_transactions", "payment_gateway_configs", "webhook_events"
+            "payment_links", "gateway_transactions", "payment_gateway_configs", "webhook_events",
+            "bill_of_materials", "bom_items", "batches", "serial_numbers",
+            "einvoice_metadata", "lower_deduction_certificates", "tds_tcs_entries",
+            "tax_challans", "challan_entry_map", "gst_return_periods",
+            "gstr1_line_items", "gstr1_hsn_summary", "gstr3b_summary", "itc_entries"
         }
         
         for table in tables:
-            db_name = portal_db if table in portal_tables else tally_db
+            is_portal = table in portal_tables
+            
+            # Filter tables based on target_db selection
+            if target_db == "tally_portal" and not is_portal:
+                continue
+            elif target_db == "tally_sync" and is_portal:
+                continue
+                
+            db_name = portal_db if is_portal else tally_db
             fq_table = f"`{db_name}`.`{table}`"
             print(f"Truncating table: {fq_table}...")
             try:
@@ -93,4 +111,7 @@ async def clear_data():
     print("Database clear operations completed successfully!")
 
 if __name__ == "__main__":
-    asyncio.run(clear_data())
+    # Configurable option: "all", "tally_sync", or "tally_portal"
+    TARGET_DB = "tally_sync"
+    
+    asyncio.run(clear_data(TARGET_DB))

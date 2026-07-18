@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { useTheme } from '@/components/ThemeProvider'
 import {
@@ -21,6 +21,7 @@ import {
   X,
   Shield,
   Building,
+  ArrowLeft,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -30,6 +31,7 @@ export function GlobalHeader() {
   const { user, logout, permissions, switchCompany } = useAuth()
   const { dark, toggle } = useTheme()
   const pathname = usePathname()
+  const router = useRouter()
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   if (!user) return null
@@ -40,11 +42,23 @@ export function GlobalHeader() {
     <>
       <header className={cn("shrink-0 border-b border-border bg-card/80 backdrop-blur-sm z-20", drawerOpen && "z-50 relative")}>
         <div className="flex items-center justify-between px-4 h-14">
-          {/* Left: back button or logo */}
-<div className="flex items-center gap-2 min-w-0">
-            <Link href="/" className="flex items-center gap-2 min-w-0">
-              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-black text-sm shrink-0">S</div>
-              <span className="font-bold text-primary truncate hidden xs:block">Sneh Dist.</span>
+          {/* Left: back button, logo, and title */}
+          <div className="flex items-center gap-2 min-w-0">
+            {pathname !== '/' && pathname !== '/login' && pathname !== '/signup' && (
+              <button
+                onClick={() => router.back()}
+                className="p-1.5 rounded-full hover:bg-muted text-muted-foreground transition-colors shrink-0"
+                aria-label="Go Back"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </button>
+            )}
+            <img src="/logo.png" alt="Logo" className="h-8 w-8 object-contain shrink-0 rounded-md" />
+            <Link
+              href="/"
+              className="text-base sm:text-lg font-extrabold text-emerald-500 dark:text-emerald-400 hover:opacity-85 transition-all truncate"
+            >
+              Sneh Distributors
             </Link>
             
             {user.allowedCompanies && user.allowedCompanies.length > 0 && (

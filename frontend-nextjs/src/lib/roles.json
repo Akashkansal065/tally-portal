@@ -1,0 +1,38 @@
+{
+  "admin": {
+    "showLedger": true,
+    "showStocks": true,
+    "ledgerScope": "all",
+    "stockScope": "full"
+  },
+  "admin_restricted_stock": {
+    "showLedger": true,
+    "showStocks": true,
+    "ledgerScope": "all",
+    "stockScope": "restricted"
+  },
+  "sales": {
+    "showLedger": true,
+    "showStocks": false,
+    "ledgerScope": "dr_only",
+    "stockScope": "full"
+  },
+  "sales_credit": {
+    "showLedger": true,
+    "showStocks": false,
+    "ledgerScope": "all",
+    "stockScope": "full"
+  },
+  "sales_stock_restricted": {
+    "showLedger": true,
+    "showStocks": true,
+    "ledgerScope": "dr_only",
+    "stockScope": "restricted"
+  },
+  "sales_credit_stock_restricted": {
+    "showLedger": true,
+    "showStocks": true,
+    "ledgerScope": "all",
+    "stockScope": "restricted"
+  }
+}

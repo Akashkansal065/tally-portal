@@ -64,6 +64,9 @@ class TrnAccounting(Base):
     
     # Relationship back to voucher
     voucher = relationship("TrnVoucher", back_populates="entries")
+    
+    # Python-only relationship to access ledger name (no DB modification)
+    ledger = relationship("MstLedger")
 
 class ApprovalRule(Base):
     __tablename__ = "approval_rules"

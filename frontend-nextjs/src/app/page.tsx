@@ -16,6 +16,7 @@ import {
   Wallet,
   ArrowRight,
   Shield,
+  Clock,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -85,13 +86,13 @@ const [dashboardData, setDashboardData] = useState<any>(null)
       show: permissions.showStocks,
     },
     {
-      href: '/orders',
+      href: '/temporders',
       label: 'Temporary Orders',
       description: 'Create and manage pre-Tally customer orders',
       icon: ShoppingCart,
       color: 'text-amber-600',
       bgColor: 'bg-amber-500/10 border-amber-500/20',
-      show: true,
+      show: permissions.showOrders,
     },
     {
       href: '/payments',
@@ -100,7 +101,7 @@ const [dashboardData, setDashboardData] = useState<any>(null)
       icon: IndianRupee,
       color: 'text-teal-600',
       bgColor: 'bg-teal-500/10 border-teal-500/20',
-      show: true,
+      show: permissions.showPayments,
     },
     {
       href: '/check-in',
@@ -109,7 +110,7 @@ const [dashboardData, setDashboardData] = useState<any>(null)
       icon: MapPin,
       color: 'text-rose-600',
       bgColor: 'bg-rose-500/10 border-rose-500/20',
-      show: true,
+      show: permissions.showCheckIn,
     },
     {
       href: '/expenses',
@@ -119,6 +120,15 @@ const [dashboardData, setDashboardData] = useState<any>(null)
       color: 'text-purple-600',
       bgColor: 'bg-purple-500/10 border-purple-500/20',
       show: permissions.showExpenses,
+    },
+    {
+      href: '/attendance',
+      label: 'Attendance Log',
+      description: 'Daily punch-in, punch-out, and shift logs',
+      icon: Clock,
+      color: 'text-sky-600',
+      bgColor: 'bg-sky-500/10 border-sky-500/20',
+      show: permissions.showAttendance,
     },
     {
       href: '/reports',

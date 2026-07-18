@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     TALLY_DATABASE_NAME: str = "tally_sync"
     JWT_SECRET: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    DB_SSL: bool = False
     
     # ImageKit Integration
     IMAGEKIT_PUBLIC_KEY: Optional[str] = None

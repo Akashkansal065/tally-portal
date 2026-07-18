@@ -15,7 +15,7 @@ from app.models.voucher import MstVoucherType, TrnVoucher, TrnAccounting, Approv
 from app.models.ledger import MstLedger
 from app.models.sync import SyncQueue
 from app.schemas.voucher import (
-    VoucherCreate, VoucherResponse,
+    VoucherCreate, VoucherResponse, VoucherListResponse,
     ApprovalRuleCreate, ApprovalRuleResponse,
     ApprovalRequestResponse
 )
@@ -219,7 +219,10 @@ async def create_voucher(
     # Fetch completed object with entries loaded
     final_query = await db.execute(
         select(TrnVoucher)
-        .options(selectinload(TrnVoucher.entries))
+        .options(
+            selectinload(TrnVoucher.voucher_type),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
+        )
         .where(TrnVoucher.voucher_id == voucher.voucher_id)
     )
     final_voucher = final_query.scalars().first()
@@ -229,18 +232,206 @@ async def create_voucher(
         
     return final_voucher
 
-@router.get("", response_model=List[VoucherResponse])
+def _resolve_party_and_amount(entries):
+    """Score entries by ledger group to find the primary party (like tally-web's party_name lookup)."""
+    if not entries:
+        return "Cash Account", 0.0
+
+    primary_entry = entries[0]
+    max_score = -100
+
+    for entry in entries:
+        ledger = getattr(entry, "ledger", None)
+        if not ledger:
+            continue
+        group = getattr(ledger, "group", None)
+        gname = (getattr(group, "name", "") or "").lower() if group else ""
+        lname = (getattr(ledger, "name", "") or "").lower()
+
+        score = 0
+        if "debtors" in gname or "creditors" in gname:
+            score = 10
+        elif "bank" in gname or "cash" in gname:
+            score = 5
+        elif "sales" in gname or "purchase" in gname or "tax" in gname or "duty" in gname or "round" in lname:
+            score = -10
+        else:
+            score = 1
+
+        if score > max_score:
+            max_score = score
+            primary_entry = entry
+
+    ledger = getattr(primary_entry, "ledger", None)
+    party_name = getattr(ledger, "name", "Cash Account") if ledger else "Cash Account"
+
+    debit = float(primary_entry.debit_amount or 0)
+    credit = float(primary_entry.credit_amount or 0)
+    amount = debit if debit > 0 else credit
+
+    return party_name, abs(amount)
+
+
+@router.get("", response_model=List[VoucherListResponse])
 async def get_vouchers(
     is_optional: Optional[bool] = None,
     user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(TrnVoucher).options(selectinload(TrnVoucher.entries)).where(TrnVoucher.company_id == user.company_id)
+    stmt = select(TrnVoucher).options(
+        selectinload(TrnVoucher.voucher_type),
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
+    ).where(TrnVoucher.company_id == user.company_id)
     if is_optional is not None:
         stmt = stmt.where(TrnVoucher.is_optional == is_optional)
     stmt = stmt.order_by(TrnVoucher.voucher_date.desc(), TrnVoucher.voucher_id.desc())
     res = await db.execute(stmt)
-    return res.scalars().all()
+    vouchers = res.scalars().all()
+
+    result = []
+    for v in vouchers:
+        party_name, amount = _resolve_party_and_amount(v.entries)
+        if amount == 0:
+            continue
+        result.append({
+            "voucher_id": v.voucher_id,
+            "date": str(v.voucher_date),
+            "voucher_type": v.voucher_type.name if v.voucher_type else "Unknown",
+            "voucher_number": v.voucher_number,
+            "reference_number": v.reference_number,
+            "narration": v.narration,
+            "party_name": party_name,
+            "amount": amount,
+            "total_amount": float(v.total_amount or 0),
+        })
+    return result
+
+@router.get("/{voucher_id}")
+async def get_voucher_detail(
+    voucher_id: int,
+    user: User = Depends(require_permission("vouchers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(TrnVoucher).options(
+        selectinload(TrnVoucher.voucher_type),
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
+    ).where(
+        TrnVoucher.voucher_id == voucher_id,
+        TrnVoucher.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    voucher = res.scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+
+    party_name, amount = _resolve_party_and_amount(voucher.entries)
+
+    # Build entries list with ledger names
+    entries = []
+    for entry in voucher.entries:
+        ledger = getattr(entry, "ledger", None)
+        ledger_name = getattr(ledger, "name", "Unknown") if ledger else "Unknown"
+        debit = float(entry.debit_amount or 0)
+        credit = float(entry.credit_amount or 0)
+        entries.append({
+            "ledger_name": ledger_name,
+            "amount": debit if debit > 0 else credit,
+            "entry_type": "Debit" if debit > 0 else "Credit",
+        })
+
+    # Fetch inventory entries
+    from app.models.inventory import TrnInventory, MstStockItem
+    inv_stmt = select(TrnInventory).options(
+        selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit)
+    ).where(TrnInventory.voucher_id == voucher_id)
+    inv_res = await db.execute(inv_stmt)
+    inv_entries = inv_res.scalars().all()
+
+    inventory = []
+    for inv in inv_entries:
+        item_name = inv.stock_item.name if inv.stock_item else "Unknown Item"
+        uom_sym = inv.stock_item.unit.symbol if inv.stock_item and inv.stock_item.unit else "PCS"
+        gst_pct = float(inv.stock_item.gst_rate_percent or 0) if inv.stock_item else 0.0
+        hsn_code = inv.stock_item.hsn_code if inv.stock_item else ""
+        
+        qty = float(inv.quantity or 0)
+        rate = float(inv.rate or 0)
+        amt = float(inv.amount or 0)
+        
+        expected_amt = abs(qty * rate)
+        actual_amt = abs(amt)
+        discount_percent = 0.0
+        if expected_amt > actual_amt and expected_amt > 0:
+            diff = expected_amt - actual_amt
+            if diff > 1.0:
+                discount_percent = round((diff / expected_amt) * 100, 2)
+
+        inventory.append({
+            "item": item_name,
+            "quantity": qty,
+            "rate": rate,
+            "uom": uom_sym,
+            "gstRate": gst_pct,
+            "gstHsnCode": hsn_code,
+            "discountAmount": str(discount_percent) if discount_percent > 0 else "0",
+            "amount": amt,
+        })
+
+    # Fetch party ledger details
+    party_ledger = None
+    if party_name:
+        party_stmt = select(MstLedger).where(
+            MstLedger.name == party_name,
+            MstLedger.company_id == user.company_id
+        )
+        party_res = await db.execute(party_stmt)
+        party_led = party_res.scalars().first()
+        if party_led:
+            addr = party_led.address or ""
+            mobile_val = ""
+            if addr and " | Mobile: " in addr:
+                parts = addr.split(" | Mobile: ")
+                addr = parts[0]
+                mobile_val = parts[1]
+            party_ledger = {
+                "mailingName": party_led.name,
+                "mailingAddress": addr,
+                "gstn": party_led.gstin,
+                "mailingState": party_led.state,
+                "mobile": mobile_val,
+            }
+
+    # Map entries for UI accounts list: rename keys to match tally-web details client expectations and deduplicate
+    accounts_mapped = []
+    seen = set()
+    for entry in entries:
+        ledger = entry["ledger_name"]
+        amt = entry["amount"] if entry["entry_type"] == "Credit" else -entry["amount"]
+        key = (ledger, amt)
+        if key in seen:
+            continue
+        seen.add(key)
+        accounts_mapped.append({
+            "ledger": ledger,
+            "amount": amt
+        })
+
+    return {
+        "voucher_id": voucher.voucher_id,
+        "date": str(voucher.voucher_date),
+        "voucher_type": voucher.voucher_type.name if voucher.voucher_type else "Unknown",
+        "voucher_number": voucher.voucher_number,
+        "reference_number": voucher.reference_number,
+        "narration": voucher.narration,
+        "party_name": party_name,
+        "amount": amount,
+        "total_amount": float(voucher.total_amount or 0),
+        "entries": entries,
+        "accounts": accounts_mapped,
+        "inventory": inventory,
+        "is_inventory_voucher": len(inventory) > 0,
+        "party_ledger": party_ledger,
+    }
 
 # --- Rules ---
 

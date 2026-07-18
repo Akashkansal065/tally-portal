@@ -18,15 +18,28 @@ type Ledger = {
   gstin?: string
   mobile?: string
   email?: string
+  state?: string
 }
 
 export default function LedgersPage() {
-  const { user, token } = useAuth()
+  const { user, token, permissions } = useAuth()
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState<'customers' | 'suppliers'>('customers')
   const [ledgers, setLedgers] = useState<Ledger[]>([])
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!user) { router.replace('/login'); return }
+    if (!permissions.showLedger && !permissions.isAdmin) { router.replace('/'); return }
+    if (!permissions.isAdmin) {
+      if (!permissions.showSalesLedgers && permissions.showPurchaseLedgers) {
+        setActiveTab('suppliers')
+      } else if (permissions.showSalesLedgers && !permissions.showPurchaseLedgers) {
+        setActiveTab('customers')
+      }
+    }
+  }, [user, permissions, router])
   
   // Interactive filters matching screenshot
   const [searchQuery, setSearchQuery] = useState('')
@@ -139,32 +152,34 @@ export default function LedgersPage() {
       </header>
 
       {/* Tabs Selector matching mockup */}
-      <div className="px-4 py-2.5 bg-background border-b border-border">
-        <div className="bg-muted p-1 rounded-xl flex gap-1 border border-border/40">
-          <button
-            onClick={() => setActiveTab('customers')}
-            className={cn(
-              'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center',
-              activeTab === 'customers'
-                ? 'bg-emerald-500 text-white shadow-sm font-black'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            Customers
-          </button>
-          <button
-            onClick={() => setActiveTab('suppliers')}
-            className={cn(
-              'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center',
-              activeTab === 'suppliers'
-                ? 'bg-emerald-500 text-white shadow-sm font-black'
-                : 'text-muted-foreground hover:text-foreground'
-            )}
-          >
-            Suppliers
-          </button>
+      {(permissions.isAdmin || (permissions.showSalesLedgers && permissions.showPurchaseLedgers)) && (
+        <div className="px-4 py-2.5 bg-background border-b border-border">
+          <div className="bg-muted p-1 rounded-xl flex gap-1 border border-border/40">
+            <button
+              onClick={() => setActiveTab('customers')}
+              className={cn(
+                'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center',
+                activeTab === 'customers'
+                  ? 'bg-emerald-500 text-white shadow-sm font-black'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Customers
+            </button>
+            <button
+              onClick={() => setActiveTab('suppliers')}
+              className={cn(
+                'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center',
+                activeTab === 'suppliers'
+                  ? 'bg-emerald-500 text-white shadow-sm font-black'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Suppliers
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-4 pt-3 pb-6 max-w-xl mx-auto w-full space-y-4">
         {/* Interactive Search & Filters Card */}
@@ -231,7 +246,8 @@ export default function LedgersPage() {
               return (
                 <div
                   key={ledger.ledger_id}
-                  className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-sm hover:border-emerald-500/40 transition-colors"
+                  onClick={() => router.push(`/ledgers/${ledger.ledger_id}`)}
+                  className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-sm hover:border-emerald-500/40 transition-all hover:shadow-md cursor-pointer"
                 >
                   <div className="flex justify-between items-start gap-3">
                     <div className="min-w-0">
@@ -259,17 +275,23 @@ export default function LedgersPage() {
                   </div>
 
                   {/* Card Divider & Meta Info */}
-                  {(ledger.gstin || ledger.mobile) && (
-                    <div className="pt-3 border-t border-border/60 space-y-1 text-xs text-muted-foreground leading-normal">
+                  {(ledger.gstin || ledger.mobile || ledger.state) && (
+                    <div className="pt-3 border-t border-border/60 space-y-1.5 text-xs text-muted-foreground leading-normal">
                       {ledger.gstin && (
-                        <div>
-                          <span className="text-[10px] font-semibold text-muted-foreground uppercase">GSTIN:</span>{' '}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-muted-foreground uppercase w-12">GSTIN:</span>
                           <span className="font-bold text-foreground font-mono">{ledger.gstin}</span>
                         </div>
                       )}
+                      {ledger.state && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-muted-foreground uppercase w-12">STATE:</span>
+                          <span className="font-bold text-foreground truncate">{ledger.state}</span>
+                        </div>
+                      )}
                       {ledger.mobile && (
-                        <div>
-                          <span className="text-[10px] font-semibold text-muted-foreground uppercase">MOBILE:</span>{' '}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-muted-foreground uppercase w-12">MOBILE:</span>
                           <span className="font-bold text-foreground">{ledger.mobile}</span>
                         </div>
                       )}

@@ -9,14 +9,14 @@ import { Eye, EyeOff, LogIn } from 'lucide-react'
 export default function LoginPage() {
   const { user, isLoading, login } = useAuth()
   const router = useRouter()
-  const [isRegister, setIsRegister] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // Registration states
+  // Auto-bootstrap checking states
+  const [needBootstrap, setNeedBootstrap] = useState(false)
   const [companyName, setCompanyName] = useState('')
   const [booksBeginDate, setBooksBeginDate] = useState('2026-04-01')
   const [registerUsername, setRegisterUsername] = useState('')
@@ -25,12 +25,27 @@ export default function LoginPage() {
     if (!isLoading && user) router.replace('/')
   }, [user, isLoading, router])
 
+  useEffect(() => {
+    const checkBootstrap = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/auth/bootstrap-status`)
+        if (res.ok) {
+          const data = await res.json()
+          setNeedBootstrap(data.need_bootstrap)
+        }
+      } catch (e) {
+        console.error('Error fetching bootstrap status:', e)
+      }
+    }
+    checkBootstrap()
+  }, [])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setSubmitting(true)
     try {
-      if (isRegister) {
+      if (needBootstrap) {
         // Register Company & Admin User
         const res = await fetch(`${API_BASE}/auth/register-company`, {
           method: 'POST',
@@ -45,7 +60,7 @@ export default function LoginPage() {
         })
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))
-          throw new Error(data.detail || 'Registration failed.')
+          throw new Error(data.detail || 'Setup failed.')
         }
         
         // Log in immediately after registration
@@ -55,7 +70,7 @@ export default function LoginPage() {
           body: JSON.stringify({ email, password }),
         })
         if (!loginRes.ok) {
-          throw new Error('Company registered, but login failed. Please sign in.')
+          throw new Error('Bootstrap success, but login failed. Please sign in.')
         }
         const { access_token } = await loginRes.json()
         await login(access_token, email)
@@ -92,7 +107,7 @@ export default function LoginPage() {
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight">Sneh Distributors</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {isRegister ? 'Create a new Company & Admin profile' : 'Mobile ERP — Sign in to continue'}
+            {needBootstrap ? 'First-time Setup — Configure Admin Account' : 'Mobile ERP — Sign in to continue'}
           </p>
         </div>
 
@@ -105,7 +120,7 @@ export default function LoginPage() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {isRegister && (
+            {needBootstrap && (
               <>
                 <div>
                   <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
@@ -136,7 +151,7 @@ export default function LoginPage() {
 
                 <div>
                   <label className="block text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-                    Admin Name
+                    Admin Username
                   </label>
                   <input
                     type="text"
@@ -175,7 +190,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   required
-                  autoComplete={isRegister ? 'new-password' : 'current-password'}
+                  autoComplete={needBootstrap ? 'new-password' : 'current-password'}
                   placeholder="••••••••"
                   className="w-full px-4 py-3 pr-11 rounded-xl border border-border bg-muted/40 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary text-sm"
                 />
@@ -199,25 +214,12 @@ export default function LoginPage() {
               ) : (
                 <LogIn className="h-4 w-4" />
               )}
-              {submitting ? 'Processing...' : isRegister ? 'Register & Log In' : 'Sign In'}
+              {submitting ? 'Processing...' : needBootstrap ? 'Register & Log In' : 'Sign In'}
             </button>
           </form>
 
-          <div className="mt-6 pt-4 border-t border-border flex justify-between items-center text-xs">
-            <button
-              type="button"
-              onClick={() => {
-                setIsRegister(!isRegister)
-                setError('')
-              }}
-              className="text-primary font-bold hover:underline"
-            >
-              {isRegister ? 'Already have a company? Sign In' : 'Register New Company'}
-            </button>
-          </div>
-
-          {!isRegister && (
-            <p className="text-center text-[10px] text-muted-foreground mt-4">
+          {!needBootstrap && (
+            <p className="text-center text-[10px] text-muted-foreground mt-6 border-t border-border pt-4">
               Demo: <span className="font-mono text-primary">admin_test@test.com</span> / <span className="font-mono text-primary">securepassword123</span>
             </p>
           )}
