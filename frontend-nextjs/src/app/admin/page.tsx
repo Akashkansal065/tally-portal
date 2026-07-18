@@ -538,19 +538,6 @@ const handleSavePermissions = async () => {
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Top green header */}
-      <header className="shrink-0 border-b border-border bg-emerald-500 text-white h-14 flex items-center px-4 justify-between">
-        <div className="flex items-center gap-3">
-          <button onClick={() => router.push('/')} className="p-1 hover:bg-emerald-600 rounded-lg transition-colors">
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-white/20 flex items-center justify-center text-xs font-bold">S</div>
-            <span className="font-bold text-sm">Sneh Distributors</span>
-          </div>
-        </div>
-      </header>
-
       <div className="flex-1 overflow-y-auto px-4 pt-5 pb-6 max-w-xl mx-auto w-full space-y-5">
         {/* Title */}
         <div>

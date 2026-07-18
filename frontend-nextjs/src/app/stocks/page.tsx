@@ -220,12 +220,6 @@ export default function StocksPage() {
           <span className="font-extrabold text-sm tracking-wider text-emerald-900 dark:text-emerald-50 absolute left-1/2 -translate-x-1/2 hidden xs:block">
             {activeCompanyName}
           </span>
-          <button
-            onClick={() => router.push('/')}
-            className="text-emerald-800 dark:text-emerald-300 hover:text-emerald-950 font-bold text-lg leading-none focus:outline-none"
-          >
-            ✕
-          </button>
         </div>
       ) : (
         <div className="relative px-4 py-3 bg-[#4a90e2] text-white border-b border-blue-400 flex items-center justify-between">

@@ -7,6 +7,8 @@ import { MobileBottomNav } from '@/components/MobileBottomNav'
 
 import { PwaRegister } from '@/components/PwaRegister'
 
+import { RouteGuard } from '@/components/RouteGuard'
+
 export const metadata: Metadata = {
   title: 'MyTally — Sneh Distributors',
   description: 'Inventory and ledger management for Sneh Distributors',
@@ -49,7 +51,7 @@ export default function RootLayout({
 
             {/* Scrollable main content, padded for bottom nav */}
             <main className="flex-1 overflow-y-auto overflow-x-hidden pb-16">
-              {children}
+              <RouteGuard>{children}</RouteGuard>
             </main>
 
             {/* Fixed bottom navigation */}

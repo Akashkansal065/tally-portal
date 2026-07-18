@@ -150,17 +150,6 @@ export default function NewPaymentPage() {
 
   return (
     <div className="flex flex-col h-full bg-background font-sans">
-      {/* Header */}
-      <header className="shrink-0 border-b border-border bg-emerald-500 text-white h-14 flex items-center px-4 justify-between shadow-sm">
-        <div className="flex items-center gap-3">
-          <button onClick={() => router.push('/payments')} className="p-1 hover:bg-emerald-600 rounded-lg transition-colors">
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <span className="font-bold text-sm">Collect Payment</span>
-        </div>
-      </header>
-
-      {/* Form Container */}
       <div className="flex-1 overflow-y-auto px-4 py-5 max-w-xl mx-auto w-full space-y-4">
         <div>
           <h1 className="text-xl font-extrabold tracking-tight flex items-center gap-1.5 text-foreground">

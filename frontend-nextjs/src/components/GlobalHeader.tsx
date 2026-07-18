@@ -40,36 +40,36 @@ export function GlobalHeader() {
 
   return (
     <>
-      <header className={cn("shrink-0 border-b border-border bg-card/80 backdrop-blur-sm z-20", drawerOpen && "z-50 relative")}>
+      <header className={cn("shrink-0 border-b border-emerald-600/30 bg-emerald-500 dark:bg-emerald-600 text-white z-20", drawerOpen && "z-50 relative")}>
         <div className="flex items-center justify-between px-4 h-14">
           {/* Left: back button, logo, and title */}
           <div className="flex items-center gap-2 min-w-0">
             {pathname !== '/' && pathname !== '/login' && pathname !== '/signup' && (
               <button
                 onClick={() => router.back()}
-                className="p-1.5 rounded-full hover:bg-muted text-muted-foreground transition-colors shrink-0"
+                className="p-1.5 rounded-full hover:bg-emerald-600/60 text-white transition-colors shrink-0 cursor-pointer"
                 aria-label="Go Back"
               >
                 <ArrowLeft className="h-5 w-5" />
               </button>
             )}
-            <img src="/logo.png" alt="Logo" className="h-8 w-8 object-contain shrink-0 rounded-md" />
+            <img src="/logo.png" alt="Logo" className="h-8 w-8 object-contain shrink-0 rounded-md bg-white p-0.5" />
             <Link
               href="/"
-              className="text-base sm:text-lg font-extrabold text-emerald-500 dark:text-emerald-400 hover:opacity-85 transition-all truncate"
+              className="text-base sm:text-lg font-extrabold text-white hover:opacity-90 transition-all truncate"
             >
               Sneh Distributors
             </Link>
             
             {user.allowedCompanies && user.allowedCompanies.length > 0 && (
               <div className="ml-2 relative group hidden sm:block">
-                <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-muted text-xs font-semibold text-muted-foreground transition-colors border border-transparent hover:border-border">
+                <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-emerald-600/60 text-xs font-semibold text-white/90 transition-colors border border-transparent">
                   <Building className="w-3.5 h-3.5" />
                   <span className="max-w-[120px] truncate">
                     {user.allowedCompanies.find(c => c.company_id === user.company_id)?.name || "Select Company"}
                   </span>
                 </button>
-                <div className="absolute top-full left-0 mt-1 w-48 bg-card border border-border rounded-xl shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden">
+                <div className="absolute top-full left-0 mt-1 w-48 bg-card border border-border rounded-xl shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden text-foreground">
                   {user.allowedCompanies.map(c => (
                     <button 
                       key={c.company_id}
@@ -88,14 +88,14 @@ export function GlobalHeader() {
           <div className="flex items-center gap-1">
             <button
               onClick={toggle}
-              className="p-2 rounded-full hover:bg-muted text-muted-foreground transition-colors"
+              className="p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer"
               aria-label="Toggle theme"
             >
               {dark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </button>
             <button
               onClick={() => setDrawerOpen(true)}
-              className="p-2 rounded-full hover:bg-muted text-muted-foreground transition-colors"
+              className="p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer"
               aria-label="Open menu"
             >
               <Menu className="h-5 w-5" />
@@ -153,7 +153,7 @@ export function GlobalHeader() {
               <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
               <DrawerLink href="/ledgers" icon={BookOpen} label="Ledgers" onClick={() => setDrawerOpen(false)} />
               <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />
-              <DrawerLink href="/orders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
+              <DrawerLink href="/temporders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
               <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
               <DrawerLink href="/check-in" icon={MapPin} label="Check-In" onClick={() => setDrawerOpen(false)} />
               {permissions.showExpenses && (

@@ -560,7 +560,7 @@ export default function VouchersPage() {
             Collect Payment
           </button>
           <button
-            onClick={() => router.push('/orders/new')}
+            onClick={() => router.push('/temporders/new')}
             className="flex-1 bg-slate-900 dark:bg-slate-100 hover:bg-slate-800 dark:hover:bg-slate-200 text-white dark:text-slate-900 font-extrabold text-xs shadow-md rounded-xl h-11 border-none cursor-pointer flex items-center justify-center gap-1.5 transition-transform active:scale-95"
           >
             <Plus className="h-4.5 w-4.5" />

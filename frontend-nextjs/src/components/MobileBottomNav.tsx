@@ -34,7 +34,7 @@ export function MobileBottomNav() {
     { href: '/vouchers', label: 'Vouchers', icon: FileText },
     { href: '/ledgers', label: 'Ledgers', icon: BookOpen },
     { href: '/stocks', label: 'Items', icon: Layers },
-    { href: '/orders', label: 'Orders', icon: ShoppingCart },
+    { href: '/temporders', label: 'Orders', icon: ShoppingCart },
     { href: '/payments', label: 'Payments', icon: IndianRupee },
     { href: '/check-in', label: 'Check-In', icon: MapPin },
     ...(permissions.showExpenses

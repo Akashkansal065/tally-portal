@@ -193,19 +193,6 @@ export default function ExpensesPage() {
 
   return (
     <div className="flex flex-col h-full bg-background font-sans">
-      {/* Top Header */}
-      <header className="shrink-0 border-b border-border bg-emerald-500 text-white h-14 flex items-center px-4 justify-between shadow-sm">
-        <div className="flex items-center gap-3">
-          <button onClick={() => router.push('/')} className="p-1 hover:bg-emerald-600 rounded-lg transition-colors">
-            <ChevronLeft className="h-5 w-5" />
-          </button>
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-white/20 flex items-center justify-center text-xs font-bold">S</div>
-            <span className="font-bold text-sm">Sneh Distributors</span>
-          </div>
-        </div>
-      </header>
-
       {/* Main Container */}
       <div className="flex-1 overflow-y-auto px-4 py-5 max-w-xl mx-auto w-full space-y-4">
         {/* Title and CTA */}
