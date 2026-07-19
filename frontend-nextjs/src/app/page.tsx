@@ -17,6 +17,7 @@ import {
   ArrowRight,
   Shield,
   Clock,
+  FileSpreadsheet,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -138,6 +139,15 @@ const [dashboardData, setDashboardData] = useState<any>(null)
       color: 'text-indigo-600',
       bgColor: 'bg-indigo-500/10 border-indigo-500/20',
       show: permissions.showReports,
+    },
+    {
+      href: '/gst',
+      label: 'GST Returns',
+      description: 'Manage GSTR-1, GSTR-3B filings, track eligible ITC, and export GST JSONs',
+      icon: FileSpreadsheet,
+      color: 'text-emerald-600',
+      bgColor: 'bg-emerald-500/10 border-emerald-500/20',
+      show: permissions.showGst,
     },
     {
       href: '/admin',

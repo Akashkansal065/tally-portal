@@ -416,6 +416,30 @@ async def get_voucher_detail(
             "amount": amt
         })
 
+    # Fetch company active environment
+    from app.models.company import Company
+    comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
+    company = comp_q.scalars().first()
+    active_env = company.einvoice_env if company else "mock"
+
+    # Fetch e-invoice metadata
+    from app.models.advanced import EinvoiceMetadata
+    meta_stmt = select(EinvoiceMetadata).where(
+        EinvoiceMetadata.voucher_id == voucher_id,
+        EinvoiceMetadata.environment == active_env
+    )
+    meta_res = await db.execute(meta_stmt)
+    meta = meta_res.scalars().first()
+    einvoice_metadata = None
+    if meta:
+        einvoice_metadata = {
+            "irn": meta.irn,
+            "ack_no": meta.ack_no,
+            "ack_date": str(meta.ack_date) if meta.ack_date else None,
+            "eway_bill_no": meta.eway_bill_no,
+            "eway_bill_date": str(meta.eway_bill_date) if meta.eway_bill_date else None,
+        }
+
     return {
         "voucher_id": voucher.voucher_id,
         "date": str(voucher.voucher_date),
@@ -431,6 +455,7 @@ async def get_voucher_detail(
         "inventory": inventory,
         "is_inventory_voucher": len(inventory) > 0,
         "party_ledger": party_ledger,
+        "einvoice_metadata": einvoice_metadata,
     }
 
 # --- Rules ---

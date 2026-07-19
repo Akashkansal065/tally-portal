@@ -32,6 +32,7 @@ class AdminUserResponse(BaseModel):
     showReports: bool
     showOrders: bool
     showCheckIn: bool
+    showGst: bool
     ledgerScope: str
     stockScope: str
     allowedStockGroups: Optional[str] = None
@@ -122,6 +123,7 @@ async def get_users(
             showReports=u.show_reports,
             showOrders=u.show_orders,
             showCheckIn=u.show_check_in,
+            showGst=u.show_gst,
             ledgerScope=u.ledger_scope,
             stockScope=u.stock_scope,
             allowedStockGroups=u.allowed_stock_groups,
@@ -173,6 +175,7 @@ async def create_user(
         show_payments=True if is_new_admin else True, # Default True for both Admin and User
         show_expenses=True if is_new_admin else False,
         show_attendance=True if is_new_admin else True, # Default True for both Admin and User
+        show_gst=True if is_new_admin else False, # Default False for non-Admin users
         ledger_scope='full' if is_new_admin else 'none',
         stock_scope='full' if is_new_admin else 'none'
     )
@@ -198,6 +201,7 @@ async def create_user(
         showReports=user.show_reports,
         showOrders=user.show_orders,
         showCheckIn=user.show_check_in,
+        showGst=user.show_gst,
         ledgerScope=user.ledger_scope,
         stockScope=user.stock_scope,
         allowedStockGroups=user.allowed_stock_groups,
@@ -416,6 +420,7 @@ class UserPermissionsToggle(BaseModel):
     showReports: bool
     showOrders: bool
     showCheckIn: bool
+    showGst: bool
 
 class UserScopesToggle(BaseModel):
     ledgerScope: str
@@ -454,6 +459,7 @@ async def update_user_permissions(
     user.show_reports = payload.showReports
     user.show_orders = payload.showOrders
     user.show_check_in = payload.showCheckIn
+    user.show_gst = payload.showGst
     
     # Derived show_ledger
     user.show_ledger = payload.showSalesLedgers or payload.showPurchaseLedgers or payload.showReceipts or payload.showPayments

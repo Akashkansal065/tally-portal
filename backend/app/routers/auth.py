@@ -248,6 +248,7 @@ class UserMeResponse(BaseModel):
     showReports: bool
     showOrders: bool
     showCheckIn: bool
+    showGst: bool
     ledgerScope: str
     stockScope: str
     allowedStockGroups: Optional[str] = None
@@ -278,6 +279,7 @@ async def get_me(
         "showReports": user.show_reports,
         "showOrders": user.show_orders,
         "showCheckIn": user.show_check_in,
+        "showGst": user.show_gst,
         "ledgerScope": user.ledger_scope,
         "stockScope": user.stock_scope,
         "allowedStockGroups": user.allowed_stock_groups,

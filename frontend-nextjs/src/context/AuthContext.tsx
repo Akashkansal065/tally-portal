@@ -15,6 +15,7 @@ export interface UserPermissions {
   showReports: boolean
   showOrders: boolean
   showCheckIn: boolean
+  showGst: boolean
   ledgerScope: 'all' | 'dr_only' | 'restricted'
   stockScope: 'full' | 'restricted'
   isAdmin: boolean
@@ -52,6 +53,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   showReports: false,
   showOrders: false,
   showCheckIn: true,
+  showGst: false,
   ledgerScope: 'dr_only',
   stockScope: 'full',
   isAdmin: false,
@@ -105,6 +107,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           showReports: isAdmin ? true : (data.showReports ?? false),
           showOrders: isAdmin ? true : (data.showOrders ?? false),
           showCheckIn: isAdmin ? true : (data.showCheckIn ?? true),
+          showGst: isAdmin ? true : (data.showGst ?? false),
           ledgerScope: isAdmin ? 'all' : (data.ledgerScope ?? 'dr_only'),
           stockScope: isAdmin ? 'full' : (data.stockScope ?? 'full'),
           isAdmin,

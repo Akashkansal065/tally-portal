@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate } from '@/lib/utils'
@@ -19,7 +19,8 @@ import {
   Plus,
   Upload,
   CheckCircle2,
-  Landmark
+  Landmark,
+  Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
@@ -44,6 +45,7 @@ type UserItem = {
   showReports: boolean
   showOrders: boolean
   showCheckIn: boolean
+  showGst: boolean
   ledgerScope: string
   stockScope: string
   allowedStockGroups: string | null
@@ -83,12 +85,22 @@ export default function AdminPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
   
-  const [tab, setTab] = useState<'users' | 'sync' | 'logs' | 'visits'>('users')
+  const [tab, setTab] = useState<'users' | 'sync' | 'logs' | 'visits' | 'einvoice'>('users')
   const [users, setUsers] = useState<UserItem[]>([])
   const [logs, setLogs] = useState<AuditLog[]>([])
   const [visits, setVisits] = useState<VisitLog[]>([])
   const [loading, setLoading] = useState(false)
   const [alertsEnabled, setAlertsEnabled] = useState(true)
+
+  // E-Invoicing settings states
+  const [einvEnv, setEinvEnv] = useState<'mock' | 'sandbox' | 'production'>('mock')
+  const [einvUser, setEinvUser] = useState('')
+  const [einvPass, setEinvPass] = useState('')
+  const [einvClientId, setEinvClientId] = useState('')
+  const [einvClientSecret, setEinvClientSecret] = useState('')
+  const [einvLoading, setEinvLoading] = useState(false)
+  const [hasPass, setHasPass] = useState(false)
+  const [hasSecret, setHasSecret] = useState(false)
 
   // Sync state
   const [xmlFile, setXmlFile] = useState<File | null>(null)
@@ -117,6 +129,59 @@ export default function AdminPage() {
   const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role_id: 2 })
   const [createUserError, setCreateUserError] = useState('')
   const [createUserLoading, setCreateUserLoading] = useState(false)
+
+  const fetchEinvSettings = useCallback(async () => {
+    if (!token) return
+    setEinvLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/gst/einvoice/settings`, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setEinvEnv(data.einvoice_env)
+        setEinvUser(data.einvoice_username || '')
+        setHasPass(data.has_password)
+        setEinvClientId(data.einvoice_gsp_client_id || '')
+        setHasSecret(data.has_gsp_client_secret)
+      }
+    } catch (e) { console.error(e) }
+    finally { setEinvLoading(false) }
+  }, [token])
+
+  const saveEinvSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!token) return
+    setEinvLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/gst/einvoice/settings`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          einvoice_env: einvEnv,
+          einvoice_username: einvUser || null,
+          einvoice_password: einvPass || undefined,
+          einvoice_gsp_client_id: einvClientId || null,
+          einvoice_gsp_client_secret: einvClientSecret || undefined
+        })
+      })
+      if (res.ok) {
+        alert('E-Invoicing settings updated successfully!')
+        setEinvPass('')
+        setEinvClientSecret('')
+        fetchEinvSettings()
+      } else {
+        const err = await res.json()
+        alert(err.detail || 'Failed to save settings')
+      }
+    } catch (e: any) { alert(e.message) }
+    finally { setEinvLoading(false) }
+  }
+
+  useEffect(() => {
+    if (tab === 'einvoice') {
+      fetchEinvSettings()
+    }
+  }, [tab, fetchEinvSettings])
+
 
   // Company registration form state
   const [showRegisterCompany, setShowRegisterCompany] = useState(false)
@@ -255,6 +320,7 @@ export default function AdminPage() {
       showReports: field === 'showReports' ? value : user.showReports,
       showOrders: field === 'showOrders' ? value : user.showOrders,
       showCheckIn: field === 'showCheckIn' ? value : user.showCheckIn,
+      showGst: field === 'showGst' ? value : user.showGst,
     }
     
     // Optimistic
@@ -640,6 +706,15 @@ const handleSavePermissions = async () => {
           >
             <MapPin className="h-3.5 w-3.5" /> Visit Logs
           </button>
+          <button
+            onClick={() => setTab('einvoice')}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
+              tab === 'einvoice' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+            )}
+          >
+            <Shield className="h-3.5 w-3.5" /> E-Invoices
+          </button>
         </div>
 
         {/* Directory/Logs Render Grid */}
@@ -816,7 +891,7 @@ const handleSavePermissions = async () => {
                 <div className="text-center py-8 text-muted-foreground text-xs">No audit logs logged.</div>
               )}
             </div>
-          ) : (
+          ) : tab === 'visits' ? (
             <div className="space-y-2">
               {visits.map(v => (
                 <div key={v.id} className="bg-card border border-border rounded-xl p-3 shadow-sm">
@@ -841,6 +916,101 @@ const handleSavePermissions = async () => {
                 <div className="text-center py-8 text-muted-foreground text-xs">No visit logs logged.</div>
               )}
             </div>
+          ) : (
+            <form onSubmit={saveEinvSettings} className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm font-sans text-sm">
+              <div>
+                <h3 className="font-extrabold text-foreground uppercase tracking-wider text-xs">E-Invoicing API Settings</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">Select the environment mode and configure portal client integration keys.</p>
+              </div>
+
+              <div className="space-y-3 font-sans">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1.5 block">Active Environment</label>
+                  <div className="flex gap-2">
+                    {(['mock', 'sandbox', 'production'] as const).map(env => (
+                      <button
+                        type="button"
+                        key={env}
+                        onClick={() => setEinvEnv(env)}
+                        className={cn(
+                          "flex-1 py-2 rounded-lg text-xs font-bold border transition-colors capitalize",
+                          einvEnv === env
+                            ? "bg-emerald-500 text-white border-emerald-500"
+                            : "bg-background border-border text-foreground hover:bg-muted"
+                        )}
+                      >
+                        {env}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {einvEnv !== 'mock' && (
+                  <div className="space-y-3 pt-2 border-t border-border/50 animate-in fade-in duration-200">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-semibold text-muted-foreground mb-1 block">IRP API Username</label>
+                        <input
+                          type="text"
+                          value={einvUser}
+                          onChange={e => setEinvUser(e.target.value)}
+                          placeholder="IRP portal API username"
+                          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-muted-foreground mb-1 block">
+                          IRP API Password {hasPass && <span className="text-[10px] text-emerald-600 font-bold ml-1">(Configured)</span>}
+                        </label>
+                        <input
+                          type="password"
+                          value={einvPass}
+                          onChange={e => setEinvPass(e.target.value)}
+                          placeholder={hasPass ? "••••••••••••" : "IRP portal API password"}
+                          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-semibold text-muted-foreground mb-1 block">GSP Client ID</label>
+                        <input
+                          type="text"
+                          value={einvClientId}
+                          onChange={e => setEinvClientId(e.target.value)}
+                          placeholder="GSP gateway Client ID"
+                          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-muted-foreground mb-1 block">
+                          GSP Client Secret {hasSecret && <span className="text-[10px] text-emerald-600 font-bold ml-1">(Configured)</span>}
+                        </label>
+                        <input
+                          type="password"
+                          value={einvClientSecret}
+                          onChange={e => setEinvClientSecret(e.target.value)}
+                          placeholder={hasSecret ? "••••••••••••" : "GSP gateway Client Secret"}
+                          className="w-full bg-background border border-border rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end pt-1">
+                <button
+                  type="submit"
+                  disabled={einvLoading}
+                  className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  {einvLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  Save Configuration
+                </button>
+              </div>
+            </form>
           )}
         </div>
       </div>

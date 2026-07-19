@@ -21,6 +21,11 @@ class Company(Base):
     base_currency = Column(String(10), default="INR")
     books_begin_date = Column(Date, nullable=False)
     is_active = Column(Boolean, default=True)
+    einvoice_env = Column(String(20), default='mock')
+    einvoice_username = Column(String(100), nullable=True)
+    einvoice_password = Column(String(255), nullable=True)
+    einvoice_gsp_client_id = Column(String(100), nullable=True)
+    einvoice_gsp_client_secret = Column(String(255), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     

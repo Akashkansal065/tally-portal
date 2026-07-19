@@ -146,5 +146,6 @@ class EinvoiceMetadata(Base):
     eway_bill_no = Column(String(20), nullable=True)
     eway_bill_date = Column(DateTime, nullable=True)
     raw_response = Column(TEXT, nullable=True)
+    environment = Column(String(20), default='mock')
     
     voucher = relationship("TrnVoucher")

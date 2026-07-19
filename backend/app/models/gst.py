@@ -115,3 +115,64 @@ class ItcEntry(Base):
     company = relationship("Company")
     voucher = relationship("TrnVoucher")
     claimed_period = relationship("GstReturnPeriod")
+
+class Gstr2bEntry(Base):
+    """GSTR-2B Auto-drafted ITC statement — purchase reconciliation entries"""
+    __tablename__ = "gstr2b_entries"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    
+    entry_id = Column(BigInteger, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    return_period_id = Column(BigInteger, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.gst_return_periods.return_period_id", ondelete="SET NULL"), nullable=True)
+    supplier_gstin = Column(String(15), nullable=False)
+    supplier_name = Column(String(150), nullable=True)
+    invoice_number = Column(String(30), nullable=False)
+    invoice_date = Column(Date, nullable=False)
+    invoice_type = Column(Enum('Regular', 'SEZ', 'Reverse Charge', 'Deemed Export', name='gstr2b_inv_type_enum'), default='Regular')
+    taxable_value = Column(Numeric(18, 2), nullable=False)
+    cgst_amount = Column(Numeric(18, 2), default=0.00)
+    sgst_amount = Column(Numeric(18, 2), default=0.00)
+    igst_amount = Column(Numeric(18, 2), default=0.00)
+    cess_amount = Column(Numeric(18, 2), default=0.00)
+    itc_availability = Column(Enum('Available', 'Not Available', 'Pending', name='gstr2b_itc_avail_enum'), default='Pending')
+    match_status = Column(Enum('Matched', 'Unmatched', 'Mismatch', name='gstr2b_match_enum'), default='Unmatched')
+    matched_voucher_id = Column(BigInteger, nullable=True)
+    
+    company = relationship("Company")
+    period = relationship("GstReturnPeriod")
+
+class Gstr9AnnualReturn(Base):
+    """GSTR-9 Annual Return summary — year-end filing"""
+    __tablename__ = "gstr9_annual_returns"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    
+    annual_return_id = Column(BigInteger, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    financial_year = Column(String(9), nullable=False)  # e.g. '2025-2026'
+    status = Column(Enum('Draft', 'Filed', name='gstr9_status_enum'), default='Draft')
+    
+    # Part II — Outward Supplies
+    outward_taxable_supplies = Column(Numeric(18, 2), default=0.00)
+    outward_tax_amount = Column(Numeric(18, 2), default=0.00)
+    zero_rated_supplies = Column(Numeric(18, 2), default=0.00)
+    nil_rated_supplies = Column(Numeric(18, 2), default=0.00)
+    
+    # Part III — Inward Supplies (ITC)
+    inward_taxable_supplies = Column(Numeric(18, 2), default=0.00)
+    inward_tax_amount = Column(Numeric(18, 2), default=0.00)
+    itc_claimed = Column(Numeric(18, 2), default=0.00)
+    itc_reversed = Column(Numeric(18, 2), default=0.00)
+    
+    # Part IV — Tax Paid
+    total_tax_payable = Column(Numeric(18, 2), default=0.00)
+    tax_paid_via_cash = Column(Numeric(18, 2), default=0.00)
+    tax_paid_via_itc = Column(Numeric(18, 2), default=0.00)
+    interest_paid = Column(Numeric(18, 2), default=0.00)
+    late_fee_paid = Column(Numeric(18, 2), default=0.00)
+    
+    filed_date = Column(Date, nullable=True)
+    arn = Column(String(30), nullable=True)
+    filed_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+    
+    company = relationship("Company")
+    user = relationship("User")

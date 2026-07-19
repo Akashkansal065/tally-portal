@@ -22,6 +22,7 @@ import {
   Shield,
   Building,
   ArrowLeft,
+  FileSpreadsheet,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -161,6 +162,9 @@ export function GlobalHeader() {
               )}
               {permissions.showReports && (
                 <DrawerLink href="/reports" icon={BarChart3} label="Reports" onClick={() => setDrawerOpen(false)} />
+              )}
+              {permissions.showGst && (
+                <DrawerLink href="/gst" icon={FileSpreadsheet} label="GST Returns" onClick={() => setDrawerOpen(false)} />
               )}
             </nav>
 

@@ -52,6 +52,7 @@ class User(Base):
     show_payments = Column(Boolean, default=True)
     show_expenses = Column(Boolean, default=False)
     show_attendance = Column(Boolean, default=True)
+    show_gst = Column(Boolean, default=False)
     ledger_scope = Column(String(64), default='dr_only')
     stock_scope = Column(String(64), default='full')
     allowed_stock_groups = Column(String(1024), nullable=True)

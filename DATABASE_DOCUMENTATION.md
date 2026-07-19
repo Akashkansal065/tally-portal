@@ -1,6 +1,6 @@
 # Sneh Distributors - Database Schema & Data Flow Documentation
 
-This document provides a comprehensive technical overview of the PostgreSQL database schema, tables, Entity Relationships (ERD), Data Flow Diagrams (DFD), and field-level purposes.
+This document provides a comprehensive technical overview of the MySQL database schema, tables, Entity Relationships (ERD), Data Flow Diagrams (DFD), and field-level purposes.
 
 ---
 
@@ -202,9 +202,9 @@ graph TD
 
 ---
 
-## 6. PostgreSQL DDL Schema for Tally Sync Tables
+## 6. Database DDL Schema for Tally Sync Tables
 
-The following DDL schemas represent the exact PostgreSQL table structures for Tally Master Sync and Tally Transaction Sync tables, generated directly from database introspection:
+The following DDL schemas represent the exact table structures for Tally Master Sync and Tally Transaction Sync tables, generated directly from database introspection:
 
 ### 6.1. Master Sync Tables DDL
 
