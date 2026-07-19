@@ -109,6 +109,7 @@ async def clear_data(target_db: str = "all"):
         print("Enabling foreign key checks...")
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 1;"))
     print("Database clear operations completed successfully!")
+    await engine.dispose()
 
 if __name__ == "__main__":
     # Configurable option: "all", "tally_sync", or "tally_portal"
