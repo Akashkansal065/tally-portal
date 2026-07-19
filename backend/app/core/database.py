@@ -27,6 +27,8 @@ if settings.DB_SSL:
 engine = create_async_engine(
     settings.DATABASE_URL, 
     connect_args=connect_args, 
+    pool_size=10,
+    max_overflow=20,
     pool_recycle=300, 
     pool_pre_ping=True, 
     echo=False
