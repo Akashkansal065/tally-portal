@@ -42,8 +42,15 @@ const [dashboardData, setDashboardData] = useState<any>(null)
       router.replace('/login')
     } else if (user && permissions.showReports) {
       fetch(`${API_BASE}/reports/dashboard-summary`, { headers: authHeaders(token) })
-        .then(res => res.json())
-        .then(data => setDashboardData(data))
+        .then(res => {
+          if (!res.ok) throw new Error('Failed to fetch dashboard data')
+          return res.json()
+        })
+        .then(data => {
+          if (data && typeof data.total_sales === 'number') {
+            setDashboardData(data)
+          }
+        })
         .catch(() => {})
     }
   }, [user, isLoading, router, token, permissions.showReports])
@@ -173,23 +180,23 @@ const [dashboardData, setDashboardData] = useState<any>(null)
       </div>
 
 {/* Metrics Row */}
-      {dashboardData && (
+      {dashboardData && typeof dashboardData.total_sales === 'number' && (
         <div className="grid grid-cols-2 gap-3 mb-6">
           <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4 flex flex-col gap-1">
             <span className="text-[10px] uppercase font-bold text-emerald-600 tracking-wider">Total Sales</span>
-            <span className="text-xl font-black text-emerald-700">₹{dashboardData.total_sales.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
+            <span className="text-xl font-black text-emerald-700">₹{dashboardData.total_sales?.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
           </div>
           <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 flex flex-col gap-1">
             <span className="text-[10px] uppercase font-bold text-blue-600 tracking-wider">Total Receipts</span>
-            <span className="text-xl font-black text-blue-700">₹{dashboardData.total_receipts.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
+            <span className="text-xl font-black text-blue-700">₹{dashboardData.total_receipts?.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
           </div>
           <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex flex-col gap-1">
             <span className="text-[10px] uppercase font-bold text-amber-600 tracking-wider">To Receive</span>
-            <span className="text-xl font-black text-amber-700">₹{dashboardData.outstanding_receivables.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
+            <span className="text-xl font-black text-amber-700">₹{dashboardData.outstanding_receivables?.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
           </div>
           <div className="bg-rose-500/10 border border-rose-500/20 rounded-2xl p-4 flex flex-col gap-1">
             <span className="text-[10px] uppercase font-bold text-rose-600 tracking-wider">To Pay</span>
-            <span className="text-xl font-black text-rose-700">₹{dashboardData.outstanding_payables.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
+            <span className="text-xl font-black text-rose-700">₹{dashboardData.outstanding_payables?.toLocaleString('en-IN', {maximumFractionDigits:0})}</span>
           </div>
         </div>
       )}

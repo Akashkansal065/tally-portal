@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
 from app.core.config import settings
+from app.models.company import Company
 
 class Role(Base):
     __tablename__ = "roles"
