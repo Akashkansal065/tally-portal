@@ -596,7 +596,10 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         
         # Add entries
         # Tally lists entries in <ALLLEDGERENTRIES.LIST> or <LEDGERENTRIES.LIST>
-        entries_nodes = v_node.findall(".//ALLLEDGERENTRIES.LIST") + v_node.findall(".//LEDGERENTRIES.LIST")
+        # Check ALLLEDGERENTRIES.LIST first, falling back to LEDGERENTRIES.LIST if it is missing
+        entries_nodes = v_node.findall(".//ALLLEDGERENTRIES.LIST")
+        if not entries_nodes:
+            entries_nodes = v_node.findall(".//LEDGERENTRIES.LIST")
         for ent_node in entries_nodes:
             led_name = ent_node.findtext("LEDGERNAME")
             if not led_name:
