@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update, delete
@@ -16,14 +17,37 @@ from app.services.tally_xml_importer import import_tally_xml
 
 router = APIRouter(prefix="/sync", tags=["Tally Synchronization"])
 
+# Global lock to serialize inbound sync background tasks and prevent deadlocks
+sync_lock = asyncio.Lock()
+
+async def run_inbound_sync_background(xml_data: str, company_id: int):
+    """Asynchronously parses and imports inbound Tally XML, serialized via a global lock."""
+    from app.core.database import AsyncSessionLocal
+    from app.core.cache import clear_company_cache
+    import logging
+    logger = logging.getLogger("uvicorn.error")
+
+    async with sync_lock:
+        async with AsyncSessionLocal() as db:
+            try:
+                logger.info(f"Background inbound sync task started for company_id={company_id}")
+                result = await import_tally_xml(xml_data, db, company_id)
+                if result.get("status") == "error":
+                    logger.error(f"Background inbound sync failed for company_id={company_id}: {result.get('message')}")
+                else:
+                    logger.info(f"Background inbound sync succeeded for company_id={company_id}: {result}")
+                    clear_company_cache(company_id)
+            except Exception as e:
+                logger.error(f"Background inbound sync exception for company_id={company_id}: {str(e)}")
+
 @router.post("/inbound")
 async def inbound_sync(
     request: Request,
-    user: User = Depends(require_permission("ledgers", "create")),
-    db: AsyncSession = Depends(get_db)
+    background_tasks: BackgroundTasks,
+    user: User = Depends(require_permission("ledgers", "create"))
 ):
     """
-    Receives raw Tally XML export from sync bridge daemon, parses and upserts data.
+    Receives raw Tally XML export from sync bridge daemon, queueing it for async processing.
     """
     body = await request.body()
     # Auto detect UTF-16 or UTF-8 to prevent UnicodeDecodeError on raw file uploads
@@ -35,13 +59,15 @@ async def inbound_sync(
         except UnicodeDecodeError:
             xml_data = body.decode('utf-8', errors='ignore')
     
-    result = await import_tally_xml(xml_data, db, user.company_id)
-    if result.get("status") == "error":
-        raise HTTPException(status_code=400, detail=result.get("message"))
-        
-    from app.core.cache import clear_company_cache
-    clear_company_cache(user.company_id)
-    return result
+    background_tasks.add_task(run_inbound_sync_background, xml_data, user.company_id)
+    
+    return {
+        "status": "success",
+        "message": "Inbound sync payload received and queued for background processing.",
+        "imported_groups": 0, "imported_ledgers": 0, "imported_vouchers": 0,
+        "imported_stock_groups": 0, "imported_uoms": 0, "imported_godowns": 0,
+        "imported_stock_categories": 0, "imported_stock_items": 0
+    }
 
 @router.get("/outbound-queue")
 async def get_outbound_queue(

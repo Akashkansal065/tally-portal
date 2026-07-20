@@ -233,6 +233,8 @@ def run_sync_cycle(token):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        <SVFROMDATE TYPE="Date">20000101</SVFROMDATE>
+        <SVTODATE TYPE="Date">20991231</SVTODATE>
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -368,8 +370,10 @@ def run_sync_cycle(token):
 
     # Step C: Execute queries
     for name, xml_payload in queries.items():
+        import time as _time
+        step_start = _time.time()
         try:
-            # Encode request as UTF-16LE for Tally Prime
+            # 1. Encode request as UTF-16LE for Tally Prime
             encoded_data = xml_payload.encode('utf-16-le')
             tally_req = urllib.request.Request(
                 TALLY_URL,
@@ -380,8 +384,15 @@ def run_sync_cycle(token):
                 },
                 method='POST'
             )
-            with urllib.request.urlopen(tally_req, timeout=20) as response:
+            
+            # 2. Fetch XML from Tally (90s timeout for large payloads like Vouchers/StockItems)
+            print(f"  [{name}] Fetching from Tally ({TALLY_URL})...")
+            fetch_start = _time.time()
+            with urllib.request.urlopen(tally_req, timeout=90) as response:
                 raw_bytes = response.read()
+                fetch_elapsed = _time.time() - fetch_start
+                print(f"  [{name}] Received {len(raw_bytes):,} bytes from Tally in {fetch_elapsed:.1f}s")
+                
                 # Decode response from UTF-16 (Tally responds in UTF-16)
                 try:
                     tally_xml_response = raw_bytes.decode('utf-16')
@@ -390,29 +401,45 @@ def run_sync_cycle(token):
                 
                 # If Tally returns an empty envelope or error
                 if not tally_xml_response or "<ENVELOPE>" not in tally_xml_response:
+                    print(f"  [{name}] Skipped: Tally returned empty/invalid response ({len(tally_xml_response)} chars)")
                     continue
                 
-                # Post this XML payload directly to ERP inbound endpoint
+                # 3. Post this XML payload to ERP inbound endpoint
+                post_data = tally_xml_response.encode('utf-8')
+                print(f"  [{name}] Posting {len(post_data):,} bytes to ERP ({ERP_URL}/sync/inbound)...")
                 inbound_url = f"{ERP_URL}/sync/inbound"
                 inbound_req = urllib.request.Request(
                     inbound_url,
-                    data=tally_xml_response.encode('utf-8'),
+                    data=post_data,
                     headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/xml'},
                     method='POST'
                 )
-                with urllib.request.urlopen(inbound_req, timeout=30) as erp_response:
+                post_start = _time.time()
+                with urllib.request.urlopen(inbound_req, timeout=60) as erp_response:
                     result = json.loads(erp_response.read().decode('utf-8'))
-                    print(f"Inbound sync for {name} success: {result}")
+                    post_elapsed = _time.time() - post_start
+                    total_elapsed = _time.time() - step_start
+                    print(f"  [{name}] ERP responded in {post_elapsed:.1f}s (total: {total_elapsed:.1f}s): {result}")
         except TimeoutError as e:
-            print(f"Inbound sync for {name} skipped (local Tally offline/timed out): Please ensure Tally Prime is running and XML Server is enabled on port {TALLY_URL.split(':')[-1]}.")
+            elapsed = _time.time() - step_start
+            print(f"  [{name}] TIMEOUT after {elapsed:.1f}s - Tally or ERP did not respond in time")
+        except urllib.error.HTTPError as e:
+            elapsed = _time.time() - step_start
+            try:
+                err_body = e.read().decode('utf-8')
+                print(f"  [{name}] HTTP ERROR {e.code} after {elapsed:.1f}s: {err_body[:200]}")
+            except Exception:
+                print(f"  [{name}] HTTP ERROR {e.code} {e.reason} after {elapsed:.1f}s")
         except urllib.error.URLError as e:
+            elapsed = _time.time() - step_start
             reason = str(e.reason) if hasattr(e, 'reason') else str(e)
             if "timed out" in reason.lower():
-                print(f"Inbound sync for {name} skipped (local Tally offline/timed out): Please ensure Tally Prime is running and XML Server is enabled on port {TALLY_URL.split(':')[-1]}.")
+                print(f"  [{name}] TIMEOUT (URLError) after {elapsed:.1f}s: {reason}")
             else:
-                print(f"Inbound sync for {name} skipped (local Tally offline or connection error): {reason}")
+                print(f"  [{name}] CONNECTION ERROR after {elapsed:.1f}s: {reason}")
         except Exception as e:
-            print(f"Inbound sync for {name} skipped (error): {str(e)}")
+            elapsed = _time.time() - step_start
+            print(f"  [{name}] UNEXPECTED ERROR after {elapsed:.1f}s: {type(e).__name__}: {str(e)}")
 
 def main():
     global TALLY_URL, ERP_URL

@@ -237,6 +237,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         imported_groups += 1
         
     await db.flush()
+    if imported_groups > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_groups} groups")
 
     # 1.1. Parse Stock Groups (<STOCKGROUP>)
     for sg_node in root.findall(".//STOCKGROUP"):
@@ -248,6 +251,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         imported_stock_groups += 1
         
     await db.flush()
+    if imported_stock_groups > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_stock_groups} stock groups")
 
     # 1.2. Parse Units (<UNIT>)
     for unit_node in root.findall(".//UNIT"):
@@ -266,6 +272,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         imported_uoms += 1
         
     await db.flush()
+    if imported_uoms > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_uoms} UOMs")
 
     # 1.3. Parse Godowns (<GODOWN>)
     for gd_node in root.findall(".//GODOWN"):
@@ -277,6 +286,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         imported_godowns += 1
         
     await db.flush()
+    if imported_godowns > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_godowns} godowns")
 
     # 1.4. Parse Stock Categories (<STOCKCATEGORY>)
     for sc_node in root.findall(".//STOCKCATEGORY"):
@@ -288,6 +300,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         imported_stock_categories += 1
         
     await db.flush()
+    if imported_stock_categories > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_stock_categories} stock categories")
 
     # 1.5. Parse Stock Items (<STOCKITEM>)
     for si_node in root.findall(".//STOCKITEM"):
@@ -385,8 +400,15 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             await db.flush()
             
         imported_stock_items += 1
+        # Batch commit every 50 stock items
+        if imported_stock_items % 50 == 0:
+            await db.commit()
+            logger.info(f"Committed {imported_stock_items} stock items so far...")
         
     await db.flush()
+    if imported_stock_items > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_stock_items} stock items (total)")
     
     # 2. Parse Ledgers (<LEDGER>)
     for ledger_node in root.findall(".//LEDGER"):
@@ -486,11 +508,20 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             ledger.tally_alter_id = alter_id
             
         imported_ledgers += 1
+        # Batch commit every 50 ledgers
+        if imported_ledgers % 50 == 0:
+            await db.commit()
+            logger.info(f"Committed {imported_ledgers} ledgers so far...")
         
     await db.flush()
+    if imported_ledgers > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_ledgers} ledgers (total)")
     
     # 3. Parse Vouchers (<VOUCHER>)
-    for v_node in root.findall(".//VOUCHER"):
+    # Filter out empty/metadata VOUCHER tags (like <VOUCHER>14</VOUCHER> in CMPINFO) by ensuring they have child elements
+    voucher_nodes = [v for v in root.findall(".//VOUCHER") if len(v) > 0]
+    for v_node in voucher_nodes:
         guid = v_node.findtext("GUID") or v_node.get("GUID")
         if not guid:
             guid = v_node.findtext("REMOTEID") or v_node.get("REMOTEID")
@@ -836,7 +867,15 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         voucher.total_amount = total_amt
         imported_vouchers += 1
         
+        # Batch commit every 25 vouchers to avoid transaction timeout on remote DB
+        if imported_vouchers % 25 == 0:
+            await db.commit()
+            logger.info(f"Committed {imported_vouchers} vouchers so far...")
+        
+    # Final commit for any remaining records
     await db.commit()
+    if imported_vouchers > 0:
+        logger.info(f"Committed {imported_vouchers} vouchers (total)")
     
     return {
         "status": "success",
