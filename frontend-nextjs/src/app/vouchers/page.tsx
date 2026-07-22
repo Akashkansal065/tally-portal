@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
-import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing } from 'lucide-react'
+import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -91,17 +91,38 @@ export default function VouchersPage() {
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc'>('date_desc')
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all')
   const [filterModalOpen, setFilterModalOpen] = useState(false)
+  const [showGrossInfoModal, setShowGrossInfoModal] = useState(false)
 
   const { fyLabel, fyStartYear, fyEndYear, months: fyMonths } = useMemo(() => getFinancialYearMonths(), [])
 
-  const hasAnyVoucherPermission = permissions.isAdmin || 
+  const parseLocalDate = useCallback((dateStr: string) => {
+    if (!dateStr) return new Date(NaN)
+    const parts = dateStr.slice(0, 10).split('-')
+    if (parts.length === 3) {
+      const y = parseInt(parts[0], 10)
+      const m = parseInt(parts[1], 10) - 1
+      const d = parseInt(parts[2], 10)
+      return new Date(y, m, d)
+    }
+    return new Date(dateStr)
+  }, [])
+
+  const isVoucherAllowed = useCallback((vType: string) => {
+    const vt = (vType || '').toLowerCase()
+    if (vt.includes('sales')) return permissions.showSalesLedgers
+    if (vt.includes('purchase')) return permissions.showPurchaseLedgers
+    if (vt.includes('receipt')) return permissions.showReceipts
+    if (vt.includes('payment')) return permissions.showPayments
+    return permissions.showLedger
+  }, [permissions])
+
+  const hasAnyVoucherPermission = 
     permissions.showSalesLedgers || 
     permissions.showPurchaseLedgers || 
     permissions.showReceipts || 
     permissions.showPayments
 
   const allowedCategories = useMemo(() => {
-    if (permissions.isAdmin) return ['All', 'Sales', 'Purchase', 'Receipt', 'Payment']
     const cats = ['All']
     if (permissions.showSalesLedgers) cats.push('Sales')
     if (permissions.showPurchaseLedgers) cats.push('Purchase')
@@ -123,7 +144,7 @@ export default function VouchersPage() {
 
   // Client-side filtering and sorting
   const filtered = useMemo(() => {
-    let list = [...allVouchers]
+    let list = allVouchers.filter(v => isVoucherAllowed(v.voucher_type))
 
     // Category filter
     if (activeCategory !== 'All') {
@@ -154,7 +175,7 @@ export default function VouchersPage() {
     if (activeDateFilter !== 'All') {
       list = list.filter(v => {
         if (!v.date) return false
-        const d = new Date(v.date)
+        const d = parseLocalDate(v.date)
         const today = new Date()
         today.setHours(0, 0, 0, 0)
 
@@ -167,8 +188,8 @@ export default function VouchersPage() {
           return d.toDateString() === yesterday.toDateString()
         }
         if (activeDateFilter === 'FY') {
-          const fyStart = new Date(`${fyStartYear}-04-01`)
-          const fyEnd = new Date(`${fyEndYear}-03-31`)
+          const fyStart = new Date(fyStartYear, 3, 1)
+          const fyEnd = new Date(fyEndYear, 2, 31, 23, 59, 59)
           return d >= fyStart && d <= fyEnd
         }
         // Monthly filter: "Jul'26"
@@ -176,7 +197,7 @@ export default function VouchersPage() {
         if (match) {
           const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
           const monthIdx = monthNames.indexOf(match[1])
-          const year = 2000 + parseInt(match[2])
+          const year = 2000 + parseInt(match[2], 10)
           if (monthIdx !== -1) {
             return d.getFullYear() === year && d.getMonth() === monthIdx
           }
@@ -189,21 +210,22 @@ export default function VouchersPage() {
     list.sort((a, b) => {
       const amtA = grossEnabled ? a.amount : a.total_amount
       const amtB = grossEnabled ? b.amount : b.total_amount
-      if (sortBy === 'date_desc') return new Date(b.date).getTime() - new Date(a.date).getTime()
-      if (sortBy === 'date_asc') return new Date(a.date).getTime() - new Date(b.date).getTime()
+      if (sortBy === 'date_desc') return parseLocalDate(b.date).getTime() - parseLocalDate(a.date).getTime()
+      if (sortBy === 'date_asc') return parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime()
       if (sortBy === 'amount_desc') return Math.abs(amtB) - Math.abs(amtA)
       if (sortBy === 'amount_asc') return Math.abs(amtA) - Math.abs(amtB)
       return 0
     })
 
     return list
-  }, [allVouchers, activeCategory, search, statusFilter, activeDateFilter, sortBy, grossEnabled, fyStartYear, fyEndYear])
+  }, [allVouchers, isVoucherAllowed, parseLocalDate, activeCategory, search, statusFilter, activeDateFilter, sortBy, grossEnabled, fyStartYear, fyEndYear])
 
   // Compute summaries from allVouchers (client-side, like tally-web)
   const summaries = useMemo(() => {
+    const allowedVouchers = allVouchers.filter(v => isVoucherAllowed(v.voucher_type))
     const catVouchers = activeCategory === 'All'
-      ? allVouchers
-      : allVouchers.filter(v => v.voucher_type.toLowerCase().includes(activeCategory.toLowerCase()))
+      ? allowedVouchers
+      : allowedVouchers.filter(v => v.voucher_type.toLowerCase().includes(activeCategory.toLowerCase()))
 
     const today = new Date()
     today.setHours(0, 0, 0, 0)
@@ -214,14 +236,14 @@ export default function VouchersPage() {
     const monthTotals: Record<string, number> = {}
 
     for (const v of catVouchers) {
-      const d = new Date(v.date)
+      const d = parseLocalDate(v.date)
       const amt = Math.abs(grossEnabled ? v.amount : v.total_amount)
 
       if (d.toDateString() === today.toDateString()) todayTotal += amt
       if (d.toDateString() === yesterday.toDateString()) yesterdayTotal += amt
 
-      const fyStart = new Date(`${fyStartYear}-04-01`)
-      const fyEnd = new Date(`${fyEndYear}-03-31`)
+      const fyStart = new Date(fyStartYear, 3, 1)
+      const fyEnd = new Date(fyEndYear, 2, 31, 23, 59, 59)
       if (d >= fyStart && d <= fyEnd) fyTotal += amt
 
       for (const m of fyMonths) {
@@ -237,7 +259,7 @@ export default function VouchersPage() {
       fy: fyTotal,
       months: fyMonths.map(m => ({ label: m.label, total: monthTotals[m.label] || 0 })),
     }
-  }, [allVouchers, activeCategory, grossEnabled, fyStartYear, fyEndYear, fyMonths])
+  }, [allVouchers, isVoucherAllowed, parseLocalDate, activeCategory, grossEnabled, fyStartYear, fyEndYear, fyMonths])
 
   // WhatsApp share handler
   const triggerWhatsAppShare = (e: React.MouseEvent, v: Voucher) => {
@@ -261,7 +283,7 @@ export default function VouchersPage() {
   return (
     <div className="flex flex-col h-full bg-background pb-20">
       {/* Sticky Header Controls Panel */}
-      <div className="bg-card border-b border-border p-4 sticky top-0 z-40 shadow-sm space-y-3.5">
+      <div className="bg-card border-b border-border p-4 sticky top-0 z-10 shadow-sm space-y-3.5">
         <div className="flex flex-col gap-3.5 max-w-lg mx-auto">
           {/* Row A: Navbar / Search triggers */}
           <div className="flex items-center justify-between gap-3">
@@ -291,12 +313,14 @@ export default function VouchersPage() {
                   <button className="px-4 py-1.5 rounded-md bg-emerald-500 text-white shadow-sm flex items-center gap-1.5 transition-all">
                     Vouchers
                   </button>
-                  <button
-                    onClick={() => router.push("/ledgers")}
-                    className="px-4 py-1.5 rounded-md text-muted-foreground hover:text-foreground transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    Ledgers
-                  </button>
+                  {permissions.showLedger && (
+                    <button
+                      onClick={() => router.push("/ledgers")}
+                      className="px-4 py-1.5 rounded-md text-muted-foreground hover:text-foreground transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      Ledgers
+                    </button>
+                  )}
                 </div>
 
                 {/* Compact Search Trigger Icon Button */}
@@ -308,19 +332,35 @@ export default function VouchersPage() {
                 </button>
 
                 {/* Switch & Download PDF Icon */}
-                <div className="flex items-center gap-2 shrink-0">
-                  <div className="flex items-center gap-1">
-                    <span className="text-[10px] font-bold text-muted-foreground tracking-wider">GROSS</span>
-                    <label className="relative inline-flex items-center cursor-pointer scale-75">
-                      <input
-                        type="checkbox"
-                        checked={grossEnabled}
-                        onChange={(e) => setGrossEnabled(e.target.checked)}
-                        className="sr-only peer"
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setGrossEnabled(prev => !prev)}
+                    className="flex items-center gap-1.5 px-1.5 py-1 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer"
+                  >
+                    <span className="text-[10px] font-bold text-muted-foreground tracking-wider select-none">GROSS</span>
+                    <div
+                      className={cn(
+                        "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out",
+                        grossEnabled ? "bg-emerald-500" : "bg-muted-foreground/30"
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out",
+                          grossEnabled ? "translate-x-4" : "translate-x-0"
+                        )}
                       />
-                      <div className="w-9 h-5 bg-muted peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
-                    </label>
-                  </div>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowGrossInfoModal(true)}
+                    className="text-muted-foreground hover:text-emerald-500 transition-colors p-1 rounded-full hover:bg-muted/60 cursor-pointer"
+                    title="What is GROSS?"
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </button>
                   <button 
                     onClick={handleExportFilteredVouchersPdf}
                     className="h-8 w-8 flex items-center justify-center hover:bg-muted text-red-500 rounded-full shrink-0"
@@ -688,6 +728,89 @@ export default function VouchersPage() {
               className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-2.5 rounded-xl border-none cursor-pointer transition-colors"
             >
               Apply Filters
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Gross Info Modal */}
+      {showGrossInfoModal && (
+        <div
+          className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={() => setShowGrossInfoModal(false)}
+        >
+          <div
+            className="bg-card border border-border rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-500">
+                  <Info className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-foreground">Gross vs Net Amount</h3>
+                  <p className="text-[11px] text-muted-foreground">Understanding the Gross toggle switch</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowGrossInfoModal(false)}
+                className="p-1 rounded-lg text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs leading-relaxed text-muted-foreground">
+              <div className="p-3 rounded-xl bg-muted/40 border border-border/60 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+                    GROSS ON
+                  </span>
+                  <span className="font-semibold text-foreground">Base Value Before Tax</span>
+                </div>
+                <p>
+                  Displays the primary item transaction subtotal <strong>before GST, duties, or taxes</strong> are added.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-muted/40 border border-border/60 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-500/20 text-slate-600 dark:text-slate-400">
+                    GROSS OFF
+                  </span>
+                  <span className="font-semibold text-foreground">Net Invoice Total</span>
+                </div>
+                <p>
+                  Displays the final bill amount <strong>including GST, taxes, and round-offs</strong> (the exact net payable/receivable sum).
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20 space-y-2">
+                <p className="font-bold text-foreground flex items-center gap-1.5">
+                  💡 Real Example (Purchase Invoice)
+                </p>
+                <div className="text-[11px] space-y-1 font-mono text-muted-foreground">
+                  <div className="flex justify-between"><span>Subtotal (Items):</span><span className="font-bold text-foreground">₹10,000</span></div>
+                  <div className="flex justify-between"><span>GST (18%):</span><span>+ ₹1,800</span></div>
+                  <div className="flex justify-between border-t border-border/60 pt-1 font-bold"><span className="text-foreground">Total Invoice Value:</span><span className="text-emerald-500">₹11,800</span></div>
+                </div>
+                <div className="pt-2 text-[11px] space-y-1 border-t border-emerald-500/10">
+                  <p>• <strong>GROSS ON:</strong> Displays <strong className="text-foreground">₹10,000</strong> (Base Value)</p>
+                  <p>• <strong>GROSS OFF:</strong> Displays <strong className="text-foreground">₹11,800</strong> (Net Invoice Total)</p>
+                </div>
+              </div>
+
+              <p className="text-[11px] italic text-muted-foreground/80">
+                * Note: For simple Receipts & Payments without GST or tax splits, Gross and Net amounts are naturally identical.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setShowGrossInfoModal(false)}
+              className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
+            >
+              Got it
             </button>
           </div>
         </div>

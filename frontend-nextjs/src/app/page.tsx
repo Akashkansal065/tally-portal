@@ -99,7 +99,7 @@ export default function DashboardPage() {
       icon: FileText,
       color: 'text-blue-600',
       bgColor: 'bg-blue-500/10 border-blue-500/20',
-      show: true,
+      show: permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments,
     },
     {
       href: '/ledgers',

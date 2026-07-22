@@ -85,8 +85,10 @@ export default function AttendancePage() {
   useEffect(() => {
     if (!token && !localStorage.getItem('mytally_token')) {
       router.push('/login')
+    } else if (permissions && !permissions.showAttendance) {
+      router.replace('/')
     }
-  }, [token, router])
+  }, [token, permissions, router])
 
   // Fetch initial personal details
   useEffect(() => {
@@ -272,7 +274,7 @@ export default function AttendancePage() {
   return (
     <div className="min-h-screen bg-background pb-12">
       {/* Header */}
-      <div className="border-b border-border bg-card/50 backdrop-blur-md sticky top-0 z-40">
+      <div className="border-b border-border bg-card/50 backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
           <button 
             onClick={() => router.push('/')}

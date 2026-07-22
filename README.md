@@ -12,14 +12,24 @@ The application contains three core components:
 1. **Local Tally Prime Server**: Runs locally at the business site with the XML ODBC Server enabled on a designated port (e.g., `9000`).
 2. **Tally Sync Daemon (`tally_sync_daemon.py`)**: A lightweight background service running locally that queries Tally collections using TDL/XML, converts payloads, and pushes incremental data to the ERP backend.
 3. **ERP Cloud Platform (FastAPI & Next.js)**: 
-   - **Backend**: A Python FastAPI REST API connected to a MySQL database that parses Tally XML messages and updates accounts, transactions, and inventory.
-    - **Frontend**: A Next.js Web App featuring a rich, responsive interface for viewing stocks, invoices, ledgers, and tracking orders.
+   - **Backend**: A Python FastAPI REST API connected to a MySQL database that parses Tally XML messages, handles GST return filing & reconciliation, and manages accounts, transactions, and inventory.
+   - **Frontend**: A Next.js Web App featuring a rich, responsive interface for viewing stocks, invoices, GST returns (GSTR-1, GSTR-3B, GSTR-2B, GSTR-9), ledgers, and tracking orders.
 
 ---
 
 ## 🚀 Key Features
 
 * **🔄 Bidirectional Tally Sync**: Incremental ledger, transaction voucher, and stock group synchronization with offline Tally Prime setups.
+* **📊 Complete GST Returns & Reconciliation Suite (`/gst`)**:
+  * **GSTR-1 Return Filing**: Auto-aggregates outward sales supplies, tax components (IGST/CGST/SGST), and HSN summary. Export official GSTR-1 JSON files for portal uploading.
+  * **GSTR-3B Government PDF Layout**: Identical mirror of official GST Portal PDF summary (Table 3.1 Outward Taxable Supplies, Table 4 Eligible ITC, Table 5 Exempt/Nil-rated). Number formatting exactly matches government PDF standards (`0.00` without currency symbols or commas).
+  * **GSTR-2B Portal Reconciliation Engine**:
+    * **Direct GST Portal API Sync**: Multi-step OTP authentication flow via GSTN API (Request OTP, Verify OTP, Session Token Management) with live stream terminal & browser console request/response logs.
+    * **Official Portal JSON Import**: Upload & parse official GSTR-2B JSON files (`b2b` and `cdnr` document arrays) with automatic local disk archiving under `storage/gstr2b/`.
+    * **Dual-Pass Smart Matching Engine**: Reconciles GSTR-2B portal entries against Tally purchase vouchers, Manual Purchases, and ITC entries. Matches via invoice/reference numbers or smart fallback matching (Supplier Name/GSTIN + Net Tax Amounts within ₹2.00 tolerance across Fixed Assets, Equipment, Laptops/Printers, and Expenses).
+    * **"+ Add to Books" Quick Action**: 1-click button on unmatched GSTR-2B rows to quickly add company asset/expense purchases (laptops, printers, office supplies, Amazon/Clicktech purchases) into `manual_purchases` table, auto-matching the row and claiming the ITC in GSTR-3B Table 4.
+  * **Manual Purchases Register**: Track, manage, and claim ITC on non-inventory or direct company asset/expense purchases.
+  * **GSTR-9 Annual Return & E-Invoicing**: Annual return generation & e-invoice IRN / QR code management.
 * **📅 Attendance Log Portal**: Daily salesperson clock-in and checkout system. Features live session durations, geolocation verification, and watermarked webcam selfie stamping.
 * **📍 GPS Shop Check-In**: GPS-verified client site check-ins with camera proofing and reverse-geocoded map watermarking overlays.
 * **💼 Expense & Order Management**: Submit and review sales orders and expense claims directly from the field with receipt attachments.
@@ -39,6 +49,7 @@ The portal initializes 2 standard system roles with the following default module
 | **Vouchers & Invoices** | CRUD | None |
 | **Inventory & Stocks** | CRUD | None |
 | **Orders & Expenses** | CRUD | CRUD (Orders Only) |
+| **GST Returns & Reconciliations** | CRUD | Read |
 | **Reports (P&L, Balance)** | CRUD | None |
 | **Shop GPS Check-In** | CRUD | CRUD |
 | **Attendance Portal** | CRUD | CRUD |
@@ -56,7 +67,7 @@ Administrators can override these standard roles with granular user-specific per
   - `showPayments` (Cash & bank payment records visibility)
   - `showExpenses` (Expenses submission & approval visibility)
   - `showStocks` (Stock item list and stock groups visibility)
-  - `showReports` (P&L Statement & Balance Sheet visibility)
+  - `showReports` (P&L Statement, Balance Sheet & GST Returns visibility)
   - `showOrders` (Sales order submission visibility)
   - `showCheckIn` (GPS-verified Shop Check-In visibility)
 * **Data Limit Scopes**:
@@ -104,21 +115,22 @@ Administrators can override these standard roles with granular user-specific per
      DATABASE_URL=mysql+aiomysql://YOUR_DB_USER:YOUR_DB_PASSWORD@localhost:3306/mytally_db
      JWT_SECRET=change-this-to-a-very-secure-secret-key
      ACCESS_TOKEN_EXPIRE_MINUTES=1440
-          # Tally Database Name
-      TALLY_DATABASE_NAME=tally_sync
-      
-      # SSL Connection (Set to true if using Aiven/cloud databases requiring SSL/TLS)
-      DB_SSL=true
-      
-      # Tally Synchronization Settings
-      TALLY_URL=http://127.0.0.1:9000
-      ERP_URL=http://127.0.0.1:8000
-      ERP_EMAIL=admin_test@test.com
-      ERP_PASSWORD=securepassword123
-      SYNC_FREQUENCY=120
-      ```
-    - **SSL CA Certificate (For Cloud/Aiven Databases)**: 
-      If your MySQL database requires certificate-validated SSL connections (e.g., Aiven MySQL), place your `ca.pem` certificate file directly inside the `backend/` folder. The application is configured to automatically detect and load it, and `.gitignore` ensures it is never pushed to Git.
+     
+     # Tally Database Name
+     TALLY_DATABASE_NAME=tally_sync
+     
+     # SSL Connection (Set to true if using Aiven/cloud databases requiring SSL/TLS)
+     DB_SSL=true
+     
+     # Tally Synchronization Settings
+     TALLY_URL=http://127.0.0.1:9000
+     ERP_URL=http://127.0.0.1:8000
+     ERP_EMAIL=admin_test@test.com
+     ERP_PASSWORD=securepassword123
+     SYNC_FREQUENCY=120
+     ```
+   - **SSL CA Certificate (For Cloud/Aiven Databases)**: 
+     If your MySQL database requires certificate-validated SSL connections (e.g., Aiven MySQL), place your `ca.pem` certificate file directly inside the `backend/` folder. The application is configured to automatically detect and load it, and `.gitignore` ensures it is never pushed to Git.
 
  5. Initialize the Database and Seed Roles:
     Create the database schema and run the seed script:

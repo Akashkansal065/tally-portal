@@ -31,13 +31,11 @@ export default function LedgersPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showLedger && !permissions.isAdmin) { router.replace('/'); return }
-    if (!permissions.isAdmin) {
-      if (!permissions.showSalesLedgers && permissions.showPurchaseLedgers) {
-        setActiveTab('suppliers')
-      } else if (permissions.showSalesLedgers && !permissions.showPurchaseLedgers) {
-        setActiveTab('customers')
-      }
+    if (!permissions.showLedger) { router.replace('/'); return }
+    if (!permissions.showSalesLedgers && permissions.showPurchaseLedgers) {
+      setActiveTab('suppliers')
+    } else if (permissions.showSalesLedgers && !permissions.showPurchaseLedgers) {
+      setActiveTab('customers')
     }
   }, [user, permissions, router])
   
@@ -139,7 +137,7 @@ export default function LedgersPage() {
   return (
     <div className="flex flex-col h-full bg-background font-sans">
       {/* Tabs Selector matching mockup */}
-      {(permissions.isAdmin || (permissions.showSalesLedgers && permissions.showPurchaseLedgers)) && (
+      {(permissions.showSalesLedgers && permissions.showPurchaseLedgers) && (
         <div className="px-4 py-2.5 bg-background border-b border-border">
           <div className="bg-muted p-1 rounded-xl flex gap-1 border border-border/40">
             <button

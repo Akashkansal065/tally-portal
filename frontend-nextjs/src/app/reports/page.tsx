@@ -111,8 +111,8 @@ export default function ReportsPage() {
                 <div key={i} className="px-4 py-3 flex items-start justify-between gap-2 text-sm">
                   <div className="flex-1 min-w-0">
                     <p className="font-medium truncate">
-                      {row.name || row.ledger_name || row.party_name 
-                        ? toTitleCase(row.name || row.ledger_name || row.party_name) 
+                      {row.name || row.ledger_name || row.party_name
+                        ? toTitleCase(row.name || row.ledger_name || row.party_name)
                         : (row.voucher_number || JSON.stringify(row).slice(0, 40))}
                     </p>
                     {(row.date || row.created_at) && <p className="text-xs text-muted-foreground">{formatDate(row.date || row.created_at)}</p>}

@@ -90,8 +90,9 @@ export default function TempOrdersPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
+    if (!permissions.showOrders) { router.replace('/'); return }
     fetchData()
-  }, [user, token, router])
+  }, [user, token, router, permissions])
 
   const handleStatusChange = async (orderId: number, nextStatus: 'done' | 'cancelled') => {
     try {

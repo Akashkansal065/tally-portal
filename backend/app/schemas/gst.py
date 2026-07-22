@@ -204,5 +204,11 @@ class EinvoiceSettingsUpdate(BaseModel):
     einvoice_gsp_client_id: Optional[str] = None
     einvoice_gsp_client_secret: Optional[str] = None
 
+class Gstr2bOtpRequest(BaseModel):
+    period_id: int
+    force_refetch: Optional[bool] = False
 
-
+class Gstr2bOtpVerify(BaseModel):
+    period_id: int
+    otp: str
+    txn_id: Optional[str] = None

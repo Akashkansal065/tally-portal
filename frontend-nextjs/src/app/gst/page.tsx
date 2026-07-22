@@ -9,7 +9,7 @@ import {
   FileSpreadsheet, Plus, RefreshCw, CheckCircle2, Download, Calendar,
   ChevronDown, Loader2, ArrowUpDown, Receipt, ShieldCheck, FileText,
   AlertTriangle, Eye, Lock, ArrowRight, Activity, HelpCircle, Check, Info, Shield,
-  Trash2, Settings, X, Upload
+  Trash2, Settings, X, Upload, Key, ShieldAlert
 } from 'lucide-react'
 
 const MONTHS = [
@@ -178,6 +178,15 @@ export default function GstPage() {
     product_description: '', taxable_value: 0, cgst_amount: 0, sgst_amount: 0, igst_amount: 0
   })
 
+  // GSTR-2B OTP Modal State
+  const [showGstr2bOtpModal, setShowGstr2bOtpModal] = useState(false)
+  const [gstr2bOtpStep, setGstr2bOtpStep] = useState<'request' | 'verify' | 'exists_prompt'>('request')
+  const [gstr2bExistingCount, setGstr2bExistingCount] = useState(0)
+  const [gstr2bTxnId, setGstr2bTxnId] = useState('')
+  const [gstr2bOtpInput, setGstr2bOtpInput] = useState('')
+  const [gstr2bMaskedGstin, setGstr2bMaskedGstin] = useState('')
+  const [lastGstLog, setLastGstLog] = useState<string | null>(null)
+
   const [loading, setLoading] = useState(false)
   const [selectedPeriodId, setSelectedPeriodId] = useState<number | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -240,7 +249,7 @@ export default function GstPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showGst && !permissions.isAdmin) { router.replace('/'); return }
+    if (!permissions.showGst) { router.replace('/'); return }
   }, [user, permissions, router])
 
   // --- Data Fetching ---
@@ -416,6 +425,7 @@ export default function GstPage() {
         product_description: '', taxable_value: 0, cgst_amount: 0, sgst_amount: 0, igst_amount: 0
       })
       fetchManualPurchases(selectedPeriodId)
+      handleReconcileGstr2b()
     } catch (e: any) { alert(e.message) }
     finally { setActionLoading(null) }
   }
@@ -569,6 +579,20 @@ export default function GstPage() {
     finally { setActionLoading(null) }
   }
 
+  const handleQuickAddManualPurchase = (entry: Gstr2bEntry) => {
+    setManualPurchaseForm({
+      source: entry.supplier_name || 'Direct Asset/Expense Purchase',
+      invoice_number: entry.invoice_number,
+      invoice_date: entry.invoice_date.split('T')[0],
+      product_description: `${entry.supplier_name || 'Vendor'} — Asset/Office Purchase (Laptop/Printer)`,
+      taxable_value: entry.taxable_value,
+      cgst_amount: entry.cgst_amount,
+      sgst_amount: entry.sgst_amount,
+      igst_amount: entry.igst_amount,
+    })
+    setShowManualPurchaseModal(true)
+  }
+
   const handleGstr2bUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || !token) return
@@ -599,6 +623,84 @@ export default function GstPage() {
       setActionLoading(null)
       e.target.value = ''
     }
+  }
+
+  const handleOpenGstr2bOtpModal = () => {
+    setGstr2bOtpStep('request')
+    setGstr2bOtpInput('')
+    setGstr2bTxnId('')
+    if (!selectedPeriodId && periods.length > 0) {
+      setSelectedPeriodId(periods[0].return_period_id)
+    }
+    setShowGstr2bOtpModal(true)
+    handleRequestGstr2bOtp(false)
+  }
+
+  const handleRequestGstr2bOtp = async (forceRefetch: boolean = false) => {
+    const pId = selectedPeriodId || (periods.length > 0 ? periods[0].return_period_id : null)
+    if (!pId || !token) {
+      alert('Please select a return period first.')
+      return
+    }
+    setActionLoading('request-gstr2b-otp')
+    try {
+      const res = await fetch(`${API_BASE}/gst/gstr2b/request-otp`, {
+        method: 'POST',
+        headers: authHeaders(token),
+        body: JSON.stringify({ period_id: pId, force_refetch: forceRefetch })
+      })
+      if (res.ok) {
+        const result = await res.json()
+        if (result.logs) {
+          console.log('%c[GST PORTAL REQUEST/RESPONSE LOGS]', 'color: #a855f7; font-weight: bold; font-size: 12px;\n', result.logs)
+          setLastGstLog(result.logs)
+        }
+        setGstr2bMaskedGstin(result.gstin || '')
+        if (result.exists) {
+          setGstr2bExistingCount(result.count || 0)
+          setGstr2bOtpStep('exists_prompt')
+        } else {
+          setGstr2bTxnId(result.txn_id || '')
+          setGstr2bOtpStep('verify')
+        }
+      } else {
+        const err = await res.json()
+        alert(err.detail || 'Failed to request OTP from GST Portal')
+      }
+    } catch (e: any) { alert(e.message) }
+    finally { setActionLoading(null) }
+  }
+
+  const handleVerifyGstr2bOtp = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const pId = selectedPeriodId || (periods.length > 0 ? periods[0].return_period_id : null)
+    if (!pId || !token || !gstr2bOtpInput) return
+    setActionLoading('verify-gstr2b-otp')
+    try {
+      const res = await fetch(`${API_BASE}/gst/gstr2b/verify-otp`, {
+        method: 'POST',
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          period_id: pId,
+          otp: gstr2bOtpInput,
+          txn_id: gstr2bTxnId
+        })
+      })
+      if (res.ok) {
+        const result = await res.json()
+        if (result.logs) {
+          console.log('%c[GST PORTAL REQUEST/RESPONSE LOGS]', 'color: #10b981; font-weight: bold; font-size: 12px;\n', result.logs)
+          setLastGstLog(result.logs)
+        }
+        alert(result.detail || 'GSTR-2B statement successfully fetched and reconciled!')
+        setShowGstr2bOtpModal(false)
+        fetchGstr2b()
+      } else {
+        const err = await res.json()
+        alert(err.detail || 'OTP Verification failed')
+      }
+    } catch (e: any) { alert(e.message) }
+    finally { setActionLoading(null) }
   }
 
   const handleCreateGstr9 = async () => {
@@ -662,10 +764,10 @@ export default function GstPage() {
   const tabs: { id: TabId; label: string; icon: React.ElementType }[] = [
     { id: 'periods', label: 'Return Periods', icon: Calendar },
     { id: 'gstr1', label: 'GSTR-1', icon: FileText },
-    { id: 'gstr3b', label: 'GSTR-3B', icon: ShieldCheck },
+    { id: 'gstr2b', label: 'GSTR-2B (Reconcile)', icon: Activity },
     { id: 'itc', label: 'ITC Register', icon: Receipt },
     { id: 'manualPurchases', label: 'Manual Purchases', icon: Receipt },
-    { id: 'gstr2b', label: 'GSTR-2B (Reconcile)', icon: Activity },
+    { id: 'gstr3b', label: 'GSTR-3B', icon: ShieldCheck },
     { id: 'gstr9', label: 'GSTR-9 (Annual)', icon: FileSpreadsheet },
     { id: 'einvoices', label: 'E-Invoices', icon: Shield },
   ]
@@ -707,7 +809,7 @@ export default function GstPage() {
       </div>
 
       {/* Period Selector (for tabs that depend on period) */}
-      {(activeTab === 'gstr1' || activeTab === 'gstr3b' || activeTab === 'manualPurchases') && (
+      {(activeTab === 'gstr1' || activeTab === 'gstr3b' || activeTab === 'manualPurchases' || activeTab === 'gstr2b' || activeTab === 'itc') && (
         <div className="flex items-center gap-3">
           <label className="text-xs font-semibold text-muted-foreground">Select Period:</label>
           <div className="relative flex-1 max-w-xs">
@@ -718,10 +820,10 @@ export default function GstPage() {
             >
               <option value="">Choose a period...</option>
               {periods
-                .filter(p => activeTab === 'gstr1' ? p.return_type === 'GSTR1' : p.return_type === 'GSTR3B')
+                .filter(p => activeTab === 'gstr1' ? p.return_type === 'GSTR1' : true)
                 .map(p => (
                   <option key={p.return_period_id} value={p.return_period_id}>
-                    {MONTHS[p.period_month - 1]} {p.period_year} — {p.status}
+                    {MONTHS[p.period_month - 1]} {p.period_year} ({p.return_type}) — {p.status}
                   </option>
                 ))}
             </select>
@@ -1600,6 +1702,14 @@ export default function GstPage() {
                 className="hidden"
               />
               <button
+                onClick={handleOpenGstr2bOtpModal}
+                disabled={actionLoading === 'request-gstr2b-otp'}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
+              >
+                {actionLoading === 'request-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Key className="h-3.5 w-3.5" />}
+                Fetch via GST Portal
+              </button>
+              <button
                 onClick={() => document.getElementById('gstr2b-file-input')?.click()}
                 disabled={actionLoading === 'upload-gstr2b'}
                 className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
@@ -1637,6 +1747,7 @@ export default function GstPage() {
                     <th className="text-right py-2.5 px-2 font-bold">SGST</th>
                     <th className="text-right py-2.5 px-2 font-bold">IGST</th>
                     <th className="text-center py-2.5 px-2 font-bold">Match Status</th>
+                    <th className="text-center py-2.5 px-2 font-bold">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1661,6 +1772,21 @@ export default function GstPage() {
                           {entry.match_status === 'Matched' && <Check className="h-3 w-3" />}
                           {entry.match_status}
                         </span>
+                      </td>
+                      <td className="py-2.5 px-2 text-center">
+                        {entry.match_status !== 'Matched' ? (
+                          <button
+                            type="button"
+                            onClick={() => handleQuickAddManualPurchase(entry)}
+                            className="px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-bold rounded-md transition-colors inline-flex items-center gap-1 cursor-pointer shadow-sm whitespace-nowrap"
+                            title="Add this company asset/expense purchase to books to claim ITC"
+                          >
+                            <Plus className="h-3 w-3" />
+                            + Add to Books
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-emerald-600 font-bold">Reconciled</span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -2257,6 +2383,164 @@ export default function GstPage() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Modal: GSTR-2B OTP Authorization */}
+      {showGstr2bOtpModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-card w-full max-w-md rounded-2xl shadow-xl overflow-hidden border border-border flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
+              <h2 className="text-sm font-extrabold flex items-center gap-2">
+                <Key className="h-4 w-4 text-purple-500" />
+                GST Portal OTP Authentication
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowGstr2bOtpModal(false)}
+                className="p-1 text-muted-foreground hover:bg-muted rounded-md transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {gstr2bOtpStep === 'exists_prompt' ? (
+              <div className="p-5 space-y-4 text-xs">
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 text-amber-900 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5 text-amber-700">
+                    <Info className="h-4 w-4" /> GSTR-2B Statement Already Saved
+                  </p>
+                  <p className="text-[11px] text-amber-800 leading-relaxed">
+                    Data for this return period is already saved in your portal database (<strong>{gstr2bExistingCount} entries</strong> saved).
+                  </p>
+                </div>
+
+                <div className="space-y-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGstr2bOtpModal(false)
+                      handleReconcileGstr2b()
+                    }}
+                    className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    Use Saved Data & Reconcile
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleRequestGstr2bOtp(true)}
+                    disabled={actionLoading === 'request-gstr2b-otp'}
+                    className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    {actionLoading === 'request-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    Force Refetch from GST Portal (Send OTP)
+                  </button>
+                </div>
+              </div>
+            ) : gstr2bOtpStep === 'request' ? (
+              <div className="p-5 space-y-4 text-xs">
+                <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3.5 text-purple-900 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5 text-purple-700">
+                    <ShieldCheck className="h-4 w-4" /> Direct Portal Sync (GSTN API)
+                  </p>
+                  <p className="text-[11px] text-purple-800 leading-relaxed">
+                    Request an OTP from GSTN to authorize downloading your official GSTR-2B statement directly from the government portal.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5 bg-muted/40 p-3 rounded-lg border border-border">
+                  <label className="text-[11px] font-bold text-muted-foreground block">Select Return Period to Fetch:</label>
+                  <div className="relative">
+                    <select
+                      value={selectedPeriodId ?? ''}
+                      onChange={(e) => {
+                        const newId = e.target.value ? Number(e.target.value) : null
+                        setSelectedPeriodId(newId)
+                      }}
+                      className="w-full appearance-none bg-background border border-border rounded-lg px-3 py-2 text-xs font-bold text-foreground pr-8 focus:outline-none focus:ring-2 focus:ring-purple-500/50 cursor-pointer"
+                    >
+                      <option value="">-- Select Return Period --</option>
+                      {periods.map(p => (
+                        <option key={p.return_period_id} value={p.return_period_id}>
+                          {MONTHS[p.period_month - 1]} {p.period_year} ({p.return_type}) — {p.status}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  </div>
+                </div>
+
+                <div className="pt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowGstr2bOtpModal(false)}
+                    className="flex-1 py-2.5 bg-background border border-border text-foreground rounded-lg font-bold hover:bg-muted transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRequestGstr2bOtp(false)}
+                    disabled={actionLoading === 'request-gstr2b-otp'}
+                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg font-bold hover:bg-purple-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    {actionLoading === 'request-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Key className="h-3.5 w-3.5" />}
+                    Send OTP to Mobile/Email
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleVerifyGstr2bOtp} className="p-5 space-y-4 text-xs">
+                <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3.5 text-emerald-900 space-y-1">
+                  <p className="font-bold flex items-center gap-1.5 text-emerald-700">
+                    <CheckCircle2 className="h-4 w-4" /> OTP Sent Successfully!
+                  </p>
+                  <p className="text-[11px] text-emerald-800 leading-relaxed">
+                    Enter the 6-digit OTP sent to the registered mobile number & email linked to GSTIN <strong className="font-mono">{gstr2bMaskedGstin}</strong>.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-foreground mb-1 block">Enter 6-Digit OTP</label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={6}
+                    placeholder="e.g. 123456"
+                    value={gstr2bOtpInput}
+                    onChange={e => setGstr2bOtpInput(e.target.value)}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-center text-lg font-mono font-bold tracking-widest focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                  />
+                </div>
+
+                <div className="pt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setGstr2bOtpStep('request')}
+                    className="py-2.5 px-3 bg-background border border-border text-foreground rounded-lg font-bold hover:bg-muted transition-colors cursor-pointer"
+                  >
+                    Resend
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={actionLoading === 'verify-gstr2b-otp' || gstr2bOtpInput.length !== 6}
+                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg font-bold hover:bg-purple-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    {actionLoading === 'verify-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                    Verify OTP & Fetch GSTR-2B
+                  </button>
+                </div>
+              </form>
+            )}
+            {lastGstLog && (
+              <div className="p-3 bg-zinc-950 text-emerald-400 font-mono text-[10px] border-t border-border overflow-x-auto max-h-36 no-scrollbar">
+                <p className="text-zinc-500 font-bold mb-1 uppercase tracking-wider text-[9px]">Live GST Portal Log Stream:</p>
+                <pre className="whitespace-pre-wrap leading-relaxed">{lastGstLog}</pre>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

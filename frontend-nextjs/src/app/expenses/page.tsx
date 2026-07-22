@@ -5,16 +5,16 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate } from '@/lib/utils'
 import { stampPhoto } from '@/lib/photo-stamping'
-import { 
-  Wallet, 
-  Plus, 
-  X, 
-  Camera, 
-  Clock, 
-  Check, 
-  XCircle, 
-  ChevronLeft, 
-  ListTodo, 
+import {
+  Wallet,
+  Plus,
+  X,
+  Camera,
+  Clock,
+  Check,
+  XCircle,
+  ChevronLeft,
+  ListTodo,
   BarChart3,
   Calendar,
   CheckCircle2
@@ -40,7 +40,7 @@ const MODES = ['Cash', 'Bank', 'Online']
 export default function ExpensesPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
-  
+
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'claims' | 'analytics'>('claims')
@@ -113,14 +113,14 @@ export default function ExpensesPage() {
       const res = await fetch(`${API_BASE}/expenses`, {
         method: 'POST',
         headers: authHeaders(token),
-        body: JSON.stringify({ 
-          amount: parseFloat(amount), 
-          date, 
-          category, 
-          payment_mode: mode, 
-          narration, 
-          reference_no: refNo, 
-          photo_base64: photo 
+        body: JSON.stringify({
+          amount: parseFloat(amount),
+          date,
+          category,
+          payment_mode: mode,
+          narration,
+          reference_no: refNo,
+          photo_base64: photo
         }),
       })
       if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
@@ -131,10 +131,10 @@ export default function ExpensesPage() {
       setRefNo('')
       setPhoto(null)
       await fetchExpenses()
-    } catch (err: any) { 
-      setError(err.message) 
-    } finally { 
-      setSubmitting(false) 
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -169,7 +169,7 @@ export default function ExpensesPage() {
       totalSpend += amt
 
       catTotals[e.category] = (catTotals[e.category] || 0) + amt
-      
+
       const st = e.status || 'pending'
       if (!statusCounts[st]) {
         statusCounts[st] = { count: 0, total: 0 }
@@ -203,7 +203,7 @@ export default function ExpensesPage() {
             </h1>
             <p className="text-[11px] text-muted-foreground mt-0.5">Submit and review business reimbursement requests</p>
           </div>
-          <button 
+          <button
             onClick={() => setShowForm(v => !v)}
             className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all active:scale-[0.98] shadow-md shadow-emerald-500/10 cursor-pointer"
           >
@@ -249,25 +249,25 @@ export default function ExpensesPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Amount (₹)</label>
-                <input 
-                  type="number" 
-                  min="0" 
-                  step="0.01" 
-                  placeholder="0.00" 
-                  value={amount} 
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={amount}
                   required
-                  onChange={e => setAmount(e.target.value)} 
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500" 
+                  onChange={e => setAmount(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Date</label>
-                <input 
-                  type="date" 
-                  value={date} 
+                <input
+                  type="date"
+                  value={date}
                   required
-                  onChange={e => setDate(e.target.value)} 
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500" 
+                  onChange={e => setDate(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
             </div>
@@ -275,8 +275,8 @@ export default function ExpensesPage() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Category</label>
-                <select 
-                  value={category} 
+                <select
+                  value={category}
                   onChange={e => setCategory(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 >
@@ -285,8 +285,8 @@ export default function ExpensesPage() {
               </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Payment Mode</label>
-                <select 
-                  value={mode} 
+                <select
+                  value={mode}
                   onChange={e => setMode(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 >
@@ -297,12 +297,12 @@ export default function ExpensesPage() {
 
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Narration Description</label>
-              <textarea 
-                placeholder="What was this expense spent on?" 
-                value={narration} 
-                onChange={e => setNarration(e.target.value)} 
+              <textarea
+                placeholder="What was this expense spent on?"
+                value={narration}
+                onChange={e => setNarration(e.target.value)}
                 rows={2}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none" 
+                className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
               />
             </div>
 
@@ -312,9 +312,9 @@ export default function ExpensesPage() {
               {photo ? (
                 <div className="relative rounded-xl overflow-hidden border border-border mt-1 shadow-sm">
                   <img src={photo} alt="receipt preview" className="w-full h-32 object-cover" />
-                  <button 
-                    type="button" 
-                    onClick={() => setPhoto(null)} 
+                  <button
+                    type="button"
+                    onClick={() => setPhoto(null)}
                     className="absolute top-2.5 right-2.5 bg-black/75 hover:bg-black text-white rounded-full p-2 text-xs transition-colors cursor-pointer"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -331,12 +331,12 @@ export default function ExpensesPage() {
                     <>
                       <Camera className="h-5 w-5 opacity-70 text-muted-foreground" />
                       <span className="font-bold">Capture Stamped Receipt</span>
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        capture="environment" 
-                        className="hidden" 
-                        onChange={handlePhotoCapture} 
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="hidden"
+                        onChange={handlePhotoCapture}
                       />
                     </>
                   )}
@@ -344,9 +344,9 @@ export default function ExpensesPage() {
               )}
             </div>
 
-            <button 
-              type="submit" 
-              disabled={submitting || processingPhoto} 
+            <button
+              type="submit"
+              disabled={submitting || processingPhoto}
               className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 disabled:opacity-50 transition-all shadow-md cursor-pointer"
             >
               {submitting && <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
@@ -408,7 +408,7 @@ export default function ExpensesPage() {
                     <div className="flex items-center gap-1">
                       <span className="font-extrabold text-[9px] uppercase tracking-wider">Proof:</span>
                       {e.receipt_photo_url ? (
-                        <button 
+                        <button
                           onClick={() => setSelectedReceipt(e.receipt_photo_url || null)}
                           className="text-emerald-500 hover:text-emerald-600 font-bold underline flex items-center gap-0.5 cursor-pointer"
                         >
@@ -421,14 +421,14 @@ export default function ExpensesPage() {
 
                     {permissions.isAdmin && e.status === 'pending' && (
                       <div className="flex items-center gap-2">
-                        <button 
+                        <button
                           onClick={() => handleApproveStatus(e.id, 'approved')}
                           className="h-8 w-8 bg-green-500/10 hover:bg-green-500 text-green-600 hover:text-white rounded-lg transition-colors flex items-center justify-center cursor-pointer border border-green-500/20"
                           title="Approve Claim"
                         >
                           <Check className="h-4 w-4" />
                         </button>
-                        <button 
+                        <button
                           onClick={() => setRejectingExpenseId(e.id)}
                           className="h-8 w-8 bg-destructive/10 hover:bg-destructive text-destructive hover:text-white rounded-lg transition-colors flex items-center justify-center cursor-pointer border border-destructive/20"
                           title="Reject Claim"
@@ -489,7 +489,7 @@ export default function ExpensesPage() {
                         <span className="text-muted-foreground font-mono">{formatCurrency(cat.total)} ({cat.percentage}%)</span>
                       </div>
                       <div className="w-full bg-muted rounded-full h-2 overflow-hidden border border-border/40">
-                        <div 
+                        <div
                           className="bg-emerald-500 h-2 rounded-full transition-all duration-300"
                           style={{ width: `${cat.percentage}%` }}
                         />
@@ -509,15 +509,15 @@ export default function ExpensesPage() {
       {selectedReceipt && (
         <div className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="relative max-w-lg w-full bg-card rounded-3xl overflow-hidden shadow-2xl p-2 animate-in zoom-in-95 duration-200">
-            <button 
+            <button
               onClick={() => setSelectedReceipt(null)}
               className="absolute top-4 right-4 w-8 h-8 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80 transition-colors z-10 cursor-pointer"
             >
               <X className="h-4 w-4" />
             </button>
-            <img 
-              src={selectedReceipt} 
-              alt="Expense Receipt Proof" 
+            <img
+              src={selectedReceipt}
+              alt="Expense Receipt Proof"
               className="w-full h-auto max-h-[80vh] object-contain rounded-2xl"
             />
           </div>
@@ -531,22 +531,22 @@ export default function ExpensesPage() {
             <h3 className="font-extrabold text-sm text-foreground">Reject Claim Reason</h3>
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Cancellation Reason</label>
-              <input 
-                type="text" 
-                placeholder="Reason details..." 
+              <input
+                type="text"
+                placeholder="Reason details..."
                 value={rejectReason}
                 onChange={e => setRejectReason(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500" 
+                className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </div>
             <div className="flex gap-2">
-              <button 
+              <button
                 onClick={() => { setRejectingExpenseId(null); setRejectReason('') }}
                 className="flex-1 py-2.5 border border-border hover:bg-muted text-muted-foreground font-bold rounded-xl text-xs transition-colors cursor-pointer"
               >
                 Cancel
               </button>
-              <button 
+              <button
                 onClick={() => handleApproveStatus(rejectingExpenseId, 'rejected', rejectReason)}
                 disabled={!rejectReason.trim()}
                 className="flex-1 py-2.5 bg-destructive hover:bg-destructive/95 text-white font-bold rounded-xl text-xs transition-all shadow-md disabled:opacity-50 cursor-pointer"

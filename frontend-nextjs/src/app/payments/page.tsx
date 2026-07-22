@@ -58,8 +58,9 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
+    if (!permissions.showPayments) { router.replace('/'); return }
     fetchData()
-  }, [user, token, router])
+  }, [user, token, router, permissions])
 
   const handleStatusChange = async (paymentId: number, nextStatus: 'success' | 'cancelled') => {
     try {

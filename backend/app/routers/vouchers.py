@@ -9,7 +9,7 @@ import json
 from app.models.payment import TrnBill
 
 from app.core.database import get_db
-from app.core.permissions import require_permission, get_current_user
+from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
 from app.models.user import User, Module
 from app.models.voucher import MstVoucherType, TrnVoucher, TrnAccounting, ApprovalRule, ApprovalRequest, AuditLog
 from app.models.ledger import MstLedger
@@ -38,7 +38,7 @@ async def log_audit(db: AsyncSession, company_id: int, user_id: int, action: str
 
 @router.get("/types")
 async def get_voucher_types(
-    user: User = Depends(require_permission("vouchers", "read")),
+    user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
     res = await db.execute(
@@ -233,12 +233,15 @@ async def create_voucher(
     return final_voucher
 
 def _resolve_party_and_amount(entries):
-    """Score entries by ledger group to find the primary party (like tally-web's party_name lookup)."""
+    """Score entries by ledger group to find primary party name and compute true Gross Amount (before taxes/duties)."""
     if not entries:
         return "Cash Account", 0.0
 
     primary_entry = entries[0]
     max_score = -100
+
+    sales_purchase_sum = 0.0
+    has_sales_purchase = False
 
     for entry in entries:
         ledger = getattr(entry, "ledger", None)
@@ -247,6 +250,14 @@ def _resolve_party_and_amount(entries):
         group = getattr(ledger, "group", None)
         gname = (getattr(group, "name", "") or "").lower() if group else ""
         lname = (getattr(ledger, "name", "") or "").lower()
+
+        # Sum base Sales / Purchase ledger amounts (excluding taxes, duties, and round off)
+        if "sales accounts" in gname or "purchase accounts" in gname or "sales" in gname or "purchase" in gname:
+            if "tax" not in lname and "duty" not in lname and "round" not in lname and "discount" not in lname:
+                damt = float(entry.debit_amount or 0)
+                camt = float(entry.credit_amount or 0)
+                sales_purchase_sum += damt if damt > 0 else camt
+                has_sales_purchase = True
 
         score = 0
         if "debtors" in gname or "creditors" in gname:
@@ -267,15 +278,20 @@ def _resolve_party_and_amount(entries):
 
     debit = float(primary_entry.debit_amount or 0)
     credit = float(primary_entry.credit_amount or 0)
-    amount = debit if debit > 0 else credit
+    party_net_amount = debit if debit > 0 else credit
 
-    return party_name, abs(amount)
+    if has_sales_purchase and sales_purchase_sum > 0:
+        gross_amount = sales_purchase_sum
+    else:
+        gross_amount = party_net_amount
+
+    return party_name, abs(gross_amount)
 
 
 @router.get("", response_model=List[VoucherListResponse])
 async def get_vouchers(
     is_optional: Optional[bool] = None,
-    user: User = Depends(require_permission("vouchers", "read")),
+    user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(TrnVoucher).options(
@@ -309,7 +325,7 @@ async def get_vouchers(
 @router.get("/{voucher_id}")
 async def get_voucher_detail(
     voucher_id: int,
-    user: User = Depends(require_permission("vouchers", "read")),
+    user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(TrnVoucher).options(

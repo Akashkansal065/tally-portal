@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import {
   Home,
+  Shield,
   FileText,
   BookOpen,
   Layers,
@@ -12,7 +13,9 @@ import {
   IndianRupee,
   MapPin,
   Wallet,
+  Clock,
   BarChart3,
+  FileSpreadsheet,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -29,19 +32,47 @@ export function MobileBottomNav() {
 
   if (!user) return null
 
+  const isAdmin = permissions.isAdmin || user.role === 'admin' || user.role === 'Admin'
+  const hasVouchersAccess =
+    permissions.showSalesLedgers ||
+    permissions.showPurchaseLedgers ||
+    permissions.showReceipts ||
+    permissions.showPayments
+
   const tabs: NavTab[] = [
     { href: '/', label: 'Home', icon: Home },
-    { href: '/vouchers', label: 'Vouchers', icon: FileText },
-    { href: '/ledgers', label: 'Ledgers', icon: BookOpen },
-    { href: '/stocks', label: 'Items', icon: Layers },
-    { href: '/temporders', label: 'Orders', icon: ShoppingCart },
-    { href: '/payments', label: 'Payments', icon: IndianRupee },
-    { href: '/check-in', label: 'Check-In', icon: MapPin },
+    ...(isAdmin
+      ? [{ href: '/admin', label: 'Admin', icon: Shield }]
+      : []),
+    ...(hasVouchersAccess
+      ? [{ href: '/vouchers', label: 'Vouchers', icon: FileText }]
+      : []),
+    ...(permissions.showLedger
+      ? [{ href: '/ledgers', label: 'Ledgers', icon: BookOpen }]
+      : []),
+    ...(permissions.showStocks
+      ? [{ href: '/stocks', label: 'Stocks', icon: Layers }]
+      : []),
+    ...(permissions.showOrders
+      ? [{ href: '/temporders', label: 'Orders', icon: ShoppingCart }]
+      : []),
+    ...(permissions.showPayments
+      ? [{ href: '/payments', label: 'Payments', icon: IndianRupee }]
+      : []),
+    ...(permissions.showCheckIn
+      ? [{ href: '/check-in', label: 'Check-In', icon: MapPin }]
+      : []),
     ...(permissions.showExpenses
       ? [{ href: '/expenses', label: 'Expenses', icon: Wallet }]
       : []),
+    ...(permissions.showAttendance
+      ? [{ href: '/attendance', label: 'Attendance', icon: Clock }]
+      : []),
     ...(permissions.showReports
       ? [{ href: '/reports', label: 'Reports', icon: BarChart3 }]
+      : []),
+    ...(permissions.showGst
+      ? [{ href: '/gst', label: 'GST', icon: FileSpreadsheet }]
       : []),
   ]
 

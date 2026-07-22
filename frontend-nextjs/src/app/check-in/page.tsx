@@ -23,7 +23,7 @@ type RecentVisit = {
 type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
 
 export default function CheckInPage() {
-  const { user, token } = useAuth()
+  const { user, token, permissions } = useAuth()
   const router = useRouter()
   const [ledgers, setLedgers] = useState<Ledger[]>([])
   const [recentVisits, setRecentVisits] = useState<RecentVisit[]>([])
@@ -53,6 +53,7 @@ export default function CheckInPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
+    if (!permissions.showCheckIn) { router.replace('/'); return }
     Promise.all([
       fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()),
       fetch(`${API_BASE}/visits/recent`, { headers: authHeaders(token) }).then(r => r.json()).catch(() => []),
@@ -61,7 +62,7 @@ export default function CheckInPage() {
       setLedgers(customers)
       setRecentVisits(Array.isArray(vs) ? vs : (vs?.data ?? []))
     }).finally(() => setLoading(false))
-  }, [user, token, router])
+  }, [user, token, router, permissions.showCheckIn])
 
   const handlePhotoCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]

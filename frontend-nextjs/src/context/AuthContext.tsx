@@ -27,7 +27,7 @@ export interface AuthUser {
   username: string
   role: string
   company_id: number
-  allowedCompanies: {company_id: number, name: string}[]
+  allowedCompanies: { company_id: number, name: string }[]
   permissions: UserPermissions
 }
 
@@ -63,9 +63,9 @@ const AuthContext = createContext<AuthContextValue>({
   user: null,
   token: '',
   isLoading: true,
-  login: async () => {},
-  logout: () => {},
-  switchCompany: async () => {},
+  login: async () => { },
+  logout: () => { },
+  switchCompany: async () => { },
   permissions: DEFAULT_PERMISSIONS,
 })
 
@@ -81,14 +81,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       if (!res.ok) throw new Error('Unauthorized')
       const data = await res.json()
-      
+
       let allowedCompanies = []
       try {
         const compRes = await fetch(`${API_BASE}/auth/me/companies`, {
           headers: authHeaders(tok),
         })
         if (compRes.ok) allowedCompanies = await compRes.json()
-      } catch (e) {}
+      } catch (e) { }
 
       const isAdmin = data.role === 'admin' || data.role === 'Admin'
       setUser({
@@ -147,7 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('mytally_email')
   }
 
-const switchCompany = async (company_id: number) => {
+  const switchCompany = async (company_id: number) => {
     if (!token) return
     const res = await fetch(`${API_BASE}/auth/me/active-company`, {
       method: 'PUT',

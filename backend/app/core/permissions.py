@@ -204,9 +204,7 @@ async def get_user_permission_toggles(
     # 3. Derive showLedger
     toggles["showLedger"] = (
         toggles["showSalesLedgers"] or 
-        toggles["showPurchaseLedgers"] or 
-        toggles["showReceipts"] or 
-        toggles["showPayments"]
+        toggles["showPurchaseLedgers"]
     )
     return toggles
 
@@ -228,3 +226,21 @@ def require_permission(module_code: str, action: str):
             )
         return user
     return dependency
+
+async def require_voucher_read_permission(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    """
+    User is allowed to read vouchers if they have read permission for ANY voucher-related module:
+    vouchers (Receipts), ledger_customer (Sales), ledger_supplier (Purchases), or payments.
+    """
+    for mod_code in ("vouchers", "ledger_customer", "ledger_supplier", "payments"):
+        perms = await get_effective_permission(user.user_id, mod_code, db)
+        if perms.get("can_read", False):
+            return user
+            
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to read any voucher categories."
+    )

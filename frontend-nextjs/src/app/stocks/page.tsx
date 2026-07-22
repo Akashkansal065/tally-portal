@@ -131,8 +131,8 @@ export default function StocksPage() {
     // Search filter
     if (search.trim()) {
       const q = search.toLowerCase()
-      result = result.filter(item => 
-        item.name.toLowerCase().includes(q) || 
+      result = result.filter(item =>
+        item.name.toLowerCase().includes(q) ||
         getProductDetails(item.name, item.group_name).subtitle.toLowerCase().includes(q)
       )
     }
@@ -540,17 +540,17 @@ export default function StocksPage() {
                   <tbody className="divide-y divide-border/50">
                     {filtered.map(item => {
                       const details = getProductDetails(item.name, item.group_name)
-                      
+
                       const inwardQtyStr = item.inward_qty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                       const outwardQtyStr = item.outward_qty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                       const closingQtyStr = item.closing_balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                      
+
                       const isInwardZero = item.inward_qty === 0
                       const isOutwardZero = item.outward_qty === 0
                       const isConsZero = item.cons_value === 0
                       const isGpZero = item.gp_value === 0
                       const isClosingZero = item.closing_balance === 0
-                      
+
                       return (
                         <tr
                           key={item.item_id}
@@ -588,15 +588,13 @@ export default function StocksPage() {
                             {formatCurrency(item.cons_value)}
                           </td>
                           {/* GP Value */}
-                          <td className={`px-3 py-3.5 text-right border-r border-border/50 font-bold ${
-                            isGpZero ? 'text-muted-foreground/30' : item.gp_value > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                          }`}>
+                          <td className={`px-3 py-3.5 text-right border-r border-border/50 font-bold ${isGpZero ? 'text-muted-foreground/30' : item.gp_value > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                            }`}>
                             {formatCurrency(item.gp_value)}
                           </td>
                           {/* GP % */}
-                          <td className={`px-3 py-3.5 text-right border-r border-border font-semibold ${
-                            isGpZero ? 'text-muted-foreground/30' : item.gp_value > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                          }`}>
+                          <td className={`px-3 py-3.5 text-right border-r border-border font-semibold ${isGpZero ? 'text-muted-foreground/30' : item.gp_value > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                            }`}>
                             {item.gp_percent.toFixed(1)}%
                           </td>
                           {/* Closing Qty */}

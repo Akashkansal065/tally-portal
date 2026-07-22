@@ -108,11 +108,11 @@ export function GlobalHeader() {
       {/* Drawer overlay */}
       {drawerOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-40"
+          className="fixed inset-0 bg-black/50 z-50"
           onClick={() => setDrawerOpen(false)}
         >
           <div
-            className="absolute right-0 top-0 bottom-0 w-72 bg-card border-l border-border flex flex-col"
+            className="absolute right-0 top-0 bottom-0 w-72 bg-card border-l border-border flex flex-col shadow-2xl z-50"
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between p-4 border-b border-border">
@@ -151,12 +151,24 @@ export function GlobalHeader() {
               {isAdmin && (
                 <DrawerLink href="/admin" icon={Shield} label="Admin Panel" onClick={() => setDrawerOpen(false)} />
               )}
-              <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
-              <DrawerLink href="/ledgers" icon={BookOpen} label="Ledgers" onClick={() => setDrawerOpen(false)} />
-              <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />
-              <DrawerLink href="/temporders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
-              <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
-              <DrawerLink href="/check-in" icon={MapPin} label="Check-In" onClick={() => setDrawerOpen(false)} />
+              {(permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments) && (
+                <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
+              )}
+              {permissions.showLedger && (
+                <DrawerLink href="/ledgers" icon={BookOpen} label="Ledgers" onClick={() => setDrawerOpen(false)} />
+              )}
+              {permissions.showStocks && (
+                <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />
+              )}
+              {permissions.showOrders && (
+                <DrawerLink href="/temporders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
+              )}
+              {permissions.showPayments && (
+                <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
+              )}
+              {permissions.showCheckIn && (
+                <DrawerLink href="/check-in" icon={MapPin} label="Check-In" onClick={() => setDrawerOpen(false)} />
+              )}
               {permissions.showExpenses && (
                 <DrawerLink href="/expenses" icon={Wallet} label="Expenses" onClick={() => setDrawerOpen(false)} />
               )}
