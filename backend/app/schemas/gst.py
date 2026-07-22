@@ -54,6 +54,24 @@ class Gstr1HsnSummaryResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class ManualPurchaseCreate(BaseModel):
+    source: str
+    invoice_number: Optional[str] = None
+    invoice_date: date
+    product_description: str
+    taxable_value: Decimal
+    cgst_amount: Decimal
+    sgst_amount: Decimal
+    igst_amount: Decimal
+
+class ManualPurchaseResponse(ManualPurchaseCreate):
+    purchase_id: int
+    company_id: int
+    claimed_return_period_id: Optional[int] = None
+    
+    class Config:
+        from_attributes = True
+
 class Gstr3bSummaryResponse(BaseModel):
     summary_id: int
     return_period_id: int
@@ -75,6 +93,9 @@ class Gstr3bSummaryResponse(BaseModel):
     tax_paid_via_itc: Decimal
     interest_paid: Decimal
     late_fee_paid: Decimal
+    company_name: Optional[str] = None
+    company_gstin: Optional[str] = None
+    company_pan: Optional[str] = None
     
     class Config:
         from_attributes = True

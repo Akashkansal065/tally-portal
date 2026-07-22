@@ -5,9 +5,9 @@ from typing import List
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.core.permissions import get_current_user
+from app.core.permissions import get_current_user, get_user_permission_toggles
 from app.core.security import get_password_hash
-from app.models.user import User, Role, Permission, Module
+from app.models.user import User, Role, Permission, Module, UserPermissionOverride
 from app.models.voucher import AuditLog
 
 router = APIRouter(prefix="/admin", tags=["Admin Panel"])
@@ -105,25 +105,27 @@ async def get_users(
         # Load role details
         role_q = await db.execute(select(Role).where(Role.role_id == u.role_id))
         role = role_q.scalars().first()
+        r_name = role.name if role else "Unknown"
+        toggles = await get_user_permission_toggles(u.user_id, u.role_id, r_name, db)
         response.append(AdminUserResponse(
             user_id=u.user_id,
             username=u.username,
             email=u.email,
             is_active=u.is_active,
             role_id=u.role_id,
-            role_name=role.name if role else "Unknown",
-            showLedger=u.show_ledger,
-            showSalesLedgers=u.show_sales_ledgers,
-            showPurchaseLedgers=u.show_purchase_ledgers,
-            showReceipts=u.show_receipts,
-            showPayments=u.show_payments,
-            showExpenses=u.show_expenses,
-            showAttendance=u.show_attendance,
-            showStocks=u.show_stocks,
-            showReports=u.show_reports,
-            showOrders=u.show_orders,
-            showCheckIn=u.show_check_in,
-            showGst=u.show_gst,
+            role_name=r_name,
+            showLedger=toggles["showLedger"],
+            showSalesLedgers=toggles["showSalesLedgers"],
+            showPurchaseLedgers=toggles["showPurchaseLedgers"],
+            showReceipts=toggles["showReceipts"],
+            showPayments=toggles["showPayments"],
+            showExpenses=toggles["showExpenses"],
+            showAttendance=toggles["showAttendance"],
+            showStocks=toggles["showStocks"],
+            showReports=toggles["showReports"],
+            showOrders=toggles["showOrders"],
+            showCheckIn=toggles["showCheckIn"],
+            showGst=toggles["showGst"],
             ledgerScope=u.ledger_scope,
             stockScope=u.stock_scope,
             allowedStockGroups=u.allowed_stock_groups,
@@ -164,18 +166,6 @@ async def create_user(
         password_hash=password_hash,
         role_id=payload.role_id,
         is_active=True,
-        show_ledger=True if is_new_admin else False,
-        show_stocks=True if is_new_admin else False,
-        show_reports=True if is_new_admin else False,
-        show_orders=True if is_new_admin else True, # Default True for both Admin and User
-        show_check_in=True if is_new_admin else True, # Default True for both Admin and User
-        show_sales_ledgers=True if is_new_admin else False,
-        show_purchase_ledgers=True if is_new_admin else False,
-        show_receipts=True if is_new_admin else False,
-        show_payments=True if is_new_admin else True, # Default True for both Admin and User
-        show_expenses=True if is_new_admin else False,
-        show_attendance=True if is_new_admin else True, # Default True for both Admin and User
-        show_gst=True if is_new_admin else False, # Default False for non-Admin users
         ledger_scope='full' if is_new_admin else 'none',
         stock_scope='full' if is_new_admin else 'none'
     )
@@ -183,6 +173,7 @@ async def create_user(
     await db.commit()
     await db.refresh(user)
     
+    toggles = await get_user_permission_toggles(user.user_id, user.role_id, role.name, db)
     return AdminUserResponse(
         user_id=user.user_id,
         username=user.username,
@@ -190,18 +181,18 @@ async def create_user(
         is_active=user.is_active,
         role_id=user.role_id,
         role_name=role.name,
-        showLedger=user.show_ledger,
-        showSalesLedgers=user.show_sales_ledgers,
-        showPurchaseLedgers=user.show_purchase_ledgers,
-        showReceipts=user.show_receipts,
-        showPayments=user.show_payments,
-        showExpenses=user.show_expenses,
-        showAttendance=user.show_attendance,
-        showStocks=user.show_stocks,
-        showReports=user.show_reports,
-        showOrders=user.show_orders,
-        showCheckIn=user.show_check_in,
-        showGst=user.show_gst,
+        showLedger=toggles["showLedger"],
+        showSalesLedgers=toggles["showSalesLedgers"],
+        showPurchaseLedgers=toggles["showPurchaseLedgers"],
+        showReceipts=toggles["showReceipts"],
+        showPayments=toggles["showPayments"],
+        showExpenses=toggles["showExpenses"],
+        showAttendance=toggles["showAttendance"],
+        showStocks=toggles["showStocks"],
+        showReports=toggles["showReports"],
+        showOrders=toggles["showOrders"],
+        showCheckIn=toggles["showCheckIn"],
+        showGst=toggles["showGst"],
         ledgerScope=user.ledger_scope,
         stockScope=user.stock_scope,
         allowedStockGroups=user.allowed_stock_groups,
@@ -449,21 +440,69 @@ async def update_user_permissions(
             detail="User not found."
         )
         
-    user.show_sales_ledgers = payload.showSalesLedgers
-    user.show_purchase_ledgers = payload.showPurchaseLedgers
-    user.show_receipts = payload.showReceipts
-    user.show_payments = payload.showPayments
-    user.show_expenses = payload.showExpenses
-    user.show_attendance = payload.showAttendance
-    user.show_stocks = payload.showStocks
-    user.show_reports = payload.showReports
-    user.show_orders = payload.showOrders
-    user.show_check_in = payload.showCheckIn
-    user.show_gst = payload.showGst
+    mapping = {
+        "ledger_customer": payload.showSalesLedgers,
+        "ledger_supplier": payload.showPurchaseLedgers,
+        "vouchers": payload.showReceipts,
+        "payments": payload.showPayments,
+        "expenses": payload.showExpenses,
+        "attendance": payload.showAttendance,
+        "inventory": payload.showStocks,
+        "reports": payload.showReports,
+        "orders": payload.showOrders,
+        "visits": payload.showCheckIn,
+        "gst": payload.showGst
+    }
     
-    # Derived show_ledger
-    user.show_ledger = payload.showSalesLedgers or payload.showPurchaseLedgers or payload.showReceipts or payload.showPayments
-    
+    for mod_code, requested_val in mapping.items():
+        # Find module
+        mod_q = await db.execute(select(Module).where(Module.code == mod_code))
+        module = mod_q.scalars().first()
+        if not module:
+            continue
+            
+        # Get default permission for user role
+        perm_q = await db.execute(
+            select(Permission).where(
+                Permission.role_id == user.role_id,
+                Permission.module_id == module.module_id
+            )
+        )
+        perm = perm_q.scalars().first()
+        default_read = perm.can_read if perm else False
+        
+        # Upsert or Delete override
+        if requested_val != default_read:
+            ov_q = await db.execute(
+                select(UserPermissionOverride).where(
+                    UserPermissionOverride.user_id == user_id,
+                    UserPermissionOverride.module_id == module.module_id
+                )
+            )
+            override = ov_q.scalars().first()
+            if not override:
+                override = UserPermissionOverride(
+                    user_id=user_id,
+                    module_id=module.module_id,
+                    granted_by=admin.user_id,
+                    reason="Admin Panel Toggle"
+                )
+                db.add(override)
+            override.can_read = requested_val
+            override.can_create = requested_val
+            override.can_update = requested_val
+            override.can_delete = requested_val
+        else:
+            ov_q = await db.execute(
+                select(UserPermissionOverride).where(
+                    UserPermissionOverride.user_id == user_id,
+                    UserPermissionOverride.module_id == module.module_id
+                )
+            )
+            override = ov_q.scalars().first()
+            if override:
+                await db.delete(override)
+                
     await db.commit()
     return {"success": True}
 

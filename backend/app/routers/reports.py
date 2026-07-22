@@ -168,6 +168,102 @@ class DashboardSummaryResponse(BaseModel):
     outstanding_payables: float
 
 
+class DashboardDetailItem(BaseModel):
+    ledger_id: int
+    name: str
+    group_name: str
+    balance: float
+
+
+@router.get("/dashboard-details", response_model=List[DashboardDetailItem])
+async def get_dashboard_details(
+    category: str,
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    
+    if category == "sales":
+        query_str = """
+            SELECT l.ledger_id, l.name, g.name as group_name,
+                   COALESCE(sub.net_bal, 0) as balance
+            FROM tally_sync.ledgers l
+            JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+            LEFT JOIN (
+                SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
+                FROM tally_sync.voucher_entries e
+                JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                GROUP BY ledger_id
+            ) sub ON l.ledger_id = sub.ledger_id
+            WHERE g.name = 'Sales Accounts' AND l.company_id = :comp_id
+            ORDER BY balance DESC
+        """
+    elif category == "receipts":
+        query_str = """
+            SELECT l.ledger_id, l.name, g.name as group_name,
+                   COALESCE(sub.net_bal, 0) as balance
+            FROM tally_sync.ledgers l
+            JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+            LEFT JOIN (
+                SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
+                FROM tally_sync.voucher_entries e
+                JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                GROUP BY ledger_id
+            ) sub ON l.ledger_id = sub.ledger_id
+            WHERE g.name IN ('Cash-in-hand', 'Bank Accounts') AND l.company_id = :comp_id
+            ORDER BY balance DESC
+        """
+    elif category == "receivables":
+        query_str = """
+            SELECT l.ledger_id, l.name, g.name as group_name,
+                   COALESCE(sub.net_bal, 0) as balance
+            FROM tally_sync.ledgers l
+            JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+            LEFT JOIN (
+                SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
+                FROM tally_sync.voucher_entries e
+                JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                GROUP BY ledger_id
+            ) sub ON l.ledger_id = sub.ledger_id
+            WHERE g.name = 'Sundry Debtors' AND l.company_id = :comp_id
+            ORDER BY balance DESC
+        """
+    elif category == "payables":
+        query_str = """
+            SELECT l.ledger_id, l.name, g.name as group_name,
+                   COALESCE(sub.net_bal, 0) as balance
+            FROM tally_sync.ledgers l
+            JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+            LEFT JOIN (
+                SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
+                FROM tally_sync.voucher_entries e
+                JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                GROUP BY ledger_id
+            ) sub ON l.ledger_id = sub.ledger_id
+            WHERE g.name = 'Sundry Creditors' AND l.company_id = :comp_id
+            ORDER BY balance DESC
+        """
+    else:
+        raise HTTPException(status_code=400, detail="Invalid category requested.")
+
+    res = await db.execute(text(query_str), {"comp_id": user.company_id})
+    rows = res.all()
+    
+    return [
+        {
+            "ledger_id": row.ledger_id,
+            "name": row.name,
+            "group_name": row.group_name,
+            "balance": float(row.balance or 0.0)
+        }
+        for row in rows
+    ]
+
+
 @router.get("/dashboard-summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
     user: User = Depends(require_permission("reports", "read")),
@@ -183,10 +279,7 @@ async def get_dashboard_summary(
     
     # Total Sales (from Sales Accounts, Net Credit Balance)
     sales_query = await db.execute(text("""
-        SELECT SUM(
-            CASE WHEN l.opening_balance_type = 'Cr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
-            + COALESCE(sub.net_bal, 0)
-        ) as final_bal
+        SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN (
@@ -202,10 +295,7 @@ async def get_dashboard_summary(
 
     # Total Receipts (Cash/Bank Accounts, Net Debit Balance)
     receipts_query = await db.execute(text("""
-        SELECT SUM(
-            CASE WHEN l.opening_balance_type = 'Dr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
-            + COALESCE(sub.net_bal, 0)
-        ) as final_bal
+        SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN (
@@ -221,10 +311,7 @@ async def get_dashboard_summary(
     
     # Receivables: Sum of (Dr Balances) for Sundry Debtors
     receivables_query = await db.execute(text("""
-        SELECT SUM(
-            CASE WHEN l.opening_balance_type = 'Dr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
-            + COALESCE(sub.net_bal, 0)
-        ) as final_bal
+        SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN (
@@ -240,10 +327,7 @@ async def get_dashboard_summary(
     
     # Payables: Sum of (Cr Balances) for Sundry Creditors
     payables_query = await db.execute(text("""
-        SELECT SUM(
-            CASE WHEN l.opening_balance_type = 'Cr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END
-            + COALESCE(sub.net_bal, 0)
-        ) as final_bal
+        SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN (

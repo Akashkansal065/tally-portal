@@ -176,3 +176,23 @@ class Gstr9AnnualReturn(Base):
     
     company = relationship("Company")
     user = relationship("User")
+
+class ManualPurchase(Base):
+    """User-entered manual purchases (Amazon, Flipkart, Offline, etc) for ITC calculation"""
+    __tablename__ = "manual_purchases"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    
+    purchase_id = Column(BigInteger, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    source = Column(String(100), nullable=False)
+    invoice_number = Column(String(50), nullable=True)
+    invoice_date = Column(Date, nullable=False)
+    product_description = Column(String(200), nullable=False)
+    taxable_value = Column(Numeric(18, 2), nullable=False, default=0.00)
+    cgst_amount = Column(Numeric(18, 2), nullable=False, default=0.00)
+    sgst_amount = Column(Numeric(18, 2), nullable=False, default=0.00)
+    igst_amount = Column(Numeric(18, 2), nullable=False, default=0.00)
+    claimed_return_period_id = Column(BigInteger, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.gst_return_periods.return_period_id", ondelete="SET NULL"), nullable=True)
+    
+    company = relationship("Company")
+    claimed_period = relationship("GstReturnPeriod")

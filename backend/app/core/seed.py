@@ -38,20 +38,32 @@ def seed_global_data(db: Session):
             ('payroll',   'Payroll Management',    'Employees, salary components, structures, payslips', 1),
             ('visits',    'Shop Check-In',         'GPS check-in records for sales visits', 1),
             ('expenses',  'Expenses',              'Expense claim submission and approval', 1),
-            ('attendance', 'Attendance',            'Daily check-in and check-out logs', 1)
+            ('attendance', 'Attendance',            'Daily check-in and check-out logs', 1),
+            ('gst',       'GST Return Filing',     'File and view GST return periods', 1)
         """))
         db.commit()
         print("Modules seeded successfully.")
+    else:
+        # Ensure 'gst' module exists on update
+        gst_exists = db.execute(text("SELECT COUNT(*) FROM modules WHERE code = 'gst'")).scalar()
+        if gst_exists == 0:
+            print("Adding missing 'gst' module...")
+            db.execute(text("""
+                INSERT INTO modules (code, name, description, is_system)
+                VALUES ('gst', 'GST Return Filing', 'File and view GST return periods', 1)
+            """))
+            db.commit()
 
     # 3. Seed Default Permissions Matrix
     permissions_exist = db.execute(text("SELECT COUNT(*) FROM permissions")).scalar()
+    
+    # Get roles mapping name -> id
+    roles = {r[1]: r[0] for r in db.execute(text("SELECT role_id, name FROM roles")).all()}
+    # Get modules mapping code -> id
+    modules = {m[1]: m[0] for m in db.execute(text("SELECT module_id, code FROM modules")).all()}
+
     if permissions_exist == 0:
         print("Seeding permissions matrix...")
-        
-        # Get roles mapping name -> id
-        roles = {r[1]: r[0] for r in db.execute(text("SELECT role_id, name FROM roles")).all()}
-        # Get modules mapping code -> id
-        modules = {m[1]: m[0] for m in db.execute(text("SELECT module_id, code FROM modules")).all()}
         
         # Admin gets full CRUD on all modules
         for mod_code, mod_id in modules.items():
@@ -76,6 +88,22 @@ def seed_global_data(db: Session):
                 
         db.commit()
         print("Permissions matrix seeded successfully.")
+    else:
+        # Ensure Admin role has permission for 'gst' if it was just added
+        if 'Admin' in roles and 'gst' in modules:
+            admin_role_id = roles['Admin']
+            gst_mod_id = modules['gst']
+            gst_perm_exists = db.execute(text(f"""
+                SELECT COUNT(*) FROM permissions 
+                WHERE role_id = {admin_role_id} AND module_id = {gst_mod_id}
+            """)).scalar()
+            if gst_perm_exists == 0:
+                print("Seeding Admin permission for new 'gst' module...")
+                db.execute(text(f"""
+                    INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
+                    VALUES ({admin_role_id}, {gst_mod_id}, 1, 1, 1, 1)
+                """))
+                db.commit()
 
 def seed_company_defaults(db: Session, company_id: int):
     """

@@ -41,19 +41,7 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     
-    # Permission & Scopes Columns mapping tally-web schema
-    show_ledger = Column(Boolean, default=True)
-    show_stocks = Column(Boolean, default=True)
-    show_reports = Column(Boolean, default=False)
-    show_orders = Column(Boolean, default=False)
-    show_check_in = Column(Boolean, default=True)
-    show_sales_ledgers = Column(Boolean, default=True)
-    show_purchase_ledgers = Column(Boolean, default=False)
-    show_receipts = Column(Boolean, default=True)
-    show_payments = Column(Boolean, default=True)
-    show_expenses = Column(Boolean, default=False)
-    show_attendance = Column(Boolean, default=True)
-    show_gst = Column(Boolean, default=False)
+
     ledger_scope = Column(String(64), default='dr_only')
     stock_scope = Column(String(64), default='full')
     allowed_stock_groups = Column(String(1024), nullable=True)

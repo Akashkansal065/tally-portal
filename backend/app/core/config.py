@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     SMTP_USER: Optional[str] = None
     SMTP_PASS: Optional[str] = None
     
+    # Tally Synchronization Settings
+    TALLY_URL: Optional[str] = None
+    
     @property
     def PORTAL_DATABASE_NAME(self) -> str:
         db_name = self.DATABASE_URL.rsplit('/', 1)[-1]

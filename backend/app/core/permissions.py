@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.security import decode_access_token
 from app.models.user import User, UserSession, UserPermissionOverride, Permission, Module
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login")
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme), 
@@ -65,9 +65,10 @@ async def get_effective_permission(
 ) -> dict:
     """
     Resolves the effective permission for a user on a given module.
-    Resolves using User permission columns directly, mapping them from tally-web permissions schema.
+    Queries the database roles, permissions, and user_permission_overrides tables.
     """
     from sqlalchemy.orm import selectinload
+    from sqlalchemy import func
     
     effective = {
         "can_create": False,
@@ -86,11 +87,7 @@ async def get_effective_permission(
         return effective
 
     # Admin role gets full access to everything
-    is_admin = False
     if user.role and user.role.name.lower() == "admin":
-        is_admin = True
-        
-    if is_admin:
         return {
             "can_create": True,
             "can_read": True,
@@ -98,59 +95,120 @@ async def get_effective_permission(
             "can_delete": True
         }
 
-    m_code = module_code.lower()
-    
-    # 1. Ledgers / Customers / Suppliers
-    if "ledger" in m_code:
-        # showLedger is derived from show_sales_ledgers or show_purchase_ledgers or show_receipts or show_payments
-        has_access = user.show_sales_ledgers or user.show_purchase_ledgers or user.show_receipts or user.show_payments
-        effective["can_read"] = has_access
-        effective["can_create"] = has_access
-        effective["can_update"] = has_access
-        effective["can_delete"] = has_access
-        
-    # 2. Inventory / Stocks
-    elif "inventory" in m_code or "stock" in m_code:
-        effective["can_read"] = user.show_stocks
-        effective["can_create"] = user.show_stocks
-        effective["can_update"] = user.show_stocks
-        effective["can_delete"] = user.show_stocks
-        
-    # 3. Reports
-    elif "report" in m_code:
-        effective["can_read"] = user.show_reports
-        effective["can_create"] = user.show_reports
-        effective["can_update"] = user.show_reports
-        effective["can_delete"] = user.show_reports
-        
-    # 4. Orders
-    elif "order" in m_code:
-        effective["can_read"] = user.show_orders
-        effective["can_create"] = user.show_orders
-        effective["can_update"] = user.show_orders
-        effective["can_delete"] = user.show_orders
-        
-    # 5. Check-In / Shop Visits
-    elif "visit" in m_code or "check" in m_code:
-        effective["can_read"] = user.show_check_in
-        effective["can_create"] = user.show_check_in
-        effective["can_update"] = user.show_check_in
-        effective["can_delete"] = user.show_check_in
-        
-    # 6. Payments / Receipts / Expenses
-    elif "payment" in m_code:
-        # User has payments or receipts enabled
-        has_access = user.show_payments or user.show_receipts or user.show_expenses
-        effective["can_read"] = has_access
-        effective["can_create"] = has_access
-        effective["can_update"] = has_access
-        effective["can_delete"] = has_access
-        
-    else:
-        # Fail-safe read
-        effective["can_read"] = True
-        
+    # Find the module by code
+    module_query = await db.execute(select(Module).where(func.lower(Module.code) == module_code.lower()))
+    module = module_query.scalars().first()
+    if not module:
+        # Fallback if module is not found
+        return effective
+
+    # Get role permission for this module
+    perm_query = await db.execute(
+        select(Permission).where(
+            Permission.role_id == user.role_id,
+            Permission.module_id == module.module_id
+        )
+    )
+    perm = perm_query.scalars().first()
+    if perm:
+        effective["can_create"] = perm.can_create
+        effective["can_read"] = perm.can_read
+        effective["can_update"] = perm.can_update
+        effective["can_delete"] = perm.can_delete
+
+    # Check for user-specific overrides
+    override_query = await db.execute(
+        select(UserPermissionOverride).where(
+            UserPermissionOverride.user_id == user_id,
+            UserPermissionOverride.module_id == module.module_id
+        )
+    )
+    override = override_query.scalars().first()
+    if override:
+        if override.can_create is not None:
+            effective["can_create"] = override.can_create
+        if override.can_read is not None:
+            effective["can_read"] = override.can_read
+        if override.can_update is not None:
+            effective["can_update"] = override.can_update
+        if override.can_delete is not None:
+            effective["can_delete"] = override.can_delete
+
     return effective
+
+async def get_user_permission_toggles(
+    user_id: int,
+    role_id: int,
+    role_name: str,
+    db: AsyncSession
+) -> dict:
+    """
+    Returns the UI visibility toggles dynamically resolved for a given user.
+    """
+    toggles = {
+        "showLedger": False,
+        "showSalesLedgers": False,
+        "showPurchaseLedgers": False,
+        "showReceipts": False,
+        "showPayments": False,
+        "showExpenses": False,
+        "showAttendance": False,
+        "showStocks": False,
+        "showReports": False,
+        "showOrders": False,
+        "showCheckIn": False,
+        "showGst": False
+    }
+
+        
+    # Mapping of module codes to toggles
+    mapping = {
+        "ledger_customer": "showSalesLedgers",
+        "ledger_supplier": "showPurchaseLedgers",
+        "vouchers": "showReceipts",
+        "payments": "showPayments",
+        "expenses": "showExpenses",
+        "attendance": "showAttendance",
+        "inventory": "showStocks",
+        "reports": "showReports",
+        "orders": "showOrders",
+        "visits": "showCheckIn",
+        "gst": "showGst"
+    }
+    
+    # 1. Fetch role permissions joined with Module
+    perm_q = await db.execute(
+        select(Permission, Module.code)
+        .join(Module, Permission.module_id == Module.module_id)
+        .where(Permission.role_id == role_id)
+    )
+    for perm, mod_code in perm_q.all():
+        m_code = mod_code.lower()
+        if m_code in mapping:
+            toggle_key = mapping[m_code]
+            toggles[toggle_key] = perm.can_read
+
+    # 2. Fetch user overrides joined with Module
+    override_q = await db.execute(
+        select(UserPermissionOverride, Module.code)
+        .join(Module, UserPermissionOverride.module_id == Module.module_id)
+        .where(UserPermissionOverride.user_id == user_id)
+    )
+    for override, mod_code in override_q.all():
+        m_code = mod_code.lower()
+        if m_code in mapping:
+            toggle_key = mapping[m_code]
+            if override.can_read is not None:
+                toggles[toggle_key] = override.can_read
+                
+    # 3. Derive showLedger
+    toggles["showLedger"] = (
+        toggles["showSalesLedgers"] or 
+        toggles["showPurchaseLedgers"] or 
+        toggles["showReceipts"] or 
+        toggles["showPayments"]
+    )
+    return toggles
 
 def require_permission(module_code: str, action: str):
     """

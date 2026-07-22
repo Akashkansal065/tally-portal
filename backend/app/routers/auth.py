@@ -7,7 +7,7 @@ import hashlib
 
 from app.core.database import get_db
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_access_token
-from app.core.permissions import get_current_user, oauth2_scheme
+from app.core.permissions import get_current_user, oauth2_scheme, get_user_permission_toggles
 from app.core.seed import seed_company_defaults
 from app.models.company import Company
 from app.models.user import User, Role, UserSession
@@ -141,17 +141,6 @@ async def register_company(
         password_hash=password_hash,
         role_id=admin_role.role_id,
         is_active=True,
-        show_ledger=True,
-        show_stocks=True,
-        show_reports=True,
-        show_orders=True,
-        show_check_in=True,
-        show_sales_ledgers=True,
-        show_purchase_ledgers=True,
-        show_receipts=True,
-        show_payments=True,
-        show_expenses=True,
-        show_attendance=True,
         ledger_scope='full',
         stock_scope='full'
     )
@@ -180,6 +169,41 @@ async def login(
     user_query = await db.execute(select(User).where(User.email == req.email, User.is_active == True))
     user = user_query.scalars().first()
     if not user or not verify_password(req.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incorrect email or password"
+        )
+        
+    # Generate Token
+    access_token = create_access_token(subject=user.user_id)
+    token_hash = hashlib.sha256(access_token.encode()).hexdigest()
+    
+    # Save session
+    session = UserSession(
+        user_id=user.user_id,
+        token_hash=token_hash,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=1440)
+    )
+    db.add(session)
+    
+    # Update last login
+    user.last_login = datetime.now(timezone.utc)
+    await db.commit()
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+
+@router.post("/swagger-login", response_model=Token)
+async def swagger_login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db)
+):
+    user_query = await db.execute(select(User).where(User.email == form_data.username, User.is_active == True))
+    user = user_query.scalars().first()
+    if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect email or password"
@@ -262,24 +286,26 @@ async def get_me(
 ):
     # Eagerly load role
     await db.refresh(user, ["role"])
+    r_name = user.role.name if user.role else "User"
+    toggles = await get_user_permission_toggles(user.user_id, user.role_id, r_name, db)
     return {
         "user_id": user.user_id,
         "company_id": user.company_id,
         "username": user.username,
         "email": user.email,
-        "role": user.role.name if user.role else "sales",
+        "role": r_name,
         "is_active": user.is_active,
-        "showLedger": user.show_ledger,
-        "showSalesLedgers": user.show_sales_ledgers,
-        "showPurchaseLedgers": user.show_purchase_ledgers,
-        "showReceipts": user.show_receipts,
-        "showPayments": user.show_payments,
-        "showExpenses": user.show_expenses,
-        "showStocks": user.show_stocks,
-        "showReports": user.show_reports,
-        "showOrders": user.show_orders,
-        "showCheckIn": user.show_check_in,
-        "showGst": user.show_gst,
+        "showLedger": toggles["showLedger"],
+        "showSalesLedgers": toggles["showSalesLedgers"],
+        "showPurchaseLedgers": toggles["showPurchaseLedgers"],
+        "showReceipts": toggles["showReceipts"],
+        "showPayments": toggles["showPayments"],
+        "showExpenses": toggles["showExpenses"],
+        "showStocks": toggles["showStocks"],
+        "showReports": toggles["showReports"],
+        "showOrders": toggles["showOrders"],
+        "showCheckIn": toggles["showCheckIn"],
+        "showGst": toggles["showGst"],
         "ledgerScope": user.ledger_scope,
         "stockScope": user.stock_scope,
         "allowedStockGroups": user.allowed_stock_groups,

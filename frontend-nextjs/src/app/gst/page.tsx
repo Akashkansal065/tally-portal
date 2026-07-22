@@ -8,7 +8,8 @@ import { API_BASE, authHeaders, formatCurrency, cn } from '@/lib/utils'
 import {
   FileSpreadsheet, Plus, RefreshCw, CheckCircle2, Download, Calendar,
   ChevronDown, Loader2, ArrowUpDown, Receipt, ShieldCheck, FileText,
-  AlertTriangle, Eye, Lock, ArrowRight, Activity, HelpCircle, Check, Info, Shield
+  AlertTriangle, Eye, Lock, ArrowRight, Activity, HelpCircle, Check, Info, Shield,
+  Trash2, Settings, X, Upload
 } from 'lucide-react'
 
 const MONTHS = [
@@ -66,6 +67,9 @@ type Gstr3bSummary = {
   tax_paid_via_itc: number
   interest_paid: number
   late_fee_paid: number
+  company_name?: string | null
+  company_gstin?: string | null
+  company_pan?: string | null
 }
 
 type ItcEntry = {
@@ -126,6 +130,19 @@ type Gstr9AnnualReturn = {
   filed_by?: number
 }
 
+type ManualPurchase = {
+  purchase_id: number
+  company_id: number
+  source: string
+  invoice_number: string | null
+  invoice_date: string
+  product_description: string
+  taxable_value: number
+  cgst_amount: number
+  sgst_amount: number
+  igst_amount: number
+  claimed_return_period_id: number | null
+}
 type GstEinvoice = {
   voucher_id: number
   voucher_number: string
@@ -138,7 +155,7 @@ type GstEinvoice = {
   eway_bill_no: string | null
 }
 
-type TabId = 'periods' | 'gstr1' | 'gstr3b' | 'itc' | 'gstr2b' | 'gstr9' | 'einvoices'
+type TabId = 'periods' | 'gstr1' | 'gstr3b' | 'itc' | 'manualPurchases' | 'gstr2b' | 'gstr9' | 'einvoices'
 
 export default function GstPage() {
   const { user, token, permissions } = useAuth()
@@ -153,6 +170,13 @@ export default function GstPage() {
   const [gstr9Returns, setGstr9Returns] = useState<Gstr9AnnualReturn[]>([])
   const [einvoices, setEinvoices] = useState<GstEinvoice[]>([])
   const [currentEinvEnv, setCurrentEinvEnv] = useState('mock')
+  
+  const [manualPurchases, setManualPurchases] = useState<ManualPurchase[]>([])
+  const [showManualPurchaseModal, setShowManualPurchaseModal] = useState(false)
+  const [manualPurchaseForm, setManualPurchaseForm] = useState({
+    source: '', invoice_number: '', invoice_date: new Date().toISOString().split('T')[0],
+    product_description: '', taxable_value: 0, cgst_amount: 0, sgst_amount: 0, igst_amount: 0
+  })
 
   const [loading, setLoading] = useState(false)
   const [selectedPeriodId, setSelectedPeriodId] = useState<number | null>(null)
@@ -171,6 +195,48 @@ export default function GstPage() {
   const [showFileGstr9Modal, setShowFileGstr9Modal] = useState(false)
   const [fileGstr9Id, setFileGstr9Id] = useState<number | null>(null)
   const [fileGstr9Arn, setFileGstr9Arn] = useState('')
+
+  // E-Invoicing Settings State
+  const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [settingsEnv, setSettingsEnv] = useState('mock')
+  const [settingsUsername, setSettingsUsername] = useState('')
+  const [settingsPassword, setSettingsPassword] = useState('')
+  const [settingsClientId, setSettingsClientId] = useState('')
+  const [settingsClientSecret, setSettingsClientSecret] = useState('')
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const tabParam = params.get('tab') as TabId
+      if (tabParam && ['periods', 'gstr1', 'gstr3b', 'itc', 'gstr2b', 'gstr9', 'einvoices'].includes(tabParam)) {
+        setActiveTab(tabParam)
+      }
+    }
+  }, [])
+
+  const handleTabChange = (tabId: TabId) => {
+    setActiveTab(tabId)
+    
+    // Clear selected period if it doesn't match the new tab's allowed return types
+    if (selectedPeriodId) {
+      const currentPeriod = periods.find(p => p.return_period_id === selectedPeriodId)
+      if (currentPeriod) {
+        if (tabId === 'gstr1' && currentPeriod.return_type !== 'GSTR1') {
+          setSelectedPeriodId(null)
+          setGstr1Lines([])
+        } else if (tabId === 'gstr3b' && currentPeriod.return_type !== 'GSTR3B') {
+          setSelectedPeriodId(null)
+          setGstr3b(null)
+        }
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href)
+      url.searchParams.set('tab', tabId)
+      window.history.replaceState({}, '', url.toString())
+    }
+  }
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
@@ -205,6 +271,16 @@ export default function GstPage() {
     try {
       const res = await fetch(`${API_BASE}/gst/periods/${periodId}/gstr3b`, { headers: authHeaders(token) })
       if (res.ok) setGstr3b(await res.json())
+    } catch (e) { console.error(e) }
+    finally { setLoading(false) }
+  }, [token])
+
+  const fetchManualPurchases = useCallback(async (periodId: number) => {
+    if (!token) return
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/gst/periods/${periodId}/manual-purchases`, { headers: authHeaders(token) })
+      if (res.ok) setManualPurchases(await res.json())
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
   }, [token])
@@ -266,8 +342,9 @@ export default function GstPage() {
     if (selectedPeriodId) {
       if (activeTab === 'gstr1') fetchGstr1Lines(selectedPeriodId)
       if (activeTab === 'gstr3b') fetchGstr3b(selectedPeriodId)
+      if (activeTab === 'manualPurchases') fetchManualPurchases(selectedPeriodId)
     }
-  }, [selectedPeriodId, activeTab, fetchGstr1Lines, fetchGstr3b])
+  }, [selectedPeriodId, activeTab, fetchGstr1Lines, fetchGstr3b, fetchManualPurchases])
 
   // --- Actions ---
   const handleCreatePeriod = async () => {
@@ -287,6 +364,132 @@ export default function GstPage() {
       fetchPeriods()
     } catch (e: any) { alert(e.message) }
     finally { setActionLoading(null) }
+  }
+
+  const handleDeletePeriod = async (periodId: number) => {
+    if (!window.confirm("Are you sure you want to delete this GST Return Period? This will delete all generated snapshot line items, GSTR-1, and GSTR-3B summaries for this period.")) {
+      return
+    }
+    
+    setActionLoading(`del-${periodId}`)
+    try {
+      const res = await fetch(`${API_BASE}/gst/periods/${periodId}`, {
+        method: "DELETE",
+        headers: authHeaders(token)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || "Failed to delete return period.")
+      }
+      
+      // Remove from local state
+      setPeriods(prev => prev.filter(p => p.return_period_id !== periodId))
+      
+      // If the currently viewed details period is deleted, clear it
+      if (selectedPeriodId === periodId) {
+        setSelectedPeriodId(null)
+      }
+    } catch (err: any) {
+      alert(err.message || "Failed to delete period.")
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleAddManualPurchase = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedPeriodId || !token) return
+    setActionLoading('add-manual-purchase')
+    try {
+      const res = await fetch(`${API_BASE}/gst/periods/${selectedPeriodId}/manual-purchases`, {
+        method: 'POST',
+        headers: authHeaders(token),
+        body: JSON.stringify(manualPurchaseForm)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to add manual purchase')
+      }
+      setShowManualPurchaseModal(false)
+      setManualPurchaseForm({
+        source: '', invoice_number: '', invoice_date: new Date().toISOString().split('T')[0],
+        product_description: '', taxable_value: 0, cgst_amount: 0, sgst_amount: 0, igst_amount: 0
+      })
+      fetchManualPurchases(selectedPeriodId)
+    } catch (e: any) { alert(e.message) }
+    finally { setActionLoading(null) }
+  }
+
+  const handleDeleteManualPurchase = async (purchaseId: number) => {
+    if (!window.confirm("Are you sure you want to delete this manual purchase?")) return
+    setActionLoading(`del-mp-${purchaseId}`)
+    try {
+      const res = await fetch(`${API_BASE}/gst/manual-purchases/${purchaseId}`, {
+        method: 'DELETE',
+        headers: authHeaders(token)
+      })
+      if (!res.ok) throw new Error('Failed to delete manual purchase')
+      fetchManualPurchases(selectedPeriodId!)
+    } catch (e: any) { alert(e.message) }
+    finally { setActionLoading(null) }
+  }
+
+  const handleOpenSettings = async () => {
+    if (!token) return
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/gst/einvoice/settings`, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setSettingsEnv(data.einvoice_env)
+        setSettingsUsername(data.einvoice_username || '')
+        setSettingsPassword('') // Do not expose password
+        setSettingsClientId(data.einvoice_gsp_client_id || '')
+        setSettingsClientSecret('') // Do not expose client secret
+        setShowSettingsModal(true)
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!token) return
+    setActionLoading('save-settings')
+    try {
+      const payload: any = {
+        einvoice_env: settingsEnv,
+        einvoice_username: settingsUsername || null,
+        einvoice_gsp_client_id: settingsClientId || null
+      }
+      if (settingsPassword) payload.einvoice_password = settingsPassword
+      if (settingsClientSecret) payload.einvoice_gsp_client_secret = settingsClientSecret
+
+      const res = await fetch(`${API_BASE}/gst/einvoice/settings`, {
+        method: 'PUT',
+        headers: {
+          ...authHeaders(token),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to save e-invoicing settings')
+      }
+
+      alert('E-Invoicing settings updated successfully!')
+      setShowSettingsModal(false)
+      setCurrentEinvEnv(settingsEnv)
+    } catch (err: any) {
+      alert(err.message || 'Failed to save settings')
+    } finally {
+      setActionLoading(null)
+    }
   }
 
   const handleGenerate = async (periodId: number) => {
@@ -366,6 +569,38 @@ export default function GstPage() {
     finally { setActionLoading(null) }
   }
 
+  const handleGstr2bUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !token) return
+    
+    setActionLoading('upload-gstr2b')
+    const formData = new FormData()
+    formData.append('file', file)
+    
+    try {
+      const res = await fetch(`${API_BASE}/gst/gstr2b/upload`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      })
+      if (res.ok) {
+        const result = await res.json()
+        alert(result.detail || 'GSTR-2B file uploaded and parsed successfully!')
+        fetchGstr2b()
+      } else {
+        const err = await res.json()
+        alert(err.detail || 'Failed to upload GSTR-2B file')
+      }
+    } catch (err: any) {
+      alert(err.message || 'An error occurred during file upload.')
+    } finally {
+      setActionLoading(null)
+      e.target.value = ''
+    }
+  }
+
   const handleCreateGstr9 = async () => {
     setActionLoading('create-gstr9')
     try {
@@ -429,12 +664,13 @@ export default function GstPage() {
     { id: 'gstr1', label: 'GSTR-1', icon: FileText },
     { id: 'gstr3b', label: 'GSTR-3B', icon: ShieldCheck },
     { id: 'itc', label: 'ITC Register', icon: Receipt },
+    { id: 'manualPurchases', label: 'Manual Purchases', icon: Receipt },
     { id: 'gstr2b', label: 'GSTR-2B (Reconcile)', icon: Activity },
     { id: 'gstr9', label: 'GSTR-9 (Annual)', icon: FileSpreadsheet },
     { id: 'einvoices', label: 'E-Invoices', icon: Shield },
   ]
 
-  const fmt = (n: number) => formatCurrency(n)
+  const fmt = (n: number) => Number(n).toFixed(2)
 
   if (!user) return null
 
@@ -458,7 +694,7 @@ export default function GstPage() {
         {tabs.map(tab => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => handleTabChange(tab.id)}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap
               ${activeTab === tab.id
                 ? 'bg-background shadow-sm text-foreground'
@@ -470,8 +706,8 @@ export default function GstPage() {
         ))}
       </div>
 
-      {/* Period Selector (for GSTR-1 and GSTR-3B tabs) */}
-      {(activeTab === 'gstr1' || activeTab === 'gstr3b') && (
+      {/* Period Selector (for tabs that depend on period) */}
+      {(activeTab === 'gstr1' || activeTab === 'gstr3b' || activeTab === 'manualPurchases') && (
         <div className="flex items-center gap-3">
           <label className="text-xs font-semibold text-muted-foreground">Select Period:</label>
           <div className="relative flex-1 max-w-xs">
@@ -573,7 +809,7 @@ export default function GstPage() {
                     <button
                       onClick={() => {
                         setSelectedPeriodId(p.return_period_id)
-                        setActiveTab(p.return_type === 'GSTR1' ? 'gstr1' : 'gstr3b')
+                        handleTabChange(p.return_type === 'GSTR1' ? 'gstr1' : 'gstr3b')
                       }}
                       className="flex items-center gap-1 px-3 py-1.5 bg-muted hover:bg-muted/80 text-foreground text-[11px] font-bold rounded-lg transition-colors"
                     >
@@ -597,6 +833,18 @@ export default function GstPage() {
                         className="flex items-center gap-1 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-[11px] font-bold rounded-lg transition-colors shadow-sm"
                       >
                         <CheckCircle2 className="h-3 w-3" /> Mark as Filed
+                      </button>
+                    )}
+                    {p.status === 'Draft' && (
+                      <button
+                        onClick={() => handleDeletePeriod(p.return_period_id)}
+                        disabled={actionLoading === `del-${p.return_period_id}`}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-destructive/10 hover:bg-destructive/20 text-destructive text-[11px] font-bold rounded-lg transition-colors ml-auto disabled:opacity-50"
+                      >
+                        {actionLoading === `del-${p.return_period_id}`
+                          ? <Loader2 className="h-3 w-3 animate-spin" />
+                          : <Trash2 className="h-3 w-3" />}
+                        Delete
                       </button>
                     )}
                   </div>
@@ -683,69 +931,532 @@ export default function GstPage() {
 
       {/* ========== TAB: GSTR-3B ========== */}
       {activeTab === 'gstr3b' && !loading && (
-        <div className="space-y-4">
+        <div className="space-y-6">
           {!selectedPeriodId ? (
-            <div className="text-center py-16 text-muted-foreground">
+            <div className="text-center py-16 text-muted-foreground bg-card border border-border rounded-xl">
               <ShieldCheck className="h-12 w-12 mx-auto mb-3 opacity-30" />
               <p className="text-sm font-medium">Select a GSTR-3B period above to view summary</p>
             </div>
           ) : !gstr3b ? (
-            <div className="text-center py-16 text-muted-foreground">
+            <div className="text-center py-16 text-muted-foreground bg-card border border-border rounded-xl">
               <AlertTriangle className="h-12 w-12 mx-auto mb-3 opacity-30" />
               <p className="text-sm font-medium">GSTR-3B summary not generated yet</p>
               <p className="text-xs mt-1">Go to Return Periods tab and click &quot;Generate Snapshot&quot;</p>
             </div>
           ) : (
-            <>
-              <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">
-                GSTR-3B Summary — {selectedPeriod ? `${MONTHS[selectedPeriod.period_month - 1]} ${selectedPeriod.period_year}` : ''}
-              </h2>
-
-              {/* Section 3.1 */}
-              <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <div className="bg-blue-500/10 px-4 py-2.5">
-                  <h3 className="text-xs font-bold text-blue-700 uppercase tracking-wider">3.1 — Details of Outward Supplies</h3>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 p-4">
-                  <SummaryCard label="Taxable Value" value={gstr3b.outward_taxable_value} />
-                  <SummaryCard label="CGST" value={gstr3b.outward_cgst} />
-                  <SummaryCard label="SGST" value={gstr3b.outward_sgst} />
-                  <SummaryCard label="IGST" value={gstr3b.outward_igst} />
-                  <SummaryCard label="Cess" value={gstr3b.outward_cess} />
-                </div>
-              </div>
-
-              {/* Section 4 */}
-              <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <div className="bg-emerald-500/10 px-4 py-2.5">
-                  <h3 className="text-xs font-bold text-emerald-700 uppercase tracking-wider">4 — Eligible ITC</h3>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 p-4">
-                  <SummaryCard label="IGST Available" value={gstr3b.itc_igst_available} color="emerald" />
-                  <SummaryCard label="CGST Available" value={gstr3b.itc_cgst_available} color="emerald" />
-                  <SummaryCard label="SGST Available" value={gstr3b.itc_sgst_available} color="emerald" />
-                  <SummaryCard label="Cess Available" value={gstr3b.itc_cess_available} color="emerald" />
-                  <SummaryCard label="ITC Reversed" value={gstr3b.itc_reversed} color="rose" />
+            <div className="bg-white text-black p-6 border border-gray-300 shadow-md font-sans text-xs space-y-6 rounded-lg max-w-5xl mx-auto">
+              
+              {/* Document Header */}
+              <div className="text-center space-y-1 relative">
+                <h1 className="text-lg font-extrabold tracking-tight text-gray-900">Form GSTR-3B</h1>
+                <p className="text-[10px] font-semibold text-gray-500 italic">[See rule 61(5)]</p>
+                
+                {/* Year/Period Box */}
+                <div className="absolute right-0 top-0 border border-gray-400 text-left text-[11px]">
+                  <div className="flex border-b border-gray-400">
+                    <span className="bg-gray-100 px-3 py-1 font-bold border-r border-gray-400 w-20">Year</span>
+                    <span className="px-3 py-1 w-28">{selectedPeriod ? `${selectedPeriod.period_year}-${String(selectedPeriod.period_year + 1).slice(-2)}` : ''}</span>
+                  </div>
+                  <div className="flex">
+                    <span className="bg-gray-100 px-3 py-1 font-bold border-r border-gray-400 w-20">Period</span>
+                    <span className="px-3 py-1 w-28">{selectedPeriod ? MONTHS[selectedPeriod.period_month - 1] : ''}</span>
+                  </div>
                 </div>
               </div>
 
-              {/* Section 6 */}
-              <div className="bg-card border border-border rounded-xl overflow-hidden">
-                <div className="bg-amber-500/10 px-4 py-2.5">
-                  <h3 className="text-xs font-bold text-amber-700 uppercase tracking-wider">6 — Payment of Tax</h3>
+              {/* Taxpayer Details */}
+              <div className="mt-8 border border-gray-400 divide-y divide-gray-400 text-[11px]">
+                <div className="flex">
+                  <div className="w-1/3 bg-gray-100 p-2 font-bold border-r border-gray-400">GSTIN of the supplier</div>
+                  <div className="w-2/3 p-2 font-mono font-bold uppercase">{gstr3b.company_gstin || '09GAHPK5367P1ZR'}</div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 p-4">
-                  <SummaryCard label="Net IGST Payable" value={gstr3b.net_igst_payable} color="amber" />
-                  <SummaryCard label="Net CGST Payable" value={gstr3b.net_cgst_payable} color="amber" />
-                  <SummaryCard label="Net SGST Payable" value={gstr3b.net_sgst_payable} color="amber" />
-                  <SummaryCard label="Net Cess Payable" value={gstr3b.net_cess_payable} color="amber" />
-                  <SummaryCard label="Paid via Cash" value={gstr3b.tax_paid_via_cash} />
-                  <SummaryCard label="Paid via ITC" value={gstr3b.tax_paid_via_itc} />
-                  <SummaryCard label="Interest" value={gstr3b.interest_paid} color="rose" />
-                  <SummaryCard label="Late Fee" value={gstr3b.late_fee_paid} color="rose" />
+                <div className="flex">
+                  <div className="w-1/3 bg-gray-100 p-2 font-bold border-r border-gray-400">2(a). Legal name of the registered person</div>
+                  <div className="w-2/3 p-2 font-bold">{gstr3b.company_name || 'MAYANK KANSAL'}</div>
+                </div>
+                <div className="flex">
+                  <div className="w-1/3 bg-gray-100 p-2 font-bold border-r border-gray-400">2(b). Trade name, if any</div>
+                  <div className="w-2/3 p-2 font-bold">Sneh Distributors</div>
+                </div>
+                <div className="flex">
+                  <div className="w-1/3 bg-gray-100 p-2 font-bold border-r border-gray-400">2(c). ARN</div>
+                  <div className="w-2/3 p-2 font-mono">{selectedPeriod?.arn || 'AB0904260612843'}</div>
+                </div>
+                <div className="flex">
+                  <div className="w-1/3 bg-gray-100 p-2 font-bold border-r border-gray-400">2(d). Date of ARN</div>
+                  <div className="w-2/3 p-2 font-mono">
+                    {selectedPeriod?.filed_date ? new Date(selectedPeriod.filed_date).toLocaleDateString('en-IN') : '14/05/2026'}
+                  </div>
                 </div>
               </div>
-            </>
+
+              <p className="text-[10px] text-right font-semibold text-gray-500 italic">(Amount in ₹ for all tables)</p>
+
+              {/* ========== Table 3.1 ========== */}
+              <div className="border border-gray-400 overflow-hidden">
+                <div className="bg-[#f5e1d3] px-3 py-2 border-b border-gray-400 text-[#783c1b] font-bold text-[11px]">
+                  3.1 Details of Outward supplies and inward supplies liable to reverse charge (other than those covered by Table 3.1.1)
+                </div>
+                <table className="w-full text-left text-[10px] border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                      <th className="p-2 border-r border-gray-400 text-left w-[40%]">Nature of Supplies</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">Total taxable value</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">Integrated tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">Central tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">State/UT tax</th>
+                      <th className="p-2 w-[12%]">Cess</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-400 text-right">
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">(a) Outward taxable supplies (other than zero rated, nil rated and exempted)</td>
+                      <td className="p-2 border-r border-gray-400 font-semibold">{fmt(gstr3b.outward_taxable_value)}</td>
+                      <td className="p-2 border-r border-gray-400">{fmt(gstr3b.outward_igst)}</td>
+                      <td className="p-2 border-r border-gray-400">{fmt(gstr3b.outward_cgst)}</td>
+                      <td className="p-2 border-r border-gray-400">{fmt(gstr3b.outward_sgst)}</td>
+                      <td className="p-2">{fmt(gstr3b.outward_cess)}</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">(b) Outward taxable supplies (zero rated)</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">(c) Other outward supplies (nil rated, exempted)</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 text-center text-gray-400">-</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">(d) Inward supplies (liable to reverse charge)</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">(e) Non-GST outward supplies</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 text-center text-gray-400">-</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ========== Table 3.1.1 ========== */}
+              <div className="border border-gray-400 overflow-hidden">
+                <div className="bg-[#f5e1d3] px-3 py-2 border-b border-gray-400 text-[#783c1b] font-bold text-[11px]">
+                  3.1.1 Details of Supplies notified under section 9(5) of the CGST Act, 2017 and corresponding provisions in IGST/UTGST/SGST Acts
+                </div>
+                <table className="w-full text-left text-[10px] border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                      <th className="p-2 border-r border-gray-400 text-left w-[40%]">Nature of Supplies</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">Total taxable value</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">Integrated tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">Central tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[12%]">State/UT tax</th>
+                      <th className="p-2 w-[12%]">Cess</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-400 text-right">
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">(i) Taxable supplies on which electronic commerce operator pays tax u/s 9(5)</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">(ii) Taxable supplies made by registered person through electronic commerce operator...</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center text-gray-400">-</td>
+                      <td className="p-2 text-center text-gray-400">-</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ========== Table 3.2 ========== */}
+              <div className="border border-gray-400 overflow-hidden">
+                <div className="bg-[#f5e1d3] px-3 py-2 border-b border-gray-400 text-[#783c1b] font-bold text-[11px]">
+                  3.2 Out of supplies made in 3.1 (a) and 3.1.1 (i), details of inter-state supplies made
+                </div>
+                <table className="w-full text-left text-[10px] border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                      <th className="p-2 border-r border-gray-400 text-left w-[52%]">Nature of Supplies</th>
+                      <th className="p-2 border-r border-gray-400 w-[24%]">Total taxable value</th>
+                      <th className="p-2 w-[24%]">Integrated tax</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-400 text-right">
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">Supplies made to Unregistered Persons</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">Supplies made to Composition Taxable Persons</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">Supplies made to UIN holders</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ========== Table 4 ========== */}
+              <div className="border border-gray-400 overflow-hidden">
+                <div className="bg-[#f5e1d3] px-3 py-2 border-b border-gray-400 text-[#783c1b] font-bold text-[11px]">
+                  4. Eligible ITC
+                </div>
+                <table className="w-full text-left text-[10px] border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                      <th className="p-2 border-r border-gray-400 text-left w-[40%]">Details</th>
+                      <th className="p-2 border-r border-gray-400 w-[15%]">Integrated tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[15%]">Central tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[15%]">State/UT tax</th>
+                      <th className="p-2 w-[15%]">Cess</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-400 text-right">
+                    <tr className="bg-gray-100 font-bold text-left">
+                      <td colSpan={5} className="p-2 border-b border-gray-400">A. ITC Available (whether in full or part)</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(1) Import of goods</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(2) Import of services</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(3) Inward supplies liable to reverse charge (other than 1 & 2 above)</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(4) Inward supplies from ISD</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(5) All other ITC</td>
+                      <td className="p-2 border-r border-gray-400 font-semibold">{fmt(gstr3b.itc_igst_available)}</td>
+                      <td className="p-2 border-r border-gray-400 font-semibold">{fmt(gstr3b.itc_cgst_available)}</td>
+                      <td className="p-2 border-r border-gray-400 font-semibold">{fmt(gstr3b.itc_sgst_available)}</td>
+                      <td className="p-2">{fmt(gstr3b.itc_cess_available)}</td>
+                    </tr>
+                    <tr className="bg-gray-100 font-bold text-left">
+                      <td colSpan={5} className="p-2 border-y border-gray-400">B. ITC Reversed</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(1) As per rules 38, 42 & 43 of CGST Rules and section 17(5)</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(2) Others</td>
+                      <td className="p-2 border-r border-gray-400 font-semibold">{fmt(gstr3b.itc_reversed)}</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="bg-[#fdf8f5] font-extrabold text-left hover:bg-[#fbf2ec]">
+                      <td className="p-2 border-r border-gray-400">C. Net ITC available (A-B)</td>
+                      <td className="p-2 border-r border-gray-400 text-right">{fmt(gstr3b.itc_igst_available - gstr3b.itc_reversed)}</td>
+                      <td className="p-2 border-r border-gray-400 text-right">{fmt(gstr3b.itc_cgst_available)}</td>
+                      <td className="p-2 border-r border-gray-400 text-right">{fmt(gstr3b.itc_sgst_available)}</td>
+                      <td className="p-2 text-right">{fmt(gstr3b.itc_cess_available)}</td>
+                    </tr>
+                    <tr className="bg-gray-100 font-bold text-left">
+                      <td colSpan={5} className="p-2 border-y border-gray-400">D. Other Details</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(1) ITC reclaimed which was reversed under Table 4(B)(2) in earlier tax period</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left pl-6 font-medium">(2) Ineligible ITC under section 16(4) & ITC restricted due to PoS rules</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ========== Table 5 ========== */}
+              <div className="border border-gray-400 overflow-hidden">
+                <div className="bg-[#f5e1d3] px-3 py-2 border-b border-gray-400 text-[#783c1b] font-bold text-[11px]">
+                  5. Values of exempt, nil-rated and non-GST inward supplies
+                </div>
+                <table className="w-full text-left text-[10px] border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                      <th className="p-2 border-r border-gray-400 text-left w-[40%]">Nature of Supplies</th>
+                      <th className="p-2 border-r border-gray-400 w-[30%]">Inter-State supplies</th>
+                      <th className="p-2 w-[30%]">Intra-State supplies</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-400 text-right">
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">From a supplier under composition scheme, Exempt, Nil rated supply</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left font-medium">Non GST supply</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ========== Table 5.1 ========== */}
+              <div className="border border-gray-400 overflow-hidden">
+                <div className="bg-[#f5e1d3] px-3 py-2 border-b border-gray-400 text-[#783c1b] font-bold text-[11px]">
+                  5.1 Interest and Late fee for previous tax period
+                </div>
+                <table className="w-full text-left text-[10px] border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                      <th className="p-2 border-r border-gray-400 text-left w-[40%]">Details</th>
+                      <th className="p-2 border-r border-gray-400 w-[15%]">Integrated tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[15%]">Central tax</th>
+                      <th className="p-2 border-r border-gray-400 w-[15%]">State/UT tax</th>
+                      <th className="p-2 w-[15%]">Cess</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-400 text-right text-gray-500">
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left text-black font-medium">System computed Interest</td>
+                      <td className="p-2 border-r border-gray-400 text-center">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center">-</td>
+                      <td className="p-2 border-r border-gray-400 text-center">-</td>
+                      <td className="p-2 text-center">-</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left text-black font-medium">Interest Paid</td>
+                      <td className="p-2 border-r border-gray-400 text-black font-semibold">{fmt(gstr3b.interest_paid)}</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2 border-r border-gray-400">0.00</td>
+                      <td className="p-2">0.00</td>
+                    </tr>
+                    <tr className="hover:bg-gray-50">
+                      <td className="p-2 border-r border-gray-400 text-left text-black font-medium">Late fee</td>
+                      <td className="p-2 border-r border-gray-400 text-center">-</td>
+                      <td className="p-2 border-r border-gray-400 text-black font-semibold">{fmt(gstr3b.late_fee_paid / 2)}</td>
+                      <td className="p-2 border-r border-gray-400 text-black font-semibold">{fmt(gstr3b.late_fee_paid / 2)}</td>
+                      <td className="p-2 text-center">-</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ========== Table 6.1 ========== */}
+              <div className="border border-gray-400 overflow-hidden">
+                <div className="bg-[#f5e1d3] px-3 py-2 border-b border-gray-400 text-[#783c1b] font-bold text-[11px]">
+                  6.1 Payment of tax
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[9px] border-collapse min-w-[700px]">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                        <th className="p-1.5 border-r border-gray-400 text-left" rowSpan={2}>Description</th>
+                        <th className="p-1.5 border-r border-gray-400" rowSpan={2}>Tax payable</th>
+                        <th className="p-1.5 border-r border-gray-400" rowSpan={2}>Adjustment of negative liability...</th>
+                        <th className="p-1.5 border-r border-gray-400" rowSpan={2}>Net Tax Payable</th>
+                        <th className="p-1.5 border-r border-gray-400" colSpan={4}>Tax paid through ITC</th>
+                        <th className="p-1.5 border-r border-gray-400" rowSpan={2}>Tax paid in cash</th>
+                        <th className="p-1.5 border-r border-gray-400" rowSpan={2}>Interest paid in cash</th>
+                        <th className="p-1.5" rowSpan={2}>Late fee paid in cash</th>
+                      </tr>
+                      <tr className="bg-gray-50 border-b border-gray-400 text-center font-bold">
+                        <th className="p-1.5 border-r border-gray-400">Integrated tax</th>
+                        <th className="p-1.5 border-r border-gray-400">Central tax</th>
+                        <th className="p-1.5 border-r border-gray-400">State/UT tax</th>
+                        <th className="p-1.5 border-r border-gray-400">Cess</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-400 text-right">
+                      <tr className="bg-gray-50 text-left font-semibold">
+                        <td colSpan={11} className="p-1.5 border-b border-gray-400">(A) Other than reverse charge</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">Integrated tax</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_igst)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_igst)}</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.tax_paid_via_itc)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.tax_paid_via_cash)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 text-center text-gray-400">-</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">Central tax</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_cgst)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_cgst)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5">0.00</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">State/UT tax</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_sgst)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_sgst)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5">0.00</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">Cess</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_cess)}</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">{fmt(gstr3b.outward_cess)}</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 text-center text-gray-400">-</td>
+                      </tr>
+                      <tr className="bg-gray-50 text-left font-semibold">
+                        <td colSpan={11} className="p-1.5 border-b border-gray-400">(B) Reverse charge and supplies made u/s 9(5)</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">Integrated tax</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 text-center text-gray-400">-</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">Central tax</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 text-center text-gray-400">-</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">State/UT tax</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 text-center text-gray-400">-</td>
+                      </tr>
+                      <tr className="hover:bg-gray-50">
+                        <td className="p-1.5 border-r border-gray-400 text-left font-medium">Cess</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 border-r border-gray-400">0.00</td>
+                        <td className="p-1.5 border-r border-gray-400 text-center text-gray-400">-</td>
+                        <td className="p-1.5 text-center text-gray-400">-</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* ========== Verification Block ========== */}
+              <div className="pt-4 border-t border-gray-300 space-y-4">
+                <p className="font-bold">Verification:</p>
+                <p className="italic text-gray-700 leading-relaxed pl-4">
+                  I hereby solemnly affirm and declare that the information given herein above is true and correct to the best of my knowledge and belief and nothing has been concealed there from.
+                </p>
+                <div className="flex justify-between items-start pt-2 pl-4">
+                  <div className="space-y-1">
+                    <p><span className="font-bold text-gray-600">Date:</span> {selectedPeriod?.filed_date ? new Date(selectedPeriod.filed_date).toLocaleDateString('en-IN') : '14/05/2026'}</p>
+                  </div>
+                  <div className="space-y-1 text-right">
+                    <p><span className="font-bold text-gray-600">Name of Authorized Signatory:</span> {gstr3b.company_name || 'MAYANK KANSAL'}</p>
+                    <p><span className="font-bold text-gray-600">Designation/Status:</span> PROPRIETOR</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status Stamp */}
+              {selectedPeriod?.status === 'Filed' && (
+                <div className="border-4 border-emerald-500 text-emerald-500 font-extrabold text-sm px-6 py-2 rounded-lg inline-block rotate-[-5deg] absolute top-8 left-8 tracking-widest opacity-80 select-none">
+                  FILED
+                </div>
+              )}
+
+            </div>
           )}
         </div>
       )}
@@ -809,6 +1520,69 @@ export default function GstPage() {
         </div>
       )}
 
+      {/* ========== TAB: Manual Purchases ========== */}
+      {activeTab === 'manualPurchases' && !loading && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">Manual Purchases</h2>
+            <button
+              onClick={() => setShowManualPurchaseModal(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg transition-colors shadow-sm"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add Manual Purchase
+            </button>
+          </div>
+
+          {manualPurchases.length === 0 ? (
+            <div className="text-center py-16 text-muted-foreground">
+              <Receipt className="h-12 w-12 mx-auto mb-3 opacity-30" />
+              <p className="text-sm font-medium">No manual purchases recorded</p>
+              <p className="text-xs mt-1">Add offline or external purchases (Amazon, Flipkart) to include in ITC</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto -mx-4 px-4">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border text-muted-foreground">
+                    <th className="text-left py-2.5 px-2 font-bold">Source</th>
+                    <th className="text-left py-2.5 px-2 font-bold">Date</th>
+                    <th className="text-left py-2.5 px-2 font-bold">Product</th>
+                    <th className="text-right py-2.5 px-2 font-bold">Taxable</th>
+                    <th className="text-right py-2.5 px-2 font-bold">CGST</th>
+                    <th className="text-right py-2.5 px-2 font-bold">SGST</th>
+                    <th className="text-right py-2.5 px-2 font-bold">IGST</th>
+                    <th className="text-center py-2.5 px-2 font-bold">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manualPurchases.map(mp => (
+                    <tr key={mp.purchase_id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                      <td className="py-2.5 px-2 font-semibold">{mp.source}</td>
+                      <td className="py-2.5 px-2">{new Date(mp.invoice_date).toLocaleDateString('en-IN')}</td>
+                      <td className="py-2.5 px-2 truncate max-w-[150px]">{mp.product_description}</td>
+                      <td className="py-2.5 px-2 text-right font-medium">{fmt(mp.taxable_value)}</td>
+                      <td className="py-2.5 px-2 text-right">{fmt(mp.cgst_amount)}</td>
+                      <td className="py-2.5 px-2 text-right">{fmt(mp.sgst_amount)}</td>
+                      <td className="py-2.5 px-2 text-right">{fmt(mp.igst_amount)}</td>
+                      <td className="py-2.5 px-2 text-center">
+                        <button
+                          onClick={() => handleDeleteManualPurchase(mp.purchase_id)}
+                          disabled={actionLoading === `del-mp-${mp.purchase_id}`}
+                          className="text-destructive hover:text-destructive/80 transition-colors disabled:opacity-50"
+                        >
+                          {actionLoading === `del-mp-${mp.purchase_id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ========== TAB: GSTR-2B (Reconciliation) ========== */}
       {activeTab === 'gstr2b' && !loading && (
         <div className="space-y-4">
@@ -817,14 +1591,31 @@ export default function GstPage() {
               <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">GSTR-2B Portal Reconciliation</h2>
               <p className="text-[11px] text-muted-foreground mt-0.5">Match vendor auto-drafted ITC statements against book purchase entries</p>
             </div>
-            <button
-              onClick={handleReconcileGstr2b}
-              disabled={actionLoading === 'reconcile'}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50"
-            >
-              {actionLoading === 'reconcile' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              Reconcile Books
-            </button>
+            <div className="flex gap-2">
+              <input
+                type="file"
+                id="gstr2b-file-input"
+                accept=".json"
+                onChange={handleGstr2bUpload}
+                className="hidden"
+              />
+              <button
+                onClick={() => document.getElementById('gstr2b-file-input')?.click()}
+                disabled={actionLoading === 'upload-gstr2b'}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
+              >
+                {actionLoading === 'upload-gstr2b' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                Upload GSTR-2B JSON
+              </button>
+              <button
+                onClick={handleReconcileGstr2b}
+                disabled={actionLoading === 'reconcile'}
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50"
+              >
+                {actionLoading === 'reconcile' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                Reconcile Books
+              </button>
+            </div>
           </div>
 
           {gstr2bEntries.length === 0 ? (
@@ -966,14 +1757,22 @@ export default function GstPage() {
               <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">E-Invoicing Management Portal</h2>
               <p className="text-[11px] text-muted-foreground mt-0.5">Upload sales invoices to the government Invoice Registration Portal (IRP)</p>
             </div>
-            <span className={cn(
-              "px-3 py-1 rounded-full text-xs font-bold capitalize border shrink-0",
-              currentEinvEnv === 'production' ? "bg-rose-500/10 text-rose-600 border-rose-500/20" :
-              currentEinvEnv === 'sandbox' ? "bg-amber-500/10 text-amber-600 border-amber-500/20" :
-              "bg-muted text-muted-foreground border-border"
-            )}>
-              Environment: {currentEinvEnv}
-            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleOpenSettings}
+                className="flex items-center gap-1.5 px-3 py-1 bg-muted hover:bg-muted/80 text-foreground text-xs font-bold rounded-lg border border-border transition-colors cursor-pointer"
+              >
+                <Settings className="h-3.5 w-3.5" /> Configure
+              </button>
+              <span className={cn(
+                "px-3 py-1 rounded-full text-xs font-bold capitalize border shrink-0",
+                currentEinvEnv === 'production' ? "bg-rose-500/10 text-rose-600 border-rose-500/20" :
+                currentEinvEnv === 'sandbox' ? "bg-amber-500/10 text-amber-600 border-amber-500/20" :
+                "bg-muted text-muted-foreground border-border"
+              )}>
+                Environment: {currentEinvEnv}
+              </span>
+            </div>
           </div>
 
           {einvoices.length === 0 ? (
@@ -1247,6 +2046,217 @@ export default function GstPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {/* ========== MODAL: E-Invoicing Settings ========== */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowSettingsModal(false)}>
+          <form className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4" onClick={e => e.stopPropagation()} onSubmit={handleSaveSettings}>
+            <div>
+              <h3 className="text-lg font-extrabold">E-Invoicing API Configuration</h3>
+              <p className="text-xs text-muted-foreground mt-1">Configure environment and credentials for government IRP uploads</p>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1.5 block">Environment</label>
+                <select
+                  value={settingsEnv}
+                  onChange={e => setSettingsEnv(e.target.value)}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 font-bold"
+                >
+                  <option value="mock">Mock Sandbox (Simulation)</option>
+                  <option value="sandbox">Government Sandbox (Testing)</option>
+                  <option value="production">Government Production (Live)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1 block">IRP Username</label>
+                <input
+                  type="text"
+                  value={settingsUsername}
+                  onChange={e => setSettingsUsername(e.target.value)}
+                  placeholder="e.g. GSTIN_USER_01"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1 block">IRP Password</label>
+                <input
+                  type="password"
+                  value={settingsPassword}
+                  onChange={e => setSettingsPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1 block">GSP Client ID</label>
+                <input
+                  type="text"
+                  value={settingsClientId}
+                  onChange={e => setSettingsClientId(e.target.value)}
+                  placeholder="e.g. gsp-client-id"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1 block">GSP Client Secret</label>
+                <input
+                  type="password"
+                  value={settingsClientSecret}
+                  onChange={e => setSettingsClientSecret(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSettingsModal(false)}
+                className="flex-1 py-2.5 bg-muted text-foreground rounded-lg text-xs font-bold hover:bg-muted/80 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={actionLoading === 'save-settings'}
+                className="flex-1 py-2.5 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {actionLoading === 'save-settings' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                Save Settings
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Modal: Add Manual Purchase */}
+      {showManualPurchaseModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <form onSubmit={handleAddManualPurchase} className="bg-card w-full max-w-lg rounded-2xl shadow-xl overflow-hidden border border-border flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
+              <h2 className="text-sm font-extrabold flex items-center gap-2">
+                <Receipt className="h-4 w-4 text-emerald-500" />
+                Add Manual Purchase
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowManualPurchaseModal(false)}
+                className="p-1 text-muted-foreground hover:bg-muted rounded-md transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            
+            <div className="p-4 space-y-4 overflow-y-auto">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1 block">Source Platform/Vendor</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Amazon, Flipkart, Offline"
+                    value={manualPurchaseForm.source}
+                    onChange={e => setManualPurchaseForm({ ...manualPurchaseForm, source: e.target.value })}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1 block">Invoice Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={manualPurchaseForm.invoice_date}
+                    onChange={e => setManualPurchaseForm({ ...manualPurchaseForm, invoice_date: e.target.value })}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground mb-1 block">Product Description</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Sony Camera ILCE-7M3"
+                  value={manualPurchaseForm.product_description}
+                  onChange={e => setManualPurchaseForm({ ...manualPurchaseForm, product_description: e.target.value })}
+                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1 block">Taxable Value</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={manualPurchaseForm.taxable_value || ''}
+                    onChange={e => setManualPurchaseForm({ ...manualPurchaseForm, taxable_value: parseFloat(e.target.value) || 0 })}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1 block">IGST Amount</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={manualPurchaseForm.igst_amount || ''}
+                    onChange={e => setManualPurchaseForm({ ...manualPurchaseForm, igst_amount: parseFloat(e.target.value) || 0 })}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1 block">CGST Amount</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={manualPurchaseForm.cgst_amount || ''}
+                    onChange={e => setManualPurchaseForm({ ...manualPurchaseForm, cgst_amount: parseFloat(e.target.value) || 0 })}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground mb-1 block">SGST Amount</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={manualPurchaseForm.sgst_amount || ''}
+                    onChange={e => setManualPurchaseForm({ ...manualPurchaseForm, sgst_amount: parseFloat(e.target.value) || 0 })}
+                    className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-border bg-muted/30 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowManualPurchaseModal(false)}
+                className="flex-1 py-2 bg-background border border-border text-foreground rounded-lg text-xs font-bold hover:bg-muted transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={actionLoading === 'add-manual-purchase'}
+                className="flex-1 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+              >
+                {actionLoading === 'add-manual-purchase' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                Add Purchase
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

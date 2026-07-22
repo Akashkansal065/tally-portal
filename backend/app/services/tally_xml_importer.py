@@ -168,6 +168,9 @@ async def get_or_create_group(db: AsyncSession, company_id: int, name: str, pare
     return group
 
 async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> dict:
+    if not xml_data or not xml_data.strip():
+        return {"status": "error", "message": "Empty XML payload."}
+        
     # Sanitize XML data before parsing to handle invalid control characters
     xml_data = sanitize_xml(xml_data)
     try:
@@ -196,8 +199,8 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             detailed_err = "\n".join(context_lines)
             logger.error(detailed_err)
         except Exception as log_ex:
-            logger.error(f"Error parsing XML and formatting error: {str(log_ex)}")
-            logger.error(f"Original XML ParseError: {str(e)}")
+            logger.error(f"Error parsing XML and formatting error: {str(log_ex)}", exc_info=True)
+            logger.error(f"Original XML ParseError: {str(e)}", exc_info=True)
             
         return {"status": "error", "message": f"XML parse error: {str(e)}"}
 
@@ -216,7 +219,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                     await db.flush()
                     logger.info(f"Updated company name in database to '{company_name}' based on XML import.")
     except Exception as ex:
-        logger.error(f"Error updating company name from XML: {str(ex)}")
+        logger.error(f"Error updating company name from XML: {str(ex)}", exc_info=True)
         
     imported_groups = 0
     imported_ledgers = 0

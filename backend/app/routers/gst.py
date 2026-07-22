@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -10,12 +10,13 @@ from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.user import User
 from app.models.voucher import TrnVoucher, TrnAccounting
-from app.models.gst import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn
+from app.models.gst import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn, ManualPurchase
 from app.schemas.gst import (
     GstReturnPeriodCreate, GstReturnPeriodResponse,
     Gstr1LineItemResponse, Gstr1HsnSummaryResponse, Gstr3bSummaryResponse,
     ItcEntryCreate, ItcEntryResponse, Gstr2bEntryResponse, Gstr9AnnualReturnResponse,
-    GstEinvoiceListResponse, EinvoiceSettingsResponse, EinvoiceSettingsUpdate
+    GstEinvoiceListResponse, EinvoiceSettingsResponse, EinvoiceSettingsUpdate,
+    ManualPurchaseCreate, ManualPurchaseResponse
 )
 
 router = APIRouter(prefix="/gst", tags=["GST Reports & Return Filing"])
@@ -61,6 +62,27 @@ async def get_gst_periods(
     res = await db.execute(stmt)
     return res.scalars().all()
 
+@router.delete("/periods/{period_id}")
+async def delete_gst_period(
+    period_id: int,
+    user: User = Depends(require_permission("reports", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    period_query = await db.execute(
+        select(GstReturnPeriod).where(
+            GstReturnPeriod.return_period_id == period_id,
+            GstReturnPeriod.company_id == user.company_id
+        )
+    )
+    period = period_query.scalars().first()
+    if not period:
+        raise HTTPException(status_code=404, detail="GST Return period not found.")
+        
+    await db.delete(period)
+    await db.commit()
+    return {"status": "success", "message": "GST Return period deleted successfully."}
+
+
 # --- Snapshot Generation ---
 
 @router.post("/periods/{period_id}/generate")
@@ -69,6 +91,9 @@ async def generate_gst_snapshot(
     user: User = Depends(require_permission("reports", "update")),
     db: AsyncSession = Depends(get_db)
 ):
+    from app.models.ledger import MstLedger
+    from app.routers.vouchers import _resolve_party_and_amount
+
     period_query = await db.execute(
         select(GstReturnPeriod).where(
             GstReturnPeriod.return_period_id == period_id,
@@ -101,13 +126,23 @@ async def generate_gst_snapshot(
     await db.commit()
     
     # 1. Fetch Sales Vouchers in the period range
-    # Simplification: query all non-optional vouchers for this company
+    import calendar
+    from datetime import date
+    
+    start_date = date(period.period_year, period.period_month, 1)
+    last_day = calendar.monthrange(period.period_year, period.period_month)[1]
+    end_date = date(period.period_year, period.period_month, last_day)
+
     vouchers_query = await db.execute(
         select(TrnVoucher)
-        .options(selectinload(TrnVoucher.entries))
+        .options(
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
+        )
         .where(
             TrnVoucher.company_id == user.company_id,
-            TrnVoucher.is_optional == False
+            TrnVoucher.is_optional == False,
+            TrnVoucher.voucher_date >= start_date,
+            TrnVoucher.voucher_date <= end_date
         )
     )
     vouchers = vouchers_query.scalars().all()
@@ -118,9 +153,16 @@ async def generate_gst_snapshot(
     total_igst_outward = Decimal("0.00")
     
     for v in vouchers:
+        # Skip purchase vouchers (containing a ledger with 'PURCHASE' in its name)
+        if any(e.ledger and 'PURCHASE' in e.ledger.name.upper() for e in v.entries):
+            continue
+            
         # Determine if it's a Sales voucher
         # Check if v.voucher_type_id name is Sales
         # For simplicity, we scan entries for SGST / CGST / IGST tax ledgers
+        # Resolve party details dynamically first to avoid matching party ledgers as sales ledgers
+        party_name, _ = _resolve_party_and_amount(v.entries)
+        
         has_tax = False
         cgst = Decimal("0.00")
         sgst = Decimal("0.00")
@@ -129,40 +171,61 @@ async def generate_gst_snapshot(
         
         # Pull ledger names for tax detection
         for e in v.entries:
-            # We assume ledger names containing 'CGST', 'SGST', 'IGST' represent tax entries
-            # In a real ERP, we look at the ledger group nature.
-            # Fetch actual ledger name
-            from app.models.ledger import MstLedger
-            l_query = await db.execute(select(MstLedger).where(MstLedger.ledger_id == e.ledger_id))
-            ledger = l_query.scalars().first()
-            if not ledger:
+            if not e.ledger:
                 continue
-            if 'CGST' in ledger.name:
-                cgst += e.credit_amount if e.credit_amount > 0 else e.debit_amount
-                has_tax = True
-            elif 'SGST' in ledger.name:
-                sgst += e.credit_amount if e.credit_amount > 0 else e.debit_amount
-                has_tax = True
-            elif 'IGST' in ledger.name:
-                igst += e.credit_amount if e.credit_amount > 0 else e.debit_amount
-                has_tax = True
-            elif 'Sales' in ledger.name:
-                taxable += e.credit_amount if e.credit_amount > 0 else e.debit_amount
                 
-        if has_tax and taxable > 0:
+            # Skip the party ledger from tax and taxable calculations
+            if e.ledger.name == party_name:
+                continue
+                
+            name_upper = e.ledger.name.upper()
+            net_credit = e.credit_amount - e.debit_amount
+            
+            if 'CGST' in name_upper:
+                cgst += net_credit
+                has_tax = True
+            elif 'SGST' in name_upper:
+                sgst += net_credit
+                has_tax = True
+            elif 'IGST' in name_upper:
+                igst += net_credit
+                has_tax = True
+            elif 'SALES' in name_upper or 'DISCOUNT' in name_upper:
+                taxable += net_credit
+                
+        if has_tax and taxable != 0:
             total_taxable_outward += taxable
             total_cgst_outward += cgst
             total_sgst_outward += sgst
             total_igst_outward += igst
             
+            party_gstin = None
+            party_state = "Maharashtra"
+            supply_type = "B2CS"
+            
+            if party_name:
+                party_q = await db.execute(
+                    select(MstLedger).where(
+                        MstLedger.name == party_name,
+                        MstLedger.company_id == user.company_id
+                    )
+                )
+                party_ledger = party_q.scalars().first()
+                if party_ledger:
+                    party_gstin = party_ledger.gstin
+                    if party_ledger.state:
+                        party_state = party_ledger.state
+                    if party_gstin:
+                        supply_type = "B2B"
+            
             line = Gstr1LineItem(
                 return_period_id=period_id,
                 voucher_id=v.voucher_id,
-                supply_type="B2B", # default
-                party_gstin="27AADCB2230M1Z5", # dummy
+                supply_type=supply_type,
+                party_gstin=party_gstin,
                 invoice_number=v.voucher_number,
                 invoice_date=v.voucher_date,
-                place_of_supply="Maharashtra",
+                place_of_supply=party_state,
                 taxable_value=taxable,
                 cgst_amount=cgst,
                 sgst_amount=sgst,
@@ -182,9 +245,37 @@ async def generate_gst_snapshot(
     )
     itc_list = itc_query.scalars().all()
     
-    total_cgst_itc = sum(i.cgst_amount for i in itc_list)
-    total_sgst_itc = sum(i.sgst_amount for i in itc_list)
-    total_igst_itc = sum(i.igst_amount for i in itc_list)
+    mp_query = await db.execute(
+        select(ManualPurchase).where(
+            ManualPurchase.company_id == user.company_id,
+            ManualPurchase.claimed_return_period_id == period_id
+        )
+    )
+    mp_list = mp_query.scalars().all()
+    
+    # Calculate book ITC from purchase vouchers in the database for this date range
+    purchase_igst = Decimal("0.00")
+    purchase_cgst = Decimal("0.00")
+    purchase_sgst = Decimal("0.00")
+    
+    for v in vouchers:
+        # Check if this is a purchase voucher (has a ledger containing PURCHASE)
+        if any(e.ledger and 'PURCHASE' in e.ledger.name.upper() for e in v.entries):
+            for e in v.entries:
+                if e.ledger:
+                    name_upper = e.ledger.name.upper()
+                    # Book ITC is the debit to CGST/SGST/IGST ledgers (debit - credit)
+                    net_debit = e.debit_amount - e.credit_amount
+                    if 'IGST' in name_upper:
+                        purchase_igst += net_debit
+                    elif 'CGST' in name_upper:
+                        purchase_cgst += net_debit
+                    elif 'SGST' in name_upper:
+                        purchase_sgst += net_debit
+    
+    total_cgst_itc = sum(i.cgst_amount for i in itc_list) + sum(m.cgst_amount for m in mp_list) + purchase_cgst
+    total_sgst_itc = sum(i.sgst_amount for i in itc_list) + sum(m.sgst_amount for m in mp_list) + purchase_sgst
+    total_igst_itc = sum(i.igst_amount for i in itc_list) + sum(m.igst_amount for m in mp_list) + purchase_igst
     
     summary3b = Gstr3bSummary(
         return_period_id=period_id,
@@ -229,7 +320,36 @@ async def get_gstr3b_summary(
     summary = res.scalars().first()
     if not summary:
         raise HTTPException(status_code=404, detail="GSTR-3B summary not generated yet.")
-    return summary
+        
+    from app.models.company import Company
+    comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
+    company = comp_q.scalars().first()
+    
+    return {
+        "summary_id": summary.summary_id,
+        "return_period_id": summary.return_period_id,
+        "outward_taxable_value": summary.outward_taxable_value,
+        "outward_cgst": summary.outward_cgst,
+        "outward_sgst": summary.outward_sgst,
+        "outward_igst": summary.outward_igst,
+        "outward_cess": summary.outward_cess,
+        "itc_igst_available": summary.itc_igst_available,
+        "itc_cgst_available": summary.itc_cgst_available,
+        "itc_sgst_available": summary.itc_sgst_available,
+        "itc_cess_available": summary.itc_cess_available,
+        "itc_reversed": summary.itc_reversed,
+        "net_igst_payable": summary.net_igst_payable,
+        "net_cgst_payable": summary.net_cgst_payable,
+        "net_sgst_payable": summary.net_sgst_payable,
+        "net_cess_payable": summary.net_cess_payable,
+        "tax_paid_via_cash": summary.tax_paid_via_cash,
+        "tax_paid_via_itc": summary.tax_paid_via_itc,
+        "interest_paid": summary.interest_paid,
+        "late_fee_paid": summary.late_fee_paid,
+        "company_name": company.name if company else None,
+        "company_gstin": company.gstin if company else None,
+        "company_pan": company.pan if company else None
+    }
 
 @router.post("/periods/{period_id}/file")
 async def file_gst_return(
@@ -401,6 +521,184 @@ async def get_hsn_summary(
 
 # --- GSTR-2B (Reconciliation) ---
 
+@router.post("/gstr2b/upload")
+async def upload_gstr2b_json(
+    file: UploadFile = File(...),
+    user: User = Depends(require_permission("reports", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Upload and parse GSTR-2B JSON file from GST portal to populate reconciliation entries"""
+    import json
+    try:
+        contents = await file.read()
+        data = json.loads(contents)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse JSON file: {str(e)}")
+
+    # Resolve return period from rtnprd (usually 'MMYYYY' or 'MM/YYYY')
+    rtnprd = data.get("rtnprd")
+    month = None
+    year = None
+    if rtnprd:
+        if "/" in rtnprd:
+            parts = rtnprd.split("/")
+            try:
+                month = int(parts[0])
+                year = int(parts[1])
+            except ValueError:
+                pass
+        elif len(rtnprd) == 6:
+            try:
+                month = int(rtnprd[:2])
+                year = int(rtnprd[2:])
+            except ValueError:
+                pass
+                
+    if not month or not year:
+        raise HTTPException(status_code=400, detail="Could not resolve return period (rtnprd) from GSTR-2B JSON.")
+
+    # Find or auto-create the return period
+    period_q = await db.execute(
+        select(GstReturnPeriod).where(
+            GstReturnPeriod.period_month == month,
+            GstReturnPeriod.period_year == year,
+            GstReturnPeriod.company_id == user.company_id
+        )
+    )
+    period = period_q.scalars().first()
+    if not period:
+        # Create a return period for GSTR-3B by default
+        period = GstReturnPeriod(
+            company_id=user.company_id,
+            return_type="GSTR3B",
+            period_month=month,
+            period_year=year,
+            status="Draft"
+        )
+        db.add(period)
+        await db.commit()
+        await db.refresh(period)
+
+    period_id = period.return_period_id
+
+    # Clear existing GSTR-2B entries for this period
+    del_q = await db.execute(select(Gstr2bEntry).where(
+        Gstr2bEntry.return_period_id == period_id,
+        Gstr2bEntry.company_id == user.company_id
+    ))
+    for entry in del_q.scalars().all():
+        await db.delete(entry)
+    await db.commit()
+
+    imported_count = 0
+
+    # 1. Parse B2B
+    b2b_list = data.get("b2b", [])
+    for supplier in b2b_list:
+        ctin = supplier.get("ctin")
+        trade_name = supplier.get("trdn") or supplier.get("lmnm") or "Unknown Supplier"
+        
+        invoices = supplier.get("inv", [])
+        for inv in invoices:
+            inum = inv.get("inum")
+            idt_str = inv.get("idt")
+            
+            try:
+                invoice_date = datetime.strptime(idt_str, "%d-%m-%Y").date()
+            except ValueError:
+                try:
+                    invoice_date = datetime.strptime(idt_str, "%d/%m/%Y").date()
+                except ValueError:
+                    try:
+                        invoice_date = datetime.strptime(idt_str, "%Y-%m-%d").date()
+                    except ValueError:
+                        invoice_date = date.today()
+                        
+            taxable_value = Decimal("0.00")
+            cgst = Decimal("0.00")
+            sgst = Decimal("0.00")
+            igst = Decimal("0.00")
+            cess = Decimal("0.00")
+            
+            for item in inv.get("itms", []):
+                det = item.get("itm_det", {})
+                taxable_value += Decimal(str(det.get("txval", 0) or 0))
+                igst += Decimal(str(det.get("iamt", 0) or 0))
+                cgst += Decimal(str(det.get("camt", 0) or 0))
+                sgst += Decimal(str(det.get("samt", 0) or 0))
+                cess += Decimal(str(det.get("csamt", 0) or 0))
+                
+            entry = Gstr2bEntry(
+                company_id=user.company_id,
+                return_period_id=period_id,
+                supplier_gstin=ctin,
+                supplier_name=trade_name,
+                invoice_number=inum,
+                invoice_date=invoice_date,
+                taxable_value=taxable_value,
+                cgst_amount=cgst,
+                sgst_amount=sgst,
+                igst_amount=igst,
+                cess_amount=cess,
+                itc_availability="Available",
+                match_status="Unmatched"
+            )
+            db.add(entry)
+            imported_count += 1
+
+    # 2. Parse CDNR (Credit/Debit Notes)
+    cdnr_list = data.get("cdnr", [])
+    for supplier in cdnr_list:
+        ctin = supplier.get("ctin")
+        trade_name = supplier.get("trdn") or supplier.get("lmnm") or "Unknown Supplier"
+        notes = supplier.get("nt", [])
+        for note in notes:
+            nt_num = note.get("nt_num")
+            nt_dt_str = note.get("nt_dt")
+            
+            try:
+                note_date = datetime.strptime(nt_dt_str, "%d-%m-%Y").date()
+            except ValueError:
+                try:
+                    note_date = datetime.strptime(nt_dt_str, "%d/%m/%Y").date()
+                except ValueError:
+                    note_date = date.today()
+                    
+            taxable_value = Decimal("0.00")
+            cgst = Decimal("0.00")
+            sgst = Decimal("0.00")
+            igst = Decimal("0.00")
+            cess = Decimal("0.00")
+            
+            for item in note.get("itms", []):
+                det = item.get("itm_det", {})
+                taxable_value += Decimal(str(det.get("txval", 0) or 0))
+                igst += Decimal(str(det.get("iamt", 0) or 0))
+                cgst += Decimal(str(det.get("camt", 0) or 0))
+                sgst += Decimal(str(det.get("samt", 0) or 0))
+                cess += Decimal(str(det.get("csamt", 0) or 0))
+                
+            entry = Gstr2bEntry(
+                company_id=user.company_id,
+                return_period_id=period_id,
+                supplier_gstin=ctin,
+                supplier_name=trade_name,
+                invoice_number=nt_num,
+                invoice_date=note_date,
+                taxable_value=-taxable_value,
+                cgst_amount=-cgst,
+                sgst_amount=-sgst,
+                igst_amount=-igst,
+                cess_amount=-cess,
+                itc_availability="Available",
+                match_status="Unmatched"
+            )
+            db.add(entry)
+            imported_count += 1
+
+    await db.commit()
+    return {"detail": f"Successfully parsed GSTR-2B JSON. Imported {imported_count} entries."}
+
 @router.get("/gstr2b", response_model=List[Gstr2bEntryResponse])
 async def get_gstr2b_entries(
     user: User = Depends(require_permission("reports", "read")),
@@ -456,6 +754,10 @@ async def reconcile_gstr2b(
                 g2b.match_status = "Matched"
                 g2b.itc_availability = "Available"
                 g2b.matched_voucher_id = match.voucher_id
+                
+                # Auto-claim this ITC entry in the return period of this GSTR-2B entry
+                match.claimed_return_period_id = g2b.return_period_id
+                
                 reconciled_count += 1
             else:
                 g2b.match_status = "Mismatch"
@@ -719,7 +1021,7 @@ async def get_einvoices_list(
     # 2. Fetch Sales Vouchers
     stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
-        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger)
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
     ).where(
         TrnVoucher.company_id == user.company_id
     )
@@ -821,6 +1123,61 @@ async def update_einvoice_settings(
     await db.commit()
     return {"detail": "E-Invoicing configuration settings updated successfully."}
 
+# --- Manual Purchases ---
 
+@router.post("/periods/{period_id}/manual-purchases", response_model=ManualPurchaseResponse)
+async def create_manual_purchase(
+    period_id: int,
+    req: ManualPurchaseCreate,
+    user: User = Depends(require_permission("reports", "create")),
+    db: AsyncSession = Depends(get_db)
+):
+    period_query = await db.execute(select(GstReturnPeriod).where(GstReturnPeriod.return_period_id == period_id, GstReturnPeriod.company_id == user.company_id))
+    period = period_query.scalars().first()
+    if not period:
+        raise HTTPException(status_code=404, detail="GST Return period not found.")
+        
+    mp = ManualPurchase(
+        company_id=user.company_id,
+        source=req.source,
+        invoice_number=req.invoice_number,
+        invoice_date=req.invoice_date,
+        product_description=req.product_description,
+        taxable_value=req.taxable_value,
+        cgst_amount=req.cgst_amount,
+        sgst_amount=req.sgst_amount,
+        igst_amount=req.igst_amount,
+        claimed_return_period_id=period_id
+    )
+    db.add(mp)
+    await db.commit()
+    await db.refresh(mp)
+    return mp
 
+@router.get("/periods/{period_id}/manual-purchases", response_model=List[ManualPurchaseResponse])
+async def get_manual_purchases(
+    period_id: int,
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(ManualPurchase).where(
+        ManualPurchase.claimed_return_period_id == period_id,
+        ManualPurchase.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    return res.scalars().all()
 
+@router.delete("/manual-purchases/{purchase_id}")
+async def delete_manual_purchase(
+    purchase_id: int,
+    user: User = Depends(require_permission("reports", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    mp_query = await db.execute(select(ManualPurchase).where(ManualPurchase.purchase_id == purchase_id, ManualPurchase.company_id == user.company_id))
+    mp = mp_query.scalars().first()
+    if not mp:
+        raise HTTPException(status_code=404, detail="Manual purchase not found.")
+        
+    await db.delete(mp)
+    await db.commit()
+    return {"detail": "Manual purchase deleted successfully."}
