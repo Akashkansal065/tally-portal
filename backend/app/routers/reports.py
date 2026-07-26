@@ -142,27 +142,47 @@ async def get_trial_balance(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return group-level ledger trial balance."""
-    # List all ledgers and their opening/closing balances grouped by group name
-    stmt = select(MstLedger).options(selectinload(MstLedger.group)).where(MstLedger.company_id == user.company_id)
-    res = await db.execute(stmt)
-    ledgers = res.scalars().all()
+    """Return group-level ledger trial balance with Dr/Cr balances."""
+    from sqlalchemy import text
+    
+    query = await db.execute(text("""
+        SELECT g.name as group_name,
+               SUM(COALESCE(l.opening_balance, 0)) as opening_sum,
+               SUM(COALESCE(e.debit_amount, 0)) as total_debit,
+               SUM(COALESCE(e.credit_amount, 0)) as total_credit
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        WHERE l.company_id = :comp_id
+        GROUP BY g.name
+        ORDER BY ABS(SUM(COALESCE(e.debit_amount, 0)) - SUM(COALESCE(e.credit_amount, 0))) DESC
+    """), {"comp_id": user.company_id})
 
-    groups = {}
-    for l in ledgers:
-        # Use opening balance as fallback
-        bal = float(l.opening_balance or 0.0)
-        group_name = l.group.name if l.group else "Other Accounts"
-        groups[group_name] = groups.get(group_name, 0.0) + bal
+    rows = query.all()
+    results = []
 
-    return [
-        {"name": group_name, "balance": bal}
-        for group_name, bal in groups.items()
-    ]
+    for r in rows:
+        opening = float(r.opening_sum or 0.0)
+        dr = float(r.total_debit or 0.0)
+        cr = float(r.total_credit or 0.0)
+        net = (dr - cr) + opening
+
+        # If group is Liabilities / Capital / Income -> Cr balance is positive; else Dr balance
+        # Keep net sign (positive Dr, negative Cr) so Math.abs(balance) works cleanly with Dr/Cr
+        results.append({
+            "name": r.group_name,
+            "balance": net,
+            "debit": dr,
+            "credit": cr
+        })
+
+    return results
 
 
 class DashboardSummaryResponse(BaseModel):
     total_sales: float
+    total_sales_gross: Optional[float] = 0.0
     total_receipts: float
     outstanding_receivables: float
     outstanding_payables: float
@@ -266,19 +286,24 @@ async def get_dashboard_details(
 
 @router.get("/dashboard-summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.core.cache import get_cached_response, set_cached_response
-    # cached = get_cached_response(user.company_id, "dashboard-summary")
-    # if cached:
-    #     return cached
-
-    # Calculate exact closing balances for Ledgers
     from sqlalchemy import text
     
-    # Total Sales (from Sales Accounts, Net Credit Balance)
-    sales_query = await db.execute(text("""
+    date_where = ""
+    params = {"comp_id": user.company_id}
+    if from_date:
+        date_where += " AND v.voucher_date >= :from_date"
+        params["from_date"] = from_date
+    if to_date:
+        date_where += " AND v.voucher_date <= :to_date"
+        params["to_date"] = to_date
+
+    # Total Sales (from Sales Accounts, Net Credit Balance - WITHOUT GST)
+    sales_query = await db.execute(text(f"""
         SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
@@ -286,27 +311,29 @@ async def get_dashboard_summary(
             SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id {date_where}
             GROUP BY ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE g.name = 'Sales Accounts' AND l.company_id = :comp_id
-    """), {"comp_id": user.company_id})
+    """), params)
     total_sales = sales_query.scalar() or 0.0
 
-    # Total Receipts (Cash/Bank Accounts, Net Debit Balance)
-    receipts_query = await db.execute(text("""
-        SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
-        FROM tally_sync.ledgers l
-        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
-        LEFT JOIN (
-            SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
-            FROM tally_sync.voucher_entries e
-            JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
-            GROUP BY ledger_id
-        ) sub ON l.ledger_id = sub.ledger_id
-        WHERE g.name IN ('Cash-in-hand', 'Bank Accounts') AND l.company_id = :comp_id
-    """), {"comp_id": user.company_id})
+    # Gross Sales Vouchers Sum (WITH GST)
+    gross_sales_query = await db.execute(text(f"""
+        SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
+        FROM tally_sync.vouchers v
+        JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+        WHERE vt.name = 'Sales' AND v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+    """), params)
+    total_sales_gross = gross_sales_query.scalar() or 0.0
+
+    # Total Receipts (Gross Collections Received from Receipt Vouchers)
+    receipts_query = await db.execute(text(f"""
+        SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
+        FROM tally_sync.vouchers v
+        JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+        WHERE vt.name = 'Receipt' AND v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+    """), params)
     total_receipts = receipts_query.scalar() or 0.0
     
     # Receivables: Sum of (Dr Balances) for Sundry Debtors
@@ -341,11 +368,295 @@ async def get_dashboard_summary(
     """), {"comp_id": user.company_id})
     outstanding_payables = payables_query.scalar() or 0.0
 
-    res = {
+    return {
         "total_sales": float(total_sales),
+        "total_sales_gross": float(total_sales_gross),
         "total_receipts": float(total_receipts),
         "outstanding_receivables": float(outstanding_receivables),
         "outstanding_payables": float(outstanding_payables)
     }
-    set_cached_response(user.company_id, "dashboard-summary", res)
-    return res
+
+
+@router.get("/executive-analytics")
+async def get_executive_analytics(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Return aggregated trends, aging distribution, and expense category breakdown for charts within date range."""
+    from sqlalchemy import text
+    from app.models.payment import TrnBill
+    
+    date_where = ""
+    params = {"comp_id": user.company_id}
+    if from_date:
+        date_where += " AND v.voucher_date >= :from_date"
+        params["from_date"] = from_date
+    if to_date:
+        date_where += " AND v.voucher_date <= :to_date"
+        params["to_date"] = to_date
+
+    # 1. Monthly Trends (Sales vs Receipts vs Purchases)
+    trend_query = await db.execute(text(f"""
+        SELECT 
+            DATE_FORMAT(v.voucher_date, '%b %Y') as month_label,
+            DATE_FORMAT(v.voucher_date, '%Y-%m') as sort_key,
+            SUM(CASE WHEN vt.name = 'Sales' THEN v.total_amount ELSE 0 END) as sales,
+            SUM(CASE WHEN vt.name = 'Receipt' THEN v.total_amount ELSE 0 END) as receipts,
+            SUM(CASE WHEN vt.name = 'Purchase' THEN v.total_amount ELSE 0 END) as purchases
+        FROM tally_sync.vouchers v
+        JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+        WHERE v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+        GROUP BY month_label, sort_key
+        ORDER BY sort_key ASC
+        LIMIT 12
+    """), params)
+    
+    trend_rows = trend_query.all()
+    monthly_trend = [
+        {
+            "month": r.month_label,
+            "sales": float(r.sales or 0.0),
+            "receipts": float(r.receipts or 0.0),
+            "purchases": float(r.purchases or 0.0)
+        }
+        for r in trend_rows
+    ]
+
+    # 2. Receivables & Payables Aging (FIFO - Oldest Invoice Settled First)
+    today_dt = date.today()
+    rec_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
+    pay_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
+
+    # FIFO Receivables Aging (Sundry Debtors)
+    debtors_res = await db.execute(text("""
+        SELECT l.ledger_id, l.name as party_name,
+               COALESCE(SUM(e.debit_amount), 0) - COALESCE(SUM(e.credit_amount), 0) as net_balance
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        WHERE g.name = 'Sundry Debtors' AND l.company_id = :comp_id
+        GROUP BY l.ledger_id, l.name
+        HAVING net_balance > 0
+    """), {"comp_id": user.company_id})
+
+    rec_details = []
+    for d in debtors_res.all():
+        rem_bal = float(d.net_balance)
+        invoices_res = await db.execute(text("""
+            SELECT v.voucher_id, v.voucher_number, v.voucher_date, v.total_amount
+            FROM tally_sync.vouchers v
+            JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+            JOIN tally_sync.voucher_entries e ON v.voucher_id = e.voucher_id
+            WHERE e.ledger_id = :ledger_id AND vt.name = 'Sales' AND v.is_cancelled = False AND v.is_optional = False
+            ORDER BY v.voucher_date DESC, v.voucher_id DESC
+        """), {"ledger_id": d.ledger_id})
+
+        for inv in invoices_res.all():
+            if rem_bal <= 0:
+                break
+            inv_amt = float(inv.total_amount)
+            allocated = min(rem_bal, inv_amt)
+            days = (today_dt - inv.voucher_date).days if inv.voucher_date else 0
+            bucket = "0-30 Days" if days <= 30 else ("31-60 Days" if days <= 60 else ("61-90 Days" if days <= 90 else "90+ Days"))
+            rec_aging[bucket] += allocated
+            rec_details.append({
+                "id": inv.voucher_id,
+                "voucher_number": inv.voucher_number,
+                "party_name": d.party_name,
+                "date": inv.voucher_date.isoformat() if inv.voucher_date else None,
+                "days": days,
+                "bucket": bucket,
+                "amount": allocated
+            })
+            rem_bal -= allocated
+
+        if rem_bal > 0:
+            rec_aging["90+ Days"] += rem_bal
+            rec_details.append({
+                "id": 0,
+                "voucher_number": "Historic Ledger Balance",
+                "party_name": d.party_name,
+                "date": None,
+                "days": 91,
+                "bucket": "90+ Days",
+                "amount": rem_bal
+            })
+
+    # FIFO Payables Aging (Sundry Creditors)
+    creditors_res = await db.execute(text("""
+        SELECT l.ledger_id,
+               COALESCE(SUM(e.credit_amount), 0) - COALESCE(SUM(e.debit_amount), 0) as net_balance
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        WHERE g.name = 'Sundry Creditors' AND l.company_id = :comp_id
+        GROUP BY l.ledger_id
+        HAVING net_balance > 0
+    """), {"comp_id": user.company_id})
+
+    for c in creditors_res.all():
+        rem_bal = float(c.net_balance)
+        invoices_res = await db.execute(text("""
+            SELECT v.voucher_date, v.total_amount
+            FROM tally_sync.vouchers v
+            JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+            JOIN tally_sync.voucher_entries e ON v.voucher_id = e.voucher_id
+            WHERE e.ledger_id = :ledger_id AND vt.name = 'Purchase' AND v.is_cancelled = False AND v.is_optional = False
+            ORDER BY v.voucher_date DESC, v.voucher_id DESC
+        """), {"ledger_id": c.ledger_id})
+
+        for inv in invoices_res.all():
+            if rem_bal <= 0:
+                break
+            inv_amt = float(inv.total_amount)
+            allocated = min(rem_bal, inv_amt)
+            days = (today_dt - inv.voucher_date).days if inv.voucher_date else 0
+            bucket = "0-30 Days" if days <= 30 else ("31-60 Days" if days <= 60 else ("61-90 Days" if days <= 90 else "90+ Days"))
+            pay_aging[bucket] += allocated
+            rem_bal -= allocated
+
+        if rem_bal > 0:
+            pay_aging["90+ Days"] += rem_bal
+
+    # 3. Expense Breakdown by Category
+    exp_q = await db.execute(text(f"""
+        SELECT g.name as category, SUM(COALESCE(e.debit_amount, 0) - COALESCE(e.credit_amount, 0)) as amount
+        FROM tally_sync.voucher_entries e
+        JOIN tally_sync.ledgers l ON e.ledger_id = l.ledger_id
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+        WHERE v.company_id = :comp_id AND v.is_cancelled = False {date_where}
+          AND (g.name LIKE '%%Expense%%' OR g.name LIKE '%%Direct%%' OR g.name LIKE '%%Indirect%%' OR g.name LIKE '%%Tax%%' OR g.name LIKE '%%Bank%%')
+        GROUP BY g.name
+        HAVING amount > 0
+        ORDER BY amount DESC
+        LIMIT 6
+    """), params)
+    exp_rows = exp_q.all()
+    expense_breakdown = [
+        {"category": r.category, "amount": float(r.amount or 0.0)}
+        for r in exp_rows
+    ]
+
+    return {
+        "monthly_trend": monthly_trend,
+        "receivables_aging": [{"bucket": k, "amount": v} for k, v in rec_aging.items()],
+        "receivables_aging_details": rec_details,
+        "payables_aging": [{"bucket": k, "amount": v} for k, v in pay_aging.items()],
+        "expense_breakdown": expense_breakdown
+    }
+
+
+@router.get("/top-customers")
+async def get_top_customers(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Return top 10 Debtors ranked by total sales volume within date range."""
+    from sqlalchemy import text
+    date_where = ""
+    params = {"comp_id": user.company_id}
+    if from_date:
+        date_where += " AND v.voucher_date >= :from_date"
+        params["from_date"] = from_date
+    if to_date:
+        date_where += " AND v.voucher_date <= :to_date"
+        params["to_date"] = to_date
+
+    query = await db.execute(text(f"""
+        SELECT l.ledger_id, l.name, l.gstin,
+               COUNT(DISTINCT v.voucher_id) as invoice_count,
+               SUM(COALESCE(e.debit_amount, 0) - COALESCE(e.credit_amount, 0)) as total_sales
+        FROM tally_sync.ledgers l
+        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+        JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
+        JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+        JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+        WHERE l.company_id = :comp_id AND vt.name = 'Sales' AND v.is_cancelled = False {date_where}
+        GROUP BY l.ledger_id, l.name, l.gstin
+        HAVING total_sales > 0
+        ORDER BY total_sales DESC
+        LIMIT 10
+    """), params)
+
+    rows = query.all()
+    return [
+        {
+            "ledger_id": r.ledger_id,
+            "name": r.name,
+            "gstin": r.gstin or "N/A",
+            "invoice_count": r.invoice_count,
+            "total_sales": float(r.total_sales or 0.0),
+            "avg_invoice": float((r.total_sales or 0) / r.invoice_count) if r.invoice_count > 0 else 0.0
+        }
+        for r in rows
+    ]
+
+
+@router.get("/inventory-analytics")
+async def get_inventory_analytics(
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Return inventory valuation by group and top valuable stock items."""
+    from app.models.inventory import MstStockItem
+    
+    stmt = (
+        select(MstStockItem)
+        .options(selectinload(MstStockItem.group), selectinload(MstStockItem.unit))
+        .where(MstStockItem.company_id == user.company_id)
+    )
+    res = await db.execute(stmt)
+    items = res.scalars().all()
+
+    group_valuation = {}
+    group_valuation_gross = {}
+    item_list = []
+
+    for item in items:
+        qty = float(item.closing_qty or 0.0)
+        c_rate = float(item.closing_rate or 0.0)
+        val = float(item.closing_value or (qty * c_rate))
+        rate = c_rate if c_rate > 0 else (val / qty if qty > 0 else float(item.opening_rate or 0.0))
+        
+        gst_percent = float(item.gst_rate_percent or 0.0)
+        if gst_percent == 0.0:
+            gst_percent = 18.0  # standard GST fallback
+            
+        val_gross = val * (1 + gst_percent / 100.0)
+        rate_gross = rate * (1 + gst_percent / 100.0)
+
+        grp_name = item.group.name if item.group else "General Inventory"
+
+        group_valuation[grp_name] = group_valuation.get(grp_name, 0.0) + val
+        group_valuation_gross[grp_name] = group_valuation_gross.get(grp_name, 0.0) + val_gross
+        
+        item_list.append({
+            "item_id": item.stock_item_id,
+            "name": item.name,
+            "group_name": grp_name,
+            "quantity": qty,
+            "uom": item.unit.symbol if item.unit else "PCS",
+            "rate": rate,
+            "rate_gross": rate_gross,
+            "total_value": val,
+            "total_value_gross": val_gross,
+            "gst_rate_percent": gst_percent
+        })
+
+    group_chart = [
+        {"group_name": k, "total_value": v, "total_value_gross": group_valuation_gross.get(k, v)}
+        for k, v in group_valuation.items()
+    ]
+
+    return {
+        "group_valuation": group_chart,
+        "top_items": item_list
+    }
+
