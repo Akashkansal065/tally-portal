@@ -43,3 +43,4 @@ backend/ca.pem
 
 /backend/storage/gstr2b
 .vercel
+/graphify-out

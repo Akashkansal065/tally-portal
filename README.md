@@ -2,38 +2,76 @@
 
 `tally-portal` is a secure, real-time, bidirectional synchronization engine and management portal that bridges local **Tally Prime** ERP installations with a modern cloud-ready Web/Mobile ERP platform. 
 
-It enables businesses to take local offline inventory, ledger balances, and transaction voucher registers and access them dynamically via a Next.js web application, while maintaining perfect database integrity.
+It enables field agents, accountants, sales executives, and managers to access offline inventory, ledger balances, transaction voucher registers, collect payments with camera proofing, record customer orders, track GPS check-ins, file GST returns, and manage daily operations from any device while maintaining database integrity.
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ System Architecture & Staging Database Layer
 
-The application contains three core components:
+The application operates on a hybrid dual-database architecture designed to isolate unvalidated field data from core accounting ledgers until manager approval:
+
+```
+┌─────────────────────────┐          ┌───────────────────────────┐          ┌─────────────────────────┐
+│   Tally Prime (ODBC)    │  XML/TDL │ Tally Sync Daemon Service │ REST API │   FastAPI ERP Backend   │
+│ Local Desktop Instance  │ ◄──────► │ (`tally_sync_daemon.py`)  │ ◄──────► │  Python 3.10 / MySQL    │
+└─────────────────────────┘          └───────────────────────────┘          └────────────┬────────────┘
+                                                                                         │
+                                                                       ┌─────────────────┴─────────────────┐
+                                                                       ▼                                   ▼
+                                                          ┌───────────────────────────┐       ┌───────────────────────────┐
+                                                          │ Core Synced DB            │       │ Portal Staging DB         │
+                                                          │ (`tally_sync`)            │       │ (`mytally_db`)            │
+                                                          │ Synced Ledgers, Vouchers, │       │ Field Orders, Payments,   │
+                                                          │ & Stock Balances          │       │ Check-ins, Attendance     │
+                                                          └───────────────────────────┘       └───────────────────────────┘
+```
+
 1. **Local Tally Prime Server**: Runs locally at the business site with the XML ODBC Server enabled on a designated port (e.g., `9000`).
-2. **Tally Sync Daemon (`tally_sync_daemon.py`)**: A lightweight background service running locally that queries Tally collections using TDL/XML, converts payloads, and pushes incremental data to the ERP backend.
-3. **ERP Cloud Platform (FastAPI & Next.js)**: 
-   - **Backend**: A Python FastAPI REST API connected to a MySQL database that parses Tally XML messages, handles GST return filing & reconciliation, and manages accounts, transactions, and inventory.
-   - **Frontend**: A Next.js Web App featuring a rich, responsive interface for viewing stocks, invoices, GST returns (GSTR-1, GSTR-3B, GSTR-2B, GSTR-9), ledgers, and tracking orders.
+2. **Tally Sync Daemon (`tally_sync_daemon.py`)**: A lightweight background service running locally that queries Tally collections using TDL/XML, converts payloads, and pushes incremental data to the cloud ERP backend.
+3. **Core Synced Database (`tally_sync`)**: Holds real-time read-only snapshots of Tally master ledgers, stock items, vouchers, and opening/closing balances synced from Tally Prime.
+4. **Portal Staging Database (`mytally_db`)**: Stores field-created records (`temp_orders`, `payments`, `attendance_logs`, `shop_checkins`, `manual_purchases`) for administrative review and approval before posting to core Tally tables.
+5. **Next.js Web & Mobile Client (`frontend-nextjs`)**: A responsive interface built with Tailwind CSS, Next.js, and Lucide icons featuring mobile card views and desktop data tables.
 
 ---
 
-## 🚀 Key Features
+## 🚀 Key Features Overview
 
-* **🔄 Bidirectional Tally Sync**: Incremental ledger, transaction voucher, and stock group synchronization with offline Tally Prime setups.
-* **📊 Complete GST Returns & Reconciliation Suite (`/gst`)**:
-  * **GSTR-1 Return Filing**: Auto-aggregates outward sales supplies, tax components (IGST/CGST/SGST), and HSN summary. Export official GSTR-1 JSON files for portal uploading.
-  * **GSTR-3B Government PDF Layout**: Identical mirror of official GST Portal PDF summary (Table 3.1 Outward Taxable Supplies, Table 4 Eligible ITC, Table 5 Exempt/Nil-rated). Number formatting exactly matches government PDF standards (`0.00` without currency symbols or commas).
-  * **GSTR-2B Portal Reconciliation Engine**:
-    * **Direct GST Portal API Sync**: Multi-step OTP authentication flow via GSTN API (Request OTP, Verify OTP, Session Token Management) with live stream terminal & browser console request/response logs.
-    * **Official Portal JSON Import**: Upload & parse official GSTR-2B JSON files (`b2b` and `cdnr` document arrays) with automatic local disk archiving under `storage/gstr2b/`.
-    * **Dual-Pass Smart Matching Engine**: Reconciles GSTR-2B portal entries against Tally purchase vouchers, Manual Purchases, and ITC entries. Matches via invoice/reference numbers or smart fallback matching (Supplier Name/GSTIN + Net Tax Amounts within ₹2.00 tolerance across Fixed Assets, Equipment, Laptops/Printers, and Expenses).
-    * **"+ Add to Books" Quick Action**: 1-click button on unmatched GSTR-2B rows to quickly add company asset/expense purchases (laptops, printers, office supplies, Amazon/Clicktech purchases) into `manual_purchases` table, auto-matching the row and claiming the ITC in GSTR-3B Table 4.
-  * **Manual Purchases Register**: Track, manage, and claim ITC on non-inventory or direct company asset/expense purchases.
-  * **GSTR-9 Annual Return & E-Invoicing**: Annual return generation & e-invoice IRN / QR code management.
-* **📅 Attendance Log Portal**: Daily salesperson clock-in and checkout system. Features live session durations, geolocation verification, and watermarked webcam selfie stamping.
-* **📍 GPS Shop Check-In**: GPS-verified client site check-ins with camera proofing and reverse-geocoded map watermarking overlays.
-* **💼 Expense & Order Management**: Submit and review sales orders and expense claims directly from the field with receipt attachments.
-* **🛡️ Admin Oversight Console**: User access role toggles, granular ledger/stock access scope scopes, and administrator password resets.
+### 💸 1. Field Payment Collection & Watermarked Receipts (`/payments`)
+* **Multi-Mode Support**: Collect payments via **Cash**, **Cheque**, or **UPI**.
+* **Mandatory Receipt Proofing**: Requires photo upload for all payment modes before submission.
+* **Cheque Date Inputs**: Dedicated date column for cheque clearance tracking.
+* **Automated Watermark Stamping**: Uploaded receipts are dynamically stamped with Salesperson Name, Shop Title, Date & Time, and GPS Coordinates.
+* **Review & Approval Workflow**: Pending payments are reviewed by managers to change status to `Approved` or `Cancelled`.
+* **Date & Salesperson Filters**: Default date filter set to the current date (`YYYY-MM-DD`) with clear button for all-time view, plus admin salesperson dropdown filters.
+* **Responsive Layouts**: Desktop Data Table view and compact Mobile Card layout.
+
+### 📦 2. Field Sales Order Creation (`/temporders`)
+* **3-Step Order Wizard**:
+  - **Step 1**: Customer outlet selection (registered Tally ledgers or manual unregistered shop name mode).
+  - **Step 2**: Stock item selection with multi-field instant auto-suggestions (matches product name, brand mapping, parent category, stock group, part number, and HSN code), manual rate entry (no auto-prefilling), 18% GST toggle, and field validation with red highlight indicators (`border-rose-500`) for missing inputs.
+  - **Step 3**: Order narration and confirmation summary.
+* **Order Edit & Expiry Control**: Editable within 30 minutes of creation prior to manager processing.
+
+### 📍 3. GPS Shop Check-In & Visit Tracking (`/check-in`)
+* **Location Verification**: Uses device GPS coordinates for client site check-ins.
+* **Selfie & Proof Stamping**: Camera proof capture with watermarked location overlays.
+* **Interactive Map Links**: Direct Google Maps links generated for every recorded visit.
+* **Visit Logs & Filters**: Date picker filter defaulting to current date, salesperson filter, shop name search bar, and mobile card view.
+
+### 📅 4. Attendance & Geofence Logs (`/attendance`)
+* **Daily Punch-In / Punch-Out**: Tracks salesperson duty duration with real-time timers.
+* **Selfie Stamping & Network Logs**: Geolocation verification, IP address logging, and watermarked selfies.
+
+### 📊 5. Complete GST Returns & Reconciliation Suite (`/gst`)
+* **GSTR-1 Return Filing**: Auto-aggregates outward sales supplies, tax components (IGST/CGST/SGST), and HSN summaries. Exports official GSTR-1 JSON files for portal uploading.
+* **GSTR-3B Government PDF Layout**: Identical mirror of official GST Portal PDF summary (Table 3.1 Outward Taxable Supplies, Table 4 Eligible ITC, Table 5 Exempt/Nil-rated). Number formatting matches government PDF standards (`0.00`).
+* **GSTR-2B Portal Reconciliation Engine**:
+  - **Direct GST Portal API Sync**: Multi-step OTP authentication flow via GSTN API (Request OTP, Verify OTP, Session Token Management) with live stream terminal & browser console request/response logs.
+  - **Official Portal JSON Import**: Upload & parse official GSTR-2B JSON files (`b2b` and `cdnr` document arrays) with automatic local disk archiving under `storage/gstr2b/`.
+  - **Dual-Pass Smart Matching Engine**: Reconciles GSTR-2B portal entries against Tally purchase vouchers, Manual Purchases, and ITC entries. Matches via invoice numbers or smart fallback matching (Supplier Name/GSTIN + Net Tax Amounts within ₹2.00 tolerance across Fixed Assets, Equipment, Laptops/Printers, and Expenses).
+  - **"+ Add to Books" Quick Action**: 1-click button on unmatched GSTR-2B rows to add company asset/expense purchases into `manual_purchases` table, auto-matching the row and claiming ITC in GSTR-3B Table 4.
+* **Manual Purchases Register**: Track, manage, and claim ITC on non-inventory or direct company asset/expense purchases.
+* **GSTR-9 Annual Return & E-Invoicing**: Annual return generation & e-invoice IRN / QR code management.
 
 ---
 
@@ -74,6 +112,53 @@ Administrators can override these standard roles with granular user-specific per
   - `ledgerScope`: Filter ledger accounts visibility (`full` / `dr_only` / `cr_only` / `none`).
   - `stockScope`: Filter stock inventory visibility (`full` / `none`).
   - `allowedStockGroups` / `allowedLedgerGroups`: Limit user data query scopes to specific stock/ledger groups only.
+
+---
+
+## 🔮 Roadmap: Complete Web-Based Tally Operations & Conflict-Free Sync Engine
+
+Currently, temporary orders (`temp_orders`) and field payments (`payments`) are captured in portal staging tables (`mytally_db`). To transform `tally-portal` into a **complete substitute for native Tally Prime desktop operations**, the following feature roadmap and conflict-free synchronization engine will be implemented:
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                           WEB PORTAL FULL TALLY OPERATIONS ROADMAP                        │
+├──────────────────────────┬──────────────────────────┬─────────────────────────────────────┤
+│ 1. Voucher Creation      │ 2. Master Management     │ 3. Advanced Inventory & Warehouse   │
+│  - Sales Invoices        │  - Customer/Supplier     │  - Godown-to-Godown Stock Transfers │
+│  - Purchase Bills        │    Ledgers with GSTIN    │  - Physical Stock Verification      │
+│  - Receipt Vouchers      │  - Stock Item Creation   │  - Delivery Challan & Quotations    │
+│  - Payment Vouchers      │  - Price Lists & Levels  │  - Proforma Invoice Conversions     │
+└──────────────────────────┴──────────────────────────┴─────────────────────────────────────┘
+```
+
+### 1. Bidirectional Voucher Posting Pipeline
+- **Approved Order Posting**: Approved temporary field orders will automatically trigger Tally XML `Sales` / `Sales Order` voucher creation.
+- **Approved Payment Posting**: Approved field payment receipts will post official Tally `Receipt` / `Payment` vouchers.
+- **Direct Web Voucher Entry**: Allow authorized users to create Sales Invoices, Purchase Bills, Credit Notes, and Debit Notes directly from the web application.
+
+### 2. Conflict-Free Data Sync & Concurrency Control
+To prevent data discrepancies between local Tally Prime installations and the Web Portal:
+- **Tally `AlterID` & `MasterID` Lock Tracking**:
+  - Tally assigns an incremental `AlterID` to every master and voucher whenever edited.
+  - Before modifying or posting a record from the web portal, the system checks `tally_alter_id`. If Tally modified the voucher locally in the interim, the portal flags a **Sync Conflict** for admin review rather than overwriting.
+- **Idempotent Voucher Pushing (Client GUID Matching)**:
+  - Web-created vouchers generate a unique UUID / Client GUID (`voucher_guid`).
+  - During Tally XML import (`<VOUCHER REMOTEID="..." VOUCHERKEY="...">`), Tally uses this GUID to ensure that network drops or retry attempts never create duplicate vouchers in Tally.
+- **Conflict Resolution Console**:
+  - A dedicated UI screen for administrators to compare conflicting fields (e.g., local Tally edit vs web portal edit) and choose **"Keep Tally Version"** or **"Push Web Version"**.
+
+### 3. Web Master Creation & Editing
+- **Ledger Master Creation**: Create and edit Customer/Supplier ledgers directly on the web app (GSTIN validation, State, Address, Pincode, Credit Limit, and Group assignment), automatically pushing `<LEDGER>` XML to Tally.
+- **Stock Item & Price Level Management**: Add new stock items, assign HSN codes, UOMs, tax rates, and manage party-wise Price Lists/Levels.
+
+### 4. Inventory & Warehouse Workflows
+- **Godown-to-Godown Stock Transfers**: Record `Stock Journal` vouchers on mobile for shifting stock between warehouses/godowns.
+- **Physical Stock Verification**: Conduct stock counts on mobile devices and generate `Physical Stock` adjustment vouchers in Tally.
+- **Sales Orders & Delivery Challans**: Full workflow supporting Sales Quotation -> Sales Order -> Delivery Note -> Sales Invoice.
+
+### 5. Automated Bank Reconciliation & Gateways
+- **Bank Statement Import**: Import bank e-statements (CSV/Excel) and match against Tally bank vouchers.
+- **Razorpay / UPI Payment Gateway Integration**: Generate dynamic UPI QR codes for invoices with automatic Tally Receipt voucher creation upon payment webhook confirmation.
 
 ---
 
@@ -129,22 +214,18 @@ Administrators can override these standard roles with granular user-specific per
      ERP_PASSWORD=securepassword123
      SYNC_FREQUENCY=120
      ```
-   - **SSL CA Certificate (For Cloud/Aiven Databases)**: 
-     If your MySQL database requires certificate-validated SSL connections (e.g., Aiven MySQL), place your `ca.pem` certificate file directly inside the `backend/` folder. The application is configured to automatically detect and load it, and `.gitignore` ensures it is never pushed to Git.
 
- 5. Initialize the Database and Seed Roles:
-    Create the database schema and run the seed script:
+ 5. Initialize Database and Seed Roles:
     ```bash
     python3 -m app.core.seed
     ```
 
- 6. Seed default Company and Admin:
-    Run the company recreation utility to create company `Sneh Distributors` and the default admin user:
+ 6. Seed Default Company and Admin:
     ```bash
     python3 scratch/reset_companies.py
     ```
 
- 7. Start the FastAPI backend:
+ 7. Start the FastAPI Backend:
     ```bash
     uvicorn app.main:app --reload --port 8000
     ```
@@ -153,7 +234,7 @@ Administrators can override these standard roles with granular user-specific per
 
 ### 3. Frontend Setup
 
-1. Open a new terminal and navigate to the `frontend-nextjs` folder:
+1. Open a new terminal and navigate to `frontend-nextjs`:
    ```bash
    cd frontend-nextjs
    ```
@@ -180,31 +261,14 @@ To run the background sync utility that automatically queries your local Tally P
    ```bash
    python3 scratch/tally_sync_daemon.py
    ```
-   *The daemon will load configuration endpoints and credentials directly from the `backend/.env` file.*
 
 ---
 
-## 🔐 First-time Setup & Logging In
-
-### Option A: Auto-Bootstrap (Recommended for New Installations)
-If the database has zero registered administrator accounts (e.g., brand-new deployment), navigating to `http://localhost:3000/login` will automatically activate the **Bootstrap Setup Wizard**:
-1. Provide your Company Name, Books Start Date, Administrator Name, Email, and Password.
-2. Click **Register & Log In**. This initializes company defaults and registers your main administrator profile.
-3. Once completed, public registration is automatically blocked on both backend and frontend layers.
-
-### Option B: Use Seeded Credentials (If database was seeded)
-If you ran seed scripts, log in using the default administrative credentials:
-* **URL**: [http://localhost:3000/login](http://localhost:3000/login)
-* **Email**: `admin_test@test.com`
-* **Password**: `securepassword123`
-
----
-
-## 🧹 Utilities and Reset Tools
+## 🧹 Maintenance & Reset Tools
 
 The project includes administrative scripts inside `backend/scratch/` for database maintenance:
 
-* **`reset_sync.py`**: Truncates all Tally-synced vouchers, resets the transaction sync AlterIDs to `0`, and rolls back stock item closing balances to their initial opening states.
+* **`reset_sync.py`**: Truncates all Tally-synced vouchers, resets transaction sync AlterIDs to `0`, and rolls back stock item closing balances to their initial opening states.
   ```bash
   python3 scratch/reset_sync.py
   ```
@@ -212,7 +276,7 @@ The project includes administrative scripts inside `backend/scratch/` for databa
   ```bash
   python3 scratch/clear_tally_data.py
   ```
-* **`reset_companies.py`**: Clears and recreates default companies, the default administrator user, and company permissions.
+* **`reset_companies.py`**: Clears and recreates default companies, default administrator users, and company permissions.
   ```bash
   python3 scratch/reset_companies.py
   ```
