@@ -37,6 +37,8 @@ class BillAllocation(Base):
     
     bill = relationship("TrnBill", back_populates="allocations")
 
+from sqlalchemy import Column, Integer, BigInteger, String, Date, Enum, Numeric, DateTime, ForeignKey, Text
+
 class ShopPayment(Base):
     __tablename__ = "shop_payments"
     __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
@@ -45,9 +47,10 @@ class ShopPayment(Base):
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=False)
     amount = Column(Numeric(18, 2), nullable=False)
-    payment_mode = Column(String(64), nullable=False)  # Cash, Cheque, Online
+    payment_mode = Column(String(64), nullable=False)  # Cash, Cheque, Online, etc.
+    cheque_date = Column(Date, nullable=True)
     comments = Column(String(1024), nullable=True)
-    photo_url = Column(String(1024), nullable=True)
+    photo_url = Column(Text, nullable=True)
     status = Column(String(32), default="pending")  # pending, success, cancelled
     created_at = Column(DateTime, server_default=func.now())
 

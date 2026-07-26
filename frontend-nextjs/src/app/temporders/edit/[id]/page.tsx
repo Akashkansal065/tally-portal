@@ -14,7 +14,8 @@ import {
   Trash2, 
   ChevronRight, 
   ChevronLeft,
-  Package
+  Package,
+  AlertCircle
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -62,11 +63,12 @@ export default function EditOrderPage({ params }: EditProps) {
   const [productQuery, setProductQuery] = useState('')
   const [selectedProduct, setSelectedProduct] = useState<StockItem | null>(null)
   const [qty, setQty] = useState<number>(1)
-  const [price, setPrice] = useState<number>(0)
+  const [price, setPrice] = useState<number | ''>('')
   const [hasGst, setHasGst] = useState(true)
   const [cart, setCart] = useState<CartItem[]>([])
   const [showProductDropdown, setShowProductDropdown] = useState(false)
   const productDropdownRef = useRef<HTMLDivElement>(null)
+  const [itemErrors, setItemErrors] = useState<{ product?: string; qty?: string; price?: string }>({})
 
   // Narration
   const [narration, setNarration] = useState('')
@@ -154,29 +156,48 @@ export default function EditOrderPage({ params }: EditProps) {
 
   // Filtered Products
   const filteredProducts = useMemo(() => {
-    if (productQuery.trim().length < 2) return []
-    const lowerQuery = productQuery.toLowerCase()
+    if (productQuery.trim().length < 1) return []
+    const lowerQuery = productQuery.toLowerCase().trim()
     return cachedProducts.filter(p => {
       const mapping = p.name ? getProductDetails(p.name, p.parent || '') : null
       const brandStr = mapping?.brand?.toLowerCase() || ''
       const subtitleStr = mapping?.subtitle?.toLowerCase() || ''
+      const parentStr = p.parent?.toLowerCase() || ''
+      const groupStr = (p as any).group_name?.toLowerCase() || ''
       return p.name.toLowerCase().includes(lowerQuery) || 
              brandStr.includes(lowerQuery) || 
-             subtitleStr.includes(lowerQuery)
-    }).slice(0, 15)
+             subtitleStr.includes(lowerQuery) ||
+             parentStr.includes(lowerQuery) ||
+             groupStr.includes(lowerQuery)
+    }).slice(0, 30)
   }, [productQuery, cachedProducts])
 
-  // Handle Add Item to Cart
+  // Handle Add Item to Cart with field validation
   const handleAddItem = () => {
-    if (!selectedProduct) return
-    if (qty <= 0) return
+    const errs: { product?: string; qty?: string; price?: string } = {}
 
+    if (!selectedProduct) {
+      errs.product = 'Please search and select a stock item'
+    }
+    if (!qty || qty <= 0) {
+      errs.qty = 'Quantity must be at least 1'
+    }
+    if (price === '' || Number(price) <= 0) {
+      errs.price = 'Please enter a valid rate'
+    }
+
+    if (!selectedProduct || !qty || qty <= 0 || price === '' || Number(price) <= 0) {
+      setItemErrors(errs)
+      return
+    }
+
+    setItemErrors({})
     const newItem: CartItem = {
       cartItemId: Math.random().toString(36).substring(2, 9),
       stock_item_id: selectedProduct.item_id,
       name: selectedProduct.name,
       qty,
-      price,
+      price: Number(price),
       has_gst: hasGst,
     }
 
@@ -184,7 +205,7 @@ export default function EditOrderPage({ params }: EditProps) {
     setProductQuery('')
     setSelectedProduct(null)
     setQty(1)
-    setPrice(0)
+    setPrice('')
     setHasGst(true)
   }
 
@@ -429,13 +450,23 @@ export default function EditOrderPage({ params }: EditProps) {
                       setProductQuery(e.target.value)
                       setShowProductDropdown(true)
                       if (selectedProduct) setSelectedProduct(null)
+                      if (itemErrors.product) setItemErrors(prev => ({ ...prev, product: undefined }))
                     }}
                     onFocus={() => setShowProductDropdown(true)}
-                    className="w-full pl-9 pr-3 py-2.5 bg-muted/40 border border-border rounded-xl text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    className={cn(
+                      "w-full pl-9 pr-3 py-2.5 bg-muted/40 border rounded-xl text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all",
+                      itemErrors.product ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-500/5" : "border-border"
+                    )}
                   />
                 </div>
 
-                {showProductDropdown && productQuery.trim().length >= 2 && (
+                {itemErrors.product && (
+                  <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1 mt-1">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {itemErrors.product}
+                  </p>
+                )}
+
+                {showProductDropdown && productQuery.trim().length >= 1 && (
                   <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto divide-y divide-border/50">
                     {filteredProducts.length === 0 ? (
                       <p className="p-3 text-xs text-muted-foreground text-center">No products found</p>
@@ -449,8 +480,9 @@ export default function EditOrderPage({ params }: EditProps) {
                             onClick={() => {
                               setSelectedProduct(product)
                               setProductQuery(toTitleCase(product.name))
-                              setPrice(product.closing_rate || 0)
+                              setPrice('')
                               setShowProductDropdown(false)
+                              setItemErrors(prev => ({ ...prev, product: undefined }))
                             }}
                             className="w-full text-left p-3 hover:bg-muted text-xs text-foreground flex flex-col gap-0.5"
                           >
@@ -482,9 +514,20 @@ export default function EditOrderPage({ params }: EditProps) {
                     type="number"
                     min="1"
                     value={qty || ''}
-                    onChange={e => setQty(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-muted/40 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    onChange={e => {
+                      setQty(Number(e.target.value))
+                      if (itemErrors.qty) setItemErrors(prev => ({ ...prev, qty: undefined }))
+                    }}
+                    className={cn(
+                      "w-full px-3 py-2 bg-muted/40 border rounded-xl text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all",
+                      itemErrors.qty ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-500/5" : "border-border"
+                    )}
                   />
+                  {itemErrors.qty && (
+                    <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {itemErrors.qty}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Rate (₹/ea)</label>
@@ -492,10 +535,22 @@ export default function EditOrderPage({ params }: EditProps) {
                     type="number"
                     min="0"
                     step="0.01"
-                    value={price || ''}
-                    onChange={e => setPrice(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-muted/40 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="Enter Rate..."
+                    value={price}
+                    onChange={e => {
+                      setPrice(e.target.value === '' ? '' : Number(e.target.value))
+                      if (itemErrors.price) setItemErrors(prev => ({ ...prev, price: undefined }))
+                    }}
+                    className={cn(
+                      "w-full px-3 py-2 bg-muted/40 border rounded-xl text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all",
+                      itemErrors.price ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-500/5" : "border-border"
+                    )}
                   />
+                  {itemErrors.price && (
+                    <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {itemErrors.price}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -518,9 +573,8 @@ export default function EditOrderPage({ params }: EditProps) {
 
               <button
                 type="button"
-                disabled={!selectedProduct || qty <= 0}
                 onClick={handleAddItem}
-                className="w-full py-2.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-600 hover:text-white font-bold rounded-xl text-xs transition-all border border-emerald-500/20 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-emerald-500/10 flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]"
               >
                 <Plus className="h-4 w-4" /> Add Item
               </button>

@@ -10,6 +10,7 @@ from app.models.payment import TrnBill
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
+from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.models.user import User, Module
 from app.models.voucher import MstVoucherType, TrnVoucher, TrnAccounting, ApprovalRule, ApprovalRequest, AuditLog
 from app.models.ledger import MstLedger
@@ -230,6 +231,7 @@ async def create_voucher(
     if is_held_for_approval:
         response.status_code = status.HTTP_202_ACCEPTED
         
+    clear_company_cache(user.company_id)
     return final_voucher
 
 def _resolve_party_and_amount(entries):
@@ -291,24 +293,54 @@ def _resolve_party_and_amount(entries):
 @router.get("", response_model=List[VoucherListResponse])
 async def get_vouchers(
     is_optional: Optional[bool] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    date: Optional[str] = None,
+    ledger_id: Optional[int] = None,
+    party_name: Optional[str] = None,
+    voucher_type: Optional[str] = None,
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
+    cache_key = f"vouchers_list_{is_optional}_{from_date}_{to_date}_{date}_{ledger_id}_{party_name}_{voucher_type}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
     ).where(TrnVoucher.company_id == user.company_id)
+
     if is_optional is not None:
         stmt = stmt.where(TrnVoucher.is_optional == is_optional)
+
+    from datetime import date as dt_date
+    if date:
+        stmt = stmt.where(TrnVoucher.voucher_date == dt_date.fromisoformat(date))
+    if from_date:
+        stmt = stmt.where(TrnVoucher.voucher_date >= dt_date.fromisoformat(from_date))
+    if to_date:
+        stmt = stmt.where(TrnVoucher.voucher_date <= dt_date.fromisoformat(to_date))
+
+    if voucher_type:
+        stmt = stmt.join(MstVoucherType).where(MstVoucherType.name == voucher_type)
+
+    if ledger_id:
+        stmt = stmt.join(TrnAccounting).where(TrnAccounting.ledger_id == ledger_id)
+
     stmt = stmt.order_by(TrnVoucher.voucher_date.desc(), TrnVoucher.voucher_id.desc())
     res = await db.execute(stmt)
     vouchers = res.scalars().all()
 
     result = []
     for v in vouchers:
-        party_name, amount = _resolve_party_and_amount(v.entries)
+        resolved_party, amount = _resolve_party_and_amount(v.entries)
         if amount == 0:
             continue
+        if party_name and party_name.lower() not in resolved_party.lower():
+            continue
+
         result.append({
             "voucher_id": v.voucher_id,
             "date": str(v.voucher_date),
@@ -316,10 +348,12 @@ async def get_vouchers(
             "voucher_number": v.voucher_number,
             "reference_number": v.reference_number,
             "narration": v.narration,
-            "party_name": party_name,
+            "party_name": resolved_party,
             "amount": amount,
             "total_amount": float(v.total_amount or 0),
         })
+
+    set_cached_response(user.company_id, cache_key, result)
     return result
 
 @router.get("/{voucher_id}")
@@ -328,6 +362,11 @@ async def get_voucher_detail(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
+    cache_key = f"voucher_detail_{voucher_id}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
@@ -342,7 +381,6 @@ async def get_voucher_detail(
 
     party_name, amount = _resolve_party_and_amount(voucher.entries)
 
-    # Build entries list with ledger names
     entries = []
     for entry in voucher.entries:
         ledger = getattr(entry, "ledger", None)
@@ -355,7 +393,6 @@ async def get_voucher_detail(
             "entry_type": "Debit" if debit > 0 else "Credit",
         })
 
-    # Fetch inventory entries
     from app.models.inventory import TrnInventory, MstStockItem
     inv_stmt = select(TrnInventory).options(
         selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit)
@@ -393,7 +430,6 @@ async def get_voucher_detail(
             "amount": amt,
         })
 
-    # Fetch party ledger details
     party_ledger = None
     if party_name:
         party_stmt = select(MstLedger).where(
@@ -417,7 +453,6 @@ async def get_voucher_detail(
                 "mobile": mobile_val,
             }
 
-    # Map entries for UI accounts list: rename keys to match tally-web details client expectations and deduplicate
     accounts_mapped = []
     seen = set()
     for entry in entries:
@@ -432,13 +467,11 @@ async def get_voucher_detail(
             "amount": amt
         })
 
-    # Fetch company active environment
     from app.models.company import Company
     comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
     company = comp_q.scalars().first()
     active_env = company.einvoice_env if company else "mock"
 
-    # Fetch e-invoice metadata
     from app.models.advanced import EinvoiceMetadata
     meta_stmt = select(EinvoiceMetadata).where(
         EinvoiceMetadata.voucher_id == voucher_id,
@@ -456,7 +489,7 @@ async def get_voucher_detail(
             "eway_bill_date": str(meta.eway_bill_date) if meta.eway_bill_date else None,
         }
 
-    return {
+    output = {
         "voucher_id": voucher.voucher_id,
         "date": str(voucher.voucher_date),
         "voucher_type": voucher.voucher_type.name if voucher.voucher_type else "Unknown",
@@ -473,6 +506,9 @@ async def get_voucher_detail(
         "party_ledger": party_ledger,
         "einvoice_metadata": einvoice_metadata,
     }
+
+    set_cached_response(user.company_id, cache_key, output)
+    return output
 
 # --- Rules ---
 

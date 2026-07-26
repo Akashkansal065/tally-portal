@@ -169,6 +169,7 @@ class CollectRequest(BaseModel):
     ledger_id: int
     amount: float
     payment_mode: str
+    cheque_date: Optional[str] = None
     comments: Optional[str] = None
     photo_base64: Optional[str] = None
 
@@ -181,12 +182,28 @@ async def collect_payment(
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0")
 
+    # Photo proof is mandatory for ALL payment modes
+    if not req.photo_base64 or not req.photo_base64.strip():
+        raise HTTPException(status_code=400, detail="Receipt photo proof is mandatory for all payment collections.")
+
+    # Cheque date validation if payment mode is Cheque
+    cheque_dt = None
+    if req.payment_mode.lower() == "cheque":
+        if not req.cheque_date:
+            raise HTTPException(status_code=400, detail="Cheque date is mandatory when payment mode is Cheque.")
+        try:
+            cheque_dt = datetime.strptime(req.cheque_date, "%Y-%m-%d").date()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid cheque date format. Use YYYY-MM-DD.")
+
     payment = ShopPayment(
         user_id=user.user_id,
         ledger_id=req.ledger_id,
         amount=req.amount,
         payment_mode=req.payment_mode,
+        cheque_date=cheque_dt,
         comments=req.comments[:1024] if req.comments else None,
+        photo_url=req.photo_base64,
         status="pending",
     )
     db.add(payment)
@@ -214,8 +231,10 @@ async def get_payment_history(
             "ledger_name": p.ledger.name if p.ledger else "Unknown Party",
             "amount": float(p.amount),
             "payment_mode": p.payment_mode,
+            "cheque_date": p.cheque_date.isoformat() if p.cheque_date else None,
             "comments": p.comments,
             "status": p.status,
+            "photo_url": p.photo_url,
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "user_name": p.user.username if p.user else "Salesperson",
         }
@@ -242,8 +261,10 @@ async def get_all_payments(
             "ledger_name": p.ledger.name if p.ledger else "Unknown Party",
             "amount": float(p.amount),
             "payment_mode": p.payment_mode,
+            "cheque_date": p.cheque_date.isoformat() if p.cheque_date else None,
             "comments": p.comments,
             "status": p.status,
+            "photo_url": p.photo_url,
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "user_name": p.user.username if p.user else "Salesperson",
         }

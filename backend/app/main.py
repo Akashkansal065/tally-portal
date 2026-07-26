@@ -1,10 +1,25 @@
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
-from app.routers import auth, ledgers, vouchers, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance
+from app.routers import auth, ledgers, vouchers, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health
+
+async def db_keep_alive_task(interval_seconds: int = 120):
+    """Background task running every 2 minutes to keep the DB connection pool active."""
+    print(f"Starting DB Keep-Alive background worker (interval: {interval_seconds}s)...")
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            async with AsyncSessionLocal() as session:
+                await session.execute(text("SELECT 1"))
+        except asyncio.CancelledError:
+            print("DB Keep-Alive background worker stopped.")
+            break
+        except Exception as e:
+            print(f"Warning: DB Keep-Alive ping encountered an error: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -16,7 +31,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
-    # 2. Seed global default roles, modules, permissions
+    # 3. Seed global default roles, modules, permissions
     async with AsyncSessionLocal() as session:
         roles_count = (await session.execute(text("SELECT COUNT(*) FROM roles"))).scalar()
         if roles_count == 0:
@@ -31,8 +46,15 @@ async def lifespan(app: FastAPI):
             
             async with engine.begin() as conn:
                 await conn.run_sync(sync_seed)
+
+    # 4. Start background DB keep-alive worker task (pings every 2 minutes)
+    keep_alive_task = asyncio.create_task(db_keep_alive_task(120))
                 
-    yield
+    try:
+        yield
+    finally:
+        keep_alive_task.cancel()
+        await asyncio.gather(keep_alive_task, return_exceptions=True)
 
 app = FastAPI(title="Open Tally-Clone API", version="1.0.0", lifespan=lifespan)
 
@@ -45,6 +67,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(ledgers.router)
 app.include_router(vouchers.router)

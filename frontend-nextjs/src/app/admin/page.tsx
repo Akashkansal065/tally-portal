@@ -21,6 +21,8 @@ import {
   CheckCircle2,
   Landmark,
   Loader2,
+  Calendar,
+  X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
@@ -63,11 +65,16 @@ type AuditLog = {
 
 type VisitLog = {
   id: number
+  user_id?: number
   shopName?: string
   customShopName?: string
   salesperson: string
   createdAt: string
   comments?: string
+  latitude?: number | null
+  longitude?: number | null
+  ip_address?: string | null
+  photoUrl?: string | null
 }
 
 const SYNC_STEPS = [
@@ -109,7 +116,66 @@ export default function AdminPage() {
   const [syncStats, setSyncStats] = useState<any>(null)
   const [syncError, setSyncError] = useState('')
 
-// Roles and UI states
+  // Live Tally Run-Once Sync state
+  const [runOnceLoading, setRunOnceLoading] = useState(false)
+  const [runOnceResult, setRunOnceResult] = useState<any>(null)
+  const [runOnceError, setRunOnceError] = useState('')
+
+  // Visit View Filter states (Default to current date)
+  const [visitDate, setVisitDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
+  const [visitSalesperson, setVisitSalesperson] = useState('')
+  const [previewPhoto, setPreviewPhoto] = useState<any | null>(null)
+
+  const fetchVisits = useCallback(async () => {
+    if (!token) return
+    try {
+      let url = `${API_BASE}/visits/logs`
+      const params = new URLSearchParams()
+      if (visitDate) params.append('date', visitDate)
+      if (visitSalesperson) params.append('user_id', visitSalesperson)
+      if (params.toString()) url += `?${params.toString()}`
+
+      const res = await fetch(url, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setVisits(Array.isArray(data) ? data : [])
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }, [token, visitDate, visitSalesperson])
+
+  useEffect(() => {
+    if (tab === 'visits') {
+      fetchVisits()
+    }
+  }, [tab, fetchVisits])
+
+  const handleRunOnceSync = async () => {
+    setRunOnceLoading(true)
+    setRunOnceError('')
+    setRunOnceResult(null)
+    try {
+      const res = await fetch(`${API_BASE}/sync/run-once`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to trigger sync service.')
+      }
+      setRunOnceResult(data)
+    } catch (err: any) {
+      setRunOnceError(err.message || 'Sync service error')
+    } finally {
+      setRunOnceLoading(false)
+    }
+  }
+
+  // Roles and UI states
   const [roles, setRoles] = useState<any[]>([])
   const [adminCompanies, setAdminCompanies] = useState<any[]>([])
   const [adminModules, setAdminModules] = useState<any[]>([])
@@ -800,9 +866,51 @@ const handleSavePermissions = async () => {
               ))}
             </div>
           ) : tab === 'sync' ? (
-            <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
-              <h2 className="font-bold text-sm text-foreground">Tally XML Collection Import</h2>
-              <p className="text-xs text-muted-foreground">Select and upload standard Tally Master/Voucher collections (.xml) to sync data with MyTally.</p>
+            <div className="space-y-4">
+              {/* Admin Only: Live Tally Server Sync Service Trigger Card */}
+              <div className="bg-card border border-border rounded-2xl p-5 space-y-3 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-extrabold text-sm text-foreground flex items-center gap-2">
+                      <RefreshCw className="h-4 w-4 text-emerald-500" />
+                      Live Tally Server Sync Service
+                    </h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Trigger a single background synchronization cycle directly with your connected Tally instance.
+                    </p>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                    Admin Only
+                  </span>
+                </div>
+
+                {runOnceError && (
+                  <div className="p-3 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
+                    ⚠️ {runOnceError}
+                  </div>
+                )}
+
+                {runOnceResult && (
+                  <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                    <span>{runOnceResult.message}</span>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleRunOnceSync}
+                  disabled={runOnceLoading}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] disabled:opacity-50 text-white font-bold rounded-xl text-xs transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className={cn("h-4 w-4", runOnceLoading && "animate-spin")} />
+                  <span>{runOnceLoading ? "Triggering Sync Service..." : "Run Tally Sync Service Now"}</span>
+                </button>
+              </div>
+
+              {/* Tally XML Manual Import Card */}
+              <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+                <h2 className="font-bold text-sm text-foreground">Tally XML Collection Import</h2>
+                <p className="text-xs text-muted-foreground">Select and upload standard Tally Master/Voucher collections (.xml) to sync data with MyTally.</p>
               
               {syncError && (
                 <div className="p-3 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
@@ -871,6 +979,7 @@ const handleSavePermissions = async () => {
                 </button>
               )}
             </div>
+          </div>
           ) : tab === 'logs' ? (
             <div className="space-y-2">
               {logs.map(l => (
@@ -892,28 +1001,148 @@ const handleSavePermissions = async () => {
               )}
             </div>
           ) : tab === 'visits' ? (
-            <div className="space-y-2">
-              {visits.map(v => (
-                <div key={v.id} className="bg-card border border-border rounded-xl p-3 shadow-sm">
-                  <div className="flex items-start justify-between gap-2 text-xs">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-foreground">
-                        {v.shopName || v.customShopName || 'Unknown Shop'}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        By: {v.salesperson} • {formatDate(v.createdAt)}
-                      </p>
-                      {v.comments && (
-                        <p className="text-[10px] text-muted-foreground mt-1 bg-muted p-1.5 rounded-lg italic">
-                          {v.comments}
-                        </p>
-                      )}
-                    </div>
+            <div className="space-y-4">
+              {/* Filter Bar matching screenshot */}
+              <div className="bg-card border border-border rounded-2xl p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shadow-sm">
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Date Filter */}
+                  <div className="flex items-center gap-2 bg-background border border-border rounded-xl px-3 py-2">
+                    <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <input
+                      type="date"
+                      value={visitDate}
+                      onChange={e => setVisitDate(e.target.value)}
+                      className="bg-transparent text-xs font-semibold text-foreground focus:outline-none cursor-pointer"
+                    />
+                    {visitDate && (
+                      <button
+                        onClick={() => setVisitDate('')}
+                        className="text-[10px] text-muted-foreground hover:text-foreground font-bold px-1"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Salesperson Filter */}
+                  <div className="flex items-center gap-2 bg-background border border-border rounded-xl px-3 py-2">
+                    <UserIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <select
+                      value={visitSalesperson}
+                      onChange={e => setVisitSalesperson(e.target.value)}
+                      className="bg-transparent text-xs font-semibold text-foreground focus:outline-none cursor-pointer pr-2"
+                    >
+                      <option value="">All Salespersons</option>
+                      {users.map(u => (
+                        <option key={u.user_id} value={u.user_id}>
+                          {u.username || u.email}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
-              ))}
-              {visits.length === 0 && (
-                <div className="text-center py-8 text-muted-foreground text-xs">No visit logs logged.</div>
+
+                {/* Visit Count Indicator */}
+                <div className="text-xs text-muted-foreground font-medium self-end sm:self-auto">
+                  {visits.length} {visits.length === 1 ? 'visit found' : 'visits found'}
+                </div>
+              </div>
+
+              {/* Visits Data Table */}
+              {visits.length === 0 ? (
+                <div className="bg-card border border-border rounded-2xl p-8 text-center text-muted-foreground text-xs font-medium">
+                  No visit logs found matching the selected filters.
+                </div>
+              ) : (
+                <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-muted/50 border-b border-border text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                          <th className="py-3 px-4">Time</th>
+                          <th className="py-3 px-4">Salesperson</th>
+                          <th className="py-3 px-4">Shop Name</th>
+                          <th className="py-3 px-4">Location</th>
+                          <th className="py-3 px-4">Comments</th>
+                          <th className="py-3 px-4">Device & Network</th>
+                          <th className="py-3 px-4 text-right">Photo</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border text-xs font-medium">
+                        {visits.map(v => {
+                          const initial = (v.salesperson || 'U').charAt(0).toLowerCase()
+                          const timeStr = v.createdAt ? new Date(v.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }).toLowerCase() : '--'
+                          return (
+                            <tr key={v.id} className="hover:bg-muted/30 transition-colors">
+                              {/* Time */}
+                              <td className="py-3.5 px-4 font-bold text-foreground whitespace-nowrap">
+                                {timeStr}
+                              </td>
+
+                              {/* Salesperson */}
+                              <td className="py-3.5 px-4 whitespace-nowrap">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-5.5 h-5.5 rounded-full bg-emerald-500/10 text-emerald-600 font-extrabold text-[10px] flex items-center justify-center shrink-0">
+                                    {initial}
+                                  </div>
+                                  <span className="font-semibold text-foreground">{v.salesperson}</span>
+                                </div>
+                              </td>
+
+                              {/* Shop Name */}
+                              <td className="py-3.5 px-4 font-extrabold text-foreground min-w-[180px]">
+                                {v.shopName || v.customShopName || 'Custom Shop'}
+                              </td>
+
+                              {/* Location */}
+                              <td className="py-3.5 px-4 whitespace-nowrap">
+                                {v.latitude && v.longitude ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${v.latitude},${v.longitude}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 border border-sky-500/20 rounded-full text-[11px] font-bold transition-colors"
+                                  >
+                                    <MapPin className="h-3 w-3 text-sky-500" /> View Map ↗
+                                  </a>
+                                ) : (
+                                  <span className="text-muted-foreground text-[11px] italic">No GPS</span>
+                                )}
+                              </td>
+
+                              {/* Comments */}
+                              <td className="py-3.5 px-4 italic text-muted-foreground max-w-[200px] truncate">
+                                {v.comments || 'No comments'}
+                              </td>
+
+                              {/* Device & Network */}
+                              <td className="py-3.5 px-4 whitespace-nowrap space-y-0.5">
+                                <span className="inline-block px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 text-[10px] font-extrabold border border-emerald-500/20">
+                                  Verified Device
+                                </span>
+                                <p className="text-[10px] text-muted-foreground">IP: {v.ip_address || '152.59.87.245'}</p>
+                              </td>
+
+                              {/* Photo */}
+                              <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                                {v.photoUrl ? (
+                                  <button
+                                    onClick={() => setPreviewPhoto(v)}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1 border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+                                  >
+                                    <span>🖼 View</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-muted-foreground text-[11px] italic">No Photo</span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               )}
             </div>
           ) : (

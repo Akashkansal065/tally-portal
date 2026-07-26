@@ -6,7 +6,7 @@ from typing import List, Optional
 from datetime import datetime, date
 
 from app.core.database import get_db
-from app.core.permissions import require_permission
+from app.core.permissions import require_permission, get_current_user
 from app.models.user import User
 from app.models.inventory import (
     MstUom, MstStockGroup, MstStockCategory, MstGodown, MstStockItem,
@@ -216,7 +216,7 @@ async def create_stock_item(
 
 @router.get("/items", response_model=List[StockItemResponse])
 async def get_stock_items(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     from decimal import Decimal

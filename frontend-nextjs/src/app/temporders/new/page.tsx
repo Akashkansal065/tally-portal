@@ -15,7 +15,8 @@ import {
   ShoppingCart, 
   ChevronRight, 
   ChevronLeft,
-  Package
+  Package,
+  AlertCircle
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -29,7 +30,7 @@ interface CartItem {
 }
 
 type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
-type StockItem = { item_id: number; name: string; closing_rate: number; parent?: string }
+type StockItem = { item_id: number; name: string; closing_rate: number; parent?: string; part_number?: string; hsn_code?: string }
 
 export default function NewOrderPage() {
   const { user, token } = useAuth()
@@ -56,31 +57,31 @@ export default function NewOrderPage() {
   const [productQuery, setProductQuery] = useState('')
   const [selectedProduct, setSelectedProduct] = useState<StockItem | null>(null)
   const [qty, setQty] = useState<number>(1)
-  const [price, setPrice] = useState<number>(0)
+  const [price, setPrice] = useState<number | ''>('')
   const [hasGst, setHasGst] = useState(true)
   const [cart, setCart] = useState<CartItem[]>([])
   const [showProductDropdown, setShowProductDropdown] = useState(false)
   const productDropdownRef = useRef<HTMLDivElement>(null)
+  const [itemErrors, setItemErrors] = useState<{ product?: string; qty?: string; price?: string }>({})
 
   // Narration
   const [narration, setNarration] = useState('')
 
+  // Fetch initial ledgers & stock items cache
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    
-    // Fetch cache
-    fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) })
-      .then(r => r.json())
-      .then(data => {
-        const customers = Array.isArray(data) ? data.filter((l: any) => l.is_customer) : []
-        setCachedShops(customers)
-      })
 
-    fetch(`${API_BASE}/inventory/items`, { headers: authHeaders(token) })
-      .then(r => r.json())
-      .then(data => {
-        setCachedProducts(Array.isArray(data) ? data : [])
+    Promise.all([
+      fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()),
+      fetch(`${API_BASE}/inventory/items`, { headers: authHeaders(token) }).then(r => r.json())
+    ])
+      .then(([ledgersData, stocksData]) => {
+        const customers = Array.isArray(ledgersData) ? ledgersData.filter((l: any) => l.is_customer) : []
+        setCachedShops(customers)
+        setCachedProducts(Array.isArray(stocksData) ? stocksData : [])
       })
+      .catch(err => console.error('Failed to load initial cache:', err))
+      .finally(() => setLoading(false))
   }, [user, token, router])
 
   // Handle clicking outside dropdowns
@@ -97,39 +98,64 @@ export default function NewOrderPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Filtered Shops
+  // Filtered Shops & Products
   const filteredShops = useMemo(() => {
-    if (shopQuery.trim().length < 2) return []
+    if (shopQuery.trim().length < 1) return []
+    const q = shopQuery.toLowerCase().trim()
     return cachedShops.filter(s =>
-      s.name.toLowerCase().includes(shopQuery.toLowerCase())
+      s.name.toLowerCase().includes(q)
     ).slice(0, 15)
   }, [shopQuery, cachedShops])
 
-  // Filtered Products
   const filteredProducts = useMemo(() => {
-    if (productQuery.trim().length < 2) return []
-    const lowerQuery = productQuery.toLowerCase()
+    if (productQuery.trim().length < 1) return []
+    const q = productQuery.toLowerCase().trim()
     return cachedProducts.filter(p => {
       const mapping = p.name ? getProductDetails(p.name, p.parent || '') : null
       const brandStr = mapping?.brand?.toLowerCase() || ''
       const subtitleStr = mapping?.subtitle?.toLowerCase() || ''
-      return p.name.toLowerCase().includes(lowerQuery) || 
-             brandStr.includes(lowerQuery) || 
-             subtitleStr.includes(lowerQuery)
-    }).slice(0, 15)
+      const parentStr = p.parent?.toLowerCase() || ''
+      const groupStr = (p as any).group_name?.toLowerCase() || ''
+      const nameStr = p.name ? p.name.toLowerCase() : ''
+      const partStr = p.part_number ? p.part_number.toLowerCase() : ''
+      const hsnStr = p.hsn_code ? p.hsn_code.toLowerCase() : ''
+
+      return nameStr.includes(q) || 
+             brandStr.includes(q) || 
+             subtitleStr.includes(q) || 
+             parentStr.includes(q) || 
+             groupStr.includes(q) ||
+             partStr.includes(q) ||
+             hsnStr.includes(q)
+    }).slice(0, 30)
   }, [productQuery, cachedProducts])
 
-  // Handle Add Item to Cart
+  // Handle Add Item to Cart with field validation
   const handleAddItem = () => {
-    if (!selectedProduct) return
-    if (qty <= 0) return
+    const errs: { product?: string; qty?: string; price?: string } = {}
 
+    if (!selectedProduct) {
+      errs.product = 'Please search and select a stock item'
+    }
+    if (!qty || qty <= 0) {
+      errs.qty = 'Quantity must be at least 1'
+    }
+    if (price === '' || Number(price) <= 0) {
+      errs.price = 'Please enter a valid rate'
+    }
+
+    if (!selectedProduct || !qty || qty <= 0 || price === '' || Number(price) <= 0) {
+      setItemErrors(errs)
+      return
+    }
+
+    setItemErrors({})
     const newItem: CartItem = {
       cartItemId: Math.random().toString(36).substring(2, 9),
       stock_item_id: selectedProduct.item_id,
       name: selectedProduct.name,
       qty,
-      price,
+      price: Number(price),
       has_gst: hasGst,
     }
 
@@ -137,7 +163,7 @@ export default function NewOrderPage() {
     setProductQuery('')
     setSelectedProduct(null)
     setQty(1)
-    setPrice(0)
+    setPrice('')
     setHasGst(true)
   }
 
@@ -374,13 +400,23 @@ export default function NewOrderPage() {
                       setProductQuery(e.target.value)
                       setShowProductDropdown(true)
                       if (selectedProduct) setSelectedProduct(null)
+                      if (itemErrors.product) setItemErrors(prev => ({ ...prev, product: undefined }))
                     }}
                     onFocus={() => setShowProductDropdown(true)}
-                    className="w-full pl-9 pr-3 py-2.5 bg-muted/40 border border-border rounded-xl text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    className={cn(
+                      "w-full pl-9 pr-3 py-2.5 bg-muted/40 border rounded-xl text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all",
+                      itemErrors.product ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-500/5" : "border-border"
+                    )}
                   />
                 </div>
 
-                {showProductDropdown && productQuery.trim().length >= 2 && (
+                {itemErrors.product && (
+                  <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1 mt-1">
+                    <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {itemErrors.product}
+                  </p>
+                )}
+
+                {showProductDropdown && productQuery.trim().length >= 1 && (
                   <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto divide-y divide-border/50">
                     {filteredProducts.length === 0 ? (
                       <p className="p-3 text-xs text-muted-foreground text-center">No products found</p>
@@ -394,8 +430,9 @@ export default function NewOrderPage() {
                             onClick={() => {
                               setSelectedProduct(product)
                               setProductQuery(toTitleCase(product.name))
-                              setPrice(product.closing_rate || 0)
+                              setPrice('')
                               setShowProductDropdown(false)
+                              setItemErrors(prev => ({ ...prev, product: undefined }))
                             }}
                             className="w-full text-left p-3 hover:bg-muted text-xs text-foreground flex flex-col gap-0.5"
                           >
@@ -427,9 +464,20 @@ export default function NewOrderPage() {
                     type="number"
                     min="1"
                     value={qty || ''}
-                    onChange={e => setQty(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-muted/40 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    onChange={e => {
+                      setQty(Number(e.target.value))
+                      if (itemErrors.qty) setItemErrors(prev => ({ ...prev, qty: undefined }))
+                    }}
+                    className={cn(
+                      "w-full px-3 py-2 bg-muted/40 border rounded-xl text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all",
+                      itemErrors.qty ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-500/5" : "border-border"
+                    )}
                   />
+                  {itemErrors.qty && (
+                    <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {itemErrors.qty}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Rate (₹/ea)</label>
@@ -437,10 +485,22 @@ export default function NewOrderPage() {
                     type="number"
                     min="0"
                     step="0.01"
-                    value={price || ''}
-                    onChange={e => setPrice(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-muted/40 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="Enter Rate..."
+                    value={price}
+                    onChange={e => {
+                      setPrice(e.target.value === '' ? '' : Number(e.target.value))
+                      if (itemErrors.price) setItemErrors(prev => ({ ...prev, price: undefined }))
+                    }}
+                    className={cn(
+                      "w-full px-3 py-2 bg-muted/40 border rounded-xl text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all",
+                      itemErrors.price ? "border-rose-500 ring-2 ring-rose-500/20 bg-rose-500/5" : "border-border"
+                    )}
                   />
+                  {itemErrors.price && (
+                    <p className="text-[11px] font-bold text-rose-500 flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {itemErrors.price}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -463,9 +523,8 @@ export default function NewOrderPage() {
 
               <button
                 type="button"
-                disabled={!selectedProduct || qty <= 0}
                 onClick={handleAddItem}
-                className="w-full py-2.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-600 hover:text-white font-bold rounded-xl text-xs transition-all border border-emerald-500/20 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-emerald-500/10 flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]"
               >
                 <Plus className="h-4 w-4" /> Add Item
               </button>

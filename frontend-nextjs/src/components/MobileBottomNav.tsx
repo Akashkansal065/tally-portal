@@ -12,6 +12,7 @@ import {
   ShoppingCart,
   IndianRupee,
   MapPin,
+  History,
   Wallet,
   Clock,
   BarChart3,
@@ -41,9 +42,6 @@ export function MobileBottomNav() {
 
   const tabs: NavTab[] = [
     { href: '/', label: 'Home', icon: Home },
-    ...(isAdmin
-      ? [{ href: '/admin', label: 'Admin', icon: Shield }]
-      : []),
     ...(hasVouchersAccess
       ? [{ href: '/vouchers', label: 'Vouchers', icon: FileText }]
       : []),
@@ -60,7 +58,10 @@ export function MobileBottomNav() {
       ? [{ href: '/payments', label: 'Payments', icon: IndianRupee }]
       : []),
     ...(permissions.showCheckIn
-      ? [{ href: '/check-in', label: 'Check-In', icon: MapPin }]
+      ? [
+          { href: '/check-in', label: 'Check-In', icon: MapPin },
+          { href: '/check-in/history', label: 'Visit Log', icon: History }
+        ]
       : []),
     ...(permissions.showExpenses
       ? [{ href: '/expenses', label: 'Expenses', icon: Wallet }]
@@ -74,6 +75,9 @@ export function MobileBottomNav() {
     ...(permissions.showGst
       ? [{ href: '/gst', label: 'GST', icon: FileSpreadsheet }]
       : []),
+    ...(isAdmin
+      ? [{ href: '/admin', label: 'Admin', icon: Shield }]
+      : []),
   ]
 
   return (
@@ -81,7 +85,7 @@ export function MobileBottomNav() {
       className="fixed bottom-0 left-0 right-0 z-30 bg-card border-t border-border shadow-lg"
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
     >
-      <div className="flex items-stretch overflow-x-auto scrollbar-none px-1 h-16">
+      <div className="flex items-stretch justify-start md:justify-center overflow-x-auto scrollbar-none px-1 h-16 max-w-7xl mx-auto">
         {tabs.map(tab => {
           const isActive = tab.href === '/' ? pathname === '/' : pathname.startsWith(tab.href)
           const Icon = tab.icon

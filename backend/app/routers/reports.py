@@ -1,7 +1,7 @@
 """
-Reports Router — comprehensive date-filtered reports.
+Reports Router — comprehensive date-filtered reports with 2-hour in-memory caching.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc, func
@@ -16,8 +16,41 @@ from app.core.permissions import require_permission
 from app.models.user import User
 from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
 from app.models.ledger import MstLedger, MstGroup
+from app.core.cache import (
+    get_cached_response,
+    set_cached_response,
+    clear_company_cache,
+    clear_all_cache,
+    get_cache_stats
+)
 
 router = APIRouter(prefix="/reports", tags=["Reports Hub"])
+
+
+@router.post("/cache/clear")
+async def clear_reports_cache(
+    all_companies: bool = Query(False, description="Clear cache across all companies if true"),
+    user: User = Depends(require_permission("reports", "read"))
+):
+    """Manually purge in-memory report cache for the current user's company (or all companies)."""
+    if all_companies:
+        cleared_count = clear_all_cache()
+    else:
+        cleared_count = clear_company_cache(user.company_id)
+    return {
+        "status": "success",
+        "message": "Reports cache cleared successfully",
+        "cleared_entries": cleared_count,
+        "company_id": user.company_id if not all_companies else "all"
+    }
+
+
+@router.get("/cache/stats")
+async def get_reports_cache_stats(
+    user: User = Depends(require_permission("reports", "read"))
+):
+    """Return in-memory reports cache health and performance statistics."""
+    return get_cache_stats()
 
 
 @router.get("/daybook")
@@ -28,6 +61,11 @@ async def get_daybook(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve all vouchers for the company within the date range."""
+    cache_key = f"daybook_{from_date}_{to_date}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     query = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger)
@@ -46,7 +84,6 @@ async def get_daybook(
         amount = float(v.total_amount)
         party_name = "Generic Party"
         if v.entries:
-            # Try to find a ledger name from entries
             for entry in v.entries:
                 if entry.ledger:
                     party_name = entry.ledger.name
@@ -60,6 +97,8 @@ async def get_daybook(
             "party_name": party_name,
             "amount": amount,
         })
+
+    set_cached_response(user.company_id, cache_key, output)
     return output
 
 
@@ -71,6 +110,11 @@ async def get_sales_register(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve all Sales vouchers within the period."""
+    cache_key = f"sales_register_{from_date}_{to_date}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     query = select(TrnVoucher).join(MstVoucherType).options(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger)
@@ -104,6 +148,8 @@ async def get_sales_register(
             "party_name": party_name,
             "amount": amount,
         })
+
+    set_cached_response(user.company_id, cache_key, output)
     return output
 
 
@@ -113,9 +159,13 @@ async def get_outstanding_payables(
     db: AsyncSession = Depends(get_db),
 ):
     """Return outstanding purchase/supplier payable bills."""
+    cache_key = "outstanding_payables"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from app.models.payment import TrnBill
 
-    # Retrieve all Open/Partially Settled purchase bills (normally bills from Suppliers)
     stmt = (
         select(TrnBill)
         .options(selectinload(TrnBill.party))
@@ -134,6 +184,8 @@ async def get_outstanding_payables(
             "date": b.bill_date.isoformat() if b.bill_date else None,
             "amount": outstanding,
         })
+
+    set_cached_response(user.company_id, cache_key, output)
     return output
 
 
@@ -143,6 +195,11 @@ async def get_trial_balance(
     db: AsyncSession = Depends(get_db),
 ):
     """Return group-level ledger trial balance with Dr/Cr balances."""
+    cache_key = "trial_balance"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from sqlalchemy import text
     
     query = await db.execute(text("""
@@ -168,8 +225,6 @@ async def get_trial_balance(
         cr = float(r.total_credit or 0.0)
         net = (dr - cr) + opening
 
-        # If group is Liabilities / Capital / Income -> Cr balance is positive; else Dr balance
-        # Keep net sign (positive Dr, negative Cr) so Math.abs(balance) works cleanly with Dr/Cr
         results.append({
             "name": r.group_name,
             "balance": net,
@@ -177,6 +232,7 @@ async def get_trial_balance(
             "credit": cr
         })
 
+    set_cached_response(user.company_id, cache_key, results)
     return results
 
 
@@ -201,6 +257,11 @@ async def get_dashboard_details(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
+    cache_key = f"dashboard_details_{category}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from sqlalchemy import text
     
     if category == "sales":
@@ -273,7 +334,7 @@ async def get_dashboard_details(
     res = await db.execute(text(query_str), {"comp_id": user.company_id})
     rows = res.all()
     
-    return [
+    output = [
         {
             "ledger_id": row.ledger_id,
             "name": row.name,
@@ -283,6 +344,9 @@ async def get_dashboard_details(
         for row in rows
     ]
 
+    set_cached_response(user.company_id, cache_key, output)
+    return output
+
 
 @router.get("/dashboard-summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
@@ -291,6 +355,11 @@ async def get_dashboard_summary(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
+    cache_key = f"dashboard_summary_{from_date}_{to_date}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from sqlalchemy import text
     
     date_where = ""
@@ -302,7 +371,6 @@ async def get_dashboard_summary(
         date_where += " AND v.voucher_date <= :to_date"
         params["to_date"] = to_date
 
-    # Total Sales (from Sales Accounts, Net Credit Balance - WITHOUT GST)
     sales_query = await db.execute(text(f"""
         SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
@@ -318,7 +386,6 @@ async def get_dashboard_summary(
     """), params)
     total_sales = sales_query.scalar() or 0.0
 
-    # Gross Sales Vouchers Sum (WITH GST)
     gross_sales_query = await db.execute(text(f"""
         SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
         FROM tally_sync.vouchers v
@@ -327,7 +394,6 @@ async def get_dashboard_summary(
     """), params)
     total_sales_gross = gross_sales_query.scalar() or 0.0
 
-    # Total Receipts (Gross Collections Received from Receipt Vouchers)
     receipts_query = await db.execute(text(f"""
         SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
         FROM tally_sync.vouchers v
@@ -336,7 +402,6 @@ async def get_dashboard_summary(
     """), params)
     total_receipts = receipts_query.scalar() or 0.0
     
-    # Receivables: Sum of (Dr Balances) for Sundry Debtors
     receivables_query = await db.execute(text("""
         SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
@@ -352,7 +417,6 @@ async def get_dashboard_summary(
     """), {"comp_id": user.company_id})
     outstanding_receivables = receivables_query.scalar() or 0.0
     
-    # Payables: Sum of (Cr Balances) for Sundry Creditors
     payables_query = await db.execute(text("""
         SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
         FROM tally_sync.ledgers l
@@ -368,13 +432,16 @@ async def get_dashboard_summary(
     """), {"comp_id": user.company_id})
     outstanding_payables = payables_query.scalar() or 0.0
 
-    return {
+    output = {
         "total_sales": float(total_sales),
         "total_sales_gross": float(total_sales_gross),
         "total_receipts": float(total_receipts),
         "outstanding_receivables": float(outstanding_receivables),
         "outstanding_payables": float(outstanding_payables)
     }
+
+    set_cached_response(user.company_id, cache_key, output)
+    return output
 
 
 @router.get("/executive-analytics")
@@ -385,6 +452,11 @@ async def get_executive_analytics(
     db: AsyncSession = Depends(get_db)
 ):
     """Return aggregated trends, aging distribution, and expense category breakdown for charts within date range."""
+    cache_key = f"executive_analytics_{from_date}_{to_date}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from sqlalchemy import text
     from app.models.payment import TrnBill
     
@@ -397,7 +469,6 @@ async def get_executive_analytics(
         date_where += " AND v.voucher_date <= :to_date"
         params["to_date"] = to_date
 
-    # 1. Monthly Trends (Sales vs Receipts vs Purchases)
     trend_query = await db.execute(text(f"""
         SELECT 
             DATE_FORMAT(v.voucher_date, '%b %Y') as month_label,
@@ -424,12 +495,10 @@ async def get_executive_analytics(
         for r in trend_rows
     ]
 
-    # 2. Receivables & Payables Aging (FIFO - Oldest Invoice Settled First)
     today_dt = date.today()
     rec_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
     pay_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
 
-    # FIFO Receivables Aging (Sundry Debtors)
     debtors_res = await db.execute(text("""
         SELECT l.ledger_id, l.name as party_name,
                COALESCE(SUM(e.debit_amount), 0) - COALESCE(SUM(e.credit_amount), 0) as net_balance
@@ -485,7 +554,6 @@ async def get_executive_analytics(
                 "amount": rem_bal
             })
 
-    # FIFO Payables Aging (Sundry Creditors)
     creditors_res = await db.execute(text("""
         SELECT l.ledger_id,
                COALESCE(SUM(e.credit_amount), 0) - COALESCE(SUM(e.debit_amount), 0) as net_balance
@@ -522,7 +590,6 @@ async def get_executive_analytics(
         if rem_bal > 0:
             pay_aging["90+ Days"] += rem_bal
 
-    # 3. Expense Breakdown by Category
     exp_q = await db.execute(text(f"""
         SELECT g.name as category, SUM(COALESCE(e.debit_amount, 0) - COALESCE(e.credit_amount, 0)) as amount
         FROM tally_sync.voucher_entries e
@@ -542,13 +609,16 @@ async def get_executive_analytics(
         for r in exp_rows
     ]
 
-    return {
+    output = {
         "monthly_trend": monthly_trend,
         "receivables_aging": [{"bucket": k, "amount": v} for k, v in rec_aging.items()],
         "receivables_aging_details": rec_details,
         "payables_aging": [{"bucket": k, "amount": v} for k, v in pay_aging.items()],
         "expense_breakdown": expense_breakdown
     }
+
+    set_cached_response(user.company_id, cache_key, output)
+    return output
 
 
 @router.get("/top-customers")
@@ -559,6 +629,11 @@ async def get_top_customers(
     db: AsyncSession = Depends(get_db)
 ):
     """Return top 10 Debtors ranked by total sales volume within date range."""
+    cache_key = f"top_customers_{from_date}_{to_date}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from sqlalchemy import text
     date_where = ""
     params = {"comp_id": user.company_id}
@@ -586,7 +661,7 @@ async def get_top_customers(
     """), params)
 
     rows = query.all()
-    return [
+    output = [
         {
             "ledger_id": r.ledger_id,
             "name": r.name,
@@ -598,6 +673,9 @@ async def get_top_customers(
         for r in rows
     ]
 
+    set_cached_response(user.company_id, cache_key, output)
+    return output
+
 
 @router.get("/inventory-analytics")
 async def get_inventory_analytics(
@@ -605,6 +683,11 @@ async def get_inventory_analytics(
     db: AsyncSession = Depends(get_db)
 ):
     """Return inventory valuation by group and top valuable stock items."""
+    cache_key = "inventory_analytics"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from app.models.inventory import MstStockItem
     
     stmt = (
@@ -627,7 +710,7 @@ async def get_inventory_analytics(
         
         gst_percent = float(item.gst_rate_percent or 0.0)
         if gst_percent == 0.0:
-            gst_percent = 18.0  # standard GST fallback
+            gst_percent = 18.0
             
         val_gross = val * (1 + gst_percent / 100.0)
         rate_gross = rate * (1 + gst_percent / 100.0)
@@ -655,8 +738,10 @@ async def get_inventory_analytics(
         for k, v in group_valuation.items()
     ]
 
-    return {
+    output = {
         "group_valuation": group_chart,
         "top_items": item_list
     }
 
+    set_cached_response(user.company_id, cache_key, output)
+    return output

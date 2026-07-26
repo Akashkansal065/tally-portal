@@ -114,14 +114,15 @@ async def get_ledgers(
     from app.core.cache import get_cached_response
     cache_key = f"ledgers_user_{user.user_id}"
     cached = get_cached_response(user.company_id, cache_key)
-    if cached:
+    if cached is not None:
         return cached
 
     perms_customer = await get_effective_permission(user.user_id, "ledger_customer", db)
     perms_supplier = await get_effective_permission(user.user_id, "ledger_supplier", db)
     perms_general = await get_effective_permission(user.user_id, "ledgers", db)
+    perms_visits = await get_effective_permission(user.user_id, "visits", db)
     
-    if not (perms_customer.get("can_read", False) or perms_supplier.get("can_read", False) or perms_general.get("can_read", False)):
+    if not (perms_customer.get("can_read", False) or perms_supplier.get("can_read", False) or perms_general.get("can_read", False) or perms_visits.get("can_read", False)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to view ledgers."
@@ -131,6 +132,26 @@ async def get_ledgers(
         select(MstLedger).options(selectinload(MstLedger.group)).where(MstLedger.company_id == user.company_id)
     )
     all_ledgers = query.scalars().all()
+
+    # Pre-fetch all groups for fast in-memory hierarchy resolution (0 DB queries in loop)
+    groups_res = await db.execute(
+        select(MstGroup).where(MstGroup.company_id == user.company_id)
+    )
+    groups_dict = {g.group_id: g for g in groups_res.scalars().all()}
+
+    def check_is_ancestor(group_id: int, target_name: str) -> bool:
+        curr_id = group_id
+        target_lower = target_name.lower()
+        visited = set()
+        while curr_id in groups_dict:
+            if curr_id in visited:
+                break
+            visited.add(curr_id)
+            grp = groups_dict[curr_id]
+            if grp.name and grp.name.lower() == target_lower:
+                return True
+            curr_id = grp.parent_group_id
+        return False
 
     # Aggregate total debits and credits from TrnAccounting for all ledgers in a single query
     balance_stmt = select(
@@ -143,8 +164,8 @@ async def get_ledgers(
     
     filtered = []
     for ledger in all_ledgers:
-        is_debtor = await is_ancestor_group(ledger.group_id, "Sundry Debtors", user.company_id, db)
-        is_creditor = await is_ancestor_group(ledger.group_id, "Sundry Creditors", user.company_id, db)
+        is_debtor = check_is_ancestor(ledger.group_id, "Sundry Debtors")
+        is_creditor = check_is_ancestor(ledger.group_id, "Sundry Creditors")
         
         # Calculate closing balance
         total_dr, total_cr = sums_dict.get(ledger.ledger_id, (Decimal("0.00"), Decimal("0.00")))
@@ -174,10 +195,10 @@ async def get_ledgers(
         ledger.email = None
 
         if is_debtor:
-            if perms_customer.get("can_read", False):
+            if perms_customer.get("can_read", False) or perms_visits.get("can_read", False) or perms_general.get("can_read", False):
                 filtered.append(ledger)
         elif is_creditor:
-            if perms_supplier.get("can_read", False):
+            if perms_supplier.get("can_read", False) or perms_general.get("can_read", False):
                 filtered.append(ledger)
         else:
             if perms_general.get("can_read", False):
@@ -355,12 +376,65 @@ async def delete_ledger(
     clear_company_cache(user.company_id)
     return {"detail": "Ledger deleted successfully."}
 
+@router.get("/{ledger_id}")
+async def get_ledger_by_id(
+    ledger_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    from app.core.cache import get_cached_response, set_cached_response
+    cache_key = f"ledger_detail_{ledger_id}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
+    ledger_query = await db.execute(
+        select(MstLedger).options(selectinload(MstLedger.group)).where(
+            MstLedger.ledger_id == ledger_id,
+            MstLedger.company_id == user.company_id
+        )
+    )
+    ledger = ledger_query.scalars().first()
+    if not ledger:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ledger not found."
+        )
+
+    output = {
+        "ledger_id": ledger.ledger_id,
+        "company_id": ledger.company_id,
+        "group_id": ledger.group_id,
+        "group_name": ledger.group.name if ledger.group else None,
+        "name": ledger.name,
+        "alias": ledger.alias,
+        "opening_balance": float(ledger.opening_balance or 0.0),
+        "opening_balance_type": ledger.opening_balance_type,
+        "gstin": ledger.gstin,
+        "address": ledger.address,
+        "state": ledger.state,
+        "pincode": ledger.pincode,
+        "pan_itn": ledger.pan_itn,
+        "credit_period_days": ledger.credit_period_days,
+        "credit_limit": float(ledger.credit_limit or 0.0) if ledger.credit_limit else None,
+    }
+
+    set_cached_response(user.company_id, cache_key, output)
+    return output
+
+
 @router.get("/{ledger_id}/statement")
 async def get_ledger_statement(
     ledger_id: int,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    from app.core.cache import get_cached_response, set_cached_response
+    cache_key = f"ledger_statement_{ledger_id}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
     from app.models.ledger import MstLedger
     ledger_stmt = select(MstLedger).options(selectinload(MstLedger.group)).where(
         MstLedger.ledger_id == ledger_id,
@@ -428,8 +502,11 @@ async def get_ledger_statement(
             "amount": str(amt),
         })
         
-    return {
+    output = {
         "success": True,
         "ledgerInfo": ledger_info,
         "transactions": transactions,
     }
+
+    set_cached_response(user.company_id, cache_key, output)
+    return output

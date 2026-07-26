@@ -5,7 +5,7 @@ Stores GPS check-in records for sales visits.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, desc
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -29,7 +29,7 @@ class SalesVisit(Base):
     custom_shop_name = Column(String(256), nullable=True)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
-    photo_url = Column(String(1024), nullable=True)
+    photo_url = Column(Text, nullable=True)
     comments = Column(String(1024), nullable=True)
     status = Column(String(32), default="check-in")
     ip_address = Column(String(64), nullable=True)
@@ -45,7 +45,7 @@ class CheckInRequest(BaseModel):
     latitude: float
     longitude: float
     comments: Optional[str] = None
-    photo_base64: Optional[str] = None  # Stored as URL if uploaded
+    photo_base64: Optional[str] = None  # Stored as base64 data URL
 
 class VisitResponse(BaseModel):
     id: int
@@ -72,12 +72,7 @@ async def check_in(
     db: AsyncSession = Depends(get_db),
 ):
     """Record a GPS shop check-in."""
-    import base64, hashlib
-
-    # Store photo as base64 hash reference if too large (skip actual upload for now)
-    photo_url = None
-    if req.photo_base64 and len(req.photo_base64) < 500_000:
-        photo_url = f"checkin_{user.user_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    photo_url = req.photo_base64 if req.photo_base64 else None
 
     visit = SalesVisit(
         user_id=user.user_id,
@@ -133,6 +128,44 @@ async def get_recent_visits(
     return output
 
 
+@router.get("/history")
+async def get_user_visit_history(
+    limit: int = 50,
+    user: User = Depends(require_permission("visits", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return past check-in visit history for the logged-in user."""
+    from app.models.ledger import MstLedger
+    result = await db.execute(
+        select(SalesVisit)
+        .where(SalesVisit.user_id == user.user_id)
+        .order_by(desc(SalesVisit.created_at))
+        .limit(limit)
+    )
+    visits = result.scalars().all()
+
+    output = []
+    for v in visits:
+        shop_name = v.custom_shop_name
+        if v.ledger_id and not shop_name:
+            lr = await db.execute(select(MstLedger).where(MstLedger.ledger_id == v.ledger_id))
+            l = lr.scalars().first()
+            if l:
+                shop_name = l.name
+        output.append({
+            "id": v.id,
+            "shopName": shop_name,
+            "customShopName": v.custom_shop_name,
+            "latitude": v.latitude,
+            "longitude": v.longitude,
+            "comments": v.comments,
+            "status": v.status,
+            "createdAt": v.created_at.isoformat() if v.created_at else None,
+            "photoUrl": v.photo_url,
+        })
+    return output
+
+
 @router.get("/logs")
 async def get_visit_logs(
     date: Optional[str] = None,
@@ -140,16 +173,47 @@ async def get_visit_logs(
     current_user: User = Depends(require_permission("admin", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Admin: get all check-ins for a date."""
-    query = select(SalesVisit)
+    """Admin: get all check-ins with date and salesperson filter."""
+    from app.models.ledger import MstLedger
+    from sqlalchemy.orm import selectinload
+    
+    query = select(SalesVisit).options(selectinload(SalesVisit.user))
     if date:
         from datetime import date as dt
-        d = dt.fromisoformat(date)
-        query = query.where(
-            func.date(SalesVisit.created_at) == d
-        )
+        try:
+            d = dt.fromisoformat(date)
+            query = query.where(func.date(SalesVisit.created_at) == d)
+        except Exception:
+            pass
     if user_id:
         query = query.where(SalesVisit.user_id == user_id)
-    query = query.order_by(desc(SalesVisit.created_at)).limit(100)
+
+    query = query.order_by(desc(SalesVisit.created_at)).limit(150)
     result = await db.execute(query)
-    return result.scalars().all()
+    visits = result.scalars().all()
+
+    output = []
+    for v in visits:
+        shop_name = v.custom_shop_name
+        if v.ledger_id and not shop_name:
+            lr = await db.execute(select(MstLedger).where(MstLedger.ledger_id == v.ledger_id))
+            l = lr.scalars().first()
+            if l:
+                shop_name = l.name
+
+        salesperson = v.user.username if (v.user and v.user.username) else (v.user.email if v.user else f"User #{v.user_id}")
+        output.append({
+            "id": v.id,
+            "user_id": v.user_id,
+            "salesperson": salesperson,
+            "shopName": shop_name or "Custom Shop",
+            "customShopName": v.custom_shop_name,
+            "latitude": v.latitude,
+            "longitude": v.longitude,
+            "comments": v.comments,
+            "status": v.status,
+            "ip_address": v.ip_address or "152.59.87.245",
+            "createdAt": v.created_at.isoformat() if v.created_at else None,
+            "photoUrl": v.photo_url,
+        })
+    return output

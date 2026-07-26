@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils'
 
 type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
 
-const MODES = ['Cash', 'Cheque', 'Online']
+const MODES = ['Cash', 'Cheque', 'UPI / Online', 'Bank / RTGS']
 
 export default function NewPaymentPage() {
   const { user, token } = useAuth()
@@ -41,6 +41,10 @@ export default function NewPaymentPage() {
 
   const [amount, setAmount] = useState('')
   const [mode, setMode] = useState('Cash')
+  const [chequeDate, setChequeDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })
   const [comments, setComments] = useState('')
   
   // GPS/Photo status
@@ -108,6 +112,8 @@ export default function NewPaymentPage() {
     e.preventDefault()
     if (!selectedShop) { setError('Select a customer first.'); return }
     if (!amount || parseFloat(amount) <= 0) { setError('Enter a valid payment amount.'); return }
+    if (mode.toLowerCase() === 'cheque' && !chequeDate) { setError('Please select the Cheque Date.'); return }
+    if (!photo) { setError('Receipt photo proof is mandatory for all payment collections.'); return }
     
     setSubmitting(true)
     setError('')
@@ -117,8 +123,9 @@ export default function NewPaymentPage() {
         ledger_id: selectedShop.ledger_id,
         amount: parseFloat(amount),
         payment_mode: mode,
+        cheque_date: mode.toLowerCase() === 'cheque' ? chequeDate : null,
         comments: comments.trim() || null,
-        photo_base64: photo || null
+        photo_base64: photo
       }
 
       const res = await fetch(`${API_BASE}/payment/collect`, {
@@ -241,6 +248,22 @@ export default function NewPaymentPage() {
             </div>
           </div>
 
+          {/* Cheque Date Field (Mandatory when mode is Cheque) */}
+          {mode.toLowerCase() === 'cheque' && (
+            <div className="space-y-1.5 bg-muted/30 p-3 rounded-xl border border-border animate-in fade-in duration-200">
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                Cheque Date <span className="text-rose-500 font-extrabold">* (Required)</span>
+              </label>
+              <input
+                type="date"
+                required
+                value={chequeDate}
+                onChange={e => setChequeDate(e.target.value)}
+                className="w-full px-3.5 py-2.5 bg-background border border-border rounded-xl text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+              />
+            </div>
+          )}
+
           {/* Comments */}
           <div>
             <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Comments / Notes</label>
@@ -253,9 +276,12 @@ export default function NewPaymentPage() {
             />
           </div>
 
-          {/* Capture Receipt Proof Photo */}
+          {/* Capture Receipt Proof Photo (MANDATORY) */}
           <div>
-            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Receipt Proof Photo (Optional)</label>
+            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide flex items-center justify-between">
+              <span>Receipt Proof Photo</span>
+              <span className="text-rose-500 font-extrabold text-[11px]">* Mandatory for all modes</span>
+            </label>
             {photo ? (
               <div className="relative rounded-2xl overflow-hidden border border-border mt-2 shadow-sm">
                 <img src={photo} alt="payment receipt proof" className="w-full h-44 object-cover" />
@@ -268,7 +294,7 @@ export default function NewPaymentPage() {
                 </button>
               </div>
             ) : (
-              <label className="mt-2 w-full flex flex-col items-center justify-center gap-2 py-8 rounded-2xl border-2 border-dashed border-border hover:border-emerald-500/50 cursor-pointer text-xs text-muted-foreground transition-all">
+              <label className="mt-2 w-full flex flex-col items-center justify-center gap-2 py-8 rounded-2xl border-2 border-dashed border-rose-400/50 hover:border-rose-500 cursor-pointer text-xs text-muted-foreground transition-all bg-rose-500/5">
                 {processingPhoto ? (
                   <>
                     <div className="w-6 h-6 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -276,8 +302,9 @@ export default function NewPaymentPage() {
                   </>
                 ) : (
                   <>
-                    <Camera className="h-7 w-7 text-muted-foreground opacity-70" />
-                    <span className="font-bold">Take Geocoded Receipt Photo</span>
+                    <Camera className="h-7 w-7 text-rose-500" />
+                    <span className="font-bold text-foreground">Take Geocoded Receipt Photo *</span>
+                    <span className="text-[10px] text-rose-500 font-semibold">Required to submit payment collection</span>
                     <input 
                       type="file" 
                       accept="image/*" 
@@ -317,7 +344,7 @@ export default function NewPaymentPage() {
 
           <button
             type="submit"
-            disabled={submitting || processingPhoto || !selectedShop || !amount}
+            disabled={submitting || processingPhoto || !selectedShop || !amount || !photo || (mode.toLowerCase() === 'cheque' && !chequeDate)}
             className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 disabled:opacity-50 transition-all shadow-md shadow-emerald-500/10 cursor-pointer animate-none"
           >
             {submitting && <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}

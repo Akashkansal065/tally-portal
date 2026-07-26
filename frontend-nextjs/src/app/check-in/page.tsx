@@ -44,6 +44,8 @@ export default function CheckInPage() {
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null)
   const [photo, setPhoto] = useState<string | null>(null)
   const [processingPhoto, setProcessingPhoto] = useState(false)
+  const [previewPhoto, setPreviewPhoto] = useState<RecentVisit | null>(null)
+  const [expandedProofId, setExpandedProofId] = useState<number | null>(null)
 
   useEffect(() => {
     if (selectedLedger === '') {
@@ -54,12 +56,33 @@ export default function CheckInPage() {
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
     if (!permissions.showCheckIn) { router.replace('/'); return }
+
+    // Instant initial render from localStorage cache
+    try {
+      const cachedShops = localStorage.getItem('mytally_cached_customer_shops')
+      if (cachedShops) {
+        const parsed = JSON.parse(cachedShops)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setLedgers(parsed)
+          setLoading(false)
+        }
+      }
+    } catch (e) {}
+
     Promise.all([
-      fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()),
-      fetch(`${API_BASE}/visits/recent`, { headers: authHeaders(token) }).then(r => r.json()).catch(() => []),
+      fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.ok ? r.json() : []),
+      fetch(`${API_BASE}/visits/recent`, { headers: authHeaders(token) }).then(r => r.ok ? r.json() : []).catch(() => []),
     ]).then(([ls, vs]) => {
-      const customers = Array.isArray(ls) ? ls.filter((l: any) => l.is_customer) : []
-      setLedgers(customers)
+      const customers = Array.isArray(ls)
+        ? ls.filter((l: any) => l.is_customer || (l.group_name || '').toLowerCase().includes('debtor') || (l.group_name || '').toLowerCase().includes('customer'))
+        : []
+      const finalLedgers = customers.length > 0 ? customers : (Array.isArray(ls) ? ls : [])
+      setLedgers(finalLedgers)
+      if (finalLedgers.length > 0) {
+        try {
+          localStorage.setItem('mytally_cached_customer_shops', JSON.stringify(finalLedgers))
+        } catch (e) {}
+      }
       setRecentVisits(Array.isArray(vs) ? vs : (vs?.data ?? []))
     }).finally(() => setLoading(false))
   }, [user, token, router, permissions.showCheckIn])
@@ -126,7 +149,7 @@ export default function CheckInPage() {
   const filteredLedgers = useMemo(() => {
     return ledgers.filter(l =>
       l.name.toLowerCase().includes(searchQuery.toLowerCase())
-    ).slice(0, 15)
+    ).slice(0, 50)
   }, [searchQuery, ledgers])
 
   return (
@@ -303,22 +326,24 @@ export default function CheckInPage() {
           ) : (
             <div className="space-y-2">
               {recentVisits.map(v => (
-                <div key={v.id} className="bg-card border border-border rounded-xl p-3.5 flex items-center gap-3 shadow-sm hover:border-emerald-500/20 transition-all">
-                  <div className="w-8 h-8 rounded-lg bg-rose-50 flex items-center justify-center shrink-0">
-                    <MapPin className="h-4 w-4 text-rose-500" />
+                <div key={v.id} className="bg-card border border-border rounded-xl p-3.5 space-y-2 shadow-sm hover:border-emerald-500/20 transition-all">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-rose-50 flex items-center justify-center shrink-0">
+                      <MapPin className="h-4 w-4 text-rose-500" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-xs text-foreground truncate">{v.shopName || v.customShopName || 'Unknown Shop'}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(v.createdAt)}</p>
+                    </div>
+                    {v.photoUrl && (
+                      <button 
+                        onClick={() => setPreviewPhoto(v)}
+                        className="text-[10px] font-bold text-emerald-600 border border-emerald-500/30 px-2.5 py-1 rounded-lg hover:bg-emerald-500/10 transition-colors shrink-0 cursor-pointer"
+                      >
+                        Proof
+                      </button>
+                    )}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-xs text-foreground truncate">{v.shopName || v.customShopName || 'Unknown Shop'}</p>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(v.createdAt)}</p>
-                  </div>
-                  {v.photoUrl && (
-                    <button 
-                      onClick={() => window.open(v.photoUrl || '', '_blank')}
-                      className="text-[10px] font-bold text-emerald-500 border border-emerald-500/20 px-2 py-1 rounded hover:bg-emerald-500/5 transition-colors shrink-0"
-                    >
-                      Proof
-                    </button>
-                  )}
                 </div>
               ))}
             </div>
@@ -327,6 +352,43 @@ export default function CheckInPage() {
 
         <div className="h-16" />
       </div>
+
+      {/* Visit Photo Modal Popup */}
+      {previewPhoto && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-2xl rounded-3xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200 border border-border p-6 space-y-4">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between">
+              <h3 className="font-extrabold text-base text-foreground truncate pr-2">
+                Visit Photo - {previewPhoto.shopName || previewPhoto.customShopName || 'Customer Shop'}
+              </h3>
+              <button
+                onClick={() => setPreviewPhoto(null)}
+                className="w-8 h-8 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 transition-colors flex items-center justify-center cursor-pointer shrink-0"
+              >
+                <X className="w-4.5 h-4.5" />
+              </button>
+            </div>
+
+            {/* Modal Image Display Area */}
+            <div className="bg-muted/50 p-4 sm:p-6 rounded-2xl flex items-center justify-center border border-border/50">
+              {previewPhoto.photoUrl && (previewPhoto.photoUrl.startsWith('data:') || previewPhoto.photoUrl.startsWith('http')) ? (
+                <img
+                  src={previewPhoto.photoUrl}
+                  alt={`Visit Photo - ${previewPhoto.shopName || previewPhoto.customShopName}`}
+                  className="max-h-[72vh] w-auto object-contain rounded-xl shadow-sm"
+                />
+              ) : (
+                <div className="py-12 text-center space-y-2">
+                  <MapPin className="h-10 w-10 mx-auto text-emerald-500 opacity-60" />
+                  <p className="text-sm font-bold text-foreground">Verified Check-In Record</p>
+                  <p className="text-xs text-muted-foreground">{previewPhoto.photoUrl || 'GPS Verified Visit'}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
