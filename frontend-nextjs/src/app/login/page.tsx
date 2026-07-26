@@ -217,12 +217,6 @@ export default function LoginPage() {
               {submitting ? 'Processing...' : needBootstrap ? 'Register & Log In' : 'Sign In'}
             </button>
           </form>
-
-          {!needBootstrap && (
-            <p className="text-center text-[10px] text-muted-foreground mt-6 border-t border-border pt-4">
-              Demo: <span className="font-mono text-primary">admin_test@test.com</span> / <span className="font-mono text-primary">securepassword123</span>
-            </p>
-          )}
         </div>
       </div>
     </div>

@@ -7,8 +7,8 @@ interface TallyLoginScreenProps {
 }
 
 export default function TallyLoginScreen({ onLoginSuccess }: TallyLoginScreenProps) {
-  const [email, setEmail] = useState('admin_test@test.com');
-  const [password, setPassword] = useState('securepassword123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -127,11 +127,6 @@ export default function TallyLoginScreen({ onLoginSuccess }: TallyLoginScreenPro
             {loading ? 'Authenticating...' : 'Secure Login (Enter)'}
           </button>
         </form>
-
-        <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
-          System seeded with default admin: <br/>
-          <span style={{ color: 'var(--accent-gold)' }}>admin_test@test.com</span> / <span style={{ color: 'var(--accent-gold)' }}>securepassword123</span>
-        </div>
       </div>
     </div>
   );
