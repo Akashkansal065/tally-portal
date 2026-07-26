@@ -8,6 +8,7 @@ import { MobileBottomNav } from '@/components/MobileBottomNav'
 import { PwaRegister } from '@/components/PwaRegister'
 
 import { RouteGuard } from '@/components/RouteGuard'
+import { SpeedInsights } from '@vercel/speed-insights/next'
 
 export const metadata: Metadata = {
   title: 'MyTally — Sneh Distributors',
@@ -58,6 +59,7 @@ export default function RootLayout({
             <MobileBottomNav />
           </AuthProvider>
         </ThemeProvider>
+        <SpeedInsights />
       </body>
     </html>
   )
