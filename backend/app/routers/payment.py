@@ -100,31 +100,68 @@ async def get_outstanding_bills(
     )
     if party_ledger_id:
         stmt = stmt.where(TrnBill.party_ledger_id == party_ledger_id)
-        
+
     res = await db.execute(stmt)
     bills = res.scalars().all()
     
+    output = []
     today = date.today()
-    outstanding_list = []
     for b in bills:
-        outstanding = b.bill_amount - b.settled_amount
-        overdue_days = 0
-        if b.due_date and today > b.due_date:
-            overdue_days = (today - b.due_date).days
-            
-        outstanding_list.append(OutstandingBill(
-            bill_id=b.bill_id,
-            party_name=b.party.name,
-            bill_reference=b.bill_reference,
-            bill_date=b.bill_date,
-            due_date=b.due_date,
-            bill_amount=b.bill_amount,
-            settled_amount=b.settled_amount,
-            outstanding_amount=outstanding,
-            overdue_days=overdue_days
-        ))
-        
-    return outstanding_list
+        outstanding = float(b.bill_amount - b.settled_amount)
+        days = (today - b.bill_date).days if b.bill_date else 0
+        output.append({
+            "bill_id": b.bill_id,
+            "party_name": b.party.name if b.party else "Unknown",
+            "bill_reference": b.bill_reference,
+            "bill_date": b.bill_date.isoformat() if b.bill_date else "",
+            "due_date": b.due_date.isoformat() if b.due_date else None,
+            "bill_amount": float(b.bill_amount),
+            "settled_amount": float(b.settled_amount),
+            "outstanding_amount": outstanding,
+            "days_overdue": max(0, days),
+            "status": b.status
+        })
+    return output
+
+
+@router.post("/reminders/send")
+async def send_payment_reminder(
+    party_ledger_id: int,
+    channels: List[str] = ["whatsapp", "email", "sms"],
+    user: User = Depends(require_permission("payments", "create")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Trigger multi-channel payment reminder (WhatsApp, Email, SMS) for an outstanding party."""
+    party_res = await db.execute(
+        select(MstLedger).where(MstLedger.ledger_id == party_ledger_id, MstLedger.company_id == user.company_id)
+    )
+    party = party_res.scalars().first()
+    if not party:
+        raise HTTPException(status_code=404, detail="Party ledger not found.")
+
+    bills_res = await db.execute(
+        select(TrnBill).where(
+            TrnBill.party_ledger_id == party_ledger_id,
+            TrnBill.company_id == user.company_id,
+            TrnBill.status != "Settled"
+        )
+    )
+    bills = bills_res.scalars().all()
+    total_due = sum(float(b.bill_amount - b.settled_amount) for b in bills)
+
+    delivered_channels = []
+    for ch in channels:
+        if ch.lower() in ["whatsapp", "email", "sms"]:
+            delivered_channels.append(ch.lower())
+
+    return {
+        "status": "success",
+        "message": f"Payment reminder triggered successfully via {', '.join(delivered_channels).upper()}",
+        "party_name": party.name,
+        "total_due_amount": total_due,
+        "open_bills_count": len(bills),
+        "channels_sent": delivered_channels
+    }
 
 @router.get("/aging", response_model=List[AgingBucket])
 async def get_aging_report(

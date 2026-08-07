@@ -9,7 +9,7 @@ import {
   BarChart3, TrendingUp, TrendingDown, Package, Layers, BookOpen, FileText,
   DollarSign, PieChart as PieChartIcon, Calendar, Download, RefreshCw, Search,
   ArrowUpRight, ArrowDownRight, Layers3, Users, Building2, Info, HelpCircle, Check, X,
-  CheckCircle2, Sparkles, AlertCircle, ExternalLink, Filter
+  CheckCircle2, Sparkles, AlertCircle, ExternalLink, Filter, ShoppingBag, Landmark
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -17,11 +17,12 @@ import {
   ResponsiveContainer, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, Legend, CartesianGrid
 } from 'recharts'
+import ProjectedFinancials from '@/components/ProjectedFinancials'
 
-type TabType = 'executive' | 'sales' | 'inventory' | 'compliance'
+type TabType = 'executive' | 'financial' | 'sales' | 'inventory' | 'compliance'
 type PresetType = 'month' | 'quarter' | 'year' | 'custom'
 type ExplanationKey = 'revenue_trend' | 'aging' | 'expense' | 'top_customers' | 'inventory' | 'trial_balance' | null
-type KpiModalKey = 'sales' | 'receipts' | 'receivables' | 'payables' | null
+type KpiModalKey = 'sales' | 'receipts' | 'purchases' | 'payments' | 'receivables' | 'payables' | null
 
 const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#6366f1']
 
@@ -39,21 +40,21 @@ const getVoucherTypeBadge = (type: string) => {
       amount: 'text-teal-700 dark:text-teal-400 font-extrabold'
     }
   }
-  if (t.includes('purchase')) {
-    return {
-      badge: 'bg-amber-100 dark:bg-amber-950/80 text-amber-950 dark:text-amber-300 border border-amber-300 dark:border-amber-700 font-extrabold shadow-2xs',
-      amount: 'text-amber-700 dark:text-amber-400 font-extrabold'
-    }
-  }
   if (t.includes('payment')) {
     return {
       badge: 'bg-rose-100 dark:bg-rose-950/80 text-rose-900 dark:text-rose-300 border border-rose-300 dark:border-rose-700 font-extrabold shadow-2xs',
       amount: 'text-rose-700 dark:text-rose-400 font-extrabold'
     }
   }
+  if (t.includes('purchase')) {
+    return {
+      badge: 'bg-purple-100 dark:bg-purple-950/80 text-purple-900 dark:text-purple-300 border border-purple-300 dark:border-purple-700 font-extrabold shadow-2xs',
+      amount: 'text-purple-700 dark:text-purple-400 font-extrabold'
+    }
+  }
   return {
-    badge: 'bg-indigo-100 dark:bg-indigo-950/80 text-indigo-900 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700 font-extrabold shadow-2xs',
-    amount: 'text-indigo-700 dark:text-indigo-400 font-extrabold'
+    badge: 'bg-muted text-muted-foreground border border-border font-bold',
+    amount: 'text-foreground font-bold'
   }
 }
 
@@ -249,6 +250,7 @@ export default function ReportsPage() {
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState<TabType>('executive')
+  const [financialSubTab, setFinancialSubTab] = useState<'pnl' | 'bs' | 'cf' | 'ratios' | 'projected'>('pnl')
   const [activePreset, setActivePreset] = useState<PresetType>('month')
   const [loading, setLoading] = useState(false)
   const [lastUpdatedMessage, setLastUpdatedMessage] = useState<string>('')
@@ -285,6 +287,10 @@ export default function ReportsPage() {
   const [salesRegister, setSalesRegister] = useState<any[]>([])
   const [daybook, setDaybook] = useState<any[]>([])
   const [trialBalance, setTrialBalance] = useState<any[]>([])
+  const [pnlData, setPnlData] = useState<any>(null)
+  const [balanceSheetData, setBalanceSheetData] = useState<any>(null)
+  const [cashFlowData, setCashFlowData] = useState<any>(null)
+  const [ratiosData, setRatiosData] = useState<any>(null)
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
@@ -306,6 +312,10 @@ export default function ReportsPage() {
         fetch(`${API_BASE}/reports/sales-register?${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/daybook?${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/trial-balance`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/profit-loss?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/balance-sheet`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/cash-flow?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/ratio-analysis`, { headers }).then(r => r.ok ? r.json() : null),
       ])
 
       if (results[0].status === 'fulfilled' && results[0].value) setSummary(results[0].value)
@@ -315,6 +325,10 @@ export default function ReportsPage() {
       if (results[4].status === 'fulfilled' && results[4].value) setSalesRegister(results[4].value)
       if (results[5].status === 'fulfilled' && results[5].value) setDaybook(results[5].value)
       if (results[6].status === 'fulfilled' && results[6].value) setTrialBalance(results[6].value)
+      if (results[7].status === 'fulfilled' && results[7].value) setPnlData(results[7].value)
+      if (results[8].status === 'fulfilled' && results[8].value) setBalanceSheetData(results[8].value)
+      if (results[9].status === 'fulfilled' && results[9].value) setCashFlowData(results[9].value)
+      if (results[10].status === 'fulfilled' && results[10].value) setRatiosData(results[10].value)
 
       setLastUpdatedMessage(`Updated data for period: ${formatDate(fromDate)} to ${formatDate(toDate)}`)
     } catch (err) {
@@ -380,12 +394,10 @@ export default function ReportsPage() {
             <td className="py-2.5 px-3 font-mono font-bold">
               <Link
                 href={`/vouchers/${r.id}`}
-                target="_blank"
-                className="text-primary hover:underline hover:text-indigo-600 inline-flex items-center gap-1.5 group/link"
+                className="text-primary hover:underline hover:text-indigo-600 font-bold"
                 title="Click to view voucher details"
               >
                 <span>{r.voucher_number || `#${r.id}`}</span>
-                <ExternalLink className="h-3 w-3 opacity-60 group-hover/link:opacity-100 transition-opacity" />
               </Link>
             </td>
             <td className="py-2.5 px-3 text-muted-foreground">{formatDate(r.date)}</td>
@@ -395,7 +407,7 @@ export default function ReportsPage() {
         )
       }
     } else if (kpiModalKey === 'receipts') {
-      const receipts = daybook.filter(r => (r.type === 'Receipt' || r.type === 'Payment' || r.amount > 0) && ((r.party_name || '').toLowerCase().includes(kpiSearchQuery.toLowerCase()) || (r.voucher_number || '').toLowerCase().includes(kpiSearchQuery.toLowerCase())))
+      const receipts = daybook.filter(r => r.type === 'Receipt' && ((r.party_name || '').toLowerCase().includes(kpiSearchQuery.toLowerCase()) || (r.voucher_number || '').toLowerCase().includes(kpiSearchQuery.toLowerCase())))
       return {
         title: 'Cash Receipts & Bank Collections Journal',
         total: summary?.total_receipts ?? 0,
@@ -409,12 +421,76 @@ export default function ReportsPage() {
               <td className="py-2.5 px-3 font-mono font-bold">
                 <Link
                   href={`/vouchers/${r.id}`}
-                  target="_blank"
-                  className="text-primary hover:underline hover:text-indigo-600 inline-flex items-center gap-1.5 group/link"
+                  className="text-primary hover:underline hover:text-indigo-600 font-bold"
                   title="Click to view voucher details"
                 >
                   <span>{r.voucher_number || `#${r.id}`}</span>
-                  <ExternalLink className="h-3 w-3 opacity-60 group-hover/link:opacity-100 transition-opacity" />
+                </Link>
+              </td>
+              <td className="py-2.5 px-3 text-muted-foreground">{formatDate(r.date)}</td>
+              <td className="py-2.5 px-3">
+                <span className={cn('px-2.5 py-1 rounded-full text-[10px] font-extrabold border', typeStyle.badge)}>
+                  {r.type}
+                </span>
+              </td>
+              <td className="py-2.5 px-3 font-semibold">{toTitleCase(r.party_name)}</td>
+              <td className={cn('py-2.5 px-3 text-right font-bold', typeStyle.amount)}>{formatCurrency(r.amount)}</td>
+            </tr>
+          )
+        }
+      }
+    } else if (kpiModalKey === 'purchases') {
+      const purchases = daybook.filter(r => r.type === 'Purchase' && ((r.party_name || '').toLowerCase().includes(kpiSearchQuery.toLowerCase()) || (r.voucher_number || '').toLowerCase().includes(kpiSearchQuery.toLowerCase())))
+      return {
+        title: 'Vendor Purchases & Inward Bills Register',
+        total: summary?.total_purchases ?? 0,
+        badgeColor: 'purple',
+        headers: ['Voucher #', 'Date', 'Type', 'Supplier / Vendor Name', 'Amount'],
+        rows: purchases,
+        renderRow: (r: any, idx: number) => {
+          const typeStyle = getVoucherTypeBadge(r.type)
+          return (
+            <tr key={idx} className="hover:bg-muted/30 transition-colors">
+              <td className="py-2.5 px-3 font-mono font-bold">
+                <Link
+                  href={`/vouchers/${r.id}`}
+                  className="text-primary hover:underline hover:text-indigo-600 font-bold"
+                  title="Click to view voucher details"
+                >
+                  <span>{r.voucher_number || `#${r.id}`}</span>
+                </Link>
+              </td>
+              <td className="py-2.5 px-3 text-muted-foreground">{formatDate(r.date)}</td>
+              <td className="py-2.5 px-3">
+                <span className={cn('px-2.5 py-1 rounded-full text-[10px] font-extrabold border', typeStyle.badge)}>
+                  {r.type}
+                </span>
+              </td>
+              <td className="py-2.5 px-3 font-semibold">{toTitleCase(r.party_name)}</td>
+              <td className={cn('py-2.5 px-3 text-right font-bold', typeStyle.amount)}>{formatCurrency(r.amount)}</td>
+            </tr>
+          )
+        }
+      }
+    } else if (kpiModalKey === 'payments') {
+      const payments = daybook.filter(r => r.type === 'Payment' && ((r.party_name || '').toLowerCase().includes(kpiSearchQuery.toLowerCase()) || (r.voucher_number || '').toLowerCase().includes(kpiSearchQuery.toLowerCase())))
+      return {
+        title: 'Outward Cash & Bank Payments Journal',
+        total: summary?.total_payments ?? 0,
+        badgeColor: 'rose',
+        headers: ['Voucher #', 'Date', 'Type', 'Party / Account Paid', 'Amount'],
+        rows: payments,
+        renderRow: (r: any, idx: number) => {
+          const typeStyle = getVoucherTypeBadge(r.type)
+          return (
+            <tr key={idx} className="hover:bg-muted/30 transition-colors">
+              <td className="py-2.5 px-3 font-mono font-bold">
+                <Link
+                  href={`/vouchers/${r.id}`}
+                  className="text-primary hover:underline hover:text-indigo-600 font-bold"
+                  title="Click to view voucher details"
+                >
+                  <span>{r.voucher_number || `#${r.id}`}</span>
                 </Link>
               </td>
               <td className="py-2.5 px-3 text-muted-foreground">{formatDate(r.date)}</td>
@@ -467,12 +543,10 @@ export default function ReportsPage() {
               <td className="py-2.5 px-3 font-mono font-bold">
                 <Link
                   href={`/vouchers/${r.id}`}
-                  target="_blank"
-                  className="text-primary hover:underline hover:text-indigo-600 inline-flex items-center gap-1.5 group/link"
+                  className="text-primary hover:underline hover:text-indigo-600 font-bold"
                   title="Click to view voucher details"
                 >
                   <span>{r.voucher_number || `#${r.id}`}</span>
-                  <ExternalLink className="h-3 w-3 opacity-60 group-hover/link:opacity-100 transition-opacity" />
                 </Link>
               </td>
               <td className="py-2.5 px-3 text-muted-foreground">{formatDate(r.date)}</td>
@@ -609,6 +683,7 @@ export default function ReportsPage() {
       <div className="flex gap-1.5 bg-muted/50 p-1 rounded-xl overflow-x-auto no-scrollbar border border-border">
         {[
           { id: 'executive', label: 'Executive Analytics', icon: TrendingUp, desc: 'Revenue Trends, Cash Flow & Debt Aging' },
+          { id: 'financial', label: 'Financial Statements', icon: BarChart3, desc: 'P&L, Balance Sheet, Cash Flow & Ratios' },
           { id: 'sales', label: 'Sales & Customers', icon: BookOpen, desc: 'Top Debtors & Invoicing Register' },
           { id: 'inventory', label: 'Inventory Valuation', icon: Layers, desc: 'Stock Group Capital & Item Valuation' },
           { id: 'compliance', label: 'Audit & Trial Balance', icon: FileText, desc: 'Double-Entry Trial Balance & Daybook' }
@@ -635,13 +710,13 @@ export default function ReportsPage() {
       </div>
 
       {/* Interactive KPI Cards Bar (Click card to open itemized data modal) */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
         <KpiCard
-          title={isGrossGst ? "Total Revenue (With GST)" : "Total Revenue (Without GST)"}
+          title={isGrossGst ? "Total Revenue" : "Taxable Sales"}
           value={isGrossGst ? (summary?.total_sales_gross ?? 0) : (summary?.total_sales ?? 0)}
           icon={TrendingUp}
           color="emerald"
-          info={isGrossGst ? "Gross Sales Invoice Total (With GST) for selected period." : "Taxable Sales Revenue (Without GST) for selected period."}
+          info="Total Sales Billed for period."
           onClick={() => { setKpiModalKey('sales'); setKpiSearchQuery('') }}
         />
         <KpiCard
@@ -649,23 +724,39 @@ export default function ReportsPage() {
           value={summary?.total_receipts ?? 0}
           icon={DollarSign}
           color="blue"
-          info="Total money collected & deposited into bank/cash accounts."
+          info="Money collected into bank/cash."
           onClick={() => { setKpiModalKey('receipts'); setKpiSearchQuery('') }}
         />
         <KpiCard
-          title="Outstanding Receivables"
+          title="Total Purchases"
+          value={summary?.total_purchases ?? 0}
+          icon={ShoppingBag}
+          color="purple"
+          info="Vendor Purchase Invoices."
+          onClick={() => { setKpiModalKey('purchases'); setKpiSearchQuery('') }}
+        />
+        <KpiCard
+          title="Vendor Payments"
+          value={summary?.total_payments ?? 0}
+          icon={ArrowDownRight}
+          color="rose"
+          info="Outward Cash & Bank Payments."
+          onClick={() => { setKpiModalKey('payments'); setKpiSearchQuery('') }}
+        />
+        <KpiCard
+          title="Outstanding Debtors"
           value={summary?.outstanding_receivables ?? 0}
           icon={ArrowUpRight}
           color="amber"
-          info="Pending payments owed by customers (Sundry Debtors)."
+          info="Pending customer receivables."
           onClick={() => { setKpiModalKey('receivables'); setKpiSearchQuery('') }}
         />
         <KpiCard
-          title="Outstanding Payables"
+          title="Outstanding Creditors"
           value={summary?.outstanding_payables ?? 0}
-          icon={ArrowDownRight}
-          color="rose"
-          info="Unpaid vendor bills owed to suppliers (Sundry Creditors)."
+          icon={Users}
+          color="slate"
+          info="Unpaid vendor payables."
           onClick={() => { setKpiModalKey('payables'); setKpiSearchQuery('') }}
         />
       </div>
@@ -856,7 +947,315 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* TAB 2: SALES & CUSTOMER ANALYTICS */}
+      {/* TAB 2: FINANCIAL STATEMENTS (P&L, Balance Sheet, Cash Flow & Ratios) */}
+      {activeTab === 'financial' && (
+        <div className="space-y-6">
+          {/* Sub-navigation bar inside Financial Statements */}
+          <div className="flex gap-2 border-b border-border pb-2 overflow-x-auto no-scrollbar">
+            <button
+              onClick={() => setFinancialSubTab('pnl')}
+              className={cn(
+                'px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer',
+                financialSubTab === 'pnl' ? 'bg-emerald-500 text-white shadow-sm' : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              )}
+            >
+              <FileText className="h-3.5 w-3.5" /> Profit & Loss Statement
+            </button>
+            <button
+              onClick={() => setFinancialSubTab('bs')}
+              className={cn(
+                'px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer',
+                financialSubTab === 'bs' ? 'bg-emerald-500 text-white shadow-sm' : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              )}
+            >
+              <Landmark className="h-3.5 w-3.5" /> Balance Sheet
+            </button>
+            <button
+              onClick={() => setFinancialSubTab('cf')}
+              className={cn(
+                'px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer',
+                financialSubTab === 'cf' ? 'bg-emerald-500 text-white shadow-sm' : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              )}
+            >
+              <DollarSign className="h-3.5 w-3.5" /> Cash Flow Statement
+            </button>
+            <button
+              onClick={() => setFinancialSubTab('ratios')}
+              className={cn(
+                'px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer',
+                financialSubTab === 'ratios' ? 'bg-emerald-500 text-white shadow-sm' : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              )}
+            >
+              <TrendingUp className="h-3.5 w-3.5" /> Key Financial Ratios
+            </button>
+            <button
+              onClick={() => setFinancialSubTab('projected')}
+              className={cn(
+                'px-4 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer',
+                financialSubTab === 'projected' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-amber-100 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-800 hover:bg-amber-200'
+              )}
+            >
+              <Sparkles className="h-3.5 w-3.5 text-amber-500" /> Projected Statements & Bank PDF
+            </button>
+          </div>
+
+          {/* Sub-Tab 1: Profit & Loss Statement */}
+          {financialSubTab === 'pnl' && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              {/* P&L Executive Summary Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Trading Turnover</p>
+                  <p className="text-lg font-black text-emerald-600">{formatCurrency(pnlData?.total_sales || 0)}</p>
+                  <p className="text-[10px] text-muted-foreground">Gross Revenue Sales Billed</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Cost of Goods Sold (COGS)</p>
+                  <p className="text-lg font-black text-rose-600">{formatCurrency(pnlData?.total_cogs || 0)}</p>
+                  <p className="text-[10px] text-muted-foreground">Purchases & Direct Freight</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Gross Profit</p>
+                  <p className={cn("text-lg font-black", (pnlData?.gross_profit || 0) >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(pnlData?.gross_profit || 0)}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">Turnover minus COGS</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Net Operating Profit</p>
+                  <p className={cn("text-lg font-black", (pnlData?.net_profit || 0) >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(pnlData?.net_profit || 0)}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">Final Net Earnings</p>
+                </div>
+              </div>
+
+              {/* Two-Column P&L Ledger Breakdown */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Left Column: Incomes */}
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+                  <div className="flex items-center justify-between border-b border-border/50 pb-3">
+                    <h4 className="font-extrabold text-sm text-emerald-600 uppercase tracking-wider flex items-center gap-1.5">
+                      <span>Incomes & Revenue Accounts</span>
+                    </h4>
+                    <span className="text-xs font-black text-emerald-600">
+                      Total: {formatCurrency((pnlData?.total_sales || 0) + (pnlData?.total_indirect_income || 0))}
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 text-xs">
+                    <div>
+                      <p className="font-bold text-muted-foreground uppercase text-[10px] mb-1.5">Direct Trading Revenue</p>
+                      {pnlData?.trading_income && pnlData.trading_income.length > 0 ? (
+                        pnlData.trading_income.map((item: any, idx: number) => (
+                          <div key={idx} className="flex justify-between py-1.5 border-b border-border/40 font-medium">
+                            <span>{item.ledger} <span className="text-[10px] text-muted-foreground">({item.group})</span></span>
+                            <span className="font-bold text-foreground">{formatCurrency(item.amount)}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-muted-foreground italic py-1">No trading revenue recorded.</p>
+                      )}
+                    </div>
+
+                    <div className="pt-2">
+                      <p className="font-bold text-muted-foreground uppercase text-[10px] mb-1.5">Indirect Incomes</p>
+                      {pnlData?.indirect_income && pnlData.indirect_income.length > 0 ? (
+                        pnlData.indirect_income.map((item: any, idx: number) => (
+                          <div key={idx} className="flex justify-between py-1.5 border-b border-border/40 font-medium">
+                            <span>{item.ledger} <span className="text-[10px] text-muted-foreground">({item.group})</span></span>
+                            <span className="font-bold text-foreground">{formatCurrency(item.amount)}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-muted-foreground italic py-1">No indirect income ledgers.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Expenses */}
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+                  <div className="flex items-center justify-between border-b border-border/50 pb-3">
+                    <h4 className="font-extrabold text-sm text-rose-600 uppercase tracking-wider flex items-center gap-1.5">
+                      <span>Expenses & Operating Costs</span>
+                    </h4>
+                    <span className="text-xs font-black text-rose-600">
+                      Total: {formatCurrency((pnlData?.total_cogs || 0) + (pnlData?.total_indirect_expenses || 0))}
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 text-xs">
+                    <div>
+                      <p className="font-bold text-muted-foreground uppercase text-[10px] mb-1.5">Trading Expenses / COGS</p>
+                      {pnlData?.trading_expenses && pnlData.trading_expenses.length > 0 ? (
+                        pnlData.trading_expenses.map((item: any, idx: number) => (
+                          <div key={idx} className="flex justify-between py-1.5 border-b border-border/40 font-medium">
+                            <span>{item.ledger} <span className="text-[10px] text-muted-foreground">({item.group})</span></span>
+                            <span className="font-bold text-foreground">{formatCurrency(item.amount)}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-muted-foreground italic py-1">No trading expenses recorded.</p>
+                      )}
+                    </div>
+
+                    <div className="pt-2">
+                      <p className="font-bold text-muted-foreground uppercase text-[10px] mb-1.5">Indirect & Administrative Expenses</p>
+                      {pnlData?.indirect_expenses && pnlData.indirect_expenses.length > 0 ? (
+                        pnlData.indirect_expenses.map((item: any, idx: number) => (
+                          <div key={idx} className="flex justify-between py-1.5 border-b border-border/40 font-medium">
+                            <span>{item.ledger} <span className="text-[10px] text-muted-foreground">({item.group})</span></span>
+                            <span className="font-bold text-foreground">{formatCurrency(item.amount)}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-muted-foreground italic py-1">No indirect operating expenses recorded.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Sub-Tab 2: Balance Sheet */}
+          {financialSubTab === 'bs' && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              {/* Balance Sheet Summary Banner */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Total Company Assets</p>
+                  <p className="text-lg font-black text-emerald-600">{formatCurrency(balanceSheetData?.total_assets || 0)}</p>
+                  <p className="text-[10px] text-muted-foreground">Fixed & Current Assets</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Total Liabilities & Capital</p>
+                  <p className="text-lg font-black text-blue-600">{formatCurrency(balanceSheetData?.total_liabilities || 0)}</p>
+                  <p className="text-[10px] text-muted-foreground">Capital, Loans & Payables</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Net Working Capital</p>
+                  <p className={cn("text-lg font-black", (balanceSheetData?.working_capital || 0) >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(balanceSheetData?.working_capital || 0)}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">Assets minus Liabilities</p>
+                </div>
+              </div>
+
+              {/* Two-Column Balance Sheet Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Liabilities Column */}
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+                  <div className="flex items-center justify-between border-b border-border/50 pb-3">
+                    <h4 className="font-extrabold text-sm text-blue-600 uppercase tracking-wider">Capital & Liabilities</h4>
+                    <span className="text-xs font-black text-blue-600">{formatCurrency(balanceSheetData?.total_liabilities || 0)}</span>
+                  </div>
+                  <div className="space-y-2 text-xs divide-y divide-border/40">
+                    {balanceSheetData?.liabilities && balanceSheetData.liabilities.length > 0 ? (
+                      balanceSheetData.liabilities.map((item: any, idx: number) => (
+                        <div key={idx} className="flex justify-between py-2 font-medium">
+                          <div>
+                            <p className="font-bold text-foreground">{item.ledger}</p>
+                            <p className="text-[10px] text-muted-foreground">{item.group}</p>
+                          </div>
+                          <span className="font-bold text-foreground">{formatCurrency(item.amount)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-muted-foreground italic py-3">No liability accounts found.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Assets Column */}
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+                  <div className="flex items-center justify-between border-b border-border/50 pb-3">
+                    <h4 className="font-extrabold text-sm text-emerald-600 uppercase tracking-wider">Assets & Investments</h4>
+                    <span className="text-xs font-black text-emerald-600">{formatCurrency(balanceSheetData?.total_assets || 0)}</span>
+                  </div>
+                  <div className="space-y-2 text-xs divide-y divide-border/40">
+                    {balanceSheetData?.assets && balanceSheetData.assets.length > 0 ? (
+                      balanceSheetData.assets.map((item: any, idx: number) => (
+                        <div key={idx} className="flex justify-between py-2 font-medium">
+                          <div>
+                            <p className="font-bold text-foreground">{item.ledger}</p>
+                            <p className="text-[10px] text-muted-foreground">{item.group}</p>
+                          </div>
+                          <span className="font-bold text-foreground">{formatCurrency(item.amount)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-muted-foreground italic py-3">No asset accounts found.</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Sub-Tab 3: Cash Flow Statement */}
+          {financialSubTab === 'cf' && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-emerald-600 tracking-wider">Cash Receipts (Inflow)</p>
+                  <p className="text-lg font-black text-emerald-600">{formatCurrency(cashFlowData?.operating_activities?.cash_receipts_from_customers || 0)}</p>
+                  <p className="text-[10px] text-muted-foreground">From Customer Collections</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-rose-600 tracking-wider">Cash Payments (Outflow)</p>
+                  <p className="text-lg font-black text-rose-600">{formatCurrency(cashFlowData?.operating_activities?.cash_paid_to_suppliers_expenses || 0)}</p>
+                  <p className="text-[10px] text-muted-foreground">Paid to Vendors & Operations</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
+                  <p className="text-[10px] font-extrabold uppercase text-blue-600 tracking-wider">Net Operating Cash Flow</p>
+                  <p className={cn("text-lg font-black", (cashFlowData?.operating_activities?.net_cash_from_operating || 0) >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(cashFlowData?.operating_activities?.net_cash_from_operating || 0)}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">Inflows minus Outflows</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Sub-Tab 4: Financial Ratios */}
+          {financialSubTab === 'ratios' && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-2 shadow-sm">
+                  <div className="flex justify-between items-center">
+                    <span className="font-extrabold text-sm text-foreground">Current Ratio</span>
+                    <span className="text-base font-black text-emerald-600">{ratiosData?.current_ratio ?? '—'}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Measures company liquidity & ability to cover short-term debts. Benchmark: &gt; 1.5.
+                  </p>
+                </div>
+
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-2 shadow-sm">
+                  <div className="flex justify-between items-center">
+                    <span className="font-extrabold text-sm text-foreground">Quick Acid-Test Ratio</span>
+                    <span className="text-base font-black text-blue-600">{ratiosData?.quick_ratio ?? '—'}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Measures immediate cash liquidity excluding inventory stock. Benchmark: &gt; 1.0.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Sub-Tab 5: Projected Financial Statements & Bank PDF */}
+          {financialSubTab === 'projected' && (
+            <div className="space-y-6 animate-in fade-in duration-200">
+              <ProjectedFinancials companyName={user?.company_name || 'M/S SNEH DISTRIBUTORS'} initialData={pnlData} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: SALES & CUSTOMER ANALYTICS */}
       {activeTab === 'sales' && (
         <div className="space-y-6">
           {/* Top Customers Bar Chart */}
@@ -948,12 +1347,10 @@ export default function ReportsPage() {
                         <td className="py-2.5 px-2 font-mono font-bold">
                           <Link
                             href={`/vouchers/${row.id}`}
-                            target="_blank"
-                            className="text-primary hover:underline hover:text-indigo-600 inline-flex items-center gap-1.5 group/link"
+                            className="text-primary hover:underline hover:text-indigo-600 font-bold"
                             title="Click to open voucher details"
                           >
                             <span>{row.voucher_number || `#${row.id}`}</span>
-                            <ExternalLink className="h-3 w-3 opacity-60 group-hover/link:opacity-100 transition-opacity" />
                           </Link>
                         </td>
                         <td className="py-2.5 px-2 text-muted-foreground">{formatDate(row.date)}</td>
@@ -1159,12 +1556,10 @@ export default function ReportsPage() {
                         <td className="py-2.5 px-2 font-mono font-bold">
                           <Link
                             href={`/vouchers/${row.id}`}
-                            target="_blank"
-                            className="text-primary hover:underline hover:text-indigo-600 inline-flex items-center gap-1.5 group/link"
+                            className="text-primary hover:underline hover:text-indigo-600 font-bold"
                             title="Click to open voucher details"
                           >
                             <span>{row.voucher_number || `#${row.id}`}</span>
-                            <ExternalLink className="h-3 w-3 opacity-60 group-hover/link:opacity-100 transition-opacity" />
                           </Link>
                         </td>
                         <td className="py-2.5 px-2">
@@ -1544,11 +1939,9 @@ export default function ReportsPage() {
                             {item.id > 0 ? (
                               <Link
                                 href={`/vouchers/${item.id}`}
-                                target="_blank"
-                                className="text-primary hover:underline font-bold inline-flex items-center gap-1"
+                                className="text-primary hover:underline font-bold"
                               >
                                 <span>{item.voucher_number}</span>
-                                <ExternalLink className="h-3 w-3 opacity-70" />
                               </Link>
                             ) : (
                               <span className="text-muted-foreground italic">{item.voucher_number}</span>
@@ -1593,8 +1986,10 @@ function KpiCard({ title, value, icon: Icon, color, info, onClick }: { title: st
   const colorMap: Record<string, string> = {
     emerald: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 group-hover:bg-emerald-500/20',
     blue: 'bg-blue-500/10 text-blue-600 border-blue-500/20 group-hover:bg-blue-500/20',
+    purple: 'bg-purple-500/10 text-purple-600 border-purple-500/20 group-hover:bg-purple-500/20',
     amber: 'bg-amber-500/10 text-amber-600 border-amber-500/20 group-hover:bg-amber-500/20',
-    rose: 'bg-rose-500/10 text-rose-600 border-rose-500/20 group-hover:bg-rose-500/20'
+    rose: 'bg-rose-500/10 text-rose-600 border-rose-500/20 group-hover:bg-rose-500/20',
+    slate: 'bg-slate-500/10 text-slate-600 border-slate-500/20 group-hover:bg-slate-500/20'
   }
 
   return (

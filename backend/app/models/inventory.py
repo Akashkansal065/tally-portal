@@ -10,9 +10,10 @@ class MstUom(Base):
     
     unit_id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(20), nullable=False)
-    symbol = Column(String(10), nullable=False)
+    name = Column(String(100), nullable=False)
+    symbol = Column(String(100), nullable=False)
     decimal_places = Column(Integer, default=2)
+    tally_alter_id = Column(BigInteger, nullable=True, index=True)
     
     items = relationship("MstStockItem", back_populates="unit")
 
@@ -24,6 +25,7 @@ class MstStockGroup(Base):
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_groups.stock_group_id", ondelete="SET NULL"), nullable=True)
+    tally_alter_id = Column(BigInteger, nullable=True, index=True)
     
     parent = relationship("MstStockGroup", remote_side=[stock_group_id], backref="sub_groups")
     items = relationship("MstStockItem", back_populates="group")
@@ -36,6 +38,7 @@ class MstStockCategory(Base):
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_categories.stock_category_id", ondelete="SET NULL"), nullable=True)
+    tally_alter_id = Column(BigInteger, nullable=True, index=True)
     
     parent = relationship("MstStockCategory", remote_side=[stock_category_id], backref="sub_categories")
     items = relationship("MstStockItem", back_populates="category")
@@ -48,6 +51,7 @@ class MstGodown(Base):
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     address = Column(String(300), nullable=True)
+    tally_alter_id = Column(BigInteger, nullable=True, index=True)
     
     stock_entries = relationship("TrnInventory", back_populates="godown")
 
@@ -72,6 +76,7 @@ class MstStockItem(Base):
     tracking_type = Column(Enum('None', 'Batch', 'Serial', name='tracking_type_enum'), default='None')
     shelf_life_days = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)
+    tally_alter_id = Column(BigInteger, nullable=True, index=True)
     
     unit = relationship("MstUom", back_populates="items")
     group = relationship("MstStockGroup", back_populates="items")

@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
+from typing import Optional
 import hashlib
 
 from app.core.database import get_db
@@ -40,7 +41,18 @@ async def get_bootstrap_status(db: AsyncSession = Depends(get_db)):
 
 class RegisterCompanyRequest(BaseModel):
     company_name: str
+    mailing_name: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = "India"
+    pincode: Optional[str] = None
+    telephone: Optional[str] = None
+    mobile: Optional[str] = None
+    website: Optional[str] = None
+    financial_year_start: Optional[str] = None # YYYY-MM-DD
     books_begin_date: str  # YYYY-MM-DD
+    base_currency: Optional[str] = "INR"
     username: str
     email: str
     password: str
@@ -97,16 +109,29 @@ async def register_company(
         
     try:
         begin_date = datetime.strptime(req.books_begin_date, "%Y-%m-%d").date()
+        fy_start = datetime.strptime(req.financial_year_start, "%Y-%m-%d").date() if req.financial_year_start else begin_date
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid date format for books_begin_date. Use YYYY-MM-DD."
+            detail="Invalid date format. Use YYYY-MM-DD."
         )
         
-    # 1. Create Company
+    # 1. Create Company with full Tally Prime fields
     company = Company(
         name=req.company_name,
+        address_line1=req.address_line1,
+        address_line2=req.address_line2,
+        state=req.state,
+        country=req.country or "India",
+        pincode=req.pincode,
+        telephone=req.telephone,
+        mobile=req.mobile,
+        email=req.email,
+        website=req.website,
+        financial_year_start=fy_start,
         books_begin_date=begin_date,
+        base_currency=req.base_currency or "INR",
+        features={"maintain_accounts": True, "maintain_inventory": True, "enable_gst": False},
         is_active=True
     )
     db.add(company)
@@ -336,10 +361,20 @@ async def switch_active_company(
     access = query.scalars().first()
     
     if not access:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have access to this company."
-        )
+        from app.models.user import Role
+        # Admins have global access to all registered companies
+        if user.role and user.role.name.lower() == "admin":
+            comp_check = await db.execute(select(Company).where(Company.company_id == payload.company_id))
+            if not comp_check.scalars().first():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Target company does not exist."
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this company."
+            )
         
     user.company_id = payload.company_id
     await db.commit()
@@ -348,28 +383,45 @@ async def switch_active_company(
 class MyCompanyResponse(BaseModel):
     company_id: int
     name: str
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    country: Optional[str] = None
+    telephone: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    financial_year_start: Optional[date] = None
+    books_begin_date: Optional[date] = None
+
+    class Config:
+        from_attributes = True
 
 @router.get("/me/companies", response_model=list[MyCompanyResponse])
 async def get_my_companies(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    # Admin role can view and switch between all active companies
+    if user.role and user.role.name.lower() == "admin":
+        query = await db.execute(select(Company).where(Company.is_active == True))
+        return list(query.scalars().all())
+
+    # Non-admin users can view only companies explicitly granted in UserCompanyAccess
     query = await db.execute(
         select(Company).join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id)
-        .where(UserCompanyAccess.user_id == user.user_id)
+        .where(UserCompanyAccess.user_id == user.user_id, Company.is_active == True)
     )
     companies = list(query.scalars().all())
     
-    primary_company_ids = {c.company_id for c in companies}
-    if user.company_id not in primary_company_ids:
+    if not companies:
         comp_query = await db.execute(select(Company).where(Company.company_id == user.company_id))
         primary_comp = comp_query.scalars().first()
         if primary_comp:
             companies.append(primary_comp)
-            
-            # Heal database by creating the missing link
-            access = UserCompanyAccess(user_id=user.user_id, company_id=user.company_id)
-            db.add(access)
-            await db.commit()
             
     return companies

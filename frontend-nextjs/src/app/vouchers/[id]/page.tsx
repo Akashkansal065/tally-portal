@@ -149,6 +149,33 @@ export default function VoucherDetailPage() {
   const isSalesVoucher = voucher.voucher_type.toLowerCase().includes('sales')
   const partyGstin = voucher.party_ledger?.gstn
 
+  const finalTotal = (() => {
+    if (!voucher) return 0
+    // 1. Try finding Party Ledger amount (the net invoice/bill amount)
+    if (voucher.accounts && voucher.accounts.length > 0 && voucher.party_name) {
+      const partyAcc = voucher.accounts.find(
+        (a: any) => (a.ledger || '').trim().toLowerCase() === (voucher.party_name || '').trim().toLowerCase()
+      )
+      if (partyAcc && partyAcc.amount) {
+        const pAmt = Math.abs(parseFloat(partyAcc.amount))
+        if (pAmt > 0) return pAmt
+      }
+    }
+    // 2. Fallback: Sum inventory items + non-party account ledger splits
+    let total = 0
+    if (voucher.inventory && voucher.inventory.length > 0) {
+      total += voucher.inventory.reduce((sum: number, i: any) => sum + Math.abs(parseFloat(i.amount || '0')), 0)
+    }
+    if (voucher.accounts && voucher.accounts.length > 0) {
+      voucher.accounts.forEach((acc: any) => {
+        if ((acc.ledger || '').trim().toLowerCase() !== (voucher.party_name || '').trim().toLowerCase()) {
+          total += parseFloat(acc.amount || '0')
+        }
+      })
+    }
+    return total > 0 ? Math.abs(total) : Math.abs(voucher.amount)
+  })()
+
   return (
     <div className="max-w-5xl mx-auto my-1 sm:my-4 px-1 sm:px-4 pb-20 md:pb-6">
       {/* Download PDF button at top right */}
@@ -311,7 +338,7 @@ export default function VoucherDetailPage() {
             <div className="inline-block border-t-2 border-b-4 border-foreground py-2 px-6 bg-muted/30">
               <span className="text-sm uppercase mr-4 text-muted-foreground font-bold">Total</span>
               <span className="text-2xl font-black tabular-nums text-emerald-600">
-                ₹{Math.abs(voucher.amount).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                ₹{finalTotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </span>
             </div>
           </div>

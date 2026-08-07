@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import './globals.css'
 import { AuthProvider } from '@/context/AuthContext'
+import { PeriodProvider } from '@/context/PeriodContext'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { GlobalHeader } from '@/components/GlobalHeader'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
@@ -46,17 +47,19 @@ export default function RootLayout({
       <body className="flex flex-col h-dvh overflow-hidden">
         <ThemeProvider>
           <AuthProvider>
-            <PwaRegister />
-            {/* Top Header */}
-            <GlobalHeader />
+            <PeriodProvider>
+              <PwaRegister />
+              {/* Top Header */}
+              <GlobalHeader />
 
-            {/* Scrollable main content, padded for bottom nav */}
-            <main className="flex-1 overflow-y-auto overflow-x-hidden pb-16">
-              <RouteGuard>{children}</RouteGuard>
-            </main>
+              {/* Scrollable main content, padded for bottom nav */}
+              <main className="flex-1 overflow-y-auto overflow-x-hidden pb-16">
+                <RouteGuard>{children}</RouteGuard>
+              </main>
 
-            {/* Fixed bottom navigation */}
-            <MobileBottomNav />
+              {/* Fixed bottom navigation */}
+              <MobileBottomNav />
+            </PeriodProvider>
           </AuthProvider>
         </ThemeProvider>
         <SpeedInsights />

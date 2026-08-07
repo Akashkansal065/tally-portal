@@ -78,7 +78,7 @@ def post_to_tally(xml_payload):
         method='POST'
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=300) as response:
             raw_bytes = response.read()
             # Decode response as UTF-16 (Tally responds in UTF-16)
             try:
@@ -164,15 +164,101 @@ def run_sync_cycle(token):
             last_alters = json.loads(response.read().decode('utf-8'))
             last_ledger_alter = last_alters.get("last_ledger_alter_id", 0)
             last_voucher_alter = last_alters.get("last_voucher_alter_id", 0)
+            last_ledger_alter_id = last_alters.get("last_ledger_alter_id", 0)
+            last_voucher_alter_id = last_alters.get("last_voucher_alter_id", 0)
     except Exception as e:
         print(f"Error fetching last alter IDs from ERP: {str(e)}")
         return
 
-    print(f"Current ERP state - Last Ledger AlterID: {last_ledger_alter}, Last Voucher AlterID: {last_voucher_alter}")
+    print(f"Current ERP state - Last Ledger AlterID: {last_ledger_alter_id}, Last Voucher AlterID: {last_voucher_alter_id}")
 
-    # Step B: Build incremental queries with standard TDLMESSAGE tags
-    queries = {
-        "Groups": """<ENVELOPE>
+    # Step B: Fetch Companies first to auto-provision and discover all open companies
+    company_query_xml = """<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>ListofCompanies</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="ListofCompanies">
+            <TYPE>Company</TYPE>
+            <FETCH>NAME,GUID,ADDRESS,STATENAME,COUNTRYNAME,PINCODE,TELEPHONE,BASICCOMPANYPHONE,TELEPHONENUMBER,MOBILE,BASICCOMPANYMOBILE,MOBILENUMBER,EMAIL,BASICCOMPANYEMAIL,EMAILID,WEBSITE,BASICCOMPANYWEBSITE,BOOKSFROM,BOOKSBEGINNINGFROM,STARTINGFROM,FINANCIALYEARFROM,GSTREGISTRATIONNUMBER,GSTIN,PARTYGSTIN</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+
+    target_companies = []
+    print("  [Companies] Fetching open companies from Tally...")
+    try:
+        encoded_data = company_query_xml.encode('utf-16-le')
+        comp_req = urllib.request.Request(
+            TALLY_URL,
+            data=encoded_data,
+            headers={'Content-Type': 'text/xml;charset=utf-16', 'Content-Length': str(len(encoded_data))},
+            method='POST'
+        )
+        with urllib.request.urlopen(comp_req, timeout=300) as response:
+            raw_bytes = response.read()
+            try:
+                comp_xml = raw_bytes.decode('utf-16')
+            except Exception:
+                comp_xml = raw_bytes.decode('utf-8', errors='ignore')
+                
+            if comp_xml and "<COMPANY" in comp_xml:
+                import xml.etree.ElementTree as ET
+                try:
+                    c_root = ET.fromstring(comp_xml)
+                    for c_node in c_root.findall(".//COMPANY"):
+                        c_name = c_node.get("NAME") or c_node.findtext("NAME")
+                        if c_name:
+                            target_companies.append(c_name.strip())
+                            
+                            c_phone = c_node.findtext("TELEPHONE") or c_node.findtext("BASICCOMPANYPHONE") or ""
+                            c_mobile = c_node.findtext("MOBILE") or c_node.findtext("BASICCOMPANYMOBILE") or ""
+                            c_email = c_node.findtext("EMAIL") or c_node.findtext("BASICCOMPANYEMAIL") or ""
+                            c_site = c_node.findtext("WEBSITE") or c_node.findtext("BASICCOMPANYWEBSITE") or ""
+                            c_gst = c_node.findtext("GSTREGISTRATIONNUMBER") or c_node.findtext("GSTIN") or ""
+                            c_state = c_node.findtext("STATENAME") or c_node.findtext("STATE") or ""
+                            
+                            print(f"  🏢 [Tally Company Profile] '{c_name.strip()}' | State: '{c_state}' | Phone: '{c_phone}' | Mobile: '{c_mobile}' | Email: '{c_email}' | Website: '{c_site}' | GSTIN: '{c_gst}'")
+                except Exception:
+                    pass
+                
+                # Post company profiles payload to ERP so it auto-provisions missing companies
+                print(f"  [Companies] Discovered {len(target_companies)} companies: {target_companies}")
+                print(f"  [Companies] Posting company profiles to ERP...")
+                post_data = comp_xml.encode('utf-8')
+                inbound_req = urllib.request.Request(
+                    f"{ERP_URL}/sync/inbound",
+                    data=post_data,
+                    headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/xml'},
+                    method='POST'
+                )
+                with urllib.request.urlopen(inbound_req, timeout=30) as erp_res:
+                    print(f"  [Companies] ERP Provisioned Response: {erp_res.read().decode('utf-8')}")
+    except Exception as e:
+        print(f"  [Companies] Warning: Could not fetch company list ({str(e)})")
+
+    if not target_companies:
+        target_companies = [None]
+
+    # Step C: Execute queries per company
+    for company_name in target_companies:
+        sv_company = f"<SVCURRENTCOMPANY>{company_name}</SVCURRENTCOMPANY>" if company_name else ""
+        comp_label = f"[{company_name}] " if company_name else ""
+        
+        queries = {
+            f"{comp_label}Groups": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -183,6 +269,7 @@ def run_sync_cycle(token):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -195,7 +282,7 @@ def run_sync_cycle(token):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-        "Ledgers": f"""<ENVELOPE>
+            f"{comp_label}Ledgers": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -206,23 +293,24 @@ def run_sync_cycle(token):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="IncrementalLedgers">
             <TYPE>Ledger</TYPE>
-            <FETCH>GUID,ALTERID,NAME,PARENT,OPENINGBALANCE,GSTIN,LEDGSTREGDETAILS.LIST,LEDMAILINGDETAILS.LIST</FETCH>
+            <FETCH>GUID,ALTERID,NAME,PARENT,OPENINGBALANCE,GSTIN,LWLEDADHARNOSTORE,LEDGSTREGDETAILS.LIST,LEDMAILINGDETAILS.LIST</FETCH>
             <FILTERS>AlteredFilter</FILTERS>
           </COLLECTION>
           <SYSTEM TYPE="Formulae" NAME="AlteredFilter">
-            $ALTERID &gt; {last_ledger_alter}
+            $ALTERID &gt; {last_ledger_alter_id}
           </SYSTEM>
         </TDLMESSAGE>
       </TDL>
     </DESC>
   </BODY>
 </ENVELOPE>""",
-        "Vouchers": f"""<ENVELOPE>
+            f"{comp_label}Vouchers": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -235,23 +323,24 @@ def run_sync_cycle(token):
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
         <SVFROMDATE TYPE="Date">20000101</SVFROMDATE>
         <SVTODATE TYPE="Date">20991231</SVTODATE>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="IncrementalVouchers">
             <TYPE>Voucher</TYPE>
-            <FETCH>GUID,ALTERID,DATE,VOUCHERTYPENAME,VOUCHERNUMBER,NARRATION,ALLLEDGERENTRIES.LIST,LEDGERENTRIES.LIST,INVENTORYENTRIES.LIST</FETCH>
-            <FILTERS>AlteredFilter</FILTERS>
+            <FETCH>GUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST</FETCH>
+            <FILTERS>AlteredVoucherFilter</FILTERS>
           </COLLECTION>
-          <SYSTEM TYPE="Formulae" NAME="AlteredFilter">
-            $ALTERID &gt; {last_voucher_alter}
+          <SYSTEM TYPE="Formulae" NAME="AlteredVoucherFilter">
+            $ALTERID &gt; {last_voucher_alter_id}
           </SYSTEM>
         </TDLMESSAGE>
       </TDL>
     </DESC>
   </BODY>
 </ENVELOPE>""",
-        "StockGroups": """<ENVELOPE>
+            f"{comp_label}StockGroups": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -262,6 +351,7 @@ def run_sync_cycle(token):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -274,7 +364,7 @@ def run_sync_cycle(token):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-        "Units": """<ENVELOPE>
+            f"{comp_label}Units": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -285,6 +375,7 @@ def run_sync_cycle(token):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -297,7 +388,7 @@ def run_sync_cycle(token):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-        "Godowns": """<ENVELOPE>
+            f"{comp_label}Godowns": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -308,6 +399,7 @@ def run_sync_cycle(token):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -320,7 +412,7 @@ def run_sync_cycle(token):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-        "StockCategories": """<ENVELOPE>
+            f"{comp_label}StockCategories": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -331,6 +423,7 @@ def run_sync_cycle(token):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -343,103 +436,112 @@ def run_sync_cycle(token):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-        "StockItems": """<ENVELOPE>
+            f"{comp_label}StockItems": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
     <TYPE>Collection</TYPE>
-    <ID>AllStockItems</ID>
+    <ID>IncrementalStockItems</ID>
   </HEADER>
   <BODY>
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
-          <COLLECTION NAME="AllStockItems">
+          <COLLECTION NAME="IncrementalStockItems">
             <TYPE>StockItem</TYPE>
-            <FETCH>NAME,PARENT,CATEGORY,BASEUNITS,OPENINGBALANCE,OPENINGVALUE,INFGSTHSNCODE,INFGSTIGSTRATE</FETCH>
+            <FETCH>GUID,ALTERID,NAME,PARENT,CATEGORY,BASEUNITS,OPENINGBALANCE,OPENINGVALUE,INFGSTHSNCODE,INFGSTIGSTRATE</FETCH>
+            <FILTERS>AlteredStockItemFilter</FILTERS>
           </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="AlteredStockItemFilter">
+            $ALTERID &gt; 0
+          </SYSTEM>
         </TDLMESSAGE>
       </TDL>
     </DESC>
   </BODY>
 </ENVELOPE>"""
-    }
+        }
 
-    # Step C: Execute queries
-    for name, xml_payload in queries.items():
-        import time as _time
-        step_start = _time.time()
-        try:
-            # 1. Encode request as UTF-16LE for Tally Prime
-            encoded_data = xml_payload.encode('utf-16-le')
-            tally_req = urllib.request.Request(
-                TALLY_URL,
-                data=encoded_data,
-                headers={
-                    'Content-Type': 'text/xml;charset=utf-16',
-                    'Content-Length': str(len(encoded_data))
-                },
-                method='POST'
-            )
-            
-            # 2. Fetch XML from Tally (90s timeout for large payloads like Vouchers/StockItems)
-            print(f"  [{name}] Fetching from Tally ({TALLY_URL})...")
-            fetch_start = _time.time()
-            with urllib.request.urlopen(tally_req, timeout=90) as response:
-                raw_bytes = response.read()
-                fetch_elapsed = _time.time() - fetch_start
-                print(f"  [{name}] Received {len(raw_bytes):,} bytes from Tally in {fetch_elapsed:.1f}s")
-                
-                # Decode response from UTF-16 (Tally responds in UTF-16)
-                try:
-                    tally_xml_response = raw_bytes.decode('utf-16')
-                except (UnicodeDecodeError, UnicodeError):
-                    tally_xml_response = raw_bytes.decode('utf-8', errors='ignore')
-                
-                # If Tally returns an empty envelope or error
-                if not tally_xml_response or "<ENVELOPE>" not in tally_xml_response:
-                    print(f"  [{name}] Skipped: Tally returned empty/invalid response ({len(tally_xml_response)} chars)")
-                    continue
-                
-                # 3. Post this XML payload to ERP inbound endpoint
-                post_data = tally_xml_response.encode('utf-8')
-                print(f"  [{name}] Posting {len(post_data):,} bytes to ERP ({ERP_URL}/sync/inbound)...")
-                inbound_url = f"{ERP_URL}/sync/inbound"
-                inbound_req = urllib.request.Request(
-                    inbound_url,
-                    data=post_data,
-                    headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/xml'},
+        # Step C: Execute queries for this company
+        for name, xml_payload in queries.items():
+            import time as _time
+            step_start = _time.time()
+            try:
+                # 1. Encode request as UTF-16LE for Tally Prime
+                encoded_data = xml_payload.encode('utf-16-le')
+                tally_req = urllib.request.Request(
+                    TALLY_URL,
+                    data=encoded_data,
+                    headers={
+                        'Content-Type': 'text/xml;charset=utf-16',
+                        'Content-Length': str(len(encoded_data))
+                    },
                     method='POST'
                 )
-                post_start = _time.time()
-                with urllib.request.urlopen(inbound_req, timeout=60) as erp_response:
-                    result = json.loads(erp_response.read().decode('utf-8'))
-                    post_elapsed = _time.time() - post_start
-                    total_elapsed = _time.time() - step_start
-                    print(f"  [{name}] ERP responded in {post_elapsed:.1f}s (total: {total_elapsed:.1f}s): {result}")
-        except TimeoutError as e:
-            elapsed = _time.time() - step_start
-            print(f"  [{name}] TIMEOUT after {elapsed:.1f}s - Tally or ERP did not respond in time")
-        except urllib.error.HTTPError as e:
-            elapsed = _time.time() - step_start
-            try:
-                err_body = e.read().decode('utf-8')
-                print(f"  [{name}] HTTP ERROR {e.code} after {elapsed:.1f}s: {err_body[:200]}")
-            except Exception:
-                print(f"  [{name}] HTTP ERROR {e.code} {e.reason} after {elapsed:.1f}s")
-        except urllib.error.URLError as e:
-            elapsed = _time.time() - step_start
-            reason = str(e.reason) if hasattr(e, 'reason') else str(e)
-            if "timed out" in reason.lower():
-                print(f"  [{name}] TIMEOUT (URLError) after {elapsed:.1f}s: {reason}")
-            else:
-                print(f"  [{name}] CONNECTION ERROR after {elapsed:.1f}s: {reason}")
-        except Exception as e:
-            elapsed = _time.time() - step_start
-            print(f"  [{name}] UNEXPECTED ERROR after {elapsed:.1f}s: {type(e).__name__}: {str(e)}")
+                
+                # 2. Fetch XML from Tally (600s timeout for large payloads like Vouchers/StockItems over tunnels)
+                print(f"  [{name}] Fetching from Tally ({TALLY_URL})...")
+                fetch_start = _time.time()
+                with urllib.request.urlopen(tally_req, timeout=600) as response:
+                    raw_bytes = response.read()
+                    fetch_elapsed = _time.time() - fetch_start
+                    print(f"  [{name}] Received {len(raw_bytes):,} bytes from Tally in {fetch_elapsed:.1f}s")
+                    
+                    # Decode response from UTF-16 (Tally responds in UTF-16)
+                    try:
+                        tally_xml_response = raw_bytes.decode('utf-16')
+                    except (UnicodeDecodeError, UnicodeError):
+                        tally_xml_response = raw_bytes.decode('utf-8', errors='ignore')
+                    
+                    # If Tally returns an empty envelope or error
+                    if not tally_xml_response or "<ENVELOPE>" not in tally_xml_response:
+                        print(f"  [{name}] Skipped: Tally returned empty/invalid response ({len(tally_xml_response)} chars)")
+                        continue
+                    
+                    # 3. Post this XML payload to ERP inbound endpoint
+                    post_data = tally_xml_response.encode('utf-8')
+                    print(f"  [{name}] Posting {len(post_data):,} bytes to ERP ({ERP_URL}/sync/inbound)...")
+                    inbound_url = f"{ERP_URL}/sync/inbound"
+                    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/xml'}
+                    if company_name:
+                        headers['X-Company-Name'] = company_name
+
+                    inbound_req = urllib.request.Request(
+                        inbound_url,
+                        data=post_data,
+                        headers=headers,
+                        method='POST'
+                    )
+                    post_start = _time.time()
+                    with urllib.request.urlopen(inbound_req, timeout=600) as erp_response:
+                        result = json.loads(erp_response.read().decode('utf-8'))
+                        post_elapsed = _time.time() - post_start
+                        total_elapsed = _time.time() - step_start
+                        print(f"  [{name}] ERP responded in {post_elapsed:.1f}s (total: {total_elapsed:.1f}s): {result}")
+            except TimeoutError as e:
+                elapsed = _time.time() - step_start
+                print(f"  [{name}] TIMEOUT after {elapsed:.1f}s - Tally or ERP did not respond in time")
+            except urllib.error.HTTPError as e:
+                elapsed = _time.time() - step_start
+                try:
+                    err_body = e.read().decode('utf-8')
+                    print(f"  [{name}] HTTP ERROR {e.code} after {elapsed:.1f}s: {err_body[:200]}")
+                except Exception:
+                    print(f"  [{name}] HTTP ERROR {e.code} {e.reason} after {elapsed:.1f}s")
+            except urllib.error.URLError as e:
+                elapsed = _time.time() - step_start
+                reason = str(e.reason) if hasattr(e, 'reason') else str(e)
+                if "timed out" in reason.lower():
+                    print(f"  [{name}] TIMEOUT (URLError) after {elapsed:.1f}s: {reason}")
+                else:
+                    print(f"  [{name}] CONNECTION ERROR after {elapsed:.1f}s: {reason}")
+            except Exception as e:
+                elapsed = _time.time() - step_start
+                print(f"  [{name}] UNEXPECTED ERROR after {elapsed:.1f}s: {type(e).__name__}: {str(e)}")
 
 def main():
     global TALLY_URL, ERP_URL

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Date, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -21,7 +21,15 @@ class Company(Base):
     base_currency = Column(String(10), default="INR")
     books_begin_date = Column(Date, nullable=False)
     is_active = Column(Boolean, default=True)
+    telephone = Column(String(20), nullable=True)
+    mobile = Column(String(20), nullable=True)
+    email = Column(String(100), nullable=True)
+    website = Column(String(150), nullable=True)
+    financial_year_start = Column(Date, nullable=True)
+    financial_year_end = Column(Date, nullable=True)
+    features = Column(JSON, nullable=True)
     einvoice_env = Column(String(20), default='mock')
+    tally_guid = Column(String(100), nullable=True, index=True)
     einvoice_username = Column(String(100), nullable=True)
     einvoice_password = Column(String(255), nullable=True)
     einvoice_gsp_client_id = Column(String(100), nullable=True)

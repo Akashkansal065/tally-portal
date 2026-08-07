@@ -13,8 +13,8 @@ class TrnBill(Base):
     party_ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=False, index=True)
     voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="CASCADE"), nullable=False)
     bill_reference = Column(String(50), nullable=False)
-    bill_date = Column(Date, nullable=False)
-    due_date = Column(Date, nullable=True)
+    bill_date = Column(Date, nullable=False, index=True)
+    due_date = Column(Date, nullable=True, index=True)
     bill_amount = Column(Numeric(18, 2), nullable=False)
     settled_amount = Column(Numeric(18, 2), default=0.00)
     status = Column(Enum('Open', 'Partially Settled', 'Settled', name='bill_status'), default='Open')
@@ -33,7 +33,7 @@ class BillAllocation(Base):
     bill_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.bills.bill_id", ondelete="SET NULL"), nullable=True)
     allocation_type = Column(Enum('Against Ref', 'Advance', 'On Account', 'New Ref', name='allocation_type_enum'), nullable=False)
     amount = Column(Numeric(18, 2), nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)
     
     bill = relationship("TrnBill", back_populates="allocations")
 
@@ -48,11 +48,11 @@ class ShopPayment(Base):
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=False)
     amount = Column(Numeric(18, 2), nullable=False)
     payment_mode = Column(String(64), nullable=False)  # Cash, Cheque, Online, etc.
-    cheque_date = Column(Date, nullable=True)
+    cheque_date = Column(Date, nullable=True, index=True)
     comments = Column(String(1024), nullable=True)
     photo_url = Column(Text, nullable=True)
     status = Column(String(32), default="pending")  # pending, success, cancelled
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)
 
     user = relationship("User")
     ledger = relationship("MstLedger")

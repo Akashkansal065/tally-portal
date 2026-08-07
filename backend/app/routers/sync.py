@@ -1,10 +1,11 @@
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy import update, delete, text
 from sqlalchemy.sql import func
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 from decimal import Decimal
 import urllib.request
@@ -14,7 +15,7 @@ from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.core.config import settings
 from app.routers.admin import require_admin
-from app.models.user import User
+from app.models.company import Company
 from app.models.ledger import MstLedger, MstGroup
 from app.models.voucher import TrnVoucher, TrnAccounting
 from app.models.sync import SyncQueue
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/sync", tags=["Tally Synchronization"])
 # Global lock to serialize inbound sync background tasks and prevent deadlocks
 sync_lock = asyncio.Lock()
 
-async def run_inbound_sync_background(xml_data: str, company_id: int):
+async def run_inbound_sync_background(xml_data: str, user_id: int, company_name: Optional[str] = None):
     """Asynchronously parses and imports inbound Tally XML, serialized via a global lock."""
     from app.core.database import AsyncSessionLocal
     from app.core.cache import clear_company_cache
@@ -37,25 +38,31 @@ async def run_inbound_sync_background(xml_data: str, company_id: int):
     async with sync_lock:
         async with AsyncSessionLocal() as db:
             try:
-                logger.info(f"Background inbound sync task started for company_id={company_id}")
-                result = await import_tally_xml(xml_data, db, company_id)
+                logger.info(f"Background inbound sync task started for user_id={user_id}, target_company='{company_name}'")
+                result = await import_tally_xml(xml_data, db, user_id, override_company_name=company_name)
+                company_id = result.get("company_id")
                 if result.get("status") == "error":
-                    logger.error(f"Background inbound sync failed for company_id={company_id}: {result.get('message')}")
+                    logger.error(f"Background inbound sync failed for user_id={user_id}: {result.get('message')}")
                 else:
-                    logger.info(f"Background inbound sync succeeded for company_id={company_id}: {result}")
-                    clear_company_cache(company_id)
+                    logger.info(f"Background inbound sync succeeded for company '{result.get('company_name')}' (ID: {company_id})")
+                    if company_id:
+                        clear_company_cache(company_id)
             except Exception as e:
-                logger.error(f"Background inbound sync exception for company_id={company_id}: {str(e)}", exc_info=True)
+                logger.error(f"Background inbound sync exception for user_id={user_id}: {str(e)}", exc_info=True)
 
 @router.post("/inbound")
 async def inbound_sync(
     request: Request,
-    background_tasks: BackgroundTasks,
-    user: User = Depends(require_permission("ledgers", "create"))
+    company_name: Optional[str] = Query(None),
+    user: User = Depends(require_permission("ledgers", "create")),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Receives raw Tally XML export from sync bridge daemon, queueing it for async processing.
+    Receives raw Tally XML export from sync bridge daemon, importing it directly into the database.
     """
+    if not company_name:
+        company_name = request.headers.get("x-company-name")
+        
     body = await request.body()
     # Auto detect UTF-16 or UTF-8 to prevent UnicodeDecodeError on raw file uploads
     if body.startswith(b'\xff\xfe') or body.startswith(b'\xfe\xff'):
@@ -75,15 +82,13 @@ async def inbound_sync(
             "imported_stock_categories": 0, "imported_stock_items": 0
         }
         
-    background_tasks.add_task(run_inbound_sync_background, xml_data, user.company_id)
-    
-    return {
-        "status": "success",
-        "message": "Inbound sync payload received and queued for background processing.",
-        "imported_groups": 0, "imported_ledgers": 0, "imported_vouchers": 0,
-        "imported_stock_groups": 0, "imported_uoms": 0, "imported_godowns": 0,
-        "imported_stock_categories": 0, "imported_stock_items": 0
-    }
+    async with sync_lock:
+        result = await import_tally_xml(xml_data, db, user.user_id, override_company_name=company_name)
+        company_id = result.get("company_id")
+        if company_id:
+            from app.core.cache import clear_company_cache
+            clear_company_cache(company_id)
+        return result
 
 @router.get("/outbound-queue")
 async def get_outbound_queue(
@@ -113,38 +118,19 @@ async def get_outbound_queue(
             l_res = await db.execute(l_stmt)
             ledger = l_res.scalars().first()
             if ledger:
-                # Find group name
+                # Find group name & company name
                 g_stmt = select(MstGroup).where(MstGroup.group_id == ledger.group_id)
                 g_res = await db.execute(g_stmt)
                 group = g_res.scalars().first()
                 group_name = group.name if group else "Sundry Debtors"
+
+                c_stmt = select(Company).where(Company.company_id == ledger.company_id)
+                c_res = await db.execute(c_stmt)
+                comp_obj = c_res.scalars().first()
+                comp_name = comp_obj.name if comp_obj else ""
                 
                 # Build Tally XML Envelope
-                xml_envelope = f"""<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import Data</TALLYREQUEST>
-    <TYPE>Data</TYPE>
-    <ID>All Masters</ID>
-  </HEADER>
-  <BODY>
-    <DESC>
-      <STATICVARIABLES>
-        <IMPORTDUPS>@@RequestImportDups</IMPORTDUPS>
-      </STATICVARIABLES>
-    </DESC>
-    <DATA>
-      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <LEDGER NAME="{ledger.name}" ACTION="Create">
-          <NAME>{ledger.name}</NAME>
-          <PARENT>{group_name}</PARENT>
-          <OPENINGBALANCE>{'-' if ledger.opening_balance_type == 'Dr' else ''}{ledger.opening_balance}</OPENINGBALANCE>
-          <GSTIN>{ledger.gstin or ''}</GSTIN>
-        </LEDGER>
-      </TALLYMESSAGE>
-    </DATA>
-  </BODY>
-</ENVELOPE>"""
+                xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create')
                 
         # 2. Map Voucher Creation
         elif item.record_type == "Voucher":
@@ -253,34 +239,464 @@ async def get_last_alter_id(
     }
 
 
-def _post_to_tally_sync(url: str, xml_payload: str) -> str:
-    encoded_data = xml_payload.encode('utf-16-le')
+def _post_to_tally_sync(url: str, xml_payload: str, timeout: int = 5) -> str:
+    import http.client
+    import ssl
+    encoded_data = xml_payload.encode('utf-8')
+    
+    # SSL Context for HTTPS proxies/tunnels
+    ssl_ctx = None
+    if url.startswith("https"):
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
     req = urllib.request.Request(
         url,
         data=encoded_data,
         headers={
-            'Content-Type': 'text/xml;charset=utf-16',
+            'Content-Type': 'text/xml;charset=utf-8',
             'Content-Length': str(len(encoded_data))
         },
         method='POST'
     )
-    with urllib.request.urlopen(req, timeout=90) as response:
-        raw_bytes = response.read()
-        try:
-            return raw_bytes.decode('utf-16')
-        except (UnicodeDecodeError, UnicodeError):
-            return raw_bytes.decode('utf-8', errors='ignore')
+    
+    raw_bytes = bytearray()
+    try:
+        kwargs = {"timeout": timeout}
+        if ssl_ctx:
+            kwargs["context"] = ssl_ctx
+
+        with urllib.request.urlopen(req, **kwargs) as response:
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                raw_bytes.extend(chunk)
+    except http.client.IncompleteRead as e:
+        logger.warning(f"IncompleteRead encountered from Tally XML endpoint ({len(e.partial)} bytes recovered).")
+        raw_bytes.extend(e.partial)
+    except Exception as e:
+        logger.error(f"Connection error while fetching from Tally ({url}): {str(e)}")
+        if not raw_bytes:
+            return ""
+
+    if not raw_bytes:
+        return ""
+
+    try:
+        return bytes(raw_bytes).decode('utf-16')
+    except (UnicodeDecodeError, UnicodeError):
+        return bytes(raw_bytes).decode('utf-8', errors='ignore')
+
+
+def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str, action: str) -> str:
+    gstin_val = ledger.gstin or ''
+    pan_val = getattr(ledger, 'pan_number', None) or (gstin_val[2:12].upper() if len(gstin_val) >= 12 else '')
+    state_val = ledger.state or ''
+    country_val = getattr(ledger, 'country', None) or 'India'
+    pincode_val = getattr(ledger, 'pincode', None) or ''
+    
+    raw_addr = ledger.address or ''
+    clean_addr = raw_addr.split(" | Mobile: ")[0].strip() if " | Mobile: " in raw_addr else raw_addr.strip()
+    mobile_val = getattr(ledger, 'mobile', None) or ''
+    if not mobile_val and " | Mobile: " in raw_addr:
+        mobile_val = raw_addr.split(" | Mobile: ")[1].strip()
+
+    contact_val = getattr(ledger, 'contact_person', None) or ''
+    phone_val = getattr(ledger, 'phone', None) or ''
+    email_val = getattr(ledger, 'email', None) or ''
+    aadhar_val = getattr(ledger, 'aadhar_number', None) or ''
+    credit_limit_val = getattr(ledger, 'credit_limit', None)
+    credit_days_val = getattr(ledger, 'credit_period_days', None)
+    is_billwise = 'Yes' if getattr(ledger, 'is_billwise_on', True) else 'No'
+    
+    gst_reg_type = getattr(ledger, 'gst_registration_type', None) or ('Regular' if gstin_val else 'Unregistered')
+    if gst_reg_type == 'Unregistered/Consumer':
+        gst_reg_type = 'Unregistered'
+
+    op_sign = '-' if ledger.opening_balance_type == 'Dr' else ''
+    op_bal_str = f"{op_sign}{ledger.opening_balance}" if ledger.opening_balance else "0.00"
+
+    addr_lines = [line.strip() for line in clean_addr.replace('\n', ',').split(',') if line.strip()]
+    if not addr_lines and clean_addr:
+        addr_lines = [clean_addr]
+    
+    address_nodes = "".join([f"<ADDRESS>{line}</ADDRESS>" for line in addr_lines])
+    addr_list_xml = f"<ADDRESS.LIST>{address_nodes}</ADDRESS.LIST>" if address_nodes else ""
+
+    mailing_details_xml = f"""<LEDMAILINGDETAILS.LIST>
+      <MAILINGNAME>{ledger.name}</MAILINGNAME>
+      <STATE>{state_val}</STATE>
+      <COUNTRY>{country_val}</COUNTRY>
+      <PINCODE>{pincode_val}</PINCODE>
+      {addr_list_xml}
+    </LEDMAILINGDETAILS.LIST>""" if (state_val or country_val or pincode_val or addr_list_xml) else ""
+
+    gst_reg_details_xml = f"""<LEDGSTREGDETAILS.LIST>
+      <APPLICABLEFROM>20250401</APPLICABLEFROM>
+      <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
+      <GSTIN>{gstin_val}</GSTIN>
+    </LEDGSTREGDETAILS.LIST>""" if (gst_reg_type or gstin_val) else ""
+
+    return f"""<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>All Masters</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <LEDGER NAME="{ledger.name}" ACTION="{action}">
+            <NAME>{ledger.name}</NAME>
+            <PARENT>{group_name}</PARENT>
+            <MAILINGNAME>{ledger.name}</MAILINGNAME>
+            <OPENINGBALANCE>{op_bal_str}</OPENINGBALANCE>
+            <COUNTRYOFRESIDENCE>{country_val}</COUNTRYOFRESIDENCE>
+            <COUNTRYNAME>{country_val}</COUNTRYNAME>
+            <PRIORSTATENAME>{state_val}</PRIORSTATENAME>
+            <STATENAME>{state_val}</STATENAME>
+            <PINCODE>{pincode_val}</PINCODE>
+            {addr_list_xml}
+            {mailing_details_xml}
+            <LEDGERCONTACT>{contact_val}</LEDGERCONTACT>
+            <LEDGERPHONE>{phone_val}</LEDGERPHONE>
+            <LEDGERMOBILE>{mobile_val}</LEDGERMOBILE>
+            <EMAIL>{email_val}</EMAIL>
+            <INCOMETAXNUMBER>{pan_val}</INCOMETAXNUMBER>
+            <GSTIN>{gstin_val}</GSTIN>
+            <PARTYGSTIN>{gstin_val}</PARTYGSTIN>
+            <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
+            {gst_reg_details_xml}
+            <ISBILLWISEON>{is_billwise}</ISBILLWISEON>
+            <CREDITLIMIT>{credit_limit_val or ''}</CREDITLIMIT>
+            <BILLCREDITPERIOD>{f"{credit_days_val} Days" if credit_days_val else ''}</BILLCREDITPERIOD>
+            <LWLEDADHARNOSTORE>{aadhar_val}</LWLEDADHARNOSTORE>
+            <UDF:LWLEDADHARNOSTORE DESC="`LWLedAdharNoStore`" TYPE="String">{aadhar_val}</UDF:LWLEDADHARNOSTORE>
+          </LEDGER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>"""
 
 
 def check_tally_success(response_xml: str) -> bool:
+    if not response_xml:
+        return False
+    if "<LINEERROR>" in response_xml or "<ERROR>" in response_xml:
+        return False
     return (
         "<CREATED>1</CREATED>" in response_xml or 
-        "<UPDATED>1</UPDATED>" in response_xml or 
-        "<ERRORS>0</ERRORS>" in response_xml
+        "<ALTERED>1</ALTERED>" in response_xml or 
+        "<UPDATED>1</UPDATED>" in response_xml or
+        "<DELETED>1</DELETED>" in response_xml or
+        "<LASTVOUCHERID>" in response_xml or
+        ("<ERRORS>0</ERRORS>" in response_xml and "<LINEERROR>" not in response_xml)
     )
 
 
-async def run_once_sync_background(company_id: int):
+def build_ledger_json_payload(ledger: MstLedger, group_name: str, comp_name: str, action: str) -> dict:
+    act_lower = action.lower()
+    if act_lower == 'delete':
+        return {
+            "static_variables": [
+                {"name": "svMstImportFormat", "value": "jsonex"},
+                {"name": "svCurrentCompany", "value": comp_name}
+            ],
+            "tallymessage": [
+                {
+                    "metadata": {
+                        "type": "Ledger",
+                        "action": "Delete",
+                        "name": ledger.name
+                    }
+                }
+            ]
+        }
+
+    gstin_val = ledger.gstin or ''
+    pan_val = getattr(ledger, 'pan_number', None) or (gstin_val[2:12].upper() if len(gstin_val) >= 12 else '')
+    state_val = ledger.state or ''
+    country_val = getattr(ledger, 'country', None) or 'India'
+    pincode_val = getattr(ledger, 'pincode', None) or ''
+
+    raw_addr = ledger.address or ''
+    clean_addr = raw_addr.split(" | Mobile: ")[0].strip() if " | Mobile: " in raw_addr else raw_addr.strip()
+    mobile_val = getattr(ledger, 'mobile', None) or ''
+    if not mobile_val and " | Mobile: " in raw_addr:
+        mobile_val = raw_addr.split(" | Mobile: ")[1].strip()
+
+    contact_val = getattr(ledger, 'contact_person', None) or ''
+    phone_val = getattr(ledger, 'phone', None) or ''
+    email_val = getattr(ledger, 'email', None) or ''
+    aadhar_val = getattr(ledger, 'aadhar_number', None) or ''
+    credit_limit_val = getattr(ledger, 'credit_limit', None)
+    credit_days_val = getattr(ledger, 'credit_period_days', None)
+    is_billwise = bool(getattr(ledger, 'is_billwise_on', True))
+
+    gst_reg_type = getattr(ledger, 'gst_registration_type', None) or ('Regular' if gstin_val else 'Unregistered')
+    if gst_reg_type == 'Unregistered/Consumer':
+        gst_reg_type = 'Unregistered'
+
+    op_sign = '-' if ledger.opening_balance_type == 'Dr' else ''
+    op_bal_str = f"{op_sign}{ledger.opening_balance}" if ledger.opening_balance else "0.00"
+
+    addr_lines = [{"metadata": True, "type": "String"}] + [line.strip() for line in clean_addr.replace('\n', ',').split(',') if line.strip()]
+
+    transporter_id_val = getattr(ledger, 'transporter_id', None) or ''
+    is_transporter_val = bool(transporter_id_val)
+    pos_val = getattr(ledger, 'place_of_supply', None) or state_val or ''
+
+    msg_obj = {
+        "metadata": {
+            "type": "Ledger",
+            "action": act_lower,
+            "name": ledger.name
+        },
+        "name": ledger.name,
+        "parent": group_name,
+        "currencyname": "INR",
+        "ledgercountryisdcode": "+91",
+        "mailingname": ledger.name,
+        "countryofresidence": country_val,
+        "priorstatename": state_val,
+        "pincode": pincode_val,
+        "countryname": country_val,
+        "ledmailingdetails": [
+            {
+                "address": addr_lines,
+                "applicablefrom": "20250401",
+                "pincode": pincode_val,
+                "mailingname": ledger.name,
+                "state": state_val,
+                "country": country_val
+            }
+        ],
+        "ledgercontact": contact_val,
+        "ledgermobile": mobile_val,
+        "ledgerphone": phone_val,
+        "email": email_val,
+        "incometaxnumber": pan_val,
+        "lwledadlharnosstore": aadhar_val,
+        "partygstin": gstin_val,
+        "gstregistrationtype": gst_reg_type,
+        "vatdealertype": gst_reg_type,
+        "ledgstregdetails": [
+            {
+                "applicablefrom": "20250401",
+                "gstregistrationtype": gst_reg_type,
+                "transporterid": transporter_id_val,
+                "state": state_val,
+                "placeofsupply": pos_val,
+                "gstin": gstin_val,
+                "isothterritoryassessee": bool(getattr(ledger, 'is_other_territory_assessee', False)),
+                "considerpurchaseforexport": False,
+                "istransporter": is_transporter_val,
+                "iscommonparty": bool(getattr(ledger, 'is_common_party', False))
+            }
+        ],
+        "isbillwiseon": is_billwise,
+        "isaffectstock": bool(getattr(ledger, 'is_inventory_affected', False)),
+        "iscostcentreson": bool(getattr(ledger, 'is_cost_centres_on', False)),
+        "ischequeprintingenabled": True,
+        "isdeemedpositive": True if ledger.opening_balance_type == 'Dr' else False,
+        "openingbalance": op_bal_str
+    }
+
+    desc = getattr(ledger, 'description', None)
+    if desc:
+        msg_obj["description"] = desc
+
+    notes_val = getattr(ledger, 'notes', None)
+    if notes_val:
+        msg_obj["notes"] = notes_val
+
+    alias_name = getattr(ledger, 'alias_name', None)
+    if alias_name:
+        msg_obj["languagename"] = [
+            {
+                "name": [
+                    {"metadata": True, "type": "String"},
+                    ledger.name,
+                    alias_name
+                ],
+                "languageid": {"type": "Number", "value": "1033"}
+            }
+        ]
+
+    if credit_limit_val:
+        msg_obj["creditlimit"] = str(credit_limit_val)
+    if credit_days_val:
+        msg_obj["creditdays"] = f"{credit_days_val} Days"
+
+    bank_list = getattr(ledger, 'bank_details', None)
+    if bank_list and len(bank_list) > 0:
+        pay_details = []
+        for b in bank_list:
+            ttype = b.transaction_type or "e-Fund Transfer"
+            p_obj = {
+                "transactiontype": ttype,
+                "transacttype": ttype
+            }
+            fav_name = b.favouring_name or ledger.name
+            if fav_name:
+                p_obj["favouringname"] = fav_name
+
+            if ttype in ["Cheque", "Electronic Cheque"]:
+                p_obj["crossusing"] = b.cross_using or "A/c Payee"
+                if b.account_number:
+                    p_obj["accountnumber"] = b.account_number
+                if b.bank_name:
+                    p_obj["bankname"] = b.bank_name
+                if b.ifsc_code:
+                    p_obj["ifsccode"] = b.ifsc_code
+            elif ttype == "UPI":
+                if b.upi_id:
+                    p_obj["emailid"] = b.upi_id
+                    p_obj["payeeupiid"] = b.upi_id
+                if b.account_number:
+                    p_obj["accountnumber"] = b.account_number
+                if b.ifsc_code:
+                    p_obj["ifsccode"] = b.ifsc_code
+                if b.bank_name:
+                    p_obj["bankname"] = b.bank_name
+            else:
+                if b.account_number:
+                    p_obj["accountnumber"] = b.account_number
+                if b.ifsc_code:
+                    p_obj["ifsccode"] = b.ifsc_code
+                if b.bank_name:
+                    p_obj["bankname"] = b.bank_name
+
+            pay_details.append(p_obj)
+        if pay_details:
+            msg_obj["paymentdetails"] = pay_details
+
+    return {
+        "static_variables": [
+            {"name": "svMstImportFormat", "value": "jsonex"},
+            {"name": "svCurrentCompany", "value": comp_name}
+        ],
+        "tallymessage": [msg_obj]
+    }
+
+
+def _post_json_to_tally_sync(url: str, json_payload: dict, timeout: int = 5) -> str:
+    import ssl
+    encoded_data = json.dumps(json_payload).encode('utf-8')
+    
+    ssl_ctx = None
+    if url.startswith("https"):
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    req = urllib.request.Request(
+        url,
+        data=encoded_data,
+        headers={
+            'content-type': 'application/json',
+            'version': '1',
+            'tallyrequest': 'Import',
+            'type': 'Data',
+            'id': 'All Masters'
+        },
+        method='POST'
+    )
+    
+    raw_bytes = bytearray()
+    try:
+        kwargs = {"timeout": timeout}
+        if ssl_ctx:
+            kwargs["context"] = ssl_ctx
+
+        with urllib.request.urlopen(req, **kwargs) as response:
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                raw_bytes.extend(chunk)
+    except Exception as e:
+        logger.error(f"Connection error while posting JSON to Tally ({url}): {str(e)}")
+        if not raw_bytes:
+            return ""
+
+    if not raw_bytes:
+        return ""
+
+    return bytes(raw_bytes).decode('utf-8', errors='ignore')
+
+
+def check_tally_json_success(response_str: str) -> bool:
+    if not response_str:
+        return False
+    try:
+        data = json.loads(response_str)
+        if data.get("status") == "1":
+            import_result = data.get("data", {}).get("import_result", {})
+            errors = import_result.get("errors", 0)
+            if errors == 0:
+                return True
+    except Exception:
+        pass
+    return "<CREATED>1</CREATED>" in response_str or "<ALTERED>1</ALTERED>" in response_str or "<DELETED>1</DELETED>" in response_str or '"status": "1"' in response_str
+
+
+async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    """
+    Attempts real-time push to Tally Prime on the fly using JSON API (Tally_Ledger_apis.md schema).
+    If Tally is reachable and succeeds, marks SyncQueue item as processed (is_processed=True).
+    If Tally is unreachable/times out, leaves SyncQueue item as is_processed=False to sync later.
+    """
+    try:
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return False
+
+        l_stmt = select(MstLedger).options(selectinload(MstLedger.group), selectinload(MstLedger.bank_details)).where(MstLedger.ledger_id == ledger_id)
+        l_res = await db.execute(l_stmt)
+        ledger = l_res.scalars().first()
+        if not ledger:
+            logger.warning(f"Real-time Tally push skipped: ledger_id={ledger_id} not found.")
+            return False
+
+        group_name = ledger.group.name if ledger.group else "Sundry Debtors"
+        
+        c_stmt = select(Company).where(Company.company_id == ledger.company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        json_payload = build_ledger_json_payload(ledger, group_name, comp_name, action)
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY JSON PUSH (ledger_id={ledger_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{json.dumps(json_payload, indent=2)}\n=======================================================\n")
+
+        resp_str = await asyncio.to_thread(_post_json_to_tally_sync, tally_url, json_payload, 5)
+        
+        logger.info(f"\n=======================================================\nTALLY JSON PUSH RESPONSE (ledger_id={ledger_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+
+        if check_tally_json_success(resp_str):
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            await db.execute(sq_stmt)
+            await db.commit()
+            logger.info(f"Real-time Tally JSON push successful for ledger_id={ledger_id}, action={action}")
+            return True
+        else:
+            logger.error(f"Real-time Tally JSON push failed for ledger_id={ledger_id}: {resp_str}")
+    except Exception as e:
+        logger.warning(f"Real-time Tally JSON push exception for ledger_id={ledger_id}: {str(e)}", exc_info=True)
+    return False
+
+
+async def run_once_sync_background(user_id: int):
     """
     Executes a single cycle of bidirectional synchronization with the Tally XML Server in the background.
     """
@@ -289,16 +705,16 @@ async def run_once_sync_background(company_id: int):
     
     tally_url = settings.TALLY_URL
     if not tally_url:
-        logger.error(f"Background run-once sync aborted for company_id={company_id}: TALLY_URL is not configured.")
+        logger.error(f"Background run-once sync aborted for user_id={user_id}: TALLY_URL is not configured.")
         return
 
-    logger.info(f"Background run-once sync started for company_id={company_id}")
+    logger.info(f"Background run-once sync started for user_id={user_id}")
     
     async with AsyncSessionLocal() as db:
         try:
-            # 1. PHASE 1: Outbound Sync (ERP -> Tally)
-            stmt = select(SyncQueue).where(
-                SyncQueue.company_id == company_id,
+            from app.models.user import UserCompanyAccess
+            stmt = select(SyncQueue).join(UserCompanyAccess, SyncQueue.company_id == UserCompanyAccess.company_id).where(
+                UserCompanyAccess.user_id == user_id,
                 SyncQueue.is_processed == False
             ).order_by(SyncQueue.created_at.asc())
             
@@ -308,42 +724,25 @@ async def run_once_sync_background(company_id: int):
             outbound_success = 0
             for item in queue_items:
                 xml_envelope = ""
-                # 1. Map Ledger Creation
+        # 1. Map Ledger Creation
                 if item.record_type == "Ledger":
                     l_stmt = select(MstLedger).where(MstLedger.ledger_id == item.record_id)
                     l_res = await db.execute(l_stmt)
                     ledger = l_res.scalars().first()
                     if ledger:
+                        # Find group name & company name
                         g_stmt = select(MstGroup).where(MstGroup.group_id == ledger.group_id)
                         g_res = await db.execute(g_stmt)
                         group = g_res.scalars().first()
                         group_name = group.name if group else "Sundry Debtors"
-                        
-                        xml_envelope = f"""<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import Data</TALLYREQUEST>
-    <TYPE>Data</TYPE>
-    <ID>All Masters</ID>
-  </HEADER>
-  <BODY>
-    <DESC>
-      <STATICVARIABLES>
-        <IMPORTDUPS>@@RequestImportDups</IMPORTDUPS>
-      </STATICVARIABLES>
-    </DESC>
-    <DATA>
-      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <LEDGER NAME="{ledger.name}" ACTION="Create">
-          <NAME>{ledger.name}</NAME>
-          <PARENT>{group_name}</PARENT>
-          <OPENINGBALANCE>{'-' if ledger.opening_balance_type == 'Dr' else ''}{ledger.opening_balance}</OPENINGBALANCE>
-          <GSTIN>{ledger.gstin or ''}</GSTIN>
-        </LEDGER>
-      </TALLYMESSAGE>
-    </DATA>
-  </BODY>
-</ENVELOPE>"""
+
+                        c_stmt = select(Company).where(Company.company_id == ledger.company_id)
+                        c_res = await db.execute(c_stmt)
+                        comp_obj = c_res.scalars().first()
+                        comp_name = comp_obj.name if comp_obj else ""
+
+                        # Build Tally XML Envelope
+                        xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create')
                         
                 # 2. Map Voucher Creation
                 elif item.record_type == "Voucher":
@@ -396,6 +795,51 @@ async def run_once_sync_background(company_id: int):
     </DATA>
   </BODY>
 </ENVELOPE>"""
+
+                # 3. Map Company Profile Alteration
+                elif item.record_type == "Company":
+                    comp_stmt = select(Company).where(Company.company_id == item.record_id)
+                    comp_res = await db.execute(comp_stmt)
+                    company = comp_res.scalars().first()
+                    if company:
+                        addr_list = ""
+                        if company.address_line1:
+                            addr_list += f"<ADDRESS>{company.address_line1}</ADDRESS>"
+                        if company.address_line2:
+                            addr_list += f"<ADDRESS>{company.address_line2}</ADDRESS>"
+
+                        xml_envelope = f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{company.name}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+<COMPANY NAME="{company.name}" ACTION="Alter">
+<NAME>{company.name}</NAME>
+<STATENAME>{company.state or ''}</STATENAME>
+<COUNTRYNAME>{company.country or ''}</COUNTRYNAME>
+<PINCODE>{company.pincode or ''}</PINCODE>
+<BASICCOMPANYPHONE>{company.telephone or ''}</BASICCOMPANYPHONE>
+<BASICCOMPANYMOBILE>{company.mobile or ''}</BASICCOMPANYMOBILE>
+<BASICCOMPANYEMAIL>{company.email or ''}</BASICCOMPANYEMAIL>
+<WEBSITE>{company.website or ''}</WEBSITE>
+<ADDRESS.LIST>
+{addr_list}
+</ADDRESS.LIST>
+</COMPANY>
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>"""
                         
                 if xml_envelope:
                     try:
@@ -409,17 +853,87 @@ async def run_once_sync_background(company_id: int):
             if outbound_success > 0:
                 await db.commit()
 
-            # 2. PHASE 2: Inbound Sync (Tally -> ERP) with ALTERID
-            ledger_stmt = select(func.max(MstLedger.tally_alter_id)).where(MstLedger.company_id == company_id)
-            ledger_res = await db.execute(ledger_stmt)
-            max_ledger_alter = ledger_res.scalar() or 0
-            
-            voucher_stmt = select(func.max(TrnVoucher.tally_alter_id)).where(TrnVoucher.company_id == company_id)
-            voucher_res = await db.execute(voucher_stmt)
-            max_voucher_alter = voucher_res.scalar() or 0
+            # 2. PHASE 2: Inbound Sync (Tally -> ERP)
+            # Step A: Query Tally for all loaded/open companies
+            company_query_xml = """<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>ListofCompanies</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="ListofCompanies">
+            <TYPE>Company</TYPE>
+            <FETCH>*</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
 
-            queries = {
-                "Groups": """<ENVELOPE>
+            target_companies = []
+            try:
+                comp_resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, company_query_xml)
+                if comp_resp and "<COMPANY" in comp_resp:
+                    from app.services.tally_xml_importer import sanitize_xml
+                    comp_resp = sanitize_xml(comp_resp)
+                    import xml.etree.ElementTree as ET
+                    try:
+                        c_root = ET.fromstring(comp_resp)
+                        for c_node in c_root.findall(".//COMPANY"):
+                            c_name = c_node.get("NAME") or c_node.findtext("NAME")
+                            if c_name:
+                                clean_cname = c_name.strip()
+                                target_companies.append(clean_cname)
+                                c_xml_str = ET.tostring(c_node, encoding='utf-8').decode('utf-8')
+                                await import_tally_xml(c_xml_str, db, user_id, override_company_name=clean_cname)
+                    except Exception as e:
+                        logger.error(f"Error parsing company list XML: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error fetching company list from Tally: {str(e)}")
+
+            # Fallback if company list fetch didn't return names
+            if not target_companies:
+                target_companies = [None]
+
+            total_imported = {
+                "groups": 0, "ledgers": 0, "vouchers": 0,
+                "stock_groups": 0, "uoms": 0, "godowns": 0,
+                "stock_categories": 0, "stock_items": 0
+            }
+
+            async with sync_lock:
+                for company_name in target_companies:
+                    sv_company = f"<SVCURRENTCOMPANY>{company_name}</SVCURRENTCOMPANY>" if company_name else ""
+                    
+                    # Calculate max Alter ID specifically for this company
+                    max_ledger_alter = 0
+                    max_voucher_alter = 0
+                    max_stock_item_alter = 0
+                    if company_name:
+                        from app.models.inventory import MstStockItem
+                        comp_stmt = select(Company.company_id).where(Company.name == company_name)
+                        comp_id = (await db.execute(comp_stmt)).scalar()
+                        if comp_id:
+                            l_stmt = select(func.max(MstLedger.tally_alter_id)).where(MstLedger.company_id == comp_id)
+                            max_ledger_alter = (await db.execute(l_stmt)).scalar() or 0
+                            
+                            v_stmt = select(func.max(TrnVoucher.tally_alter_id)).where(TrnVoucher.company_id == comp_id)
+                            max_voucher_alter = (await db.execute(v_stmt)).scalar() or 0
+
+                            si_stmt = select(func.max(MstStockItem.tally_alter_id)).where(MstStockItem.company_id == comp_id)
+                            max_stock_item_alter = (await db.execute(si_stmt)).scalar() or 0
+                    
+                    queries = {
+                        "Groups": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -430,6 +944,7 @@ async def run_once_sync_background(company_id: int):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -442,7 +957,7 @@ async def run_once_sync_background(company_id: int):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-                "Ledgers": f"""<ENVELOPE>
+                        "Ledgers": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -453,12 +968,13 @@ async def run_once_sync_background(company_id: int):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="IncrementalLedgers">
             <TYPE>Ledger</TYPE>
-            <FETCH>GUID,ALTERID,NAME,PARENT,OPENINGBALANCE,GSTIN,LEDGSTREGDETAILS.LIST,LEDMAILINGDETAILS.LIST</FETCH>
+            <FETCH>GUID,ALTERID,NAME,PARENT,OPENINGBALANCE,GSTIN,PARTYGSTIN,INCOMETAXNUMBER,LWLEDADHARNOSTORE,LEDGERCONTACT,LEDGERPHONE,LEDGERMOBILE,EMAIL,EMAILCC,WEBSITE,DESCRIPTION,LEDGERFAX,CREDITLIMIT,BILLCREDITPERIOD,ISBILLWISEON,COUNTRYOFRESIDENCE,COUNTRYNAME,PRIORSTATENAME,STATENAME,PINCODE,LEDGSTREGDETAILS.LIST,LEDMAILINGDETAILS.LIST,LANGUAGENAME.LIST,ADDRESS.LIST,ADDRESS</FETCH>
             <FILTERS>AlteredFilter</FILTERS>
           </COLLECTION>
           <SYSTEM TYPE="Formulae" NAME="AlteredFilter">
@@ -469,7 +985,7 @@ async def run_once_sync_background(company_id: int):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-                "Vouchers": f"""<ENVELOPE>
+                        "Vouchers": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -482,15 +998,16 @@ async def run_once_sync_background(company_id: int):
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
         <SVFROMDATE TYPE="Date">20000101</SVFROMDATE>
         <SVTODATE TYPE="Date">20991231</SVTODATE>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="IncrementalVouchers">
             <TYPE>Voucher</TYPE>
-            <FETCH>GUID,ALTERID,DATE,VOUCHERTYPENAME,VOUCHERNUMBER,NARRATION,ALLLEDGERENTRIES.LIST,LEDGERENTRIES.LIST,INVENTORYENTRIES.LIST</FETCH>
-            <FILTERS>AlteredFilter</FILTERS>
+            <FETCH>GUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST</FETCH>
+            <FILTERS>AlteredVoucherFilter</FILTERS>
           </COLLECTION>
-          <SYSTEM TYPE="Formulae" NAME="AlteredFilter">
+          <SYSTEM TYPE="Formulae" NAME="AlteredVoucherFilter">
             $ALTERID &gt; {max_voucher_alter}
           </SYSTEM>
         </TDLMESSAGE>
@@ -498,7 +1015,7 @@ async def run_once_sync_background(company_id: int):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-                "StockGroups": """<ENVELOPE>
+                        "StockGroups": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -509,6 +1026,7 @@ async def run_once_sync_background(company_id: int):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -521,30 +1039,31 @@ async def run_once_sync_background(company_id: int):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-                "Units": """<ENVELOPE>
+                        "UOMs": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
     <TYPE>Collection</TYPE>
-    <ID>AllUnits</ID>
+    <ID>AllUOMs</ID>
   </HEADER>
   <BODY>
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
-          <COLLECTION NAME="AllUnits">
+          <COLLECTION NAME="AllUOMs">
             <TYPE>Unit</TYPE>
-            <FETCH>NAME,SYMBOL,DECIMALPLACES</FETCH>
+            <FETCH>NAME,ORIGINALNAME,DECIMALPLACES</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
     </DESC>
   </BODY>
 </ENVELOPE>""",
-                "Godowns": """<ENVELOPE>
+                        "Godowns": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -555,6 +1074,7 @@ async def run_once_sync_background(company_id: int):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -567,7 +1087,7 @@ async def run_once_sync_background(company_id: int):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-                "StockCategories": """<ENVELOPE>
+                        "StockCategories": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
@@ -578,6 +1098,7 @@ async def run_once_sync_background(company_id: int):
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
@@ -590,66 +1111,63 @@ async def run_once_sync_background(company_id: int):
     </DESC>
   </BODY>
 </ENVELOPE>""",
-                "StockItems": """<ENVELOPE>
+                        "StockItems": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Export</TALLYREQUEST>
     <TYPE>Collection</TYPE>
-    <ID>AllStockItems</ID>
+    <ID>IncrementalStockItems</ID>
   </HEADER>
   <BODY>
     <DESC>
       <STATICVARIABLES>
         <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
       </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
-          <COLLECTION NAME="AllStockItems">
+          <COLLECTION NAME="IncrementalStockItems">
             <TYPE>StockItem</TYPE>
-            <FETCH>NAME,PARENT,CATEGORY,BASEUNITS,OPENINGBALANCE,OPENINGVALUE,INFGSTHSNCODE,INFGSTIGSTRATE</FETCH>
+            <FETCH>GUID,ALTERID,NAME,PARENT,CATEGORY,BASEUNITS,OPENINGBALANCE,OPENINGVALUE,INFGSTHSNCODE,INFGSTIGSTRATE</FETCH>
+            <FILTERS>AlteredStockItemFilter</FILTERS>
           </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="AlteredStockItemFilter">
+            $ALTERID &gt; {max_stock_item_alter}
+          </SYSTEM>
         </TDLMESSAGE>
       </TDL>
     </DESC>
   </BODY>
 </ENVELOPE>"""
-            }
+                    }
 
-            import_results = {}
-            total_imported = {
-                "groups": 0, "ledgers": 0, "vouchers": 0,
-                "stock_groups": 0, "uoms": 0, "godowns": 0,
-                "stock_categories": 0, "stock_items": 0
-            }
-            
-            async with sync_lock:
-                for name, xml_payload in queries.items():
-                    try:
-                        resp_xml = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_payload)
-                        if not resp_xml or "<ENVELOPE>" not in resp_xml:
-                            import_results[name] = {"status": "skipped", "message": "Tally returned empty/invalid response."}
-                            continue
-                        
-                        res = await import_tally_xml(resp_xml, db, company_id)
-                        import_results[name] = res
-                        
-                        if res.get("status") == "success":
-                            total_imported["groups"] += res.get("imported_groups", 0)
-                            total_imported["ledgers"] += res.get("imported_ledgers", 0)
-                            total_imported["vouchers"] += res.get("imported_vouchers", 0)
-                            total_imported["stock_groups"] += res.get("imported_stock_groups", 0)
-                            total_imported["uoms"] += res.get("imported_uoms", 0)
-                            total_imported["godowns"] += res.get("imported_godowns", 0)
-                            total_imported["stock_categories"] += res.get("imported_stock_categories", 0)
-                            total_imported["stock_items"] += res.get("imported_stock_items", 0)
-                    except Exception as e:
-                        import_results[name] = {"status": "error", "message": str(e)}
-                        logger.error(f"Background Inbound sync failed for collection {name}: {str(e)}", exc_info=True)
+                    for name, xml_payload in queries.items():
+                        try:
+                            resp_xml = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_payload)
+                            if not resp_xml or "<ENVELOPE>" not in resp_xml:
+                                continue
+                            
+                            res = await import_tally_xml(resp_xml, db, user_id, override_company_name=company_name)
+                            
+                            if res.get("status") == "success":
+                                total_imported["groups"] += res.get("imported_groups", 0)
+                                total_imported["ledgers"] += res.get("imported_ledgers", 0)
+                                total_imported["vouchers"] += res.get("imported_vouchers", 0)
+                                total_imported["stock_groups"] += res.get("imported_stock_groups", 0)
+                                total_imported["uoms"] += res.get("imported_uoms", 0)
+                                total_imported["godowns"] += res.get("imported_godowns", 0)
+                                total_imported["stock_categories"] += res.get("imported_stock_categories", 0)
+                                total_imported["stock_items"] += res.get("imported_stock_items", 0)
+                                
+                                res_cid = res.get("company_id")
+                                if res_cid:
+                                    clear_company_cache(res_cid)
+                        except Exception as e:
+                            logger.error(f"Background Inbound sync failed for collection {name}: {str(e)}", exc_info=True)
 
-            clear_company_cache(company_id)
-            logger.info(f"Background run-once sync completed for company_id={company_id}: {total_imported}")
+            logger.info(f"Background run-once sync completed for user_id={user_id}: {total_imported}")
         except Exception as e:
-            logger.error(f"Background run-once sync failed with exception for company_id={company_id}: {str(e)}", exc_info=True)
+            logger.error(f"Background run-once sync failed with exception for user_id={user_id}: {str(e)}", exc_info=True)
 
 
 @router.post("/run-once")
@@ -669,7 +1187,7 @@ async def run_once(
             detail="TALLY_URL is not configured on the backend settings."
         )
 
-    background_tasks.add_task(run_once_sync_background, user.company_id)
+    background_tasks.add_task(run_once_sync_background, user.user_id)
 
     return {
         "status": "success",

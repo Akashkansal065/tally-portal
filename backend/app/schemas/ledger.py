@@ -27,17 +27,60 @@ class LedgerBase(BaseModel):
     opening_balance_type: str = "Dr"  # 'Dr' or 'Cr'
     currency_id: Optional[int] = None
     gstin: Optional[str] = None
+    gst_registration_type: Optional[str] = None
+    aadhar_number: Optional[str] = None
     address: Optional[str] = None
     state: Optional[str] = None
+    pincode: Optional[str] = None
+    country: Optional[str] = "India"
+    mobile: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    contact_person: Optional[str] = None
+    pan_number: Optional[str] = None
     is_bank_account: bool = False
     bank_account_no: Optional[str] = None
     bank_ifsc: Optional[str] = None
     credit_limit: Optional[Decimal] = None
     credit_period_days: Optional[int] = None
+    is_billwise_on: bool = True
+    transporter_id: Optional[str] = None
+    is_transporter: bool = False
+    place_of_supply: Optional[str] = None
+    is_other_territory_assessee: bool = False
+    is_common_party: bool = False
+    gst_applicable_from: Optional[datetime] = None
+    is_inventory_affected: bool = False
+    is_cost_centres_on: bool = False
+    notes: Optional[str] = None
     is_active: bool = True
 
-class LedgerCreate(LedgerBase):
+class LedgerBankDetailBase(BaseModel):
+    transaction_type: str = "e-Fund Transfer"
+    ref_id: Optional[str] = "Primary"
+    favouring_name: Optional[str] = None
+    cross_using: Optional[str] = "A/c Payee"
+    account_number: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    bank_name: Optional[str] = None
+    upi_id: Optional[str] = None
+    account_holder_name: Optional[str] = None
+    is_default: bool = True
+
+class LedgerBankDetailCreate(LedgerBankDetailBase):
     pass
+
+class LedgerBankDetailResponse(LedgerBankDetailBase):
+    bank_detail_id: int
+    company_id: int
+    ledger_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class LedgerCreate(LedgerBase):
+    bank_details: Optional[List[LedgerBankDetailCreate]] = None
 
 from pydantic import field_validator
 
@@ -53,6 +96,7 @@ class LedgerResponse(LedgerBase):
     email: Optional[str] = None
     is_customer: Optional[bool] = None
     is_supplier: Optional[bool] = None
+    bank_details: Optional[List[LedgerBankDetailResponse]] = None
     
     @field_validator('name')
     @classmethod
@@ -73,5 +117,25 @@ class CostCenterResponse(CostCenterBase):
     cost_center_id: int
     company_id: int
     
+    class Config:
+        from_attributes = True
+
+class GstRegistrationTypeResponse(BaseModel):
+    id: int
+    name: str
+    code: str
+    requires_gstin: bool
+    display_order: int
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+class BankTransactionTypeResponse(BaseModel):
+    id: int
+    name: str
+    display_order: int
+    is_active: bool
+
     class Config:
         from_attributes = True

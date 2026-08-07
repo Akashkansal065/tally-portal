@@ -1087,7 +1087,7 @@ export default function GstPage() {
                 <div className="flex">
                   <div className="w-1/3 bg-gray-100 p-2 font-bold border-r border-gray-400">2(d). Date of ARN</div>
                   <div className="w-2/3 p-2 font-mono">
-                    {selectedPeriod?.filed_date ? new Date(selectedPeriod.filed_date).toLocaleDateString('en-IN') : '14/05/2026'}
+                    {selectedPeriod?.filed_date ? new Date(selectedPeriod.filed_date).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN')}
                   </div>
                 </div>
               </div>
@@ -1542,7 +1542,7 @@ export default function GstPage() {
                 </p>
                 <div className="flex justify-between items-start pt-2 pl-4">
                   <div className="space-y-1">
-                    <p><span className="font-bold text-gray-600">Date:</span> {selectedPeriod?.filed_date ? new Date(selectedPeriod.filed_date).toLocaleDateString('en-IN') : '14/05/2026'}</p>
+                    <p><span className="font-bold text-gray-600">Date:</span> {selectedPeriod?.filed_date ? new Date(selectedPeriod.filed_date).toLocaleDateString('en-IN') : new Date().toLocaleDateString('en-IN')}</p>
                   </div>
                   <div className="space-y-1 text-right">
                     <p><span className="font-bold text-gray-600">Name of Authorized Signatory:</span> {gstr3b.company_name || 'MAYANK KANSAL'}</p>

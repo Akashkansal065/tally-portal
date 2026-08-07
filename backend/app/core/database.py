@@ -1,5 +1,6 @@
 import ssl
 import os
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from app.core.config import settings
@@ -136,6 +137,117 @@ async def create_databases_if_not_exist():
             # to connect anyway, which will raise the final connection error to the user if it still fails.
         finally:
             await temp_engine.dispose()
+
+async def auto_sync_all_model_schemas():
+    """
+    Dynamically inspects ALL SQLAlchemy models in Base.metadata.tables on startup.
+    Automatically detects any columns defined in Python code that are missing in the target database,
+    and executes ALTER TABLE ADD COLUMN statements to keep any database schema 100% in sync automatically.
+    """
+    from sqlalchemy import text
+    
+    db_url = settings.DATABASE_URL
+    if "sqlite" in db_url:
+        return
+
+    # Import all models to ensure they register their tables and columns in Base.metadata
+    import app.models.company
+    import app.models.user
+    import app.models.ledger
+    import app.models.voucher
+    import app.models.sync
+    import app.models.inventory
+    import app.models.gst
+    import app.models.advanced
+    import app.models.currency_tds
+    import app.models.payment
+    import app.models.payment_gateway
+    
+    async with engine.begin() as conn:
+        for table_key, table in Base.metadata.tables.items():
+            schema_name = table.schema or settings.PORTAL_DATABASE_NAME
+            table_name = table.name
+            
+            # Check if table exists in MySQL
+            check_table_sql = text(f"""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
+            """)
+            try:
+                table_exists_res = await conn.execute(check_table_sql)
+                if table_exists_res.scalar() == 0:
+                    continue
+                    
+                # Fetch existing columns and their max length from MySQL
+                cols_query = text(f"""
+                    SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
+                """)
+                existing_cols_res = await conn.execute(cols_query)
+                existing_cols_map = {row[0].lower(): row[1] for row in existing_cols_res.fetchall()}
+                
+                # Compare with columns defined on SQLAlchemy Table model in Python code
+                for column in table.columns:
+                    col_name = column.name
+                    col_name_lower = col_name.lower()
+                    col_type_str = column.type.compile(engine.dialect)
+
+                    if col_name_lower not in existing_cols_map:
+                        # Column missing in DB -> Add it dynamically!
+                        nullable_str = "NULL"
+                        default_clause = ""
+                        if column.default is not None and hasattr(column.default, 'arg') and isinstance(column.default.arg, (str, int, float, bool)):
+                            val = column.default.arg
+                            if isinstance(val, bool):
+                                val = 1 if val else 0
+                            default_clause = f" DEFAULT '{val}'" if isinstance(val, str) else f" DEFAULT {val}"
+
+                        print(f"Auto Schema Synchronizer: Adding missing column '{col_name}' ({col_type_str}) to `{schema_name}`.`{table_name}`...")
+                        alter_sql = text(f"ALTER TABLE `{schema_name}`.`{table_name}` ADD COLUMN `{col_name}` {col_type_str} {nullable_str}{default_clause}")
+                        await conn.execute(alter_sql)
+                    else:
+                        # Column exists -> Check if Python model requires larger length (e.g. VARCHAR(10) -> VARCHAR(100))
+                        db_len = existing_cols_map[col_name_lower]
+                        target_len = getattr(column.type, 'length', None)
+                        if db_len is not None and target_len is not None and int(db_len) < int(target_len):
+                            print(f"Auto Schema Synchronizer: Expanding column '{col_name}' ({db_len} -> {target_len}) in `{schema_name}`.`{table_name}`...")
+                            alter_sql = text(f"ALTER TABLE `{schema_name}`.`{table_name}` MODIFY COLUMN `{col_name}` {col_type_str}")
+                            await conn.execute(alter_sql)
+            except Exception as e:
+                print(f"Warning during auto schema sync for `{schema_name}`.`{table_name}`: {e}")
+
+        await seed_gst_registration_types(conn)
+
+async def seed_gst_registration_types(conn):
+    try:
+        check_sql = text(f"SELECT COUNT(*) FROM `{settings.PORTAL_DATABASE_NAME}`.`gst_registration_types`")
+        res = await conn.execute(check_sql)
+        count = res.scalar()
+        if count == 0:
+            print("Auto Schema Synchronizer: Seeding GST registration types master data...")
+            default_types = [
+                ("Regular", "REGULAR", 1, 1),
+                ("Composition", "COMPOSITION", 1, 2),
+                ("Unregistered/Consumer", "UNREGISTERED", 0, 3),
+                ("Government entity / TDS", "GOVT_TDS", 1, 4),
+                ("Regular - SEZ", "SEZ", 1, 5),
+                ("Regular-Deemed Exporter", "DEEMED_EXPORTER", 1, 6),
+                ("Regular-Exports (EOU)", "EOU", 1, 7),
+                ("e-Commerce Operator", "ECOMMERCE", 1, 8),
+                ("Input Service Distributor", "ISD", 1, 9),
+                ("Embassy/UN Body", "EMBASSY", 1, 10),
+                ("Non-Resident Taxpayer", "NON_RESIDENT", 1, 11),
+                ("Unknown", "UNKNOWN", 0, 12),
+            ]
+            for name, code, req_gst, order in default_types:
+                insert_sql = text(f"""
+                    INSERT INTO `{settings.PORTAL_DATABASE_NAME}`.`gst_registration_types`
+                    (name, code, requires_gstin, display_order, is_active)
+                    VALUES (:name, :code, :req_gst, :order, 1)
+                """)
+                await conn.execute(insert_sql, {"name": name, "code": code, "req_gst": req_gst, "order": order})
+    except Exception as e:
+        print(f"Warning seeding GST registration types: {e}")
 
 async def get_db():
     async with AsyncSessionLocal() as session:

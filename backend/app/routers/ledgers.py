@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -10,15 +10,32 @@ from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, get_effective_permission
 from app.models.user import User
 from app.models.sync import SyncQueue
-from app.models.ledger import MstGroup, MstLedger, CostCenter
+from app.models.ledger import MstGroup, MstLedger, MstLedgerBankDetail, CostCenter, GstRegistrationType, BankTransactionType
 from app.models.voucher import TrnAccounting
 from app.schemas.ledger import (
     AccountGroupCreate, AccountGroupResponse,
     LedgerCreate, LedgerResponse,
-    CostCenterCreate, CostCenterResponse
+    CostCenterCreate, CostCenterResponse,
+    GstRegistrationTypeResponse, BankTransactionTypeResponse
 )
 
 router = APIRouter(prefix="/ledgers", tags=["Ledgers & Masters"])
+
+@router.get("/gst-registration-types", response_model=List[GstRegistrationTypeResponse])
+async def get_gst_registration_types(
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(GstRegistrationType).where(GstRegistrationType.is_active == True).order_by(GstRegistrationType.display_order)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+@router.get("/bank-transaction-types", response_model=List[BankTransactionTypeResponse])
+async def get_bank_transaction_types(
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(BankTransactionType).where(BankTransactionType.is_active == True).order_by(BankTransactionType.display_order)
+    res = await db.execute(stmt)
+    return res.scalars().all()
 
 # Helpers
 async def check_cyclical_parent(db: AsyncSession, company_id: int, parent_id: int, target_id: int) -> bool:
@@ -129,7 +146,7 @@ async def get_ledgers(
         )
         
     query = await db.execute(
-        select(MstLedger).options(selectinload(MstLedger.group)).where(MstLedger.company_id == user.company_id)
+        select(MstLedger).options(selectinload(MstLedger.group), selectinload(MstLedger.bank_details)).where(MstLedger.company_id == user.company_id)
     )
     all_ledgers = query.scalars().all()
 
@@ -190,9 +207,8 @@ async def get_ledgers(
             address_val = parts[0]
             mobile_val = parts[1]
             
-        ledger.mobile = mobile_val
+        ledger.mobile = mobile_val or getattr(ledger, 'mobile', None)
         ledger.address = address_val
-        ledger.email = None
 
         if is_debtor:
             if perms_customer.get("can_read", False) or perms_visits.get("can_read", False) or perms_general.get("can_read", False):
@@ -258,23 +274,50 @@ async def create_ledger(
             detail="A ledger with this name already exists in the company."
         )
         
-    ledger = MstLedger(
-        company_id=user.company_id,
-        **req.model_dump()
-    )
+    # Process payload
+    data_dict = req.model_dump()
+    bank_details_data = data_dict.pop("bank_details", None)
+    mobile_val = data_dict.pop("mobile", None)
+
+    # Auto-extract PAN from GSTIN if missing
+    if data_dict.get("gstin") and len(data_dict["gstin"].strip()) >= 12 and not data_dict.get("pan_number"):
+        data_dict["pan_number"] = data_dict["gstin"].strip()[2:12].upper()
+
+    if mobile_val and data_dict.get("address"):
+      if " | Mobile: " not in data_dict["address"]:
+        data_dict["address"] = f"{data_dict['address']} | Mobile: {mobile_val}"
+    elif mobile_val and not data_dict.get("address"):
+      data_dict["address"] = f"| Mobile: {mobile_val}"
+
+    ledger = MstLedger(company_id=user.company_id, **data_dict)
     db.add(ledger)
     await db.flush()
-    
+
+    if bank_details_data:
+        for bd in bank_details_data:
+            if bd.get("account_number") or bd.get("upi_id") or bd.get("bank_name"):
+                b_record = MstLedgerBankDetail(
+                    company_id=user.company_id,
+                    ledger_id=ledger.ledger_id,
+                    **bd
+                )
+                db.add(b_record)
+
     sync_item = SyncQueue(
         company_id=user.company_id,
         record_type="Ledger",
         record_id=ledger.ledger_id,
-        action="Create"
+        action="Create",
     )
     db.add(sync_item)
-    
+
     await db.commit()
     await db.refresh(ledger)
+
+    # Trigger real-time on-the-run push to Tally Prime
+    from app.routers.sync import try_push_ledger_realtime
+    await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Create", db)
+
     from app.core.cache import clear_company_cache
     clear_company_cache(user.company_id)
     return ledger
@@ -287,7 +330,7 @@ async def update_ledger(
     db: AsyncSession = Depends(get_db)
 ):
     ledger_query = await db.execute(
-        select(MstLedger).where(
+        select(MstLedger).options(selectinload(MstLedger.bank_details)).where(
             MstLedger.ledger_id == ledger_id,
             MstLedger.company_id == user.company_id
         )
@@ -330,11 +373,52 @@ async def update_ledger(
             detail="You do not have permission to update ledgers in these module categories."
         )
         
-    for k, v in req.model_dump().items():
-        setattr(ledger, k, v)
+    data_dict = req.model_dump()
+    bank_details_data = data_dict.pop("bank_details", None)
+    mobile_val = data_dict.pop("mobile", None)
+
+    # Auto-extract PAN from GSTIN if missing
+    if data_dict.get("gstin") and len(data_dict["gstin"].strip()) >= 12 and not data_dict.get("pan_number"):
+        data_dict["pan_number"] = data_dict["gstin"].strip()[2:12].upper()
+
+    if mobile_val and data_dict.get("address"):
+        if " | Mobile: " not in data_dict["address"]:
+            data_dict["address"] = f"{data_dict['address']} | Mobile: {mobile_val}"
+    elif mobile_val and not data_dict.get("address"):
+        data_dict["address"] = f"| Mobile: {mobile_val}"
+
+    valid_cols = {c.name for c in MstLedger.__table__.columns}
+    for k, v in data_dict.items():
+        if k in valid_cols:
+            setattr(ledger, k, v)
+
+    if bank_details_data is not None:
+        from sqlalchemy import delete
+        await db.execute(delete(MstLedgerBankDetail).where(MstLedgerBankDetail.ledger_id == ledger.ledger_id))
+        for bd in bank_details_data:
+            if bd.get("account_number") or bd.get("upi_id") or bd.get("bank_name"):
+                b_record = MstLedgerBankDetail(
+                    company_id=user.company_id,
+                    ledger_id=ledger.ledger_id,
+                    **bd
+                )
+                db.add(b_record)
+
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Ledger",
+        record_id=ledger.ledger_id,
+        action="Alter",
+    )
+    db.add(sync_item)
         
     await db.commit()
     await db.refresh(ledger)
+
+    # Trigger real-time on-the-run push to Tally Prime
+    from app.routers.sync import try_push_ledger_realtime
+    await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Alter", db)
+
     from app.core.cache import clear_company_cache
     clear_company_cache(user.company_id)
     return ledger
@@ -369,6 +453,19 @@ async def delete_ledger(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"You do not have permission to delete in module {module_code}."
         )
+
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Ledger",
+        record_id=ledger.ledger_id,
+        action="Delete",
+    )
+    db.add(sync_item)
+    await db.flush()
+
+    # Trigger real-time on-the-run push to Tally Prime
+    from app.routers.sync import try_push_ledger_realtime
+    await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Delete", db)
         
     await db.delete(ledger)
     await db.commit()
@@ -426,11 +523,13 @@ async def get_ledger_by_id(
 @router.get("/{ledger_id}/statement")
 async def get_ledger_statement(
     ledger_id: int,
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     from app.core.cache import get_cached_response, set_cached_response
-    cache_key = f"ledger_statement_{ledger_id}"
+    cache_key = f"ledger_statement_{ledger_id}_{from_date}_{to_date}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -446,20 +545,101 @@ async def get_ledger_statement(
         raise HTTPException(status_code=404, detail="Ledger not found")
         
     addr = ledger.address or ""
-    mobile_val = ""
-    if addr and " | Mobile: " in addr:
+    mobile_val = ledger.mobile or ""
+    if not mobile_val and addr and " | Mobile: " in addr:
         parts = addr.split(" | Mobile: ")
         addr = parts[0]
         mobile_val = parts[1]
+
+    from datetime import datetime
+    from sqlalchemy import text
+    parsed_from_date = None
+    if from_date:
+        try:
+            parsed_from_date = datetime.strptime(from_date, "%Y-%m-%d").date()
+        except Exception:
+            parsed_from_date = None
+
+    # Calculate Individual Party Opening Balance as of from_date
+    base_net = (float(ledger.opening_balance) if ledger.opening_balance_type == 'Cr' else -float(ledger.opening_balance)) if ledger.opening_balance else 0.0
+    if parsed_from_date:
+        prior_stmt = text("""
+            SELECT SUM(COALESCE(a.credit_amount, 0) - COALESCE(a.debit_amount, 0)) as prior_net
+            FROM tally_sync.voucher_entries a
+            JOIN tally_sync.vouchers v ON a.voucher_id = v.voucher_id
+            WHERE a.ledger_id = :l_id AND v.voucher_date < :f_dt
+        """)
+        prior_res = await db.execute(prior_stmt, {"l_id": ledger_id, "f_dt": parsed_from_date})
+        prior_val = float(prior_res.scalar() or 0.0)
+        net_op = base_net + prior_val
+        ind_op_bal = abs(net_op)
+        ind_op_type = "Cr" if net_op >= 0 else "Dr"
+    else:
+        ind_op_bal = float(ledger.opening_balance or 0.0)
+        ind_op_type = ledger.opening_balance_type or "Dr"
         
+    # Calculate Company-Wide Total Opening Balance as of from_date
+    if parsed_from_date:
+        tot_op_stmt = text("""
+            SELECT 
+                SUM(CASE WHEN net_bal < 0 THEN ABS(net_bal) ELSE 0 END) 
+                + COALESCE((SELECT SUM(COALESCE(opening_qty, 0) * COALESCE(opening_rate, 0)) FROM tally_sync.stock_items WHERE company_id = :comp_id AND is_active = True), 0) as total_dr,
+                SUM(CASE WHEN net_bal > 0 THEN net_bal ELSE 0 END) as total_cr
+            FROM (
+                SELECT 
+                    l.ledger_id,
+                    (CASE 
+                        WHEN g.name IN ('Sales Accounts', 'Purchase Accounts', 'Direct Expenses', 'Indirect Expenses', 'Direct Incomes', 'Indirect Incomes') THEN 0
+                        ELSE (CASE WHEN l.opening_balance_type = 'Cr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END) + COALESCE(SUM(CASE WHEN v.voucher_date < :f_dt THEN (COALESCE(a.credit_amount, 0) - COALESCE(a.debit_amount, 0)) ELSE 0 END), 0)
+                     END) as net_bal
+                FROM tally_sync.ledgers l
+                LEFT JOIN tally_sync.account_groups g ON l.group_id = g.group_id
+                LEFT JOIN tally_sync.voucher_entries a ON l.ledger_id = a.ledger_id
+                LEFT JOIN tally_sync.vouchers v ON a.voucher_id = v.voucher_id
+                WHERE l.company_id = :comp_id AND l.is_active = True
+                GROUP BY l.ledger_id, l.opening_balance, l.opening_balance_type, g.name
+            ) sub
+        """)
+        tot_op_res = await db.execute(tot_op_stmt, {"comp_id": user.company_id, "f_dt": parsed_from_date})
+    else:
+        tot_op_stmt = text("""
+            SELECT 
+                (SELECT SUM(CASE WHEN opening_balance_type = 'Dr' THEN COALESCE(opening_balance, 0) ELSE 0 END) FROM tally_sync.ledgers WHERE company_id = :comp_id AND is_active = True)
+                + COALESCE((SELECT SUM(COALESCE(opening_qty, 0) * COALESCE(opening_rate, 0)) FROM tally_sync.stock_items WHERE company_id = :comp_id AND is_active = True), 0) as total_dr,
+                (SELECT SUM(CASE WHEN opening_balance_type = 'Cr' THEN COALESCE(opening_balance, 0) ELSE 0 END) FROM tally_sync.ledgers WHERE company_id = :comp_id AND is_active = True) as total_cr
+        """)
+        tot_op_res = await db.execute(tot_op_stmt, {"comp_id": user.company_id})
+
+    tot_op_row = tot_op_res.first()
+    tot_dr = float(tot_op_row.total_dr or 0.0) if tot_op_row else 0.0
+    tot_cr = float(tot_op_row.total_cr or 0.0) if tot_op_row else 0.0
+    diff_val = tot_cr - tot_dr
+    diff_type = "Cr" if diff_val >= 0 else "Dr"
+
     ledger_info = {
         "ledger_id": ledger.ledger_id,
         "name": ledger.name,
+        "alias_name": ledger.alias_name,
         "parent": ledger.group.name if ledger.group else "Unknown",
         "gstn": ledger.gstin,
+        "gst_registration_type": ledger.gst_registration_type,
+        "pan_number": ledger.pan_number,
         "address": addr,
         "state": ledger.state,
+        "pincode": ledger.pincode,
+        "country": ledger.country,
+        "phone": ledger.phone,
         "mobile": mobile_val,
+        "email": ledger.email,
+        "contact_person": ledger.contact_person,
+        "opening_balance": ind_op_bal,
+        "opening_balance_type": ind_op_type,
+        "credit_limit": float(ledger.credit_limit or 0.0) if ledger.credit_limit else None,
+        "credit_period_days": ledger.credit_period_days,
+        "total_opening_dr": tot_dr,
+        "total_opening_cr": tot_cr,
+        "total_opening_diff": abs(diff_val),
+        "total_opening_diff_type": diff_type,
     }
 
     from app.models.voucher import TrnAccounting, TrnVoucher, MstVoucherType

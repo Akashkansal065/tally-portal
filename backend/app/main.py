@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
-from app.routers import auth, ledgers, vouchers, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health
+from app.routers import auth, companies, ledgers, vouchers, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health
 
 async def db_keep_alive_task(interval_seconds: int = 120):
     """Background task running every 2 minutes to keep the DB connection pool active."""
@@ -24,12 +24,15 @@ async def db_keep_alive_task(interval_seconds: int = 120):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Ensure databases exist
-    from app.core.database import create_databases_if_not_exist
+    from app.core.database import create_databases_if_not_exist, auto_sync_all_model_schemas
     await create_databases_if_not_exist()
     
     # 2. Create tables if they do not exist
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+    # 3. Dynamically sync all model schemas & missing columns automatically
+    await auto_sync_all_model_schemas()
         
     # 3. Seed global default roles, modules, permissions
     async with AsyncSessionLocal() as session:
@@ -69,6 +72,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(companies.router)
 app.include_router(ledgers.router)
 app.include_router(vouchers.router)
 app.include_router(currency_tds.router)

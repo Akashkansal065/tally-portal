@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import Link from 'next/link'
+import { usePeriod } from '@/context/PeriodContext'
 import { cn, toTitleCase } from '@/lib/utils'
 
 type Transaction = {
@@ -21,20 +22,18 @@ type Props = {
 }
 
 export default function LedgerDetailsClient({ ledgerInfo, transactions }: Props) {
-  const defaultDates = useMemo(() => {
-    const today = new Date()
-    const currentMonth = today.getMonth() // 0-indexed: 3 = April
-    const currentYear = today.getFullYear()
-    const fyStartYear = currentMonth >= 3 ? currentYear : currentYear - 1
-    return {
-      start: `${fyStartYear}-04-01`,
-      end: `${fyStartYear + 1}-03-31`
-    }
-  }, [])
+  const { startDate: globalStart, endDate: globalEnd } = usePeriod()
 
   const [searchQuery, setSearchQuery] = useState('')
-  const [startDate, setStartDate] = useState(defaultDates.start)
-  const [endDate, setEndDate] = useState(defaultDates.end)
+  const [startDate, setStartDate] = useState(globalStart || '2025-04-01')
+  const [endDate, setEndDate] = useState(globalEnd || '2026-03-31')
+
+  // Sync date inputs with global selected period across pages
+  useEffect(() => {
+    if (globalStart) setStartDate(globalStart)
+    if (globalEnd) setEndDate(globalEnd)
+  }, [globalStart, globalEnd])
+
   const [filterVoucherType, setFilterVoucherType] = useState('all')
   const [filterFlow, setFilterFlow] = useState('all') // all | debit | credit
   const [sortBy, setSortBy] = useState('date-desc') // date-desc | date-asc | amount-desc | amount-asc
@@ -139,8 +138,80 @@ export default function LedgerDetailsClient({ ledgerInfo, transactions }: Props)
     return isNaN(parsed) ? '' : parsed.toLocaleString('en-IN', { minimumFractionDigits: 2 })
   }
 
+  // Period Opening & Closing Balances calculation based on selected date range
+  const periodSummary = useMemo(() => {
+    const baseOpBal = ledgerInfo?.opening_balance || 0
+    const isDr = ledgerInfo?.opening_balance_type === 'Dr'
+    const periodOpNet = isDr ? -baseOpBal : baseOpBal // negative = Dr, positive = Cr
+
+    let totalPeriodDebit = 0
+    let totalPeriodCredit = 0
+
+    const startMs = startDate ? new Date(startDate).setHours(0, 0, 0, 0) : -Infinity
+    const endMs = endDate ? new Date(endDate).setHours(23, 59, 59, 999) : Infinity
+
+    if (transactions) {
+      transactions.forEach(t => {
+        if (!t.date) return
+        const tMs = new Date(t.date).getTime()
+        const amt = parseFloat(t.amount || '0') // negative = Dr, positive = Cr
+        
+        // Vouchers within date range contribute to Period Debits / Credits
+        if (tMs >= startMs && tMs <= endMs) {
+          if (amt < 0) {
+            totalPeriodDebit += Math.abs(amt)
+          } else {
+            totalPeriodCredit += Math.abs(amt)
+          }
+        }
+      })
+    }
+
+    const periodClosingNet = periodOpNet + (totalPeriodCredit - totalPeriodDebit)
+
+    return {
+      opBal: Math.abs(periodOpNet),
+      opType: periodOpNet < 0 ? 'Dr' : 'Cr',
+      totalDebit: totalPeriodDebit,
+      totalCredit: totalPeriodCredit,
+      clBal: Math.abs(periodClosingNet),
+      clType: periodClosingNet < 0 ? 'Dr' : 'Cr'
+    }
+  }, [ledgerInfo, transactions, startDate, endDate])
+
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
+      {/* Period Balance Breakdown Strip */}
+      <div className="bg-card border border-border rounded-2xl p-3.5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-sans shadow-sm">
+        <div className="space-y-0.5">
+          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
+            Op. Balance ({startDate ? startDate.split('-').reverse().join('/') : 'Start'})
+          </span>
+          <span className="font-mono font-extrabold text-foreground text-sm">
+            ₹{periodSummary.opBal.toLocaleString('en-IN', { minimumFractionDigits: 2 })} {periodSummary.opType}
+          </span>
+        </div>
+        <div className="space-y-0.5">
+          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Total Period Debit</span>
+          <span className="font-mono font-extrabold text-rose-600 dark:text-rose-400 text-sm">
+            ₹{periodSummary.totalDebit.toLocaleString('en-IN', { minimumFractionDigits: 2 })} Dr
+          </span>
+        </div>
+        <div className="space-y-0.5">
+          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Total Period Credit</span>
+          <span className="font-mono font-extrabold text-emerald-600 dark:text-emerald-400 text-sm">
+            ₹{periodSummary.totalCredit.toLocaleString('en-IN', { minimumFractionDigits: 2 })} Cr
+          </span>
+        </div>
+        <div className="space-y-0.5">
+          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
+            Closing Balance ({endDate ? endDate.split('-').reverse().join('/') : 'End'})
+          </span>
+          <span className="font-mono font-black text-foreground text-sm">
+            ₹{periodSummary.clBal.toLocaleString('en-IN', { minimumFractionDigits: 2 })} {periodSummary.clType}
+          </span>
+        </div>
+      </div>
       {/* Search & Filters Bar */}
       <div className="bg-muted/40 p-3 flex flex-wrap gap-x-4 gap-y-3 items-center border rounded-xl shadow-sm text-xs bg-card no-print">
         {/* Search Input */}
@@ -233,12 +304,12 @@ export default function LedgerDetailsClient({ ledgerInfo, transactions }: Props)
         </div>
 
         {/* Clear Filters Button */}
-        {(searchQuery !== '' || startDate !== defaultDates.start || endDate !== defaultDates.end || filterVoucherType !== 'all' || filterFlow !== 'all' || sortBy !== 'date-desc') && (
+        {(searchQuery !== '' || startDate !== globalStart || endDate !== globalEnd || filterVoucherType !== 'all' || filterFlow !== 'all' || sortBy !== 'date-desc') && (
           <button
             onClick={() => {
               setSearchQuery('')
-              setStartDate(defaultDates.start)
-              setEndDate(defaultDates.end)
+              setStartDate(globalStart || '2025-04-01')
+              setEndDate(globalEnd || '2026-03-31')
               setFilterVoucherType('all')
               setFilterFlow('all')
               setSortBy('date-desc')

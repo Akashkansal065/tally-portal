@@ -34,6 +34,97 @@ The application operates on a hybrid dual-database architecture designed to isol
 
 ---
 
+## 🔄 Tally Prime & Portal Master-to-Voucher End-to-End Workflow
+
+The following workflow diagram illustrates how accounting & inventory data originates, the mandatory creation order of master entities, daily voucher execution paths, field mobile integration, and final financial/tax reporting:
+
+```mermaid
+flowchart TD
+    %% Phase 1: Company Setup
+    subgraph PHASE1["1️⃣ Phase 1: Initial Setup & Configuration"]
+        A["1. Create Company in Tally Prime<br/>(Name, Address, Financial Year, GSTIN)"] --> B["2. Enable F11 Features<br/>(Accounting, Inventory, GST, Bill-wise, Godowns)"]
+    end
+
+    %% Phase 2: Master Creation Hierarchy
+    subgraph PHASE2["2️⃣ Phase 2: Master Creation Hierarchy (Prerequisites First)"]
+        B --> C1["Step 2A: Create Units of Measure (UOM)<br/>(e.g., Pcs, Nos, Kg, Box)"]
+        B --> C2["Step 2B: Create Account & Stock Groups<br/>(e.g., Sundry Debtors, Electronics, Expenses)"]
+        
+        C1 & C2 --> C3["Step 2C: Create Stock Items & Godowns<br/>(Linked to UOM + Stock Group + HSN/GST Rate)"]
+        C2 --> C4["Step 2D: Create Ledger Accounts<br/>(Customers, Vendors, Sales AC, Tax Ledgers, Bank)"]
+    end
+
+    %% Phase 3: Transaction Execution Workflows
+    subgraph PHASE3["3️⃣ Phase 3: Daily Transaction Workflows"]
+        direction TB
+        
+        %% Sales Flow
+        subgraph SALES["Sales & Collection Cycle"]
+            S1["Sales Order / Quotation"] --> S2["Delivery Note / Challan"]
+            S2 --> S3["Sales Invoice<br/>(Updates Customer Ledger & Deducts Stock)"]
+            S3 --> S4["Receipt Voucher<br/>(Payment Collected via Cash/Bank/UPI)"]
+        end
+
+        %% Purchase Flow
+        subgraph PURCHASE["Purchase & Payable Cycle"]
+            P1["Purchase Order"] --> P2["Receipt Note / GRN"]
+            P2 --> P3["Purchase Invoice<br/>(Creates Payable & Adds Stock)"]
+            P3 --> P4["Payment Voucher<br/>(Vendor Payment via Bank/Cash)"]
+        end
+
+        %% Banking & Adjustments
+        subgraph BANKING["Banking & Adjustments"]
+            B1["Contra Voucher<br/>(Cash Deposit / Bank-to-Bank Transfer)"]
+            J1["Journal Voucher<br/>(Adjustments, Expense Provisions, Depreciation)"]
+        end
+    end
+
+    C3 & C4 --> PHASE3
+
+    %% Phase 4: Web/Mobile Portal Sync
+    subgraph PHASE4["4️⃣ Phase 4: Field Operations & Web Sync (Tally Portal)"]
+        M1["Field Salesperson GPS Check-In"] --> M2["Create Field Order / Collect Payment"]
+        M2 --> M3["Manager Review & Approval"]
+        M3 --> M4["Tally Sync Daemon (XML/TDL)<br/>Posts Vouchers & Pulls Incremental AlterID"]
+    end
+
+    PHASE3 <--> PHASE4
+
+    %% Phase 5: Reporting & Tax Compliance
+    subgraph PHASE5["5️⃣ Phase 5: Financial Reporting & Tax Compliance"]
+        R1["Daybook & Sales Register"]
+        R2["Profit & Loss Statement"]
+        R3["Balance Sheet"]
+        R4["GST Returns (GSTR-1, GSTR-3B, GSTR-2B Recon)"]
+    end
+
+    PHASE3 & PHASE4 --> PHASE5
+```
+
+### 📋 Detailed Phase Breakdown & Execution Rules
+
+1. **Phase 1: Setup & Configuration**
+   - Establish company details, financial year start date, and enable required *F11 Features* (Inventory, GST, Billwise tracking, Cost Centers).
+
+2. **Phase 2: Master Creation Hierarchy (Strict Prerequisite Order)**
+   - **Step 2A (Units of Measure)**: Create UOMs (`Nos`, `Pcs`, `Box`, `Kg`) *first*, as Stock Items cannot exist without an assigned unit.
+   - **Step 2B (Groups)**: Create Parent Account Groups (`Sundry Debtors`, `Sundry Creditors`) and Stock Groups (`Electronics`, `Apparel`).
+   - **Step 2C (Stock Items)**: Create inventory stock items with HSN codes, GST tax percentages, opening quantities, and godown allocations.
+   - **Step 2D (Ledger Accounts)**: Create customer/supplier party ledgers with GSTINs, credit limits, and statutory tax ledgers (`Output CGST`, `Output SGST`, `Input IGST`).
+
+3. **Phase 3: Daily Voucher Execution Workflows**
+   - **Sales Cycle**: Sales Quotation $\rightarrow$ Sales Order $\rightarrow$ Delivery Challan $\rightarrow$ **Sales Invoice** $\rightarrow$ **Receipt Voucher**.
+   - **Purchase Cycle**: Purchase Order $\rightarrow$ Receipt Note (GRN) $\rightarrow$ **Purchase Invoice** $\rightarrow$ **Payment Voucher**.
+   - **Banking & Adjustment**: Use **Contra Vouchers** for Cash/Bank transfers and **Journal Vouchers** for depreciation, tax adjustments, and year-end closing entries.
+
+4. **Phase 4: Field Operations & Web Sync Integration**
+   - Mobile users perform GPS Check-Ins, collect payments with camera proofing, and record field orders. Managers approve staged records, which the `tally_sync_daemon.py` service automatically posts into Tally Prime as XML vouchers.
+
+5. **Phase 5: Financial Statements & GST Compliance**
+   - System aggregates real-time transactions into Daybook, Sales Register, Stock Summary, Profit & Loss Statement, Balance Sheet, and files GSTR-1, GSTR-3B, and GSTR-2B reconciliations.
+
+---
+
 ## 🚀 Key Features Overview
 
 ### 💸 1. Field Payment Collection & Watermarked Receipts (`/payments`)

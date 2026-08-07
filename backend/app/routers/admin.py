@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import List
+from typing import List, Optional
+from datetime import date
 from pydantic import BaseModel
 
 from app.core.database import get_db
@@ -338,6 +339,23 @@ from app.models.user import UserCompanyAccess, UserPermissionOverride
 class CompanyResponse(BaseModel):
     company_id: int
     name: str
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    country: Optional[str] = None
+    telephone: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    financial_year_start: Optional[date] = None
+    books_begin_date: Optional[date] = None
+
+    class Config:
+        from_attributes = True
 
 class UserCompanyUpdate(BaseModel):
     company_ids: List[int]
@@ -385,6 +403,12 @@ async def update_user_companies(
         access = UserCompanyAccess(user_id=user_id, company_id=cid)
         db.add(access)
         
+    # Ensure target user active company_id is valid
+    target_user = (await db.execute(select(User).where(User.user_id == user_id))).scalars().first()
+    if target_user and payload.company_ids:
+        if target_user.company_id not in payload.company_ids:
+            target_user.company_id = payload.company_ids[0]
+
     await db.commit()
     return {"detail": "User company access updated successfully."}
 

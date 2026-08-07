@@ -21,13 +21,32 @@ export interface UserPermissions {
   isAdmin: boolean
 }
 
+export interface CompanyInfo {
+  company_id: number
+  name: string
+  gstin?: string | null
+  pan?: string | null
+  address_line1?: string | null
+  address_line2?: string | null
+  city?: string | null
+  state?: string | null
+  pincode?: string | null
+  country?: string | null
+  telephone?: string | null
+  mobile?: string | null
+  email?: string | null
+  website?: string | null
+  financial_year_start?: string | null
+  books_begin_date?: string | null
+}
+
 export interface AuthUser {
   id: number
   email: string
   username: string
   role: string
   company_id: number
-  allowedCompanies: { company_id: number, name: string }[]
+  allowedCompanies: CompanyInfo[]
   permissions: UserPermissions
 }
 
@@ -157,8 +176,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (res.ok) {
       await fetchMe(token)
     } else {
-      const err = await res.json()
-      alert(err.detail || "Failed to switch company")
+      let msg = "Failed to switch company"
+      try {
+        const err = await res.json()
+        if (typeof err.detail === 'string') msg = err.detail
+        else if (Array.isArray(err.detail)) msg = err.detail.map((e: any) => e.msg).join(', ')
+      } catch (e) {}
+      alert(msg)
     }
   }
 

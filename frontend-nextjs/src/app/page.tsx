@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
+import { usePeriod } from '@/context/PeriodContext'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { API_BASE, authHeaders } from '@/lib/utils'
@@ -20,6 +21,11 @@ import {
   FileSpreadsheet,
   X,
   Search,
+  Calendar,
+  Edit3,
+  Filter,
+  RefreshCw,
+  Check
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -35,6 +41,7 @@ interface DashboardCard {
 
 export default function DashboardPage() {
   const { user, token, permissions, isLoading } = useAuth()
+  const { startDate: globalFrom, endDate: globalTo, setPeriod } = usePeriod()
   const router = useRouter()
 
   const [dashboardData, setDashboardData] = useState<any>(null)
@@ -42,6 +49,104 @@ export default function DashboardPage() {
   const [detailData, setDetailData] = useState<any[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
+
+  // Period control states synced with global PeriodContext
+  const [fromDate, setFromDate] = useState<string>(globalFrom)
+  const [toDate, setToDate] = useState<string>(globalTo)
+  const [periodModalOpen, setPeriodModalOpen] = useState(false)
+  const [fetchingSummary, setFetchingSummary] = useState(false)
+
+  useEffect(() => {
+    setFromDate(globalFrom)
+    setToDate(globalTo)
+  }, [globalFrom, globalTo])
+
+  const applyPeriodChanges = (fDate: string, tDate: string) => {
+    setPeriod(fDate, tDate)
+    loadDashboard(fDate, tDate)
+    setPeriodModalOpen(false)
+  }
+
+  const loadDashboard = async (fDate?: string, tDate?: string) => {
+    if (!token || !permissions.showReports) return
+    const targetFrom = fDate || globalFrom
+    const targetTo = tDate || globalTo
+    setFetchingSummary(true)
+    try {
+      let url = `${API_BASE}/reports/dashboard-summary`
+      const queryParams: string[] = []
+      if (targetFrom) queryParams.push(`from_date=${targetFrom}`)
+      if (targetTo) queryParams.push(`to_date=${targetTo}`)
+      if (queryParams.length > 0) {
+        url += `?${queryParams.join('&')}`
+      }
+      const res = await fetch(url, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setDashboardData(data)
+      }
+    } catch (e) {
+      console.error('Failed to load dashboard:', e)
+    } finally {
+      setFetchingSummary(false)
+    }
+  }
+
+
+
+  const [activePreset, setActivePreset] = useState<string>('current_fy')
+
+  const selectPreset = (type: string) => {
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    const currentMonth = now.getMonth() // 0-indexed (0=Jan, 3=Apr)
+    const fyStartYear = currentMonth >= 3 ? currentYear : currentYear - 1
+
+    let startStr = ''
+    let endStr = ''
+
+    if (type === 'current_fy') {
+      // Dynamic running Current FY (e.g., 2026-04-01 to 2027-03-31)
+      startStr = `${fyStartYear}-04-01`
+      endStr = `${fyStartYear + 1}-03-31`
+    } else if (type === 'prev_fy') {
+      // Previous Financial Year (e.g., 2025-04-01 to 2026-03-31)
+      startStr = `${fyStartYear - 1}-04-01`
+      endStr = `${fyStartYear}-03-31`
+    } else if (type === 'this_month') {
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1)
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+      startStr = firstDay.toISOString().split('T')[0]
+      endStr = lastDay.toISOString().split('T')[0]
+    } else if (type === 'last_month') {
+      const firstDay = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      const lastDay = new Date(now.getFullYear(), now.getMonth(), 0)
+      startStr = firstDay.toISOString().split('T')[0]
+      endStr = lastDay.toISOString().split('T')[0]
+    } else if (type === 'all_time') {
+      startStr = '2000-01-01'
+      endStr = '2099-12-31'
+    } else if (type.startsWith('q')) {
+      const qNum = parseInt(type.replace('q', ''))
+      if (qNum === 1) {
+        startStr = `${fyStartYear}-04-01`
+        endStr = `${fyStartYear}-06-30`
+      } else if (qNum === 2) {
+        startStr = `${fyStartYear}-07-01`
+        endStr = `${fyStartYear}-09-30`
+      } else if (qNum === 3) {
+        startStr = `${fyStartYear}-10-01`
+        endStr = `${fyStartYear}-12-31`
+      } else if (qNum === 4) {
+        startStr = `${fyStartYear + 1}-01-01`
+        endStr = `${fyStartYear + 1}-03-31`
+      }
+    }
+
+    setActivePreset(type)
+    setFromDate(startStr)
+    setToDate(endStr)
+  }
 
   const openDetail = async (category: string) => {
     setDetailModal(category)
@@ -67,19 +172,9 @@ export default function DashboardPage() {
     if (!isLoading && !user) {
       router.replace('/login')
     } else if (user && permissions.showReports) {
-      fetch(`${API_BASE}/reports/dashboard-summary`, { headers: authHeaders(token) })
-        .then(res => {
-          if (!res.ok) throw new Error('Failed to fetch dashboard data')
-          return res.json()
-        })
-        .then(data => {
-          if (data && typeof data.total_sales === 'number') {
-            setDashboardData(data)
-          }
-        })
-        .catch(() => {})
+      loadDashboard(globalFrom, globalTo)
     }
-  }, [user, isLoading, router, token, permissions.showReports])
+  }, [user, isLoading, router, token, permissions.showReports, globalFrom, globalTo])
 
   if (isLoading) {
     return (
@@ -196,13 +291,58 @@ export default function DashboardPage() {
   return (
     <div className="p-4 space-y-6 max-w-2xl mx-auto">
       {/* Welcome block */}
-      <div className="pt-2">
-        <h1 className="text-2xl font-extrabold tracking-tight">
-          Welcome, <span className="text-primary">{user.username}</span>
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Access your inventory management and ledger reports below.
-        </p>
+      <div className="pt-2 flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-extrabold tracking-tight">
+            Welcome, <span className="text-primary">{user.username}</span>
+          </h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Real-time synchronization with Tally Prime
+          </p>
+        </div>
+      </div>
+
+      {/* Tally Prime Style Header Banner */}
+      <div className="bg-card border border-sky-300/60 dark:border-sky-800/60 rounded-2xl p-4 shadow-sm space-y-3 font-sans relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-sky-500/5 rounded-full blur-2xl pointer-events-none" />
+        <div className="flex justify-between items-start border-b border-sky-100 dark:border-sky-900/40 pb-3">
+          <div 
+            onClick={() => setPeriodModalOpen(true)}
+            className="cursor-pointer group flex items-center gap-2 transition-opacity hover:opacity-90"
+            title="Click to Change Period"
+          >
+            <div>
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">CURRENT PERIOD</span>
+              </div>
+              <span className="text-base font-extrabold text-foreground tracking-tight flex items-center gap-1.5">
+                {dashboardData?.current_period || '1-Apr-25 to 31-Mar-26'}
+                <Edit3 className="w-3.5 h-3.5 text-sky-500 opacity-70 group-hover:opacity-100" />
+              </span>
+            </div>
+          </div>
+          <div className="text-right">
+            <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">CURRENT DATE</span>
+            <span className="text-base font-extrabold text-foreground tracking-tight">
+              {dashboardData?.current_date || new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex justify-between items-end pt-1">
+          <div>
+            <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">NAME OF COMPANY</span>
+            <span className="text-lg font-black text-foreground tracking-tight">
+              {dashboardData?.company_name || user?.company_name || 'Bhrama Enterprises'}
+            </span>
+          </div>
+          <div className="text-right">
+            <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">DATE OF LAST ENTRY</span>
+            <span className="text-lg font-black text-foreground tracking-tight">
+              {dashboardData?.date_of_last_entry || 'No Entries'}
+            </span>
+          </div>
+        </div>
       </div>
 
 {/* Metrics Row */}
@@ -365,6 +505,198 @@ export default function DashboardPage() {
                   })
                 })()
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CHANGE PERIOD MODAL */}
+      {periodModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-card border border-border rounded-3xl max-w-md w-full p-5 space-y-5 shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-center border-b border-border pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-2xl bg-sky-500/10 text-sky-600">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-lg text-foreground">Change Period</h3>
+                  <p className="text-xs text-muted-foreground">Select reporting date range</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setPeriodModalOpen(false)}
+                className="p-2 hover:bg-secondary rounded-full transition-colors text-muted-foreground hover:text-foreground cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Quick Presets */}
+            <div>
+              <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-2 block">Quick Presets</label>
+              <div className="grid grid-cols-5 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => selectPreset('current_fy')}
+                  className={cn(
+                    "px-1 py-2 text-[10px] sm:text-[11px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'current_fy'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  Current FY
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectPreset('prev_fy')}
+                  className={cn(
+                    "px-1 py-2 text-[10px] sm:text-[11px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'prev_fy'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  Prev FY
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectPreset('this_month')}
+                  className={cn(
+                    "px-1 py-2 text-[10px] sm:text-[11px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'this_month'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  This Month
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectPreset('last_month')}
+                  className={cn(
+                    "px-1 py-2 text-[10px] sm:text-[11px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'last_month'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  Last Month
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectPreset('all_time')}
+                  className={cn(
+                    "px-1 py-2 text-[10px] sm:text-[11px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'all_time'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  All Time
+                </button>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5 mt-1.5">
+                <button
+                  type="button"
+                  onClick={() => selectPreset('q1')}
+                  className={cn(
+                    "px-1.5 py-1.5 text-[10px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'q1'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  Q1 (Apr-Jun)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectPreset('q2')}
+                  className={cn(
+                    "px-1.5 py-1.5 text-[10px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'q2'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  Q2 (Jul-Sep)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectPreset('q3')}
+                  className={cn(
+                    "px-1.5 py-1.5 text-[10px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'q3'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  Q3 (Oct-Dec)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectPreset('q4')}
+                  className={cn(
+                    "px-1.5 py-1.5 text-[10px] font-bold rounded-xl transition-colors text-center cursor-pointer",
+                    activePreset === 'q4'
+                      ? "bg-sky-600 text-white shadow-sm"
+                      : "bg-secondary hover:bg-sky-500/20 text-foreground"
+                  )}
+                >
+                  Q4 (Jan-Mar)
+                </button>
+              </div>
+            </div>
+
+            {/* Custom Dates Inputs */}
+            <div className="space-y-3 pt-2 border-t border-border">
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Starting Date (From)</label>
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={e => {
+                    setFromDate(e.target.value)
+                    setActivePreset('custom')
+                  }}
+                  className="w-full px-3 py-2 text-xs border border-border rounded-xl bg-background text-foreground focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Ending Date (To)</label>
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={e => {
+                    setToDate(e.target.value)
+                    setActivePreset('custom')
+                  }}
+                  className="w-full px-3 py-2 text-xs border border-border rounded-xl bg-background text-foreground focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setActivePreset('current_fy')
+                  applyPeriodChanges('2025-04-01', '2026-03-31')
+                }}
+                className="flex-1 px-4 py-2.5 text-xs font-bold border border-border rounded-xl hover:bg-secondary transition-colors cursor-pointer"
+              >
+                Reset Default
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPeriodChanges(fromDate, toDate)}
+                className="flex-1 px-4 py-2.5 text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Check className="w-4 h-4" />
+                Apply Period
+              </button>
             </div>
           </div>
         </div>

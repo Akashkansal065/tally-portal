@@ -1,7 +1,8 @@
 import hashlib
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 
@@ -13,6 +14,7 @@ from app.models.user import User, UserSession, UserPermissionOverride, Permissio
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login")
 
 async def get_current_user(
+    request: Request,
     token: str = Depends(oauth2_scheme), 
     db: AsyncSession = Depends(get_db)
 ) -> User:
@@ -51,11 +53,30 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
         
-    user_query = await db.execute(select(User).where(User.user_id == user_id, User.is_active == True))
+    user_query = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.user_id == user_id, User.is_active == True)
+    )
     user = user_query.scalars().first()
     if user is None:
         raise credentials_exception
         
+    # Support dynamic company switching via X-Company-ID request header
+    header_company_id = request.headers.get("x-company-id") or request.headers.get("X-Company-ID")
+    if header_company_id:
+        try:
+            h_cid = int(header_company_id)
+            if h_cid != user.company_id:
+                from app.models.user import UserCompanyAccess
+                acc_stmt = select(UserCompanyAccess).where(
+                    UserCompanyAccess.user_id == user.user_id,
+                    UserCompanyAccess.company_id == h_cid
+                )
+                acc_res = await db.execute(acc_stmt)
+                if acc_res.scalars().first():
+                    user.company_id = h_cid
+        except ValueError:
+            pass
+
     return user
 
 async def get_effective_permission(

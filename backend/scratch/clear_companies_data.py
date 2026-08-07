@@ -20,41 +20,35 @@ import app.models.sync
 import app.models.user
 import app.models.voucher
 
-# Core system tables to preserve (user accounts, roles, permissions, registered companies)
-PRESERVED_TABLES = {
+# Core system tables to preserve (preserves user accounts, credentials, roles, & permissions)
+USER_PRESERVED_TABLES = {
     "users", "roles", "permissions", "modules", "role_permissions",
-    "user_permission_overrides", "user_company_access", "companies",
-    "financial_years", "alembic_version"
+    "user_permission_overrides", "refresh_tokens", "alembic_version"
 }
 
-async def clear_data(target_db: str = "tally_sync"):
+async def clear_companies():
+    """
+    Deletes ALL companies and company-related data from MySQL.
+    Preserves user login accounts, roles, permissions, and system modules.
+    """
     print("Ensuring databases exist...")
     from app.core.database import create_databases_if_not_exist
     await create_databases_if_not_exist()
     
-    print(f"Target database selection: '{target_db}'")
     print("Connecting to database...")
-    
     async with engine.begin() as conn:
         print("Disabling foreign key checks...")
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 0;"))
         
-        # Discover all tables dynamically from SQLAlchemy metadata
         all_tables = Base.metadata.tables
-        
         cleared_count = 0
+        
         for table_key, table_obj in all_tables.items():
             table_name = table_obj.name
             schema_name = table_obj.schema
             
-            # Skip preserved core system tables
-            if table_name in PRESERVED_TABLES:
-                continue
-                
-            # Filter by target_db selection
-            if target_db == "tally_sync" and schema_name != "tally_sync":
-                continue
-            elif target_db == "tally_portal" and schema_name != "tally_portal":
+            # Skip preserved user/system tables
+            if table_name in USER_PRESERVED_TABLES:
                 continue
                 
             fq_table = f"`{schema_name}`.`{table_name}`" if schema_name else f"`{table_name}`"
@@ -69,11 +63,9 @@ async def clear_data(target_db: str = "tally_sync"):
         print("Enabling foreign key checks...")
         await conn.execute(text("SET FOREIGN_KEY_CHECKS = 1;"))
         
-    print(f"Database clear operations completed successfully! ({cleared_count} tables truncated)")
+    print(f"Company clear operations completed successfully! ({cleared_count} tables truncated)")
+    print("User accounts, credentials, roles, and permissions remain intact.")
     await engine.dispose()
 
 if __name__ == "__main__":
-    # Options: "all", "tally_sync", or "tally_portal"
-    TARGET_DB = "tally_sync"
-    
-    asyncio.run(clear_data(TARGET_DB))
+    asyncio.run(clear_companies())

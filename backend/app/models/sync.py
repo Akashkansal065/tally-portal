@@ -9,9 +9,9 @@ class SyncQueue(Base):
     
     sync_id = Column(BigInteger, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
-    record_type = Column(Enum('Ledger', 'Voucher', name='sync_record_type_enum'), nullable=False)
+    record_type = Column(String(50), nullable=False)
     record_id = Column(BigInteger, nullable=False)
-    action = Column(Enum('Create', 'Update', 'Delete', name='sync_action_enum'), nullable=False)
+    action = Column(String(50), nullable=False)
     is_processed = Column(Boolean, default=False)
     attempts = Column(Integer, default=0)
     error_message = Column(String(500), nullable=True)

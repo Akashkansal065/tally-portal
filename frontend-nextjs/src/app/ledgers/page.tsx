@@ -4,11 +4,14 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency } from '@/lib/utils'
-import { Search, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, RefreshCw, Plus, Edit2, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import LedgerFormModal, { LedgerFormData } from '@/components/LedgerFormModal'
+import DeleteLedgerModal from '@/components/DeleteLedgerModal'
 
 type Ledger = {
   ledger_id: number
+  group_id?: number
   name: string
   group_name: string
   opening_balance: number
@@ -19,6 +22,13 @@ type Ledger = {
   mobile?: string
   email?: string
   state?: string
+  pincode?: string
+  country?: string
+  contact_person?: string
+  pan_number?: string
+  credit_limit?: number
+  credit_period_days?: number
+  address?: string
 }
 
 export default function LedgersPage() {
@@ -28,6 +38,14 @@ export default function LedgersPage() {
   const [activeTab, setActiveTab] = useState<'customers' | 'suppliers'>('customers')
   const [ledgers, setLedgers] = useState<Ledger[]>([])
   const [loading, setLoading] = useState(true)
+
+  // Modal States
+  const [isFormOpen, setIsFormOpen] = useState(false)
+  const [editLedgerData, setEditLedgerData] = useState<LedgerFormData | null>(null)
+  
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false)
+  const [deleteLedgerId, setDeleteLedgerId] = useState<number | null>(null)
+  const [deleteLedgerName, setDeleteLedgerName] = useState('')
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
@@ -39,7 +57,7 @@ export default function LedgersPage() {
     }
   }, [user, permissions, router])
   
-  // Interactive filters matching screenshot
+  // Interactive filters
   const [searchQuery, setSearchQuery] = useState('')
   const [filterBalance, setFilterBalance] = useState('all') // all | nonzero | zero | dr | cr
   const [sortBy, setSortBy] = useState('name-asc') // name-asc | name-desc | balance-desc | balance-asc
@@ -134,16 +152,111 @@ export default function LedgersPage() {
     setCurrentPage(1)
   }, [activeTab, searchQuery, filterBalance, sortBy])
 
+  const handleOpenCreateModal = () => {
+    setEditLedgerData(null)
+    setIsFormOpen(true)
+  }
+
+  const handleOpenEditModal = (ledger: Ledger, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const autoPan = ledger.pan_number || (ledger.gstin && ledger.gstin.length >= 12 ? ledger.gstin.substring(2, 12).toUpperCase() : '')
+    setEditLedgerData({
+      ledger_id: ledger.ledger_id,
+      name: ledger.name,
+      group_id: ledger.group_id || 0,
+      opening_balance: Math.abs(ledger.opening_balance || 0).toString(),
+      opening_balance_type: (ledger.opening_balance_type as 'Dr' | 'Cr') || 'Dr',
+      gstin: ledger.gstin || '',
+      pan_number: autoPan,
+      aadhar_number: (ledger as any).aadhar_number || '',
+      address: ledger.address || '',
+      state: ledger.state || 'Haryana',
+      pincode: (ledger as any).pincode || '',
+      country: (ledger as any).country || 'India',
+      mobile: ledger.mobile || '',
+      phone: (ledger as any).phone || '',
+      email: ledger.email || (ledger as any).email || '',
+      contact_person: (ledger as any).contact_person || '',
+      credit_limit: ledger.credit_limit ? ledger.credit_limit.toString() : '',
+      credit_period_days: ledger.credit_period_days ? ledger.credit_period_days.toString() : '',
+      is_billwise_on: true
+    })
+    setIsFormOpen(true)
+  }
+
+  const handleOpenDeleteModal = (ledger: Ledger, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setDeleteLedgerId(ledger.ledger_id)
+    setDeleteLedgerName(ledger.name)
+    setIsDeleteOpen(true)
+  }
+
+  // Admin / Management Permission check
+  const canManageLedgers = useMemo(() => {
+    if (!user) return false
+    return user.role?.toLowerCase() === 'admin' || permissions?.isAdmin === true
+  }, [user, permissions])
+
+  const [isSyncing, setIsSyncing] = useState(false)
+
+  const handleTriggerSync = async () => {
+    if (!token) return
+    setIsSyncing(true)
+    try {
+      const res = await fetch(`${API_BASE}/sync/run-once`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        setTimeout(() => {
+          fetchData()
+        }, 1500)
+      }
+    } catch (err) {
+      console.error('Failed to trigger sync:', err)
+    } finally {
+      setTimeout(() => setIsSyncing(false), 2000)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full bg-background font-sans">
-      {/* Tabs Selector matching mockup */}
+      {/* Header bar with Add Ledger & Sync Actions */}
+      <div className="px-4 py-3 bg-card border-b border-border flex items-center justify-between shadow-xs">
+        <div>
+          <h1 className="text-base font-black text-foreground tracking-tight">Ledger Masters</h1>
+          <p className="text-[11px] text-muted-foreground font-semibold">Manage Customer & Supplier accounts</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleTriggerSync}
+            disabled={isSyncing}
+            className="px-3 py-2 border border-border bg-background hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            title="Force Instant Sync with Tally Prime"
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", isSyncing && "animate-spin text-emerald-600")} />
+            {isSyncing ? 'Syncing...' : 'Sync Tally'}
+          </button>
+          {canManageLedgers && (
+            <button
+              onClick={handleOpenCreateModal}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+            >
+              <Plus className="w-4 h-4" />
+              + Create Ledger
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs Selector */}
       {(permissions.showSalesLedgers && permissions.showPurchaseLedgers) && (
-        <div className="px-4 py-2.5 bg-background border-b border-border">
-          <div className="bg-muted p-1 rounded-xl flex gap-1 border border-border/40">
+        <div className="px-4 py-2 bg-background border-b border-border">
+          <div className="bg-muted p-1 rounded-xl flex gap-1 border border-border/40 max-w-xl mx-auto">
             <button
               onClick={() => setActiveTab('customers')}
               className={cn(
-                'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center',
+                'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center cursor-pointer',
                 activeTab === 'customers'
                   ? 'bg-emerald-500 text-white shadow-sm font-black'
                   : 'text-muted-foreground hover:text-foreground'
@@ -154,7 +267,7 @@ export default function LedgersPage() {
             <button
               onClick={() => setActiveTab('suppliers')}
               className={cn(
-                'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center',
+                'flex-1 py-2 text-xs font-extrabold rounded-lg transition-all text-center cursor-pointer',
                 activeTab === 'suppliers'
                   ? 'bg-emerald-500 text-white shadow-sm font-black'
                   : 'text-muted-foreground hover:text-foreground'
@@ -219,7 +332,7 @@ export default function LedgersPage() {
               <div className="w-6 h-6 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : paginatedData.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground text-xs italic">
+            <div className="text-center py-12 text-muted-foreground text-xs italic bg-card border border-border rounded-2xl p-6">
               No ledgers match current filters
             </div>
           ) : (
@@ -232,30 +345,53 @@ export default function LedgersPage() {
                 <div
                   key={ledger.ledger_id}
                   onClick={() => router.push(`/ledgers/${ledger.ledger_id}`)}
-                  className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-sm hover:border-emerald-500/40 transition-all hover:shadow-md cursor-pointer"
+                  className="bg-card border border-border rounded-2xl p-4 space-y-3 shadow-sm hover:border-emerald-500/40 transition-all hover:shadow-md cursor-pointer group"
                 >
                   <div className="flex justify-between items-start gap-3">
-                    <div className="min-w-0">
-                      <h3 className="font-bold text-[15px] text-foreground leading-tight tracking-tight">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-bold text-[15px] text-foreground leading-tight tracking-tight group-hover:text-emerald-600 transition-colors">
                         {ledger.name}
                       </h3>
                       <p className="text-[10px] font-bold text-muted-foreground uppercase mt-0.5 tracking-wider">
                         {labelGroup}
                       </p>
                     </div>
-                    {/* Red badge for non-zero Debit (Dr) balances, blue badge for Credit (Cr) balances, gray otherwise */}
-                    <div className={cn(
-                      "shrink-0 font-black text-xs font-mono px-2.5 py-1.5 rounded-lg border text-right",
-                      isNonZero
-                        ? isDebit
-                          ? "bg-rose-50 border-rose-200 text-rose-800"
-                          : "bg-blue-50 border-blue-200 text-blue-800"
-                        : "bg-muted/60 text-muted-foreground border-border"
-                    )}>
-                      {formatCurrency(Math.abs(bal))}
-                      <span className="text-[10px] font-bold ml-1">
-                        {!isNonZero ? '' : isDebit ? 'Dr' : 'Cr'}
-                      </span>
+
+                    <div className="flex items-center gap-2">
+                      {/* Action Buttons (Admin Only) */}
+                      {canManageLedgers && (
+                        <>
+                          <button
+                            onClick={e => handleOpenEditModal(ledger, e)}
+                            title="Edit Ledger"
+                            className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 hover:border-emerald-200 transition-all cursor-pointer"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={e => handleOpenDeleteModal(ledger, e)}
+                            title="Delete Ledger"
+                            className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition-all cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
+
+                      {/* Balance Badge */}
+                      <div className={cn(
+                        "shrink-0 font-black text-xs font-mono px-2.5 py-1.5 rounded-lg border text-right",
+                        isNonZero
+                          ? isDebit
+                            ? "bg-rose-50 border-rose-200 text-rose-800"
+                            : "bg-blue-50 border-blue-200 text-blue-800"
+                          : "bg-muted/60 text-muted-foreground border-border"
+                      )}>
+                        {formatCurrency(Math.abs(bal))}
+                        <span className="text-[10px] font-bold ml-1">
+                          {!isNonZero ? '' : isDebit ? 'Dr' : 'Cr'}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -318,6 +454,26 @@ export default function LedgersPage() {
           {processedData.length} of {ledgers.length} ledgers
         </footer>
       )}
+
+      {/* Create / Edit Ledger Modal */}
+      <LedgerFormModal
+        isOpen={isFormOpen}
+        onClose={() => setIsFormOpen(false)}
+        onSuccess={fetchData}
+        initialData={editLedgerData}
+        token={token}
+        defaultGroupType={activeTab === 'customers' ? 'customer' : 'supplier'}
+      />
+
+      {/* Delete Ledger Modal */}
+      <DeleteLedgerModal
+        isOpen={isDeleteOpen}
+        ledgerId={deleteLedgerId}
+        ledgerName={deleteLedgerName}
+        onClose={() => setIsDeleteOpen(false)}
+        onSuccess={fetchData}
+        token={token}
+      />
     </div>
   )
 }

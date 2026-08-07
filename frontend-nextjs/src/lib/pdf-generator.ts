@@ -180,7 +180,16 @@ export async function generateVoucherPdf({
   // Calculate totals
   const totalQty = inventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.quantity || '0')), 0)
   const uom = inventory[0]?.uom || 'PCS'
-  const totalAmount = Math.abs(parseFloat(accounts.find(a => a.ledger === header.partyName)?.amount || '0'))
+  
+  const partyEntry = accounts.find(a => (a.ledger || '').trim().toLowerCase() === (header.partyName || '').trim().toLowerCase())
+  let totalAmount = Math.abs(parseFloat(partyEntry?.amount || '0'))
+  if (totalAmount === 0) {
+    const invSum = inventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.amount || '0')), 0)
+    const ledgerSum = accounts
+      .filter(a => (a.ledger || '').trim().toLowerCase() !== (header.partyName || '').trim().toLowerCase())
+      .reduce((sum, a) => sum + parseFloat(a.amount || '0'), 0)
+    totalAmount = Math.abs(invSum + ledgerSum)
+  }
 
   // Group by HSN/SAC for Tax Analysis
   const groupItemsByHsn = () => {

@@ -30,7 +30,7 @@ class TrnVoucher(Base):
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     voucher_type_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_types.voucher_type_id"), nullable=False)
     voucher_number = Column(String(30), nullable=False)
-    voucher_date = Column(Date, nullable=False)
+    voucher_date = Column(Date, nullable=False, index=True)
     reference_number = Column(String(50), nullable=True)
     narration = Column(TEXT, nullable=True)
     total_amount = Column(Numeric(18, 2), nullable=False, default=0.00)
@@ -39,7 +39,7 @@ class TrnVoucher(Base):
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(Integer, nullable=True)
     created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
     voucher_type = relationship("MstVoucherType", back_populates="vouchers")
@@ -94,8 +94,8 @@ class ApprovalRequest(Base):
     status = Column(Enum('Pending', 'Approved', 'Rejected', name='approval_status'), default='Pending')
     acted_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
     comments = Column(String(500), nullable=True)
-    requested_at = Column(DateTime, server_default=func.now())
-    acted_at = Column(DateTime, nullable=True)
+    requested_at = Column(DateTime, server_default=func.now(), index=True)
+    acted_at = Column(DateTime, nullable=True, index=True)
     
     voucher = relationship("TrnVoucher", back_populates="approvals")
 
@@ -111,4 +111,4 @@ class AuditLog(Base):
     entity_id = Column(BigInteger, nullable=False)
     old_value = Column(JSON, nullable=True)
     new_value = Column(JSON, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)

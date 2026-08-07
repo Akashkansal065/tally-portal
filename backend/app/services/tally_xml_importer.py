@@ -6,13 +6,105 @@ from datetime import datetime, date
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import text
+from sqlalchemy import text, func
 
 logger = logging.getLogger("uvicorn.error")
 
 from app.models.ledger import MstGroup, MstLedger
 from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
 from app.models.payment import TrnBill, BillAllocation
+from app.models.user import User, Role, UserCompanyAccess
+from app.core.security import get_password_hash
+
+_checked_tally_users = set()
+
+def parse_tally_date(date_str: str) -> Optional[date]:
+    if not date_str or not str(date_str).strip():
+        return None
+    clean = str(date_str).strip().replace("/", "-").replace(".", "-")
+    for fmt in ("%Y%m%d", "%Y-%m-%d", "%d-%b-%Y", "%d-%b-%y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(clean, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+async def ensure_tally_user_exists(db: AsyncSession, company_id: int, user_name: str) -> Optional[User]:
+    if not user_name or not str(user_name).strip():
+        return None
+        
+    raw_name = str(user_name).strip()
+    if raw_name.lower() in ("sysname:xml", "none", "null", "system", "tally"):
+        return None
+        
+    cache_key = (company_id, raw_name.lower())
+    if cache_key in _checked_tally_users:
+        return None
+        
+    # Check if user with this username already exists in DB
+    user_stmt = select(User).where(func.lower(User.username) == raw_name.lower())
+    res = await db.execute(user_stmt)
+    existing_user = res.scalars().first()
+    
+    if existing_user:
+        # Check if user has access mapped to this company
+        access_stmt = select(UserCompanyAccess).where(
+            UserCompanyAccess.user_id == existing_user.user_id,
+            UserCompanyAccess.company_id == company_id
+        )
+        access_res = await db.execute(access_stmt)
+        if not access_res.scalars().first():
+            access = UserCompanyAccess(user_id=existing_user.user_id, company_id=company_id)
+            db.add(access)
+            await db.flush()
+            logger.info(f"👥 Linked existing user '{existing_user.username}' (ID: {existing_user.user_id}) to Company #{company_id}")
+        _checked_tally_users.add(cache_key)
+        return existing_user
+
+    # Get default 'User' or 'Staff' role
+    role_stmt = select(Role).where(Role.name.in_(["User", "Staff"]))
+    role_res = await db.execute(role_stmt)
+    default_role = role_res.scalars().first()
+    if not default_role:
+        role_stmt2 = select(Role).limit(1)
+        role_res2 = await db.execute(role_stmt2)
+        default_role = role_res2.scalars().first()
+
+    if not default_role:
+        logger.warning(f"Could not auto-create user '{raw_name}': No roles found in database.")
+        return None
+
+    # Generate a clean email for the new user
+    safe_slug = re.sub(r'[^a-z0-9]', '', raw_name.lower()) or "user"
+    generated_email = f"{safe_slug}_{company_id}@mytally.local"
+
+    email_check = await db.execute(select(User).where(User.email == generated_email))
+    if email_check.scalars().first():
+        generated_email = f"{safe_slug}_{company_id}_{int(datetime.now().timestamp())}@mytally.local"
+
+    password_hash = get_password_hash("password123")
+    new_user = User(
+        company_id=company_id,
+        username=raw_name,
+        email=generated_email,
+        password_hash=password_hash,
+        role_id=default_role.role_id,
+        is_active=True,
+        ledger_scope='full',
+        stock_scope='full'
+    )
+    db.add(new_user)
+    await db.flush()
+    await db.refresh(new_user)
+
+    # Link access to this company
+    access = UserCompanyAccess(user_id=new_user.user_id, company_id=company_id)
+    db.add(access)
+    await db.flush()
+
+    logger.info(f"👥 [AUTO-PROVISIONED TALLY USER] Created new user '{raw_name}' (Email: {generated_email}, ID: {new_user.user_id}) for Company #{company_id}")
+    _checked_tally_users.add(cache_key)
+    return new_user
 
 def is_valid_xml_char(cp: int) -> bool:
     return (
@@ -50,7 +142,13 @@ def sanitize_xml(xml_data: str) -> str:
     invalid_xml_raw_re = re.compile(
         r'[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]'
     )
-    return invalid_xml_raw_re.sub("", sanitized)
+    sanitized = invalid_xml_raw_re.sub("", sanitized)
+
+    # 3. Strip unbound 'UDF:' XML prefixes returned by Tally (e.g. <UDF:LWLEDADHARNOSTORE> -> <LWLEDADHARNOSTORE>)
+    if "UDF:" in sanitized:
+        sanitized = re.sub(r'</?UDF:', lambda m: m.group(0).replace('UDF:', ''), sanitized)
+
+    return sanitized
 
 from app.models.inventory import MstStockGroup, MstStockCategory, MstUom, MstGodown, MstStockItem
 
@@ -167,7 +265,7 @@ async def get_or_create_group(db: AsyncSession, company_id: int, name: str, pare
     await db.flush()
     return group
 
-async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> dict:
+async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, override_company_name: Optional[str] = None) -> dict:
     if not xml_data or not xml_data.strip():
         return {"status": "error", "message": "Empty XML payload."}
         
@@ -204,22 +302,203 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             
         return {"status": "error", "message": f"XML parse error: {str(e)}"}
 
-    # Extract company name and update company model
+    company_id = None
+    resolved_company_name = "Unknown Company"
+    # Extract company name and update/create company model
     try:
+        from app.models.company import Company
+        from app.models.user import UserCompanyAccess
+        
         company_name_node = root.find(".//SVCURRENTCOMPANY")
-        if company_name_node is not None and company_name_node.text:
+        company_node = root.find(".//COMPANY")
+        
+        tally_guid = None
+        if company_node is not None:
+            tally_guid = company_node.findtext("COMPANYGUID") or company_node.findtext("GUID")
+            
+        company_name = None
+        if override_company_name:
+            company_name = override_company_name.strip()
+        elif company_node is not None:
+            company_name = company_node.get("NAME") or company_node.findtext("NAME")
+        elif company_name_node is not None and company_name_node.text:
             company_name = company_name_node.text.strip()
-            if company_name:
-                from app.models.company import Company
-                stmt = select(Company).where(Company.company_id == company_id)
-                comp_res = await db.execute(stmt)
+            
+        if company_name: company_name = company_name.strip()
+        if tally_guid: tally_guid = tally_guid.strip()
+            
+        # Fallback to user's first company if no company name or GUID in XML
+        if not company_name and not tally_guid:
+            fallback_stmt = select(Company).join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == user_id).order_by(Company.company_id.asc())
+            fallback_res = await db.execute(fallback_stmt)
+            fallback_comp = fallback_res.scalars().first()
+            if fallback_comp:
+                company_name = fallback_comp.name
+                
+        if company_name or tally_guid:
+            company_obj = None
+            
+            # 1. Try finding by tally_guid mapped to this user
+            if tally_guid:
+                guid_stmt = select(Company).join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id).where(
+                    UserCompanyAccess.user_id == user_id,
+                    Company.tally_guid == tally_guid
+                )
+                comp_res = await db.execute(guid_stmt)
                 company_obj = comp_res.scalars().first()
-                if company_obj and company_obj.name != company_name:
-                    company_obj.name = company_name
+
+            # 2. If not found by GUID, try finding by name (case-insensitive) mapped to this user
+            if not company_obj and company_name:
+                name_stmt = select(Company).join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id).where(
+                    UserCompanyAccess.user_id == user_id,
+                    func.lower(Company.name) == func.lower(company_name)
+                )
+                comp_res = await db.execute(name_stmt)
+                company_obj = comp_res.scalars().first()
+            
+            if not company_obj:
+                # Auto-create company
+                company_obj = Company(
+                    name=company_name or "Unknown Sync Company",
+                    tally_guid=tally_guid,
+                    books_begin_date=date.today(),
+                    is_active=True
+                )
+                db.add(company_obj)
+                await db.flush()
+                
+                # Grant access to user
+                access = UserCompanyAccess(user_id=user_id, company_id=company_obj.company_id)
+                db.add(access)
+                await db.flush()
+                logger.info(f"Auto-created new company '{company_obj.name}' and mapped to user_id={user_id}.")
+            else:
+                # If existing company was matched by name, link the tally_guid if missing
+                if tally_guid and not company_obj.tally_guid:
+                    company_obj.tally_guid = tally_guid
                     await db.flush()
-                    logger.info(f"Updated company name in database to '{company_name}' based on XML import.")
+            
+            company_id = company_obj.company_id
+            resolved_company_name = company_obj.name
+            
+            # Now update the details from XML
+            updated = False
+            if company_node is not None:
+                if company_name and company_obj.name != company_name:
+                    company_obj.name = company_name
+                    updated = True
+                
+                if tally_guid and company_obj.tally_guid != tally_guid:
+                    company_obj.tally_guid = tally_guid
+                    updated = True
+
+                def get_clean_text(elem_name: str) -> Optional[str]:
+                    node = company_node.find(f".//{elem_name}") or company_node.find(elem_name)
+                    if node is not None and node.text:
+                        val = node.text.strip()
+                        if val and val.lower() not in ("none", "null", "n/a", "na", ""):
+                            return val
+                    return None
+
+                # Extract address
+                addr_lines = []
+                for addr_elem in company_node.findall(".//ADDRESS"):
+                    if addr_elem.text and addr_elem.text.strip():
+                        txt = addr_elem.text.strip()
+                        if txt.lower() not in ("none", "null", "n/a", "na", ""):
+                            addr_lines.append(txt)
+                if addr_lines:
+                    company_obj.address_line1 = ", ".join(addr_lines[:2])
+                    if len(addr_lines) > 2:
+                        company_obj.address_line2 = ", ".join(addr_lines[2:])
+                    updated = True
+
+                # Extract state, country, pincode
+                state = get_clean_text("STATENAME") or get_clean_text("STATE")
+                if state: company_obj.state = state; updated = True
+                
+                country = get_clean_text("COUNTRYNAME") or get_clean_text("COUNTRY")
+                if country: company_obj.country = country; updated = True
+                
+                pincode = get_clean_text("PINCODE") or get_clean_text("PIN") or get_clean_text("PERSONRESPONSIBLEPINCODE")
+                if pincode: company_obj.pincode = pincode; updated = True
+
+                # Extract telephone & mobile
+                telephone = get_clean_text("TELEPHONE") or get_clean_text("BASICCOMPANYPHONE") or get_clean_text("TELEPHONENUMBER") or get_clean_text("PERSONRESPONSIBLEPHONE")
+                if telephone: company_obj.telephone = telephone; updated = True
+                
+                mobile = get_clean_text("MOBILE") or get_clean_text("BASICCOMPANYMOBILE") or get_clean_text("MOBILENUMBER") or get_clean_text("COMPANYCONTACTNUMBER") or get_clean_text("PERSONRESPONSIBLEMOBILE")
+                if mobile: company_obj.mobile = mobile; updated = True
+
+                # Extract email
+                email = get_clean_text("EMAIL") or get_clean_text("BASICCOMPANYEMAIL") or get_clean_text("EMAILID") or get_clean_text("ADMINEMAILID") or get_clean_text("PERSONRESPONSIBLEEMAIL")
+                if email: company_obj.email = email; updated = True
+
+                # Extract website
+                website = get_clean_text("WEBSITE") or get_clean_text("BASICCOMPANYWEBSITE")
+                if website: company_obj.website = website; updated = True
+
+                # Extract GSTIN
+                gstin = get_clean_text("GSTREGISTRATIONNUMBER") or get_clean_text("GSTIN") or get_clean_text("PARTYGSTIN")
+                if gstin: company_obj.gstin = gstin[:15]; updated = True
+
+                # Extract dates using flexible parser
+                books_from_str = get_clean_text("BOOKSFROM") or get_clean_text("BOOKSBEGINNINGFROM")
+                if books_from_str:
+                    bf_date = parse_tally_date(books_from_str)
+                    if bf_date:
+                        company_obj.books_begin_date = bf_date
+                        updated = True
+                    
+                fy_start_str = get_clean_text("STARTINGFROM") or get_clean_text("FINANCIALYEARFROM")
+                if fy_start_str:
+                    fy_date = parse_tally_date(fy_start_str)
+                    if fy_date:
+                        company_obj.financial_year_start = fy_date
+                        updated = True
+
+                fy_end_str = get_clean_text("ENDINGAT") or get_clean_text("FINANCIALYEAREND")
+                if fy_end_str:
+                    fe_date = parse_tally_date(fy_end_str)
+                    if fe_date:
+                        company_obj.financial_year_end = fe_date
+                        updated = True
+                elif company_obj.financial_year_start and not company_obj.financial_year_end:
+                    from datetime import timedelta
+                    try:
+                        next_yr = company_obj.financial_year_start.year + 1
+                        company_obj.financial_year_end = date(next_yr, company_obj.financial_year_start.month, company_obj.financial_year_start.day) - timedelta(days=1)
+                        updated = True
+                    except Exception:
+                        pass
+
+                # Discover & auto-provision Tally users associated with this company
+                user_nodes = company_node.findall(".//USERLIST.LIST") + company_node.findall(".//SECURITYUSERS.LIST") + company_node.findall(".//USER.LIST")
+                for u_node in user_nodes:
+                    u_name = u_node.findtext("NAME") or u_node.findtext("USERNAME")
+                    if u_name:
+                        await ensure_tally_user_exists(db, company_obj.company_id, u_name)
+                        
+                basic_user = company_node.findtext("BASICCOMPANYUSER") or company_node.findtext("SECURITYAUTHOR")
+                if basic_user:
+                    await ensure_tally_user_exists(db, company_obj.company_id, basic_user)
+
+            if updated or company_obj:
+                await db.flush()
+                logger.info(
+                    f"🏢 [COMPANY PROFILE LOG] Name: '{company_obj.name}' (ID: {company_obj.company_id}, GUID: {company_obj.tally_guid}) | "
+                    f"Address: '{company_obj.address_line1 or ''} {company_obj.address_line2 or ''}' | "
+                    f"State: '{company_obj.state or ''}' | Pincode: '{company_obj.pincode or ''}' | Country: '{company_obj.country or ''}' | "
+                    f"Telephone: '{company_obj.telephone or ''}' | Mobile: '{company_obj.mobile or ''}' | "
+                    f"Email: '{company_obj.email or ''}' | Website: '{company_obj.website or ''}' | "
+                    f"GSTIN: '{company_obj.gstin or ''}' | Books Begin: '{company_obj.books_begin_date or ''}' | "
+                    f"FY Start: '{company_obj.financial_year_start or ''}'"
+                )
     except Exception as ex:
-        logger.error(f"Error updating company name from XML: {str(ex)}", exc_info=True)
+        logger.error(f"Error updating company profile from XML: {str(ex)}", exc_info=True)
+        
+    if not company_id:
+        return {"status": "error", "message": "Could not identify or auto-create company from XML payload."}
         
     imported_groups = 0
     imported_ledgers = 0
@@ -352,6 +631,14 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         if op_qty > 0:
             op_rate = op_val / op_qty
             
+        alter_id_str = si_node.findtext("ALTERID")
+        alter_id = None
+        if alter_id_str:
+            try:
+                alter_id = int(alter_id_str.strip())
+            except ValueError:
+                pass
+
         stock_group = None
         if parent_name:
             stock_group = await get_or_create_stock_group(db, company_id, parent_name)
@@ -371,6 +658,8 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         item = res.scalars().first()
         
         if item:
+            if alter_id and item.tally_alter_id and item.tally_alter_id >= alter_id:
+                continue
             if stock_group:
                 item.stock_group_id = stock_group.stock_group_id
             if stock_category:
@@ -382,6 +671,8 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 item.hsn_code = hsn_code
             if gst_rate > 0:
                 item.gst_rate_percent = gst_rate
+            if alter_id:
+                item.tally_alter_id = alter_id
             await db.flush()
         else:
             item = MstStockItem(
@@ -397,7 +688,8 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 closing_value=op_val,
                 hsn_code=hsn_code,
                 gst_rate_percent=gst_rate,
-                is_active=True
+                is_active=True,
+                tally_alter_id=alter_id
             )
             db.add(item)
             await db.flush()
@@ -443,27 +735,141 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             guid = f"GEN-{uuid.uuid4().hex[:12]}"
             
         # Parse nested GSTIN
-        gstin = ledger_node.findtext(".//LEDGSTREGDETAILS.LIST/GSTIN") or ledger_node.findtext("GSTIN")
-        if gstin:
-            gstin = gstin.strip()
-            
-        # Parse state
-        state = ledger_node.findtext(".//LEDMAILINGDETAILS.LIST/STATE")
-        if state:
-            state = state.strip()
-            
-        # Parse address
-        addr_nodes = ledger_node.findall(".//LEDMAILINGDETAILS.LIST/ADDRESS.LIST/ADDRESS")
-        addr_str = ", ".join([a.text.strip() for a in addr_nodes if a.text])
-        
-        # Parse mobile
-        phone = ledger_node.findtext(".//CONTACTDETAILS.LIST/PHONENUMBER")
-        isd = ledger_node.findtext(".//CONTACTDETAILS.LIST/COUNTRYISDCODE") or "+91"
-        mobile_str = f"{isd} {phone.strip()}" if phone else None
-        
-        combined_address = addr_str
-        if mobile_str:
-            combined_address = f"{addr_str} | Mobile: {mobile_str}"
+        gstin = (
+            ledger_node.findtext(".//LEDGSTREGDETAILS.LIST/GSTIN") or 
+            ledger_node.findtext("GSTIN") or 
+            ledger_node.findtext("PARTYGSTIN")
+        )
+        if gstin: gstin = gstin.strip()
+
+        # Parse GST Registration Type
+        gst_reg_type = (
+            ledger_node.findtext(".//LEDGSTREGDETAILS.LIST/GSTREGISTRATIONTYPE") or 
+            ledger_node.findtext("GSTREGISTRATIONTYPE")
+        )
+        if gst_reg_type: gst_reg_type = gst_reg_type.strip()
+        if not gst_reg_type:
+            gst_reg_type = "Regular" if gstin else "Unregistered/Consumer"
+
+        # Parse PAN
+        pan = (
+            ledger_node.findtext("INCOMETAXNUMBER") or 
+            ledger_node.findtext("PANNUMBER") or 
+            ledger_node.findtext("PAN")
+        )
+        if not pan and gstin and len(gstin) >= 12:
+            pan = gstin[2:12].upper()
+        if pan: pan = pan.strip().upper()
+
+        # Parse Aadhaar UDF
+        aadhar = ledger_node.findtext("LWLEDADHARNOSTORE") or ledger_node.findtext(".//LWLEDADHARNOSTORE")
+        if aadhar: aadhar = aadhar.strip()
+
+        # Parse State
+        state = (
+            ledger_node.findtext(".//LEDMAILINGDETAILS.LIST/STATE") or 
+            ledger_node.findtext("PRIORSTATENAME") or 
+            ledger_node.findtext("STATENAME") or 
+            ledger_node.findtext("STATE")
+        )
+        if state: state = state.strip()
+
+        # Parse Country
+        country = (
+            ledger_node.findtext(".//LEDMAILINGDETAILS.LIST/COUNTRY") or 
+            ledger_node.findtext("COUNTRYOFRESIDENCE") or 
+            ledger_node.findtext("COUNTRYNAME") or 
+            ledger_node.findtext("COUNTRY") or "India"
+        )
+        if country: country = country.strip()
+
+        # Parse Pincode
+        pincode = (
+            ledger_node.findtext(".//LEDMAILINGDETAILS.LIST/PINCODE") or 
+            ledger_node.findtext("PINCODE") or 
+            ledger_node.findtext("PIN")
+        )
+        if pincode: pincode = pincode.strip()
+
+        # Parse Address
+        addr_nodes = (
+            ledger_node.findall(".//LEDMAILINGDETAILS.LIST/ADDRESS.LIST/ADDRESS") or 
+            ledger_node.findall(".//ADDRESS.LIST/ADDRESS") or 
+            ledger_node.findall("ADDRESS")
+        )
+        addr_lines = [a.text.strip() for a in addr_nodes if a.text and a.text.strip()]
+        address_str = ", ".join(addr_lines) if addr_lines else None
+
+        # Parse Contact Person
+        contact_person = (
+            ledger_node.findtext("LEDGERCONTACT") or 
+            ledger_node.findtext("CONTACTPERSON") or 
+            ledger_node.findtext("CONTACT")
+        )
+        if contact_person: contact_person = contact_person.strip()
+
+        # Parse Phone & Mobile
+        phone = (
+            ledger_node.findtext("LEDGERPHONE") or 
+            ledger_node.findtext("PHONE") or 
+            ledger_node.findtext("TELEPHONE") or
+            ledger_node.findtext(".//CONTACTDETAILS.LIST/PHONENUMBER")
+        )
+        if phone: phone = phone.strip()
+
+        mobile = (
+            ledger_node.findtext("LEDGERMOBILE") or 
+            ledger_node.findtext("MOBILE") or 
+            ledger_node.findtext("MOBILENUMBER")
+        )
+        if mobile: mobile = mobile.strip()
+
+        # Parse Email & Email CC
+        email = ledger_node.findtext("EMAIL") or ledger_node.findtext("BASICCOMPANYEMAIL")
+        if email: email = email.strip()
+
+        email_cc = ledger_node.findtext("EMAILCC")
+        if email_cc: email_cc = email_cc.strip()
+
+        # Parse Website, Description, Fax
+        website = ledger_node.findtext("WEBSITE")
+        if website: website = website.strip()
+
+        description = ledger_node.findtext("DESCRIPTION") or ledger_node.findtext("NARRATION")
+        if description: description = description.strip()
+
+        fax = ledger_node.findtext("LEDGERFAX") or ledger_node.findtext("FAX")
+        if fax: fax = fax.strip()
+
+        # Parse Alias Name (e.g. secondary name in LANGUAGENAME.LIST or MAILINGNAME.LIST)
+        alias_name = None
+        lang_names = ledger_node.findall(".//LANGUAGENAME.LIST/NAME.LIST/NAME") + ledger_node.findall(".//MAILINGNAME.LIST/MAILINGNAME")
+        if len(lang_names) > 1 and lang_names[1].text:
+            alias_name = lang_names[1].text.strip()
+
+        # Parse Credit Limit
+        credit_limit_str = ledger_node.findtext("CREDITLIMIT")
+        credit_limit_val = None
+        if credit_limit_str:
+            try:
+                credit_limit_val = abs(Decimal(credit_limit_str.strip()))
+            except Exception:
+                credit_limit_val = None
+
+        # Parse Credit Period Days
+        credit_days_str = ledger_node.findtext("BILLCREDITPERIOD") or ledger_node.findtext("CREDITDAYS")
+        credit_days_val = None
+        if credit_days_str:
+            import re
+            digits = re.findall(r'\d+', credit_days_str)
+            if digits:
+                credit_days_val = int(digits[0])
+
+        # Parse Is Billwise On
+        is_billwise_str = ledger_node.findtext("ISBILLWISEON")
+        is_billwise_val = True
+        if is_billwise_str:
+            is_billwise_val = is_billwise_str.strip().lower() in ("yes", "true", "1")
         
         # Opening balance
         op_bal_str = ledger_node.findtext("OPENINGBALANCE") or "0"
@@ -472,9 +878,6 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         except Exception:
             op_bal_val = Decimal("0.00")
             
-        # Standard Tally: Negative is Debit, Positive is Credit for assets,
-        # but to keep it simple, we check sign:
-        # Negative -> Debit, Positive -> Credit (standard)
         bal_type = "Dr"
         if op_bal_val < 0:
             op_bal_val = abs(op_bal_val)
@@ -493,8 +896,25 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 opening_balance=op_bal_val,
                 opening_balance_type=bal_type,
                 gstin=gstin,
-                address=combined_address,
+                gst_registration_type=gst_reg_type,
+                pan_number=pan,
+                aadhar_number=aadhar,
+                address=address_str,
                 state=state,
+                country=country,
+                pincode=pincode,
+                contact_person=contact_person,
+                phone=phone,
+                mobile=mobile,
+                email=email,
+                credit_limit=credit_limit_val,
+                credit_period_days=credit_days_val,
+                is_billwise_on=is_billwise_val,
+                alias_name=alias_name,
+                website=website,
+                description=description,
+                fax=fax,
+                email_cc=email_cc,
                 tally_guid=guid,
                 tally_alter_id=alter_id
             )
@@ -505,8 +925,25 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
             ledger.opening_balance = op_bal_val
             ledger.opening_balance_type = bal_type
             ledger.gstin = gstin
-            ledger.address = combined_address
-            ledger.state = state
+            if gst_reg_type: ledger.gst_registration_type = gst_reg_type
+            if pan: ledger.pan_number = pan
+            if aadhar: ledger.aadhar_number = aadhar
+            if address_str: ledger.address = address_str
+            if state: ledger.state = state
+            if country: ledger.country = country
+            if pincode: ledger.pincode = pincode
+            if contact_person: ledger.contact_person = contact_person
+            if phone: ledger.phone = phone
+            if mobile: ledger.mobile = mobile
+            if email: ledger.email = email
+            if email_cc: ledger.email_cc = email_cc
+            if website: ledger.website = website
+            if description: ledger.description = description
+            if fax: ledger.fax = fax
+            if alias_name: ledger.alias_name = alias_name
+            if credit_limit_val is not None: ledger.credit_limit = credit_limit_val
+            if credit_days_val is not None: ledger.credit_period_days = credit_days_val
+            ledger.is_billwise_on = is_billwise_val
             ledger.tally_guid = guid
             ledger.tally_alter_id = alter_id
             
@@ -525,6 +962,11 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
     # Filter out empty/metadata VOUCHER tags (like <VOUCHER>14</VOUCHER> in CMPINFO) by ensuring they have child elements
     voucher_nodes = [v for v in root.findall(".//VOUCHER") if len(v) > 0]
     for v_node in voucher_nodes:
+        # Auto-provision user if voucher contains entered_by / altered_by
+        entered_by = v_node.findtext("ENTEREDBY") or v_node.findtext("ALTEREDBY") or v_node.findtext("CREATEDBY")
+        if entered_by:
+            await ensure_tally_user_exists(db, company_id, entered_by)
+
         guid = v_node.findtext("GUID") or v_node.get("GUID")
         if not guid:
             guid = v_node.findtext("REMOTEID") or v_node.get("REMOTEID")
@@ -568,6 +1010,14 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         res = await db.execute(stmt)
         voucher = res.scalars().first()
         
+        # Auto-provision user if voucher contains entered_by / altered_by
+        v_user_id = user_id
+        entered_by = v_node.findtext("ENTEREDBY") or v_node.findtext("ALTEREDBY") or v_node.findtext("CREATEDBY")
+        if entered_by:
+            tally_user = await ensure_tally_user_exists(db, company_id, entered_by)
+            if tally_user:
+                v_user_id = tally_user.user_id
+
         if voucher:
             # If present and alter_id is same or lower, skip to prevent overriding local changes
             if voucher.tally_alter_id and voucher.tally_alter_id >= alter_id:
@@ -585,7 +1035,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
                 voucher_date=v_date,
                 tally_guid=guid,
                 tally_alter_id=alter_id,
-                created_by=1 # fallback default admin user
+                created_by=v_user_id
             )
             db.add(voucher)
             await db.flush()
@@ -880,11 +1330,23 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, company_id: int) -> 
         
     # Final commit for any remaining records
     await db.commit()
-    if imported_vouchers > 0:
-        logger.info(f"Committed {imported_vouchers} vouchers (total)")
+    
+    logger.info(
+        f"Sync Summary for Company '{resolved_company_name}' (ID: {company_id}): "
+        f"Groups: {imported_groups}, "
+        f"Ledgers: {imported_ledgers}, "
+        f"Vouchers: {imported_vouchers}, "
+        f"StockGroups: {imported_stock_groups}, "
+        f"UOMs: {imported_uoms}, "
+        f"Godowns: {imported_godowns}, "
+        f"StockCategories: {imported_stock_categories}, "
+        f"StockItems: {imported_stock_items}"
+    )
     
     return {
         "status": "success",
+        "company_id": company_id,
+        "company_name": resolved_company_name,
         "imported_groups": imported_groups,
         "imported_ledgers": imported_ledgers,
         "imported_vouchers": imported_vouchers,

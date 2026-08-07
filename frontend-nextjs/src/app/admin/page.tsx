@@ -23,6 +23,8 @@ import {
   Loader2,
   Calendar,
   X,
+  Zap,
+  Database,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
@@ -92,12 +94,22 @@ export default function AdminPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
   
-  const [tab, setTab] = useState<'users' | 'sync' | 'logs' | 'visits' | 'einvoice'>('users')
+  const [tab, setTab] = useState<'users' | 'sync' | 'logs' | 'visits' | 'einvoice' | 'cache'>('users')
   const [users, setUsers] = useState<UserItem[]>([])
   const [logs, setLogs] = useState<AuditLog[]>([])
   const [visits, setVisits] = useState<VisitLog[]>([])
   const [loading, setLoading] = useState(false)
   const [alertsEnabled, setAlertsEnabled] = useState(true)
+
+  // Cache Management states
+  const [cacheStats, setCacheStats] = useState<{
+    total_entries: number
+    active_entries: number
+    expired_entries: number
+    default_ttl_seconds: number
+  } | null>(null)
+  const [cacheLoading, setCacheLoading] = useState(false)
+  const [cacheClearing, setCacheClearing] = useState(false)
 
   // E-Invoicing settings states
   const [einvEnv, setEinvEnv] = useState<'mock' | 'sandbox' | 'production'>('mock')
@@ -259,6 +271,50 @@ export default function AdminPage() {
   const [regError, setRegError] = useState('')
   const [regLoading, setRegLoading] = useState(false)
 
+  const fetchCacheStats = useCallback(async () => {
+    if (!token) return
+    setCacheLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/reports/cache/stats`, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setCacheStats(data)
+      }
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setCacheLoading(false)
+    }
+  }, [token])
+
+  const handleClearCache = async (allCompanies: boolean) => {
+    if (!token) return
+    const msg = allCompanies 
+      ? 'Are you sure you want to clear in-memory report cache across ALL companies?' 
+      : 'Are you sure you want to clear report cache for your active company?'
+    if (!confirm(msg)) return
+    
+    setCacheClearing(true)
+    try {
+      const res = await fetch(`${API_BASE}/reports/cache/clear?all_companies=${allCompanies}`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        alert(`Success: ${data.message} (${data.cleared_entries} entries purged)`)
+        fetchCacheStats()
+      } else {
+        const err = await res.json()
+        alert(err.detail || 'Failed to clear cache')
+      }
+    } catch (e: any) {
+      alert(e.message || 'Failed to clear cache')
+    } finally {
+      setCacheClearing(false)
+    }
+  }
+
   const fetchData = async () => {
     if (!permissions.isAdmin) return
     setLoading(true)
@@ -294,6 +350,8 @@ export default function AdminPage() {
         const res = await fetch(`${API_BASE}/visits/logs`, { headers: authHeaders(token) })
         const data = await res.json()
         setVisits(Array.isArray(data) ? data : [])
+      } else if (tab === 'cache') {
+        fetchCacheStats()
       }
     } catch (err) {
       console.error(err)
@@ -781,6 +839,15 @@ const handleSavePermissions = async () => {
           >
             <Shield className="h-3.5 w-3.5" /> E-Invoices
           </button>
+          <button
+            onClick={() => setTab('cache')}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
+              tab === 'cache' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+            )}
+          >
+            <Zap className="h-3.5 w-3.5" /> Cache Control
+          </button>
         </div>
 
         {/* Directory/Logs Render Grid */}
@@ -1145,7 +1212,7 @@ const handleSavePermissions = async () => {
                 </div>
               )}
             </div>
-          ) : (
+          ) : tab === 'einvoice' ? (
             <form onSubmit={saveEinvSettings} className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm font-sans text-sm">
               <div>
                 <h3 className="font-extrabold text-foreground uppercase tracking-wider text-xs">E-Invoicing API Settings</h3>
@@ -1240,6 +1307,99 @@ const handleSavePermissions = async () => {
                 </button>
               </div>
             </form>
+          ) : (
+            <div className="space-y-4 font-sans">
+              <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center shrink-0">
+                      <Zap className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-sm text-foreground uppercase tracking-wider">Report & Analytics Cache Control</h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">Manage in-memory caching for date-filtered reports, trial balances, and executive metrics.</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={fetchCacheStats}
+                    disabled={cacheLoading}
+                    className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted rounded-xl transition-colors cursor-pointer"
+                    title="Refresh Cache Stats"
+                  >
+                    <RefreshCw className={cn("h-4 w-4", cacheLoading && "animate-spin")} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-border/50">
+                  <div className="bg-muted/30 border border-border/60 p-3 rounded-xl flex flex-col">
+                    <span className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Total Cached</span>
+                    <span className="text-lg font-black text-foreground mt-1">
+                      {cacheStats ? cacheStats.total_entries : '—'}
+                    </span>
+                  </div>
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 p-3 rounded-xl flex flex-col">
+                    <span className="text-[10px] font-extrabold uppercase text-emerald-600 tracking-wider">Active (Served)</span>
+                    <span className="text-lg font-black text-emerald-600 mt-1">
+                      {cacheStats ? cacheStats.active_entries : '—'}
+                    </span>
+                  </div>
+                  <div className="bg-amber-500/5 border border-amber-500/20 p-3 rounded-xl flex flex-col">
+                    <span className="text-[10px] font-extrabold uppercase text-amber-600 tracking-wider">Expired Entries</span>
+                    <span className="text-lg font-black text-amber-600 mt-1">
+                      {cacheStats ? cacheStats.expired_entries : '—'}
+                    </span>
+                  </div>
+                  <div className="bg-muted/30 border border-border/60 p-3 rounded-xl flex flex-col">
+                    <span className="text-[10px] font-extrabold uppercase text-muted-foreground tracking-wider">Default TTL</span>
+                    <span className="text-lg font-black text-foreground mt-1">
+                      {cacheStats ? `${cacheStats.default_ttl_seconds / 3600} Hours` : '2 Hours'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-3 shadow-sm flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Trash2 className="h-4.5 w-4.5 text-amber-600" />
+                      <h4 className="font-extrabold text-sm text-foreground">Clear Company Cache</h4>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Purges cached report summaries and registers for your active company. Forces reports to recalculate directly from the database on next load.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleClearCache(false)}
+                    disabled={cacheClearing}
+                    className="w-full py-2.5 px-4 bg-amber-500 hover:bg-amber-600 active:scale-[0.98] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer mt-2"
+                  >
+                    {cacheClearing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                    Purge Company Cache
+                  </button>
+                </div>
+
+                <div className="bg-card border border-border rounded-2xl p-5 space-y-3 shadow-sm flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Trash2 className="h-4.5 w-4.5 text-rose-600" />
+                      <h4 className="font-extrabold text-sm text-foreground">Clear System Cache (All Companies)</h4>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Purges all in-memory report cache system-wide across all tenant companies. Use this after major data migrations or Tally syncs.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleClearCache(true)}
+                    disabled={cacheClearing}
+                    className="w-full py-2.5 px-4 bg-rose-600 hover:bg-rose-700 active:scale-[0.98] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer mt-2"
+                  >
+                    {cacheClearing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                    Purge All Companies Cache
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
