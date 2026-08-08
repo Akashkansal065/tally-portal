@@ -14,7 +14,7 @@ from datetime import datetime
 
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
-from app.models.user import User
+from app.models.portal_core import User
 from app.core.config import settings
 
 # ─── Model ───────────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ async def get_recent_visits(
     db: AsyncSession = Depends(get_db),
 ):
     """Return last 15 visits for current user."""
-    from app.models.ledger import MstLedger
+    from app.models.tally_core import MstLedger
     result = await db.execute(
         select(SalesVisit)
         .where(SalesVisit.user_id == user.user_id)
@@ -135,7 +135,7 @@ async def get_user_visit_history(
     db: AsyncSession = Depends(get_db),
 ):
     """Return past check-in visit history for the logged-in user."""
-    from app.models.ledger import MstLedger
+    from app.models.tally_core import MstLedger
     result = await db.execute(
         select(SalesVisit)
         .where(SalesVisit.user_id == user.user_id)
@@ -174,7 +174,7 @@ async def get_visit_logs(
     db: AsyncSession = Depends(get_db),
 ):
     """Admin: get all check-ins with date and salesperson filter."""
-    from app.models.ledger import MstLedger
+    from app.models.tally_core import MstLedger
     from sqlalchemy.orm import selectinload
     
     query = select(SalesVisit).options(selectinload(SalesVisit.user))

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import decode_access_token
-from app.models.user import User, UserSession, UserPermissionOverride, Permission, Module
+from app.models.portal_core import User, UserSession, UserPermissionOverride, Permission, Module
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login")
 
@@ -66,7 +66,7 @@ async def get_current_user(
         try:
             h_cid = int(header_company_id)
             if h_cid != user.company_id:
-                from app.models.user import UserCompanyAccess
+                from app.models.portal_core import UserCompanyAccess
                 acc_stmt = select(UserCompanyAccess).where(
                     UserCompanyAccess.user_id == user.user_id,
                     UserCompanyAccess.company_id == h_cid

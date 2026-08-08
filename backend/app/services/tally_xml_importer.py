@@ -10,10 +10,10 @@ from sqlalchemy import text, func
 
 logger = logging.getLogger("uvicorn.error")
 
-from app.models.ledger import MstGroup, MstLedger
-from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
-from app.models.payment import TrnBill, BillAllocation
-from app.models.user import User, Role, UserCompanyAccess
+from app.models.tally_core import MstGroup, MstLedger
+from app.models.tally_core import TrnVoucher, TrnAccounting, MstVoucherType
+from app.models.tally_core import TrnBill, BillAllocation
+from app.models.portal_core import User, Role, UserCompanyAccess
 from app.core.security import get_password_hash
 
 _checked_tally_users = set()
@@ -150,7 +150,7 @@ def sanitize_xml(xml_data: str) -> str:
 
     return sanitized
 
-from app.models.inventory import MstStockGroup, MstStockCategory, MstUom, MstGodown, MstStockItem
+from app.models.tally_core import MstStockGroup, MstStockCategory, MstUom, MstGodown, MstStockItem
 
 async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstStockGroup:
     stmt = select(MstStockGroup).where(MstStockGroup.company_id == company_id, MstStockGroup.name == name)
@@ -239,12 +239,20 @@ async def get_or_create_godown(db: AsyncSession, company_id: int, name: str, add
     await db.flush()
     return godown
 
-async def get_or_create_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstGroup:
+async def get_or_create_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None, extra_data: dict = None) -> MstGroup:
     # Check if group exists
     stmt = select(MstGroup).where(MstGroup.company_id == company_id, MstGroup.name == name)
     res = await db.execute(stmt)
     group = res.scalars().first()
     if group:
+        if extra_data:
+            if 'alias_name' in extra_data: group.alias_name = extra_data['alias_name']
+            if 'is_addable' in extra_data: group.is_addable = extra_data['is_addable']
+            if 'is_revenue' in extra_data: group.is_revenue = extra_data['is_revenue']
+            if 'is_deemed_positive' in extra_data: group.is_deemed_positive = extra_data['is_deemed_positive']
+            if 'affects_gross_profit' in extra_data: group.affects_gross_profit = extra_data['affects_gross_profit']
+            if 'tally_guid' in extra_data: group.tally_guid = extra_data['tally_guid']
+            if 'tally_alter_id' in extra_data: group.tally_alter_id = extra_data['tally_alter_id']
         return group
         
     # Get parent id
@@ -261,6 +269,15 @@ async def get_or_create_group(db: AsyncSession, company_id: int, name: str, pare
         affects_gross_profit=False,
         is_system_defined=False
     )
+    if extra_data:
+        if 'alias_name' in extra_data: group.alias_name = extra_data['alias_name']
+        if 'is_addable' in extra_data: group.is_addable = extra_data['is_addable']
+        if 'is_revenue' in extra_data: group.is_revenue = extra_data['is_revenue']
+        if 'is_deemed_positive' in extra_data: group.is_deemed_positive = extra_data['is_deemed_positive']
+        if 'affects_gross_profit' in extra_data: group.affects_gross_profit = extra_data['affects_gross_profit']
+        if 'tally_guid' in extra_data: group.tally_guid = extra_data['tally_guid']
+        if 'tally_alter_id' in extra_data: group.tally_alter_id = extra_data['tally_alter_id']
+        
     db.add(group)
     await db.flush()
     return group
@@ -306,8 +323,8 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
     resolved_company_name = "Unknown Company"
     # Extract company name and update/create company model
     try:
-        from app.models.company import Company
-        from app.models.user import UserCompanyAccess
+        from app.models.portal_core import Company
+        from app.models.portal_core import UserCompanyAccess
         
         company_name_node = root.find(".//SVCURRENTCOMPANY")
         company_node = root.find(".//COMPANY")
@@ -349,10 +366,16 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
 
             # 2. If not found by GUID, try finding by name (case-insensitive) mapped to this user
             if not company_obj and company_name:
-                name_stmt = select(Company).join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id).where(
-                    UserCompanyAccess.user_id == user_id,
+                from app.models.portal_core import User
+                name_stmt = select(Company).outerjoin(
+                    UserCompanyAccess, (Company.company_id == UserCompanyAccess.company_id) & (UserCompanyAccess.user_id == user_id)
+                ).outerjoin(
+                    User, (Company.company_id == User.company_id) & (User.user_id == user_id)
+                ).where(
+                    (UserCompanyAccess.user_id == user_id) | (User.user_id == user_id),
                     func.lower(Company.name) == func.lower(company_name)
-                )
+                ).order_by(Company.company_id.asc()) # Prefer primary/older company
+                
                 comp_res = await db.execute(name_stmt)
                 company_obj = comp_res.scalars().first()
             
@@ -515,7 +538,30 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
         if not name:
             continue
         parent_name = group_node.findtext("PARENT")
-        await get_or_create_group(db, company_id, name, parent_name)
+        
+        extra_data = {}
+        guid = group_node.findtext("GUID")
+        if guid: extra_data['tally_guid'] = guid
+        alter_id = group_node.findtext("ALTERID")
+        if alter_id and alter_id.isdigit(): extra_data['tally_alter_id'] = int(alter_id)
+        
+        is_add = group_node.findtext("ISADDABLE")
+        if is_add: extra_data['is_addable'] = (is_add.lower() == 'yes')
+        
+        is_rev = group_node.findtext("ISREVENUE")
+        if is_rev: extra_data['is_revenue'] = (is_rev.lower() == 'yes')
+        
+        is_dp = group_node.findtext("ISDEEMEDPOSITIVE")
+        if is_dp: extra_data['is_deemed_positive'] = (is_dp.lower() == 'yes')
+        
+        affects_gp = group_node.findtext("AFFECTSGROSSPROFIT")
+        if affects_gp: extra_data['affects_gross_profit'] = (affects_gp.lower() == 'yes')
+        
+        lang_name = group_node.findtext("LANGUAGENAME.LIST/NAME.LIST/TYPE/NAME")
+        if lang_name and lang_name != name:
+            extra_data['alias_name'] = lang_name
+            
+        await get_or_create_group(db, company_id, name, parent_name, extra_data)
         imported_groups += 1
         
     await db.flush()
@@ -1308,7 +1354,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 await db.flush()
 
             # Insert TrnInventory
-            from app.models.inventory import TrnInventory
+            from app.models.tally_core import TrnInventory
             stock_entry = TrnInventory(
                 voucher_id=voucher.voucher_id,
                 stock_item_id=item.stock_item_id,

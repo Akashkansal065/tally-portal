@@ -151,17 +151,8 @@ async def auto_sync_all_model_schemas():
         return
 
     # Import all models to ensure they register their tables and columns in Base.metadata
-    import app.models.company
-    import app.models.user
-    import app.models.ledger
-    import app.models.voucher
-    import app.models.sync
-    import app.models.inventory
-    import app.models.gst
-    import app.models.advanced
-    import app.models.currency_tds
-    import app.models.payment
-    import app.models.payment_gateway
+    import app.models.tally_core
+    import app.models.portal_core
     
     async with engine.begin() as conn:
         for table_key, table in Base.metadata.tables.items():

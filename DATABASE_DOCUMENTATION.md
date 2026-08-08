@@ -1,6 +1,37 @@
 # Sneh Distributors - Database Schema & Data Flow Documentation
 
-This document provides a comprehensive technical overview of the MySQL database schema, tables, Entity Relationships (ERD), Data Flow Diagrams (DFD), and field-level purposes.
+This document provides a comprehensive technical overview of the MySQL database schema, tables, Entity Relationships (ERD), Data Flow Diagrams (DFD), and field-level purposes matching Tally Prime Masters.
+
+---
+
+## 🏛️ Tally Prime Masters Reference Mapping (Master Alteration)
+
+| Tally Master Category | Tally Prime Master Item | Database Table (`tally_sync`) | Python Model Class | File Location |
+| :--- | :--- | :--- | :--- | :--- |
+| **Accounting Masters** | `Group` | `account_groups` | `MstGroup` | [`backend/app/models/ledger.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/ledger.py#L18) |
+| **Accounting Masters** | `Ledger` | `ledgers` | `MstLedger` | [`backend/app/models/ledger.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/ledger.py#L36) |
+| **Accounting Masters** | `Cost Category` | `cost_categories` | `MstCostCategory` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L154) |
+| **Accounting Masters** | `Cost Centre` | `cost_centers` | `CostCenter` | [`backend/app/models/ledger.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/ledger.py#L111) |
+| **Accounting Masters** | `Cost Centre Class` | `cost_centre_classes` | `MstCostCentreClass` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L164) |
+| **Accounting Masters** | `Currency` | `currencies` | `MstCurrency` | [`backend/app/models/currency_tds.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/currency_tds.py#L12) |
+| **Accounting Masters** | `Rates of Exchange` | `currency_rates` | `MstCurrencyRate` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L190) |
+| **Accounting Masters** | `Budget` | `budgets` | `MstBudget` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L172) |
+| **Accounting Masters** | `Scenario` | `scenarios` | `MstScenario` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L181) |
+| **Accounting Masters** | `Voucher Type` | `voucher_types` | `MstVoucherType` | [`backend/app/models/voucher.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/voucher.py#L10) |
+| **Accounting Masters** | `Credit Limits` | `ledgers.credit_limit` | `MstLedger.credit_limit` | [`backend/app/models/ledger.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/ledger.py#L67) |
+| **Inventory Masters** | `Stock Group` | `stock_groups` | `MstStockGroup` | [`backend/app/models/inventory.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/inventory.py#L12) |
+| **Inventory Masters** | `Stock Category` | `stock_categories` | `MstStockCategory` | [`backend/app/models/inventory.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/inventory.py#L22) |
+| **Inventory Masters** | `Stock Item` | `stock_items` | `MstStockItem` | [`backend/app/models/inventory.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/inventory.py#L32) |
+| **Inventory Masters** | `Unit` | `units` | `MstUnit` | [`backend/app/models/inventory.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/inventory.py#L65) |
+| **Inventory Masters** | `Godown` | `godowns` | `MstGodown` | [`backend/app/models/inventory.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/inventory.py#L74) |
+| **Inventory Masters** | `Reorder Level (Stock Item)` | `stock_items.reorder_level` | `MstStockItem.reorder_level`| [`backend/app/models/inventory.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/inventory.py#L48) |
+| **Payroll Masters** | `Employee Category` | `employee_categories` | `MstEmployeeCategory` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L201) |
+| **Payroll Masters** | `Employee Group` | `employee_groups` | `MstEmployeeGroup` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L209) |
+| **Payroll Masters** | `Employee` | `employees` | `Employee` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L9) |
+| **Payroll Masters** | `Attendance/Production Type` | `attendance_types` | `MstAttendanceType` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L218) |
+| **Payroll Masters** | `Pay Heads` | `pay_heads` / `salary_components` | `MstPayHead` / `SalaryComponent` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L227) |
+| **Payroll Masters** | `Define Salary` | `salary_structures` | `SalaryStructure` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L50) |
+| **Statutory Masters** | `GST Registration` | `gst_registrations` | `MstGstRegistration` | [`backend/app/models/advanced.py`](file:///Users/akashkansal/Documents/Github/MyTally/backend/app/models/advanced.py#L238) |
 
 ---
 

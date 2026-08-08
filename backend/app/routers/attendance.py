@@ -14,7 +14,7 @@ import json
 
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
-from app.models.user import User, Role
+from app.models.portal_core import User, Role
 from app.core.config import settings
 
 # ─── Model ───────────────────────────────────────────────────────────────────

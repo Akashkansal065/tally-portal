@@ -15,10 +15,10 @@ from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.core.config import settings
 from app.routers.admin import require_admin
-from app.models.company import Company
-from app.models.ledger import MstLedger, MstGroup
-from app.models.voucher import TrnVoucher, TrnAccounting
-from app.models.sync import SyncQueue
+from app.models.portal_core import Company
+from app.models.tally_core import MstLedger, MstGroup
+from app.models.tally_core import TrnVoucher, TrnAccounting
+from app.models.portal_core import SyncQueue
 from app.services.tally_xml_importer import import_tally_xml
 
 logger = logging.getLogger("uvicorn.error")
@@ -285,9 +285,12 @@ def _post_to_tally_sync(url: str, xml_payload: str, timeout: int = 5) -> str:
         return ""
 
     try:
-        return bytes(raw_bytes).decode('utf-16')
+        return bytes(raw_bytes).decode('utf-8')
     except (UnicodeDecodeError, UnicodeError):
-        return bytes(raw_bytes).decode('utf-8', errors='ignore')
+        try:
+            return bytes(raw_bytes).decode('utf-16')
+        except Exception:
+            return bytes(raw_bytes).decode('latin1', errors='replace')
 
 
 def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str, action: str) -> str:
@@ -649,6 +652,132 @@ def check_tally_json_success(response_str: str) -> bool:
     return "<CREATED>1</CREATED>" in response_str or "<ALTERED>1</ALTERED>" in response_str or "<DELETED>1</DELETED>" in response_str or '"status": "1"' in response_str
 
 
+
+def build_group_json_payload(group, parent_name: str, company_name: str, action: str) -> dict:
+    act_lower = action.lower()
+    if act_lower == "delete":
+        return {
+            "static_variables": [
+                {"name": "svMstImportFormat", "value": "jsonex"},
+                {"name": "svCurrentCompany", "value": company_name}
+            ],
+            "tallymessage": [
+                {
+                    "metadata": {
+                        "type": "Group",
+                        "action": "delete",
+                        "name": group.name
+                    }
+                }
+            ]
+        }
+    
+    group_data = {
+        "metadata": {
+            "type": "Group",
+            "action": act_lower,
+            "name": group.name
+        },
+        "name": group.name,
+        "parent": parent_name,
+        "isaddable": "Yes" if getattr(group, 'is_addable', True) else "No",
+        "isrevenue": "Yes" if getattr(group, 'is_revenue', False) else "No",
+        "isdeemedpositive": "Yes" if getattr(group, 'is_deemed_positive', False) else "No",
+        "affectsGrossprofit": "Yes" if getattr(group, 'affects_gross_profit', False) else "No",
+        "issubledger": "Yes" if getattr(group, 'is_subledger', False) else "No",
+        "isbillwiseon": "Yes" if getattr(group, 'is_billwise_on', False) else "No",
+        "usedforcalculation": "Yes" if getattr(group, 'used_for_calculation', False) else "No",
+        "sortposition": str(getattr(group, 'sort_position', 1000))
+    }
+    
+    if getattr(group, 'method_to_allocate', None) and group.method_to_allocate != "Not Applicable":
+        group_data["methodtoallocate"] = group.method_to_allocate
+        
+    gst_list = getattr(group, 'gst_details', [])
+    if gst_list:
+        hsn_list = []
+        rate_list = []
+        for gst in sorted(gst_list, key=lambda x: x.applicable_from):
+            app_from = gst.applicable_from.strftime("%Y%m%d")
+            
+            # HSN block
+            hsn_obj = {
+                "applicablefrom": app_from,
+                "hsncode": gst.hsn_sac or "",
+                "hsnsacdetails": gst.hsn_sac_details or "As per Company/Group"
+            }
+            hsn_list.append(hsn_obj)
+            
+            # GST Rate block
+            rate_obj = {
+                "applicablefrom": app_from,
+                "gstrate": str(gst.gst_rate) if gst.gst_rate else "0",
+                "taxability": gst.taxability_type or "Unknown",
+                "gstratedetails": gst.gst_rate_details or "As per Company/Group"
+            }
+            rate_list.append(rate_obj)
+            
+        group_data["htchsnacdetails.list"] = hsn_list
+        group_data["htcgstdetails.list"] = rate_list
+    
+    if getattr(group, 'alias_name', None):
+        group_data["languagename"] = [
+            {
+                "name": [
+                    {"metadata": True, "type": "String"},
+                    group.name,
+                    group.alias_name
+                ],
+                "languageid": {"type": "Number", "value": "1033"}
+            }
+        ]
+        
+    return {
+        "static_variables": [
+            {"name": "svMstImportFormat", "value": "jsonex"},
+            {"name": "svCurrentCompany", "value": company_name}
+        ],
+        "tallymessage": [group_data]
+    }
+
+async def try_push_group_realtime(group_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    try:
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            return False
+
+        g_stmt = select(MstGroup).options(
+            selectinload(MstGroup.parent),
+            selectinload(MstGroup.gst_details)
+        ).where(MstGroup.group_id == group_id)
+        g_res = await db.execute(g_stmt)
+        group = g_res.scalars().first()
+        if not group:
+            return False
+
+        parent_name = group.parent.name if group.parent else ""
+        
+        c_stmt = select(Company).where(Company.company_id == group.company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        json_payload = build_group_json_payload(group, parent_name, comp_name, action)
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY JSON PUSH (group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{json.dumps(json_payload, indent=2)}\n=======================================================\n")
+
+        resp_str = await asyncio.to_thread(_post_json_to_tally_sync, tally_url, json_payload, 5)
+
+        if check_tally_json_success(resp_str):
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            await db.execute(sq_stmt)
+            await db.commit()
+            return True
+            
+    except Exception as e:
+        logger.warning(f"Real-time Tally JSON push exception for group_id={group_id}: {str(e)}", exc_info=True)
+    return False
+
 async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: str, db: AsyncSession):
     """
     Attempts real-time push to Tally Prime on the fly using JSON API (Tally_Ledger_apis.md schema).
@@ -712,7 +841,7 @@ async def run_once_sync_background(user_id: int):
     
     async with AsyncSessionLocal() as db:
         try:
-            from app.models.user import UserCompanyAccess
+            from app.models.portal_core import UserCompanyAccess
             stmt = select(SyncQueue).join(UserCompanyAccess, SyncQueue.company_id == UserCompanyAccess.company_id).where(
                 UserCompanyAccess.user_id == user_id,
                 SyncQueue.is_processed == False
@@ -919,7 +1048,7 @@ async def run_once_sync_background(user_id: int):
                     max_voucher_alter = 0
                     max_stock_item_alter = 0
                     if company_name:
-                        from app.models.inventory import MstStockItem
+                        from app.models.tally_core import MstStockItem
                         comp_stmt = select(Company.company_id).where(Company.name == company_name)
                         comp_id = (await db.execute(comp_stmt)).scalar()
                         if comp_id:
@@ -1144,30 +1273,53 @@ async def run_once_sync_background(user_id: int):
                     for name, xml_payload in queries.items():
                         try:
                             resp_xml = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_payload)
-                            if not resp_xml or "<ENVELOPE>" not in resp_xml:
+                            if not resp_xml:
+                                logger.warning(f"[SYNC WARNING] Empty response from Tally for collection '{name}'. Skipping.")
+                                continue
+                            if "<ENVELOPE>" not in resp_xml:
+                                logger.warning(f"[SYNC WARNING] Invalid response (no <ENVELOPE> tag) from Tally for collection '{name}'. Response snippet: {resp_xml[:200]}...")
                                 continue
                             
+                            logger.info(f"[SYNC INFO] Received {len(resp_xml)} bytes from Tally for collection '{name}'.")
                             res = await import_tally_xml(resp_xml, db, user_id, override_company_name=company_name)
                             
                             if res.get("status") == "success":
-                                total_imported["groups"] += res.get("imported_groups", 0)
-                                total_imported["ledgers"] += res.get("imported_ledgers", 0)
-                                total_imported["vouchers"] += res.get("imported_vouchers", 0)
-                                total_imported["stock_groups"] += res.get("imported_stock_groups", 0)
-                                total_imported["uoms"] += res.get("imported_uoms", 0)
-                                total_imported["godowns"] += res.get("imported_godowns", 0)
-                                total_imported["stock_categories"] += res.get("imported_stock_categories", 0)
-                                total_imported["stock_items"] += res.get("imported_stock_items", 0)
+                                c_groups = res.get("imported_groups", 0)
+                                c_ledgers = res.get("imported_ledgers", 0)
+                                c_vouchers = res.get("imported_vouchers", 0)
+                                c_stock_groups = res.get("imported_stock_groups", 0)
+                                c_uoms = res.get("imported_uoms", 0)
+                                c_godowns = res.get("imported_godowns", 0)
+                                c_stock_cats = res.get("imported_stock_categories", 0)
+                                c_stock_items = res.get("imported_stock_items", 0)
+                                
+                                logger.info(
+                                    f"[SYNC SUCCESS] Collection '{name}' imported successfully. "
+                                    f"Counts - Groups: {c_groups}, Ledgers: {c_ledgers}, Vouchers: {c_vouchers}, "
+                                    f"StockItems: {c_stock_items}"
+                                )
+                                
+                                total_imported["groups"] += c_groups
+                                total_imported["ledgers"] += c_ledgers
+                                total_imported["vouchers"] += c_vouchers
+                                total_imported["stock_groups"] += c_stock_groups
+                                total_imported["uoms"] += c_uoms
+                                total_imported["godowns"] += c_godowns
+                                total_imported["stock_categories"] += c_stock_cats
+                                total_imported["stock_items"] += c_stock_items
                                 
                                 res_cid = res.get("company_id")
                                 if res_cid:
                                     clear_company_cache(res_cid)
+                            else:
+                                err_msg = res.get("message", "Unknown error")
+                                logger.error(f"[SYNC ERROR] Failed to import collection '{name}'. Error: {err_msg}")
                         except Exception as e:
-                            logger.error(f"Background Inbound sync failed for collection {name}: {str(e)}", exc_info=True)
+                            logger.error(f"[SYNC FATAL] Exception while processing collection '{name}': {str(e)}", exc_info=True)
 
-            logger.info(f"Background run-once sync completed for user_id={user_id}: {total_imported}")
+            logger.info(f"[SYNC COMPLETED] Background run-once sync finished for user_id={user_id}: {total_imported}")
         except Exception as e:
-            logger.error(f"Background run-once sync failed with exception for user_id={user_id}: {str(e)}", exc_info=True)
+            logger.error(f"[SYNC FATAL] Background run-once sync failed with exception for user_id={user_id}: {str(e)}", exc_info=True)
 
 
 @router.post("/run-once")

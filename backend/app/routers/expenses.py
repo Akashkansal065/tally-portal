@@ -13,7 +13,7 @@ from datetime import datetime, date
 
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
-from app.models.user import User
+from app.models.portal_core import User
 from app.core.config import settings
 
 # ─── Model ───────────────────────────────────────────────────────────────────

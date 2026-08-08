@@ -3,22 +3,73 @@ from typing import Optional, List
 from decimal import Decimal
 from datetime import datetime
 
+from datetime import date
+from enum import Enum
+
+class AccountGroupNature(str, Enum):
+    ASSET = 'Asset'
+    LIABILITY = 'Liability'
+    INCOME = 'Income'
+    EXPENSE = 'Expense'
+
+class GroupGstDetailSchema(BaseModel):
+    applicable_from: date
+    hsn_sac_details: Optional[str] = None
+    hsn_sac: Optional[str] = None
+    gst_rate_details: Optional[str] = None
+    taxability_type: Optional[str] = None
+    gst_rate: Optional[float] = None
+
 class AccountGroupBase(BaseModel):
     name: str
     parent_group_id: Optional[int] = None
     nature: str  # 'Asset', 'Liability', 'Income', 'Expense'
     affects_gross_profit: bool = False
+    alias_name: Optional[str] = None
+    is_addable: bool = True
+    is_revenue: bool = False
+    
+    # Advanced Settings
+    is_subledger: bool = False
+    is_billwise_on: bool = False
+    used_for_calculation: bool = False
+    method_to_allocate: Optional[str] = None
 
 class AccountGroupCreate(AccountGroupBase):
-    pass
+    gst_details: Optional[List[GroupGstDetailSchema]] = []
+
+class AccountGroupUpdate(AccountGroupBase):
+    name: Optional[str] = None
+    nature: Optional[str] = None
+    gst_details: Optional[List[GroupGstDetailSchema]] = None
 
 class AccountGroupResponse(AccountGroupBase):
     group_id: int
     company_id: int
     is_system_defined: bool
-    
+    is_deemed_positive: bool = False
+    sort_position: int = 1000
+    gst_details: Optional[List[GroupGstDetailSchema]] = []
+
     class Config:
         from_attributes = True
+
+class AccountGroupTreeNode(AccountGroupResponse):
+    children: List['AccountGroupTreeNode'] = []
+
+    class Config:
+        from_attributes = True
+
+class BankDetailSchema(BaseModel):
+    favouring_name: Optional[str] = None
+    transaction_type: Optional[str] = None
+    cross_using: Optional[str] = None
+    account_number: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    bank_name: Optional[str] = None
+    branch_name: Optional[str] = None
+    bilty_code: Optional[str] = None
+    upi_id: Optional[str] = None
 
 class LedgerBase(BaseModel):
     name: str

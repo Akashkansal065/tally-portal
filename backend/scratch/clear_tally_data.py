@@ -8,17 +8,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.core.database import engine, Base
 # Import all models to ensure complete metadata registration
-import app.models.advanced
-import app.models.company
-import app.models.currency_tds
-import app.models.gst
-import app.models.inventory
-import app.models.ledger
-import app.models.payment
-import app.models.payment_gateway
-import app.models.sync
-import app.models.user
-import app.models.voucher
+import app.models.tally_core
+import app.models.portal_core
 
 # Core system tables to preserve (user accounts, roles, permissions, registered companies)
 PRESERVED_TABLES = {

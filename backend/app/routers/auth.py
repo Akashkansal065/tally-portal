@@ -10,8 +10,8 @@ from app.core.database import get_db
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_access_token
 from app.core.permissions import get_current_user, oauth2_scheme, get_user_permission_toggles
 from app.core.seed import seed_company_defaults
-from app.models.company import Company
-from app.models.user import User, Role, UserSession
+from app.models.portal_core import Company
+from app.models.portal_core import User, Role, UserSession
 from app.schemas.user import UserLogin, Token, UserResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -339,7 +339,7 @@ async def get_me(
     }
 
 
-from app.models.user import UserCompanyAccess
+from app.models.portal_core import UserCompanyAccess
 from pydantic import BaseModel
 
 class SwitchCompanyRequest(BaseModel):
@@ -361,7 +361,7 @@ async def switch_active_company(
     access = query.scalars().first()
     
     if not access:
-        from app.models.user import Role
+        from app.models.portal_core import Role
         # Admins have global access to all registered companies
         if user.role and user.role.name.lower() == "admin":
             comp_check = await db.execute(select(Company).where(Company.company_id == payload.company_id))

@@ -8,13 +8,11 @@ from decimal import Decimal
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
-from app.models.user import User
-from app.models.ledger import MstLedger
-from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
-from app.models.advanced import (
-    Employee, SalaryComponent, SalaryStructure, SalaryStructureComponent,
-    PayrollPeriod, Payslip, PayslipComponent, PosPayment, EinvoiceMetadata
-)
+from app.models.portal_core import User
+from app.models.tally_core import MstLedger
+from app.models.tally_core import TrnVoucher, TrnAccounting, MstVoucherType
+from app.models.tally_core import Employee, PosPayment
+from app.models.portal_core import SalaryComponent, SalaryStructure, SalaryStructureComponent, PayrollPeriod, Payslip, PayslipComponent, EinvoiceMetadata
 from app.schemas.advanced import (
     EmployeeCreate, EmployeeResponse,
     SalaryComponentCreate, SalaryComponentResponse,

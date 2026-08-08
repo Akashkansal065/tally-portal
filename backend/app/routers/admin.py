@@ -8,8 +8,8 @@ from pydantic import BaseModel
 from app.core.database import get_db
 from app.core.permissions import get_current_user, get_user_permission_toggles
 from app.core.security import get_password_hash
-from app.models.user import User, Role, Permission, Module, UserPermissionOverride
-from app.models.voucher import AuditLog
+from app.models.portal_core import User, Role, Permission, Module, UserPermissionOverride
+from app.models.portal_core import AuditLog
 
 router = APIRouter(prefix="/admin", tags=["Admin Panel"])
 
@@ -333,8 +333,8 @@ async def update_permissions(
     return {"detail": "Permissions matrix updated successfully."}
 
 
-from app.models.company import Company
-from app.models.user import UserCompanyAccess, UserPermissionOverride
+from app.models.portal_core import Company
+from app.models.portal_core import UserCompanyAccess, UserPermissionOverride
 
 class CompanyResponse(BaseModel):
     company_id: int

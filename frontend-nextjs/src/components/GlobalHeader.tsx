@@ -300,7 +300,12 @@ export function GlobalHeader() {
                 <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
               )}
               {permissions.showLedger && (
-                <DrawerLink href="/ledgers" icon={BookOpen} label="Ledgers" onClick={() => setDrawerOpen(false)} />
+                <>
+                  <DrawerLink href="/ledgers" icon={BookOpen} label="Ledgers" onClick={() => setDrawerOpen(false)} />
+                  {permissions.showLedger && (
+                    <DrawerLink href="/ledgers/groups" icon={BookOpen} label="Group Master" onClick={() => setDrawerOpen(false)} />
+                  )}
+                </>
               )}
               {permissions.showStocks && (
                 <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />

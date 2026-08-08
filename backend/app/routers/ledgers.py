@@ -4,16 +4,20 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List
 from decimal import Decimal
-from sqlalchemy import func
+from sqlalchemy import func, delete, update
+import logging
+
+logger = logging.getLogger("app.routers.ledgers")
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, get_effective_permission
-from app.models.user import User
-from app.models.sync import SyncQueue
-from app.models.ledger import MstGroup, MstLedger, MstLedgerBankDetail, CostCenter, GstRegistrationType, BankTransactionType
-from app.models.voucher import TrnAccounting
+from app.models.portal_core import User
+from app.models.portal_core import SyncQueue
+from app.models.tally_core import MstGroup, MstLedger, MstLedgerBankDetail, CostCenter, BankTransactionType
+from app.models.portal_core import GstRegistrationType
+from app.models.tally_core import TrnAccounting
 from app.schemas.ledger import (
-    AccountGroupCreate, AccountGroupResponse,
+    AccountGroupCreate, AccountGroupResponse, AccountGroupUpdate, AccountGroupTreeNode,
     LedgerCreate, LedgerResponse,
     CostCenterCreate, CostCenterResponse,
     GstRegistrationTypeResponse, BankTransactionTypeResponse
@@ -85,9 +89,59 @@ async def get_groups(
     db: AsyncSession = Depends(get_db)
 ):
     query = await db.execute(
-        select(MstGroup).where(MstGroup.company_id == user.company_id)
+        select(MstGroup).options(
+            selectinload(MstGroup.gst_details)
+        ).where(MstGroup.company_id == user.company_id)
     )
     return query.scalars().all()
+
+@router.get("/groups/tree", response_model=List[AccountGroupTreeNode])
+async def get_groups_tree(
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    query = await db.execute(
+        select(MstGroup).options(
+            selectinload(MstGroup.gst_details)
+        ).where(MstGroup.company_id == user.company_id)
+    )
+    groups = query.scalars().all()
+    
+    # Build tree
+    group_dict = {
+        g.group_id: AccountGroupTreeNode(**AccountGroupResponse.model_validate(g).model_dump(), children=[])
+        for g in groups
+    }
+    tree = []
+    
+    for g in groups:
+        node = group_dict[g.group_id]
+        if g.parent_group_id and g.parent_group_id in group_dict:
+            group_dict[g.parent_group_id].children.append(node)
+        else:
+            tree.append(node)
+            
+    return tree
+
+@router.get("/groups/{group_id}", response_model=AccountGroupResponse)
+async def get_group(
+    group_id: int,
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    query = await db.execute(
+        select(MstGroup).options(
+            selectinload(MstGroup.gst_details)
+        ).where(
+            MstGroup.group_id == group_id,
+            MstGroup.company_id == user.company_id
+        )
+    )
+    group = query.scalars().first()
+    if not group:
+        logger.warning(f"Failed to fetch group {group_id} for user {user.user_id}: Group not found.")
+        raise HTTPException(status_code=404, detail="Group not found.")
+    return group
 
 @router.post("/groups", response_model=AccountGroupResponse)
 async def create_group(
@@ -95,6 +149,19 @@ async def create_group(
     user: User = Depends(require_permission("ledgers", "create")),
     db: AsyncSession = Depends(get_db)
 ):
+    logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to create group: {req.name}")
+    
+    # Duplicate check
+    dup_query = await db.execute(
+        select(MstGroup).where(
+            MstGroup.name == req.name,
+            MstGroup.company_id == user.company_id
+        )
+    )
+    if dup_query.scalars().first():
+        logger.warning(f"User {user.user_id} failed to create group: Name '{req.name}' already exists.")
+        raise HTTPException(status_code=400, detail="A group with this name already exists in the company.")
+
     if req.parent_group_id:
         parent_query = await db.execute(
             select(MstGroup).where(
@@ -102,10 +169,18 @@ async def create_group(
                 MstGroup.company_id == user.company_id
             )
         )
-        if not parent_query.scalars().first():
+        parent_grp = parent_query.scalars().first()
+        if not parent_grp:
+            logger.warning(f"User {user.user_id} failed to create group: Parent ID {req.parent_group_id} not found.")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Parent group not found in this company."
+            )
+        if not parent_grp.is_addable:
+            logger.warning(f"User {user.user_id} failed to create group: Parent ID {req.parent_group_id} is not addable.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot add sub-groups under this parent group."
             )
             
     group = MstGroup(
@@ -114,12 +189,211 @@ async def create_group(
         parent_group_id=req.parent_group_id,
         nature=req.nature,
         affects_gross_profit=req.affects_gross_profit,
+        alias_name=req.alias_name,
+        is_addable=req.is_addable,
+        is_revenue=req.is_revenue,
+        is_subledger=req.is_subledger,
+        is_billwise_on=req.is_billwise_on,
+        used_for_calculation=req.used_for_calculation,
+        method_to_allocate=req.method_to_allocate,
         is_system_defined=False
     )
     db.add(group)
+    await db.flush()
+    
+    if req.gst_details:
+        from app.models.tally_core import MstGroupGstDetails
+        for gst in req.gst_details:
+            gst_row = MstGroupGstDetails(
+                group_id=group.group_id,
+                applicable_from=gst.applicable_from,
+                hsn_sac_details=gst.hsn_sac_details,
+                hsn_sac=gst.hsn_sac,
+                gst_rate_details=gst.gst_rate_details,
+                taxability_type=gst.taxability_type,
+                gst_rate=gst.gst_rate
+            )
+            db.add(gst_row)
+        await db.flush()
+    
+    # Sync Queue
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Group",
+        record_id=group.group_id,
+        action="Create",
+    )
+    db.add(sync_item)
     await db.commit()
     await db.refresh(group)
+    
+    from app.routers.sync import try_push_group_realtime
+    await try_push_group_realtime(group.group_id, sync_item.sync_id, "Create", db)
+    
+    logger.info(f"Group created successfully: {group.name} (ID: {group.group_id})")
     return group
+
+@router.put("/groups/{group_id}", response_model=AccountGroupResponse)
+async def update_group(
+    group_id: int,
+    req: AccountGroupUpdate,
+    user: User = Depends(require_permission("ledgers", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to update group ID {group_id}")
+    
+    query = await db.execute(
+        select(MstGroup).where(
+            MstGroup.group_id == group_id,
+            MstGroup.company_id == user.company_id
+        )
+    )
+    group = query.scalars().first()
+    if not group:
+        logger.warning(f"User {user.user_id} failed to update group ID {group_id}: Not found.")
+        raise HTTPException(status_code=404, detail="Group not found.")
+        
+    if group.is_system_defined and req.nature != group.nature:
+        logger.warning(f"User {user.user_id} failed to update group ID {group_id}: Cannot change nature of system group.")
+        raise HTTPException(status_code=400, detail="Cannot change nature of system-defined groups.")
+        
+    # Duplicate name check
+    if req.name != group.name:
+        dup_query = await db.execute(
+            select(MstGroup).where(
+                MstGroup.name == req.name,
+                MstGroup.company_id == user.company_id
+            )
+        )
+        if dup_query.scalars().first():
+            logger.warning(f"User {user.user_id} failed to update group ID {group_id}: Name '{req.name}' already exists.")
+            raise HTTPException(status_code=400, detail="A group with this name already exists.")
+
+    if req.parent_group_id:
+        if req.parent_group_id == group.group_id:
+            logger.warning(f"User {user.user_id} failed to update group ID {group_id}: Self parent assignment.")
+            raise HTTPException(status_code=400, detail="A group cannot be its own parent.")
+            
+        parent_query = await db.execute(
+            select(MstGroup).where(
+                MstGroup.group_id == req.parent_group_id,
+                MstGroup.company_id == user.company_id
+            )
+        )
+        parent_grp = parent_query.scalars().first()
+        if not parent_grp:
+            logger.warning(f"User {user.user_id} failed to update group ID {group_id}: Parent ID {req.parent_group_id} not found.")
+            raise HTTPException(status_code=400, detail="Parent group not found.")
+            
+        # Circular reference check
+        curr_parent = parent_grp.parent_group_id
+        while curr_parent is not None:
+            if curr_parent == group.group_id:
+                logger.warning(f"User {user.user_id} failed to update group ID {group_id}: Circular reference detected.")
+                raise HTTPException(status_code=400, detail="Circular parent reference detected.")
+            parent_query2 = await db.execute(select(MstGroup).where(MstGroup.group_id == curr_parent))
+            p2 = parent_query2.scalars().first()
+            curr_parent = p2.parent_group_id if p2 else None
+            
+    group.name = req.name
+    group.parent_group_id = req.parent_group_id
+    group.nature = req.nature
+    group.affects_gross_profit = req.affects_gross_profit
+    group.alias_name = req.alias_name
+    group.is_addable = req.is_addable
+    group.is_revenue = req.is_revenue
+    group.is_subledger = req.is_subledger
+    group.is_billwise_on = req.is_billwise_on
+    group.used_for_calculation = req.used_for_calculation
+    group.method_to_allocate = req.method_to_allocate
+    
+    if req.gst_details is not None:
+        from app.models.tally_core import MstGroupGstDetails
+        await db.execute(delete(MstGroupGstDetails).where(MstGroupGstDetails.group_id == group_id))
+        for gst in req.gst_details:
+            gst_row = MstGroupGstDetails(
+                group_id=group_id,
+                applicable_from=gst.applicable_from,
+                hsn_sac_details=gst.hsn_sac_details,
+                hsn_sac=gst.hsn_sac,
+                gst_rate_details=gst.gst_rate_details,
+                taxability_type=gst.taxability_type,
+                gst_rate=gst.gst_rate
+            )
+            db.add(gst_row)
+            
+    await db.flush()
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Group",
+        record_id=group.group_id,
+        action="Alter",
+    )
+    db.add(sync_item)
+    await db.commit()
+    await db.refresh(group)
+    
+    from app.routers.sync import try_push_group_realtime
+    await try_push_group_realtime(group.group_id, sync_item.sync_id, "Alter", db)
+    
+    logger.info(f"Group updated successfully: {group.name} (ID: {group.group_id})")
+    return group
+
+@router.delete("/groups/{group_id}")
+async def delete_group(
+    group_id: int,
+    user: User = Depends(require_permission("ledgers", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to delete group ID {group_id}")
+    
+    query = await db.execute(
+        select(MstGroup).where(
+            MstGroup.group_id == group_id,
+            MstGroup.company_id == user.company_id
+        )
+    )
+    group = query.scalars().first()
+    if not group:
+        logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: Not found.")
+        raise HTTPException(status_code=404, detail="Group not found.")
+        
+    if group.is_system_defined:
+        logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: System-defined group.")
+        raise HTTPException(status_code=400, detail="Cannot delete system-defined groups.")
+        
+    # Check for child groups
+    child_group_query = await db.execute(select(MstGroup).where(MstGroup.parent_group_id == group_id))
+    if child_group_query.scalars().first():
+        logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: Has child groups.")
+        raise HTTPException(status_code=400, detail="Cannot delete group because it has child sub-groups.")
+        
+    # Check for child ledgers
+    child_ledger_query = await db.execute(select(MstLedger).where(MstLedger.group_id == group_id))
+    if child_ledger_query.scalars().first():
+        logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: Has attached ledgers.")
+        raise HTTPException(status_code=400, detail="Cannot delete group because it is assigned to one or more ledgers.")
+        
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Group",
+        record_id=group.group_id,
+        action="Delete",
+    )
+    db.add(sync_item)
+    await db.flush()
+    
+    from app.routers.sync import try_push_group_realtime
+    await try_push_group_realtime(group.group_id, sync_item.sync_id, "Delete", db)
+    
+    await db.delete(group)
+    await db.commit()
+    
+    logger.info(f"Group deleted successfully: {group.name} (ID: {group_id})")
+    
+    return {"detail": "Group deleted successfully."}
 
 # --- Ledgers ---
 
@@ -534,7 +808,7 @@ async def get_ledger_statement(
     if cached is not None:
         return cached
 
-    from app.models.ledger import MstLedger
+    from app.models.tally_core import MstLedger
     ledger_stmt = select(MstLedger).options(selectinload(MstLedger.group)).where(
         MstLedger.ledger_id == ledger_id,
         MstLedger.company_id == user.company_id
@@ -642,7 +916,7 @@ async def get_ledger_statement(
         "total_opening_diff_type": diff_type,
     }
 
-    from app.models.voucher import TrnAccounting, TrnVoucher, MstVoucherType
+    from app.models.tally_core import TrnAccounting, TrnVoucher, MstVoucherType
     
     stmt = select(
         TrnAccounting.voucher_id,

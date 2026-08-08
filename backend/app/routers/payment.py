@@ -7,10 +7,11 @@ from datetime import date, datetime
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
-from app.models.user import User
-from app.models.ledger import MstLedger
-from app.models.payment import TrnBill, BillAllocation, ShopPayment
-from app.models.voucher import TrnVoucher, TrnAccounting
+from app.models.portal_core import User
+from app.models.tally_core import MstLedger
+from app.models.tally_core import TrnBill, BillAllocation
+from app.models.portal_core import ShopPayment
+from app.models.tally_core import TrnVoucher, TrnAccounting
 from app.schemas.payment import (
     BillResponse, BillAllocationCreate, BillAllocationResponse,
     OutstandingBill, AgingBucket

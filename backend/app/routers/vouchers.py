@@ -6,15 +6,16 @@ from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import json
 
-from app.models.payment import TrnBill
+from app.models.tally_core import TrnBill
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
-from app.models.user import User, Module
-from app.models.voucher import MstVoucherType, TrnVoucher, TrnAccounting, ApprovalRule, ApprovalRequest, AuditLog
-from app.models.ledger import MstLedger
-from app.models.sync import SyncQueue
+from app.models.portal_core import User, Module
+from app.models.tally_core import MstVoucherType, TrnVoucher, TrnAccounting
+from app.models.portal_core import ApprovalRule, ApprovalRequest, AuditLog
+from app.models.tally_core import MstLedger
+from app.models.portal_core import SyncQueue
 from app.schemas.voucher import (
     VoucherCreate, VoucherResponse, VoucherListResponse,
     ApprovalRuleCreate, ApprovalRuleResponse,
@@ -393,7 +394,7 @@ async def get_voucher_detail(
             "entry_type": "Debit" if debit > 0 else "Credit",
         })
 
-    from app.models.inventory import TrnInventory, MstStockItem
+    from app.models.tally_core import TrnInventory, MstStockItem
     inv_stmt = select(TrnInventory).options(
         selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit)
     ).where(TrnInventory.voucher_id == voucher_id)
@@ -467,12 +468,12 @@ async def get_voucher_detail(
             "amount": amt
         })
 
-    from app.models.company import Company
+    from app.models.portal_core import Company
     comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
     company = comp_q.scalars().first()
     active_env = company.einvoice_env if company else "mock"
 
-    from app.models.advanced import EinvoiceMetadata
+    from app.models.portal_core import EinvoiceMetadata
     meta_stmt = select(EinvoiceMetadata).where(
         EinvoiceMetadata.voucher_id == voucher_id,
         EinvoiceMetadata.environment == active_env

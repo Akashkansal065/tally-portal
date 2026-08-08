@@ -6,9 +6,10 @@ from datetime import datetime, date
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
-from app.models.user import User
-from app.models.ledger import Currency, MstLedger
-from app.models.currency_tds import ExchangeRate, TdsSection, LowerDeductionCertificate, TdsTcsEntry
+from app.models.portal_core import User
+from app.models.tally_core import MstLedger
+from app.models.portal_core import Currency
+from app.models.portal_core import ExchangeRate, TdsSection, LowerDeductionCertificate, TdsTcsEntry
 from app.schemas.currency_tds import (
     CurrencyCreate, CurrencyResponse,
     ExchangeRateCreate, ExchangeRateResponse,

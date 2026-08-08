@@ -9,8 +9,8 @@ from datetime import datetime, date
 from app.core.database import get_db
 from app.core.security import decode_access_token, get_password_hash
 from app.core.permissions import get_current_user
-from app.models.company import Company, FinancialYear
-from app.models.user import User, Role, UserCompanyAccess
+from app.models.portal_core import Company, FinancialYear
+from app.models.portal_core import User, Role, UserCompanyAccess
 from app.schemas.user import UserResponse
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
@@ -293,7 +293,7 @@ async def update_company(
             raise HTTPException(status_code=400, detail="Invalid books_begin_date format. Use YYYY-MM-DD.")
 
     # 4. Queue Outbound Sync Item for Tally Prime
-    from app.models.sync import SyncQueue
+    from app.models.portal_core import SyncQueue
     sync_item = SyncQueue(
         company_id=company_id,
         record_type="Company",

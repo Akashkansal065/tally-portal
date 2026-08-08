@@ -13,7 +13,7 @@ from datetime import datetime
 
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
-from app.models.user import User
+from app.models.portal_core import User
 from app.core.config import settings
 
 # ─── Models ──────────────────────────────────────────────────────────────────
@@ -73,8 +73,8 @@ async def create_order(
     user: User = Depends(require_permission("orders", "create")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models.ledger import MstLedger
-    from app.models.inventory import MstStockItem
+    from app.models.tally_core import MstLedger
+    from app.models.tally_core import MstStockItem
 
     if not req.ledger_id and not req.custom_customer_name:
         raise HTTPException(status_code=400, detail="Either ledger_id or custom_customer_name is required.")
@@ -128,8 +128,8 @@ async def list_orders(
     user: User = Depends(require_permission("orders", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models.ledger import MstLedger
-    from app.models.inventory import MstStockItem
+    from app.models.tally_core import MstLedger
+    from app.models.tally_core import MstStockItem
     from sqlalchemy.orm import selectinload
 
     result = await db.execute(
@@ -177,8 +177,8 @@ async def list_all_orders(
     current_user: User = Depends(require_permission("admin", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models.ledger import MstLedger
-    from app.models.inventory import MstStockItem
+    from app.models.tally_core import MstLedger
+    from app.models.tally_core import MstStockItem
     from sqlalchemy.orm import selectinload
 
     result = await db.execute(
@@ -226,8 +226,8 @@ async def get_order(
     user: User = Depends(require_permission("orders", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models.ledger import MstLedger
-    from app.models.inventory import MstStockItem
+    from app.models.tally_core import MstLedger
+    from app.models.tally_core import MstStockItem
     from sqlalchemy.orm import selectinload
 
     result = await db.execute(
@@ -288,8 +288,8 @@ async def edit_order(
     user: User = Depends(require_permission("orders", "update")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.models.ledger import MstLedger
-    from app.models.inventory import MstStockItem
+    from app.models.tally_core import MstLedger
+    from app.models.tally_core import MstStockItem
     from sqlalchemy.orm import selectinload
 
     result = await db.execute(

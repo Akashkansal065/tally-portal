@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency } from '@/lib/utils'
-import { Search, ChevronLeft, ChevronRight, RefreshCw, Plus, Edit2, Trash2 } from 'lucide-react'
+import { Search, ChevronLeft, ChevronRight, RefreshCw, Plus, Edit2, Trash2, FolderTree } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import LedgerFormModal, { LedgerFormData } from '@/components/LedgerFormModal'
 import DeleteLedgerModal from '@/components/DeleteLedgerModal'
@@ -236,6 +236,15 @@ export default function LedgersPage() {
           >
             <RefreshCw className={cn("w-3.5 h-3.5", isSyncing && "animate-spin text-emerald-600")} />
             {isSyncing ? 'Syncing...' : 'Sync Tally'}
+          </button>
+          
+          <button
+            onClick={() => router.push('/ledgers/groups')}
+            className="px-3.5 py-2 border border-border bg-background hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer hidden sm:flex"
+            title="Manage Group Master Hierarchy"
+          >
+            <FolderTree className="w-4 h-4" />
+            Group Master
           </button>
           {canManageLedgers && (
             <button

@@ -28,10 +28,10 @@ def log_gst_portal(title: str, request_data: dict, response_data: dict) -> str:
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
-from app.models.user import User
-from app.models.voucher import TrnVoucher, TrnAccounting
-from app.models.ledger import MstLedger, MstGroup
-from app.models.gst import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn, ManualPurchase
+from app.models.portal_core import User
+from app.models.tally_core import TrnVoucher, TrnAccounting
+from app.models.tally_core import MstLedger, MstGroup
+from app.models.portal_core import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn, ManualPurchase
 from app.schemas.gst import (
     GstReturnPeriodCreate, GstReturnPeriodResponse,
     Gstr1LineItemResponse, Gstr1HsnSummaryResponse, Gstr3bSummaryResponse,
@@ -113,7 +113,7 @@ async def generate_gst_snapshot(
     user: User = Depends(require_permission("reports", "update")),
     db: AsyncSession = Depends(get_db)
 ):
-    from app.models.ledger import MstLedger
+    from app.models.tally_core import MstLedger
     from app.routers.vouchers import _resolve_party_and_amount
 
     period_query = await db.execute(
@@ -343,7 +343,7 @@ async def get_gstr3b_summary(
     if not summary:
         raise HTTPException(status_code=404, detail="GSTR-3B summary not generated yet.")
         
-    from app.models.company import Company
+    from app.models.portal_core import Company
     comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
     company = comp_q.scalars().first()
     
@@ -456,7 +456,7 @@ async def export_gstr1_json(
         raise HTTPException(status_code=404, detail="GST Return period not found.")
     
     # Fetch company GSTIN
-    from app.models.company import Company
+    from app.models.portal_core import Company
     company_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
     company = company_q.scalars().first()
     
@@ -760,7 +760,7 @@ async def request_gstr2b_otp(
     db: AsyncSession = Depends(get_db)
 ):
     """Initiate OTP request to GST Portal for fetching GSTR-2B data, checking if data already exists first"""
-    from app.models.company import Company
+    from app.models.portal_core import Company
     import os
 
     period_q = await db.execute(
@@ -893,7 +893,7 @@ async def verify_gstr2b_otp_and_fetch(
 
     imported_count = 0
     from app.routers.vouchers import _resolve_party_and_amount
-    from app.models.ledger import MstLedger
+    from app.models.tally_core import MstLedger
 
     for v in vouchers:
         # Check if purchase voucher
@@ -1294,8 +1294,8 @@ async def generate_einvoice_irn(
     db: AsyncSession = Depends(get_db)
 ):
     """Generate E-Invoice (IRN, QR Code) for B2B Sales Voucher based on company active environment"""
-    from app.models.company import Company
-    from app.models.advanced import EinvoiceMetadata
+    from app.models.portal_core import Company
+    from app.models.portal_core import EinvoiceMetadata
     
     # 1. Fetch Company Environment Selection
     comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
@@ -1394,9 +1394,9 @@ async def get_einvoices_list(
     db: AsyncSession = Depends(get_db)
 ):
     """Fetch B2B Sales Invoices list and their corresponding E-invoicing status filtered by company environment"""
-    from app.models.company import Company
-    from app.models.advanced import EinvoiceMetadata
-    from app.models.ledger import MstLedger
+    from app.models.portal_core import Company
+    from app.models.portal_core import EinvoiceMetadata
+    from app.models.tally_core import MstLedger
     
     # 1. Fetch Company Environment Selection
     comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
@@ -1464,7 +1464,7 @@ async def get_einvoice_settings(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve the company's active e-invoicing settings and environment configuration"""
-    from app.models.company import Company
+    from app.models.portal_core import Company
     comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
     company = comp_q.scalars().first()
     if not company:
@@ -1485,7 +1485,7 @@ async def update_einvoice_settings(
     db: AsyncSession = Depends(get_db)
 ):
     """Update the company's e-invoicing environment and credentials settings"""
-    from app.models.company import Company
+    from app.models.portal_core import Company
     comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
     company = comp_q.scalars().first()
     if not company:

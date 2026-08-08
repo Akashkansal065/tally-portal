@@ -7,11 +7,9 @@ from datetime import datetime, date
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user
-from app.models.user import User
-from app.models.inventory import (
-    MstUom, MstStockGroup, MstStockCategory, MstGodown, MstStockItem,
-    BillOfMaterials, BomItem, Batch, SerialNumber
-)
+from app.models.portal_core import User
+from app.models.tally_core import MstUom, MstStockGroup, MstStockCategory, MstGodown, MstStockItem, Batch
+from app.models.portal_core import BillOfMaterials, BomItem, SerialNumber
 from app.schemas.inventory import (
     UnitOfMeasureCreate, UnitOfMeasureResponse,
     StockGroupCreate, StockGroupResponse,
@@ -229,8 +227,8 @@ async def get_stock_items(
     items = res.scalars().all()
 
     # Fetch all stock entries for this company
-    from app.models.inventory import TrnInventory
-    from app.models.voucher import TrnVoucher
+    from app.models.tally_core import TrnInventory
+    from app.models.tally_core import TrnVoucher
     entry_stmt = (
         select(TrnInventory)
         .join(TrnVoucher, TrnInventory.voucher_id == TrnVoucher.voucher_id)

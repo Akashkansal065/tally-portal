@@ -13,10 +13,10 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
-from app.models.user import User
-from app.models.company import Company
-from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
-from app.models.ledger import MstLedger, MstGroup
+from app.models.portal_core import User
+from app.models.portal_core import Company
+from app.models.tally_core import TrnVoucher, TrnAccounting, MstVoucherType
+from app.models.tally_core import MstLedger, MstGroup
 from app.core.cache import (
     get_cached_response,
     set_cached_response,
@@ -190,7 +190,7 @@ async def get_outstanding_payables(
     if cached is not None:
         return cached
 
-    from app.models.payment import TrnBill
+    from app.models.tally_core import TrnBill
 
     stmt = (
         select(TrnBill)
@@ -580,7 +580,7 @@ async def get_executive_analytics(
         return cached
 
     from sqlalchemy import text
-    from app.models.payment import TrnBill
+    from app.models.tally_core import TrnBill
     
     date_where = ""
     params = {"comp_id": user.company_id}
@@ -810,7 +810,7 @@ async def get_inventory_analytics(
     if cached is not None:
         return cached
 
-    from app.models.inventory import MstStockItem
+    from app.models.tally_core import MstStockItem
     
     stmt = (
         select(MstStockItem)
@@ -1217,7 +1217,7 @@ async def get_inactive_items(
     if cached is not None:
         return cached
 
-    from app.models.inventory import MstStockItem
+    from app.models.tally_core import MstStockItem
 
     stmt = (
         select(MstStockItem)

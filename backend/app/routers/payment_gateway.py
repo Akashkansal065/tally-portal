@@ -9,10 +9,10 @@ import json
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
-from app.models.user import User
-from app.models.payment import TrnBill, BillAllocation
-from app.models.voucher import TrnVoucher, TrnAccounting, MstVoucherType
-from app.models.payment_gateway import PaymentGatewayConfig, PaymentLink, GatewayTransaction, WebhookEvent
+from app.models.portal_core import User
+from app.models.tally_core import TrnBill, BillAllocation
+from app.models.tally_core import TrnVoucher, TrnAccounting, MstVoucherType
+from app.models.portal_core import PaymentGatewayConfig, PaymentLink, GatewayTransaction, WebhookEvent
 from app.schemas.payment_gateway import (
     PaymentGatewayConfigCreate, PaymentGatewayConfigResponse,
     PaymentLinkCreate, PaymentLinkResponse
