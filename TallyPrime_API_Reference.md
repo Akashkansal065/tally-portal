@@ -128,43 +128,85 @@ curl -X POST http://localhost:9000 -H "Content-Type: application/json" -d '{
 ### Group
 
 **7. Create a Group**
+(Using the `jsonex` payload format via HTTP Headers)
 ```bash
-curl -X POST http://localhost:9000 -H "Content-Type: application/json" -d '{
-  "ENVELOPE": {
-    "HEADER": { "VERSION": "1", "TALLYREQUEST": "Import Data", "TYPE": "Data", "ID": "" },
-    "BODY": { "DESC": {}, "DATA": { "TALLYMESSAGE": [ {
-      "GROUP": {
-        "@NAME": "Regional Debtors",
-        "@ACTION": "Create",
-        "PARENT": "Sundry Debtors",
-        "ISADDABLE": "Yes"
-      }
-    } ] } }
-  }
+curl -X POST http://localhost:9000 \
+  -H "content-type: application/json" \
+  -H "version: 1" \
+  -H "tallyrequest: Import" \
+  -H "type: Data" \
+  -H "id: All Masters" \
+  -d '{
+    "static_variables": [
+        { "name": "svMstImportFormat", "value": "jsonex" },
+        { "name": "svCurrentCompany", "value": "Your Company Name" }
+    ],
+    "tallymessage": [
+        {
+            "metadata": {
+                "type": "Group", 
+                "action": "create",
+                "name": "South Bank Accounts" 
+            }, 
+            "name": "South Bank Accounts",
+            "parent": "Bank Accounts",
+            "issubledger": "yes"
+        }
+    ]
 }'
 ```
 
 **8. Alter a Group**
+(Using the `jsonex` payload format)
 ```bash
-curl -X POST http://localhost:9000 -H "Content-Type: application/json" -d '{
-  "ENVELOPE": {
-    "HEADER": { "VERSION": "1", "TALLYREQUEST": "Import Data", "TYPE": "Data", "ID": "" },
-    "BODY": { "DESC": {}, "DATA": { "TALLYMESSAGE": [ {
-      "GROUP": { "@NAME": "Regional Debtors", "@ACTION": "Alter", "PARENT": "Sundry Debtors" }
-    } ] } }
-  }
+curl -X POST http://localhost:9000 \
+  -H "content-type: application/json" \
+  -H "version: 1" \
+  -H "tallyrequest: Import" \
+  -H "type: Data" \
+  -H "id: All Masters" \
+  -d '{
+    "static_variables": [
+        { "name": "svMstImportFormat", "value": "jsonex" },
+        { "name": "svCurrentCompany", "value": "Your Company Name" }
+    ],
+    "tallymessage": [
+        {
+            "metadata": {
+                "type": "Group",
+                "action": "Alter",
+                "name": "South Bank Accounts"
+            },
+            "name": "South Bank Accounts",
+            "IsSubLedger": "yes"
+        }
+    ]
 }'
 ```
 
 **9. Delete a Group**
+(Using the `jsonex` payload format)
 ```bash
-curl -X POST http://localhost:9000 -H "Content-Type: application/json" -d '{
-  "ENVELOPE": {
-    "HEADER": { "VERSION": "1", "TALLYREQUEST": "Import Data", "TYPE": "Data", "ID": "" },
-    "BODY": { "DESC": {}, "DATA": { "TALLYMESSAGE": [ {
-      "GROUP": { "@NAME": "Regional Debtors", "@ACTION": "Delete" }
-    } ] } }
-  }
+curl -X POST http://localhost:9000 \
+  -H "content-type: application/json" \
+  -H "version: 1" \
+  -H "tallyrequest: Import" \
+  -H "type: Data" \
+  -H "id: All Masters" \
+  -d '{
+    "static_variables": [
+        { "name": "svMstImportFormat", "value": "jsonex" },
+        { "name": "svCurrentCompany", "value": "Your Company Name" }
+    ],
+    "tallymessage": [
+        {
+            "metadata": {
+                "type": "Group",
+                "action": "Delete",
+                "name": "South Bank Accounts"
+            }
+        }
+    ]
 }'
 ```
 

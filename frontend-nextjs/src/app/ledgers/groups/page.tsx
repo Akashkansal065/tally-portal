@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders } from '@/lib/utils'
-import { Search, Plus, Edit2, Trash2, ChevronRight, ChevronDown, FolderTree, RefreshCw } from 'lucide-react'
+import { Search, Plus, Edit2, Trash2, ChevronRight, ChevronDown, FolderTree, RefreshCw, Info, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import GroupFormModal, { AccountGroupTreeNode, GroupFormData } from '@/components/GroupFormModal'
 
@@ -70,6 +70,8 @@ export default function GroupsPage() {
       is_billwise_on: group.is_billwise_on || false,
       used_for_calculation: group.used_for_calculation || false,
       method_to_allocate: group.method_to_allocate || 'Not Applicable',
+      sort_position: group.sort_position || 1000,
+      language_id: group.language_id || 1033,
       gst_details: group.gst_details || []
     })
     setIsFormOpen(true)

@@ -116,14 +116,7 @@ class EinvoiceMetadata(Base):
     raw_response = Column(TEXT, nullable=True)
     environment = Column(String(20), default='mock')
 
-class MstCostCentreClass(Base):
-    __tablename__ = "cost_centre_classes"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
 
-    class_id = Column(Integer, primary_key=True, index=True)
-    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(100), nullable=False)
-    category_id = Column(Integer, nullable=True)
 
 class MstBudget(Base):
     __tablename__ = "budgets"
@@ -146,16 +139,7 @@ class MstScenario(Base):
     include_actuals = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)
 
-class MstCurrencyRate(Base):
-    __tablename__ = "currency_rates"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
 
-    rate_id = Column(Integer, primary_key=True, index=True)
-    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
-    currency_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.currencies.currency_id"), nullable=False)
-    applicable_date = Column(Date, nullable=False)
-    buying_rate = Column(Numeric(14, 4), nullable=False)
-    selling_rate = Column(Numeric(14, 4), nullable=False)
 
 class MstEmployeeCategory(Base):
     __tablename__ = "employee_categories"
@@ -433,8 +417,16 @@ class Currency(Base):
     currency_id = Column(Integer, primary_key=True, index=True)
     code = Column(String(3), nullable=False, unique=True)
     symbol = Column(String(10), nullable=False)
+    formal_name = Column(String(100), nullable=True)
     decimal_places = Column(Integer, default=2)
+    show_amount_in_millions = Column(Boolean, default=False)
+    suffix_symbol_to_amount = Column(Boolean, default=False)
+    add_space_between_amount_and_symbol = Column(Boolean, default=True)
+    word_representing_amount_after_decimal = Column(String(50), nullable=True)
+    decimal_places_for_words = Column(Integer, default=2)
     is_base_currency = Column(Boolean, default=False)
+    
+    rates = relationship("ExchangeRate", back_populates="currency", cascade="all, delete-orphan")
 
 class GstRegistrationType(Base):
     __tablename__ = "gst_registration_types"
@@ -453,10 +445,14 @@ class ExchangeRate(Base):
     
     rate_id = Column(BigInteger, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
-    currency_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.currencies.currency_id"), nullable=False)
+    currency_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.currencies.currency_id", ondelete="CASCADE"), nullable=False)
     rate_date = Column(Date, nullable=False)
-    rate_to_base = Column(Numeric(14, 6), nullable=False)
+    standard_rate = Column(Numeric(14, 6), nullable=True)
+    selling_rate = Column(Numeric(14, 6), nullable=True)
+    buying_rate = Column(Numeric(14, 6), nullable=True)
     source = Column(Enum('Manual', 'RBI', 'API', name='exchange_rate_source'), default='Manual')
+    
+    currency = relationship("Currency", back_populates="rates")
 
 class TdsSection(Base):
     __tablename__ = "tds_sections"

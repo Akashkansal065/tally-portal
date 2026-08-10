@@ -193,9 +193,48 @@ class MstCostCategory(Base):
     category_id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
+    alias = Column(String(100), nullable=True)
     allocate_revenue = Column(Boolean, default=True)
     allocate_non_revenue = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+
+class MstCostCentre(Base):
+    __tablename__ = "cost_centres"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    cost_centre_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    category_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_categories.category_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    alias = Column(String(100), nullable=True)
+    parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centres.cost_centre_id", ondelete="SET NULL"), nullable=True, index=True)
+    is_active = Column(Boolean, default=True)
+    
+    category = relationship("MstCostCategory")
+    parent = relationship("MstCostCentre", remote_side=[cost_centre_id])
+
+class MstCostCentreClass(Base):
+    __tablename__ = "cost_centre_classes"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    
+    class_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    
+    allocations = relationship("MstCostCentreClassAllocation", back_populates="cost_centre_class", cascade="all, delete-orphan")
+
+class MstCostCentreClassAllocation(Base):
+    __tablename__ = "cost_centre_class_allocations"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    
+    allocation_id = Column(Integer, primary_key=True, index=True)
+    class_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centre_classes.class_id", ondelete="CASCADE"), nullable=False, index=True)
+    category_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_categories.category_id", ondelete="CASCADE"), nullable=False)
+    cost_centre_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False)
+    percentage = Column(Numeric(5, 2), nullable=False)
+    
+    cost_centre_class = relationship("MstCostCentreClass", back_populates="allocations")
+    category = relationship("MstCostCategory")
+    cost_centre = relationship("MstCostCentre")
 
 class MstAttendanceType(Base):
     __tablename__ = "attendance_types"
@@ -250,6 +289,7 @@ class MstGroup(Base):
     is_deemed_positive = Column(Boolean, default=False)
     affects_gross_profit = Column(Boolean, default=False)
     sort_position = Column(Integer, default=1000)
+    language_id = Column(Integer, default=1033)
     is_system_defined = Column(Boolean, default=False)
     
     # Advanced Parameters
@@ -363,12 +403,92 @@ class MstVoucherType(Base):
     voucher_type_id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(50), nullable=False)
+    parent_type = Column(String(50), nullable=True)
     abbreviation = Column(String(10), nullable=True)
-    numbering_method = Column(Enum('Automatic', 'Manual', name='numbering_method_type'), default='Automatic')
-    prefix = Column(String(10), default='')
+    numbering_method = Column(Enum('Automatic', 'Automatic (Manual Override)', 'Manual', 'Multi-user Auto', 'None', name='numbering_method_type'), default='Automatic')
+    numbering_behavior = Column(String(50), nullable=True) # 'Auto Retain', 'Auto Renumber'
+    prefix = Column(String(20), default='')
+    suffix = Column(String(20), default='')
     next_number = Column(Integer, default=1)
+    width_of_numerical_part = Column(Integer, default=0)
+    prefill_with_zero = Column(Boolean, default=False)
+    prevent_duplicates = Column(Boolean, default=False)
+    use_effective_dates = Column(Boolean, default=False)
+    allow_zero_valued_transactions = Column(Boolean, default=False)
+    is_optional_by_default = Column(Boolean, default=False)
+    allow_narration_in_voucher = Column(Boolean, default=True)
+    provide_narrations_for_each_ledger = Column(Boolean, default=False)
+    print_voucher_after_saving = Column(Boolean, default=False)
+    enable_default_accounting_allocations = Column(Boolean, default=False)
+    track_additional_costs_for_purchases = Column(Boolean, default=False)
+    default_jurisdiction = Column(String(100), nullable=True)
+    default_title_to_print = Column(String(100), nullable=True)
+    show_unused_vch_nos = Column(Boolean, default=False)
+    whatsapp_voucher_after_saving = Column(Boolean, default=False)
     is_system_defined = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)
+    tally_guid = Column(String(50), nullable=True, index=True)
+    tally_alter_id = Column(Integer, nullable=True)
     vouchers = relationship("TrnVoucher", back_populates="voucher_type")
+    
+    prefixes = relationship("MstVoucherTypePrefix", back_populates="voucher_type", cascade="all, delete-orphan")
+    suffixes = relationship("MstVoucherTypeSuffix", back_populates="voucher_type", cascade="all, delete-orphan")
+    restarts = relationship("MstVoucherTypeRestart", back_populates="voucher_type", cascade="all, delete-orphan")
+    classes = relationship("MstVoucherTypeClass", back_populates="voucher_type", cascade="all, delete-orphan")
+
+class MstVoucherTypePrefix(Base):
+    __tablename__ = "voucher_type_prefixes"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    voucher_type_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_types.voucher_type_id", ondelete="CASCADE"), nullable=False, index=True)
+    applicable_from = Column(Date, nullable=False)
+    particulars = Column(String(50), nullable=False)
+    
+    voucher_type = relationship("MstVoucherType", back_populates="prefixes")
+
+class MstVoucherTypeSuffix(Base):
+    __tablename__ = "voucher_type_suffixes"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    voucher_type_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_types.voucher_type_id", ondelete="CASCADE"), nullable=False, index=True)
+    applicable_from = Column(Date, nullable=False)
+    particulars = Column(String(50), nullable=False)
+    
+    voucher_type = relationship("MstVoucherType", back_populates="suffixes")
+
+class MstVoucherTypeRestart(Base):
+    __tablename__ = "voucher_type_restarts"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    voucher_type_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_types.voucher_type_id", ondelete="CASCADE"), nullable=False, index=True)
+    applicable_from = Column(Date, nullable=False)
+    starting_number = Column(Integer, nullable=False)
+    periodicity = Column(String(30), nullable=False) # Yearly, Monthly, Daily, Never
+    
+    voucher_type = relationship("MstVoucherType", back_populates="restarts")
+
+class MstVoucherTypeClass(Base):
+    __tablename__ = "voucher_type_classes"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    class_id = Column(Integer, primary_key=True, index=True)
+    voucher_type_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_types.voucher_type_id", ondelete="CASCADE"), nullable=False, index=True)
+    class_name = Column(String(100), nullable=False)
+    bank_alloc_for = Column(String(30), nullable=True) # Employees, Cost Centres, Both, None
+    default_ledger_name = Column(String(100), nullable=True)
+    
+    voucher_type = relationship("MstVoucherType", back_populates="classes")
+    groups = relationship("MstVoucherTypeClassGroup", back_populates="voucher_class", cascade="all, delete-orphan")
+
+class MstVoucherTypeClassGroup(Base):
+    __tablename__ = "voucher_type_class_groups"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    class_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_type_classes.class_id", ondelete="CASCADE"), nullable=False, index=True)
+    group_name = Column(String(100), nullable=False)
+    is_included = Column(Boolean, nullable=False, default=True) # True = Include, False = Exclude
+    
+    voucher_class = relationship("MstVoucherTypeClass", back_populates="groups")
+
 
 class TrnVoucher(Base):
     __tablename__ = "vouchers"

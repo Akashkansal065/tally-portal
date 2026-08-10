@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Sparkles, Building2, AlertCircle, Plus, Trash2 } from 'lucide-react'
+import { X, Sparkles, Building2, AlertCircle, Plus, Trash2, Info } from 'lucide-react'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 
@@ -37,6 +37,8 @@ export type GroupFormData = {
   is_billwise_on: boolean
   used_for_calculation: boolean
   method_to_allocate: string
+  sort_position: number
+  language_id: number
   gst_details: GroupGstDetail[]
 }
 
@@ -60,6 +62,13 @@ export default function GroupFormModal({
   const [groups, setGroups] = useState<any[]>([])
   const [groupsLoading, setGroupsLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<'general' | 'advanced' | 'statutory'>('general')
+  const [activeHelp, setActiveHelp] = useState<string | null>(null)
+
+  const toggleHelp = (e: React.MouseEvent, field: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setActiveHelp(prev => prev === field ? null : field)
+  }
 
   const [formData, setFormData] = useState<GroupFormData>({
     name: '',
@@ -74,6 +83,8 @@ export default function GroupFormModal({
     is_billwise_on: false,
     used_for_calculation: false,
     method_to_allocate: 'Not Applicable',
+    sort_position: 1000,
+    language_id: 1033,
     gst_details: []
   })
 
@@ -116,7 +127,9 @@ export default function GroupFormModal({
         setFormData({
           ...initialData,
           gst_details: initialData.gst_details || [],
-          method_to_allocate: initialData.method_to_allocate || 'Not Applicable'
+          method_to_allocate: initialData.method_to_allocate || 'Not Applicable',
+          sort_position: initialData.sort_position || 1000,
+          language_id: initialData.language_id || 1033
         })
       } else {
         setFormData({
@@ -132,6 +145,8 @@ export default function GroupFormModal({
           is_billwise_on: false,
           used_for_calculation: false,
           method_to_allocate: 'Not Applicable',
+          sort_position: 1000,
+          language_id: 1033,
           gst_details: []
         })
       }
@@ -347,74 +362,139 @@ export default function GroupFormModal({
             {/* TAB: ADVANCED */}
             <div className={cn("space-y-8", activeTab === 'advanced' ? "block" : "hidden")}>
               
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <label className="flex items-center gap-3 p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={formData.is_addable}
-                    onChange={e => setFormData({...formData, is_addable: e.target.checked})}
-                    className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
-                  />
-                  <div>
-                    <div className="text-sm font-bold text-foreground">Can Add Sub-Groups</div>
-                    <div className="text-[11px] text-muted-foreground">Allow items under this group</div>
+              <div className="grid grid-cols-1 gap-5">
+                <label className="flex flex-col p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={formData.is_addable}
+                      onChange={e => setFormData({...formData, is_addable: e.target.checked})}
+                      className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
+                    />
+                    <div className="flex-1 flex justify-between items-center">
+                      <div>
+                        <div className="text-sm font-bold text-foreground">Can Add Sub-Groups</div>
+                        <div className="text-[11px] text-muted-foreground">Allow items under this group</div>
+                      </div>
+                      <button onClick={(e) => toggleHelp(e, 'addable')} className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                        <Info className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
+                  {activeHelp === 'addable' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed cursor-default" onClick={e => e.preventDefault()}>
+                      Allows you to nest other groups inside this group to build a deep hierarchy (e.g. Current Assets &gt; Sundry Debtors &gt; North Zone).
+                    </div>
+                  )}
                 </label>
                 
-                <label className="flex items-center gap-3 p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={formData.affects_gross_profit}
-                    onChange={e => setFormData({...formData, affects_gross_profit: e.target.checked})}
-                    className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
-                  />
-                  <div>
-                    <div className="text-sm font-bold text-foreground">Affects Gross Profit</div>
-                    <div className="text-[11px] text-muted-foreground">Used for Trading Account groups</div>
+                <label className="flex flex-col p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={formData.affects_gross_profit}
+                      onChange={e => setFormData({...formData, affects_gross_profit: e.target.checked})}
+                      className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
+                    />
+                    <div className="flex-1 flex justify-between items-center">
+                      <div>
+                        <div className="text-sm font-bold text-foreground">Affects Gross Profit</div>
+                        <div className="text-[11px] text-muted-foreground">Used for Trading Account groups</div>
+                      </div>
+                      <button onClick={(e) => toggleHelp(e, 'grossprofit')} className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                        <Info className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
+                  {activeHelp === 'grossprofit' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed cursor-default" onClick={e => e.preventDefault()}>
+                      Enable this if the group contains direct expenses or incomes that should affect the Gross Profit in the Trading Account, rather than Net Profit in the P&L Account.
+                    </div>
+                  )}
                 </label>
 
-                <label className="flex items-center gap-3 p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={formData.is_subledger}
-                    onChange={e => setFormData({...formData, is_subledger: e.target.checked})}
-                    className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
-                  />
-                  <div>
-                    <div className="text-sm font-bold text-foreground">Behaves like a Sub-Ledger</div>
-                    <div className="text-[11px] text-muted-foreground">Don't show sub-ledgers in reports</div>
+                <label className="flex flex-col p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={formData.is_subledger}
+                      onChange={e => setFormData({...formData, is_subledger: e.target.checked})}
+                      className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
+                    />
+                    <div className="flex-1 flex justify-between items-center">
+                      <div>
+                        <div className="text-sm font-bold text-foreground">Behaves like a Sub-Ledger</div>
+                        <div className="text-[11px] text-muted-foreground">Don't show sub-ledgers in reports</div>
+                      </div>
+                      <button onClick={(e) => toggleHelp(e, 'subledger')} className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                        <Info className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
+                  {activeHelp === 'subledger' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed cursor-default" onClick={e => e.preventDefault()}>
+                      When enabled, Tally will hide the individual sub-ledgers under this group in reports like the Trial Balance, and only show the net balance of this group. Useful for grouping large numbers of similar ledgers (like Sundry Debtors).
+                    </div>
+                  )}
                 </label>
 
-                <label className="flex items-center gap-3 p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={formData.is_billwise_on}
-                    onChange={e => setFormData({...formData, is_billwise_on: e.target.checked})}
-                    className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
-                  />
-                  <div>
-                    <div className="text-sm font-bold text-foreground">Nett Debit/Credit Balances</div>
-                    <div className="text-[11px] text-muted-foreground">Show net balances for reporting</div>
+                <label className="flex flex-col p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={formData.is_billwise_on}
+                      onChange={e => setFormData({...formData, is_billwise_on: e.target.checked})}
+                      className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
+                    />
+                    <div className="flex-1 flex justify-between items-center">
+                      <div>
+                        <div className="text-sm font-bold text-foreground">Nett Debit/Credit Balances</div>
+                        <div className="text-[11px] text-muted-foreground">Show net balances for reporting</div>
+                      </div>
+                      <button onClick={(e) => toggleHelp(e, 'billwise')} className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                        <Info className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
+                  {activeHelp === 'billwise' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed cursor-default" onClick={e => e.preventDefault()}>
+                      If enabled, Tally calculates the net balance (Debit - Credit) of all ledgers under this group. If the net balance is positive, it shows as a Debit; if negative, it shows as a Credit. Leave disabled to show both total debits and total credits separately.
+                    </div>
+                  )}
                 </label>
                 
-                <label className="flex items-center gap-3 p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={formData.used_for_calculation}
-                    onChange={e => setFormData({...formData, used_for_calculation: e.target.checked})}
-                    className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
-                  />
-                  <div>
-                    <div className="text-sm font-bold text-foreground">Used for Calculation</div>
-                    <div className="text-[11px] text-muted-foreground">For taxes, discounts in invoices</div>
+                <label className="flex flex-col p-4 rounded-xl border border-border bg-muted/30 hover:bg-muted/50 cursor-pointer transition-colors">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={formData.used_for_calculation}
+                      onChange={e => setFormData({...formData, used_for_calculation: e.target.checked})}
+                      className="w-4 h-4 rounded border-input bg-background text-emerald-600 focus:ring-emerald-500/20"
+                    />
+                    <div className="flex-1 flex justify-between items-center">
+                      <div>
+                        <div className="text-sm font-bold text-foreground">Used for Calculation</div>
+                        <div className="text-[11px] text-muted-foreground">For taxes, discounts in invoices</div>
+                      </div>
+                      <button onClick={(e) => toggleHelp(e, 'calculation')} className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                        <Info className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
+                  {activeHelp === 'calculation' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed cursor-default" onClick={e => e.preventDefault()}>
+                      Enable this for groups that represent taxes (like GST) or discounts. Tally uses this to automatically calculate percentages during invoice entry.
+                    </div>
+                  )}
                 </label>
 
                 <div className="space-y-1.5 p-4 rounded-xl border border-border bg-muted/30">
-                  <label className="text-sm font-bold text-foreground">Method to Allocate (Purchase Invoice)</label>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-sm font-bold text-foreground">Method to Allocate (Purchase Invoice)</label>
+                    <button onClick={(e) => toggleHelp(e, 'allocate')} type="button" className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                      <Info className="w-4 h-4" />
+                    </button>
+                  </div>
                   <select
                     value={formData.method_to_allocate}
                     onChange={e => setFormData({...formData, method_to_allocate: e.target.value})}
@@ -424,6 +504,58 @@ export default function GroupFormModal({
                     <option value="Appropriate by Qty">Appropriate by Qty</option>
                     <option value="Appropriate by Value">Appropriate by Value</option>
                   </select>
+                  {activeHelp === 'allocate' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed">
+                      Determines how expenses (like freight or packing charges) grouped here are distributed across items in a purchase invoice to arrive at the landed cost.
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1.5 p-4 rounded-xl border border-border bg-muted/30">
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-sm font-bold text-foreground">Language Alias</label>
+                    <button onClick={(e) => toggleHelp(e, 'language')} type="button" className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                      <Info className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <select
+                    value={formData.language_id}
+                    onChange={e => setFormData({...formData, language_id: Number(e.target.value)})}
+                    className="w-full bg-background border border-input rounded-xl px-4 py-2 mt-1 text-foreground text-sm font-semibold focus:outline-none focus:border-emerald-500 transition-all"
+                  >
+                    <option value={1033}>English (India) (System)</option>
+                    <option value={1081}>Hindi</option>
+                    <option value={1093}>Bengali</option>
+                    <option value={1095}>Gujarati</option>
+                    <option value={1097}>Tamil</option>
+                    <option value={1098}>Telugu</option>
+                  </select>
+                  {activeHelp === 'language' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed">
+                      Sets the language metadata for the Alias field. This allows Tally to render the alias using the selected regional language in reports.
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1.5 p-4 rounded-xl border border-border bg-muted/30">
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-sm font-bold text-foreground">Position Index in Reports</label>
+                    <button onClick={(e) => toggleHelp(e, 'position')} type="button" className="p-1.5 text-blue-500 hover:bg-blue-500/10 rounded-full transition-colors">
+                      <Info className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    value={formData.sort_position}
+                    onChange={e => setFormData({...formData, sort_position: Number(e.target.value)})}
+                    className="w-full bg-background border border-input rounded-xl px-4 py-2 mt-1 text-foreground text-sm font-semibold focus:outline-none focus:border-emerald-500 transition-all"
+                    placeholder="1000"
+                  />
+                  {activeHelp === 'position' && (
+                    <div className="mt-3 pt-3 border-t border-border/50 text-xs text-blue-600 leading-relaxed">
+                      A sorting number (default 1000) that Tally uses to order groups in reports. Lower numbers appear first.
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

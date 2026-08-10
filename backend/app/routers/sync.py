@@ -28,6 +28,19 @@ router = APIRouter(prefix="/sync", tags=["Tally Synchronization"])
 # Global lock to serialize inbound sync background tasks and prevent deadlocks
 sync_lock = asyncio.Lock()
 
+class ActiveTallySyncConfig:
+    def __init__(self, tally_url: str):
+        self.tally_url = tally_url
+
+async def get_active_tally_sync_for_company(company_id: int, db: AsyncSession) -> Optional[ActiveTallySyncConfig]:
+    """
+    Retrieves the active Tally Sync configuration for a specific company.
+    Currently uses the global settings.TALLY_URL until multi-tenant Tally sync configuration is implemented.
+    """
+    if settings.TALLY_URL:
+        return ActiveTallySyncConfig(tally_url=settings.TALLY_URL)
+    return None
+
 async def run_inbound_sync_background(xml_data: str, user_id: int, company_name: Optional[str] = None):
     """Asynchronously parses and imports inbound Tally XML, serialized via a global lock."""
     from app.core.database import AsyncSessionLocal
@@ -653,6 +666,108 @@ def check_tally_json_success(response_str: str) -> bool:
 
 
 
+def build_cost_centre_json_payload(centre, category_name: str, parent_name: str, company_name: str, action: str) -> dict:
+    act_lower = action.lower()
+    if act_lower == "delete":
+        return {
+            "static_variables": [
+                {"name": "svMstImportFormat", "value": "jsonex"},
+                {"name": "svCurrentCompany", "value": company_name}
+            ],
+            "tallymessage": [
+                {
+                    "metadata": {
+                        "type": "CostCentre",
+                        "action": "delete",
+                        "name": centre.name
+                    }
+                }
+            ]
+        }
+    
+    centre_data = {
+        "metadata": {
+            "type": "CostCentre",
+            "action": act_lower,
+            "name": centre.name
+        },
+        "name": centre.name,
+        "category": category_name
+    }
+    
+    if parent_name:
+        centre_data["parent"] = parent_name
+
+    if getattr(centre, 'alias', None):
+        centre_data["languagename"] = [
+            {
+                "name": [
+                    {"metadata": True, "type": "String"},
+                    centre.name,
+                    centre.alias
+                ]
+            }
+        ]
+
+    return {
+        "static_variables": [
+            {"name": "svMstImportFormat", "value": "jsonex"},
+            {"name": "svCurrentCompany", "value": company_name}
+        ],
+        "tallymessage": [centre_data]
+    }
+
+
+def build_cost_category_json_payload(category, company_name: str, action: str) -> dict:
+    act_lower = action.lower()
+    if act_lower == "delete":
+        return {
+            "static_variables": [
+                {"name": "svMstImportFormat", "value": "jsonex"},
+                {"name": "svCurrentCompany", "value": company_name}
+            ],
+            "tallymessage": [
+                {
+                    "metadata": {
+                        "type": "CostCategory",
+                        "action": "delete",
+                        "name": category.name
+                    }
+                }
+            ]
+        }
+    
+    cat_data = {
+        "metadata": {
+            "type": "CostCategory",
+            "action": act_lower,
+            "name": category.name
+        },
+        "name": category.name,
+        "allocaterevenue": "Yes" if category.allocate_revenue else "No",
+        "allocatenonrevenue": "Yes" if category.allocate_non_revenue else "No"
+    }
+
+    if getattr(category, 'alias', None):
+        cat_data["languagename"] = [
+            {
+                "name": [
+                    {"metadata": True, "type": "String"},
+                    category.name,
+                    category.alias
+                ]
+            }
+        ]
+
+    return {
+        "static_variables": [
+            {"name": "svMstImportFormat", "value": "jsonex"},
+            {"name": "svCurrentCompany", "value": company_name}
+        ],
+        "tallymessage": [cat_data]
+    }
+
+
 def build_group_json_payload(group, parent_name: str, company_name: str, action: str) -> dict:
     act_lower = action.lower()
     if act_lower == "delete":
@@ -704,21 +819,40 @@ def build_group_json_payload(group, parent_name: str, company_name: str, action:
             hsn_obj = {
                 "applicablefrom": app_from,
                 "hsncode": gst.hsn_sac or "",
-                "hsnsacdetails": gst.hsn_sac_details or "As per Company/Group"
+                "srcofhsndetails": gst.hsn_sac_details or "As per Company/Group"
             }
             hsn_list.append(hsn_obj)
             
             # GST Rate block
+            gst_rate_val = float(gst.gst_rate) if gst.gst_rate else 0.0
             rate_obj = {
                 "applicablefrom": app_from,
-                "gstrate": str(gst.gst_rate) if gst.gst_rate else "0",
                 "taxability": gst.taxability_type or "Unknown",
-                "gstratedetails": gst.gst_rate_details or "As per Company/Group"
+                "srcofgstdetails": gst.gst_rate_details or "As per Company/Group",
+                "statewisedetails.list": [
+                    {
+                        "statename": "\u0004 Any",
+                        "ratedetails.list": [
+                            {
+                                "gstratedutyhead": "IGST",
+                                "gstrate": str(gst_rate_val)
+                            },
+                            {
+                                "gstratedutyhead": "CGST",
+                                "gstrate": str(gst_rate_val / 2)
+                            },
+                            {
+                                "gstratedutyhead": "SGST/UTGST",
+                                "gstrate": str(gst_rate_val / 2)
+                            }
+                        ]
+                    }
+                ]
             }
             rate_list.append(rate_obj)
             
-        group_data["htchsnacdetails.list"] = hsn_list
-        group_data["htcgstdetails.list"] = rate_list
+        group_data["hsndetails.list"] = hsn_list
+        group_data["gstdetails.list"] = rate_list
     
     if getattr(group, 'alias_name', None):
         group_data["languagename"] = [
@@ -728,7 +862,7 @@ def build_group_json_payload(group, parent_name: str, company_name: str, action:
                     group.name,
                     group.alias_name
                 ],
-                "languageid": {"type": "Number", "value": "1033"}
+                "languageid": {"type": "Number", "value": str(getattr(group, 'language_id', 1033))}
             }
         ]
         
@@ -740,7 +874,394 @@ def build_group_json_payload(group, parent_name: str, company_name: str, action:
         "tallymessage": [group_data]
     }
 
-async def try_push_group_realtime(group_id: int, sync_item_id: int, action: str, db: AsyncSession):
+async def try_push_cost_category_realtime(category_id: int, sync_id: int, action: str, db: AsyncSession):
+    try:
+        from sqlalchemy.future import select
+        from sqlalchemy import update
+        from app.models.portal_core import SyncQueue
+        from app.models.tally_core import MstCostCategory
+        from app.models.portal_core import Company
+        
+        cat = (await db.execute(select(MstCostCategory).where(MstCostCategory.category_id == category_id))).scalars().first()
+        if not cat:
+            return
+            
+        comp = (await db.execute(select(Company).where(Company.company_id == cat.company_id))).scalars().first()
+        if not comp:
+            return
+
+        active_tally = await get_active_tally_sync_for_company(comp.company_id, db)
+        if not active_tally:
+            return
+
+        payload = build_cost_category_json_payload(cat, comp.name, action)
+        url = f"{active_tally.tally_url.rstrip('/')}/"
+        response = await asyncio.to_thread(_post_json_to_tally_sync, url, payload, timeout=10)
+        success = check_tally_json_success(response)
+        
+        if success:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True))
+            await db.commit()
+            logger.info(f"Real-time Tally Push Success for CostCategory {cat.name} ({action})")
+        else:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+            await db.commit()
+            logger.error(f"Real-time Tally Push Failed for CostCategory {cat.name} ({action}). Tally Response: {response}")
+
+    except Exception as e:
+        logger.error(f"Error in try_push_cost_category_realtime: {str(e)}")
+
+async def try_push_cost_centre_realtime(cost_centre_id: int, sync_id: int, action: str, db: AsyncSession):
+    try:
+        from sqlalchemy.future import select
+        from sqlalchemy import update
+        from app.models.portal_core import SyncQueue
+        from app.models.tally_core import MstCostCentre, MstCostCategory
+        from app.models.portal_core import Company
+        
+        logger.info(f"Attempting real-time Tally push for CostCentre ID {cost_centre_id} with action {action}")
+        
+        cc = (await db.execute(select(MstCostCentre).where(MstCostCentre.cost_centre_id == cost_centre_id))).scalars().first()
+        if not cc:
+            logger.warning(f"CostCentre ID {cost_centre_id} not found for real-time push")
+            return
+            
+        comp = (await db.execute(select(Company).where(Company.company_id == cc.company_id))).scalars().first()
+        if not comp:
+            logger.warning(f"Company ID {cc.company_id} not found for CostCentre {cost_centre_id}")
+            return
+
+        cat = (await db.execute(select(MstCostCategory).where(MstCostCategory.category_id == cc.category_id))).scalars().first()
+        cat_name = cat.name if cat else "Primary Cost Category"
+
+        parent_name = ""
+        if cc.parent_id:
+            parent = (await db.execute(select(MstCostCentre).where(MstCostCentre.cost_centre_id == cc.parent_id))).scalars().first()
+            if parent:
+                parent_name = parent.name
+
+        active_tally = await get_active_tally_sync_for_company(comp.company_id, db)
+        if not active_tally:
+            return
+
+        payload = build_cost_centre_json_payload(cc, cat_name, parent_name, comp.name, action)
+        url = f"{active_tally.tally_url.rstrip('/')}/"
+        response = await asyncio.to_thread(_post_json_to_tally_sync, url, payload, timeout=10)
+        success = check_tally_json_success(response)
+        
+        if success:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True))
+            await db.commit()
+            logger.info(f"Real-time Tally Push Success for CostCentre {cc.name} ({action})")
+        else:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+            await db.commit()
+            logger.error(f"Real-time Tally Push Failed for CostCentre {cc.name} ({action}). Tally Response: {response}")
+
+    except Exception as e:
+        logger.error(f"Error in try_push_cost_centre_realtime: {str(e)}")
+
+async def try_push_cost_centre_class_realtime(class_id: int, sync_id: int, action: str, db: AsyncSession):
+    try:
+        from sqlalchemy.orm import selectinload
+        from sqlalchemy.future import select
+        from sqlalchemy import update
+        from app.models.portal_core import SyncQueue, Company
+        from app.models.tally_core import MstCostCentreClass, MstCostCentreClassAllocation
+        from app.core.config import settings
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            return
+
+        stmt = select(MstCostCentreClass).options(
+            selectinload(MstCostCentreClass.allocations).selectinload(MstCostCentreClassAllocation.category),
+            selectinload(MstCostCentreClass.allocations).selectinload(MstCostCentreClassAllocation.cost_centre)
+        ).where(MstCostCentreClass.class_id == class_id)
+        
+        cls = (await db.execute(stmt)).scalars().first()
+        if not cls: return
+        
+        comp = (await db.execute(select(Company).where(Company.company_id == cls.company_id))).scalars().first()
+        comp_name = comp.name if comp else ""
+
+        # Group allocations by category
+        cat_map = {}
+        for alloc in cls.allocations:
+            cat_name = alloc.category.name if alloc.category else "Primary Cost Category"
+            if cat_name not in cat_map:
+                cat_map[cat_name] = []
+            cat_map[cat_name].append(alloc)
+            
+        xml_allocations = ""
+        for cat_name, allocs in cat_map.items():
+            xml_allocations += f"<CATEGORYALLOCATIONS.LIST>\n<CATEGORY>{cat_name}</CATEGORY>\n"
+            for alloc in allocs:
+                cc_name = alloc.cost_centre.name if alloc.cost_centre else ""
+                xml_allocations += f"<COSTCENTREALLOCATIONS.LIST>\n<NAME>{cc_name}</NAME>\n<PERCENTAGE>{alloc.percentage}</PERCENTAGE>\n</COSTCENTREALLOCATIONS.LIST>\n"
+            xml_allocations += "</CATEGORYALLOCATIONS.LIST>\n"
+            
+        xml_envelope = f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+<COSTCENTRECLASS NAME="{cls.name}" ACTION="{action}">
+<NAME>{cls.name}</NAME>
+{xml_allocations}
+</COSTCENTRECLASS>
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>"""
+
+        response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
+        if check_tally_success(response):
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True))
+            await db.commit()
+            logger.info(f"Real-time Tally Push Success for CostCentreClass {cls.name} ({action})")
+        else:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+            await db.commit()
+            logger.error(f"Real-time Tally Push Failed for CostCentreClass {cls.name} ({action}). Tally Response: {response}")
+
+    except Exception as e:
+        logger.error(f"Error in try_push_cost_centre_class_realtime: {str(e)}")
+
+async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str, db: AsyncSession, deleted_symbol: str = None, deleted_code: str = None):
+    try:
+        from sqlalchemy.orm import selectinload
+        from sqlalchemy.future import select
+        from sqlalchemy import update
+        from app.models.portal_core import SyncQueue, Company, Currency
+        from app.core.config import settings
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            return
+
+        curr = None
+        if action != "Delete":
+            stmt = select(Currency).options(selectinload(Currency.rates)).where(Currency.currency_id == currency_id)
+            curr = (await db.execute(stmt)).scalars().first()
+            if not curr: return
+        
+        # Currency is global in DB but synced per company queue
+        sq = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_id))).scalars().first()
+        if not sq: return
+        
+        comp = (await db.execute(select(Company).where(Company.company_id == sq.company_id))).scalars().first()
+        comp_name = comp.name if comp else ""
+
+        if action == "Delete":
+            xml_envelope = f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+<CURRENCY NAME="{deleted_symbol}" ACTION="Delete">
+</CURRENCY>
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>"""
+        else:
+            in_millions = "Yes" if curr.show_amount_in_millions else "No"
+            is_suffix = "Yes" if curr.suffix_symbol_to_amount else "No"
+            has_space = "Yes" if curr.add_space_between_amount_and_symbol else "No"
+            formal_name = curr.formal_name or curr.code
+            decimal_word = curr.word_representing_amount_after_decimal or ""
+            
+            rates_xml = ""
+            for r in curr.rates:
+                if r.company_id == sq.company_id:
+                    rdate_str = r.rate_date.strftime("%Y%m%d")
+                    if r.standard_rate:
+                        rates_xml += f"<DAILYSTDRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{r.standard_rate}/{curr.symbol}</SPECIFIEDRATE>\n</DAILYSTDRATE.LIST>\n"
+                    if r.selling_rate:
+                        rates_xml += f"<DAILYSELLINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{r.selling_rate}/{curr.symbol}</SPECIFIEDRATE>\n</DAILYSELLINGRATE.LIST>\n"
+                    if r.buying_rate:
+                        rates_xml += f"<DAILYBUYINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{r.buying_rate}/{curr.symbol}</SPECIFIEDRATE>\n</DAILYBUYINGRATE.LIST>\n"
+
+            xml_envelope = f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+<CURRENCY NAME="{curr.symbol}" ACTION="{action}">
+<ORIGINALNAME>{curr.symbol}</ORIGINALNAME>
+<MAILINGNAME>{formal_name}</MAILINGNAME>
+<EXPANDEDSYMBOL>{formal_name}</EXPANDEDSYMBOL>
+<ISOCURRENCYCODE>{curr.code}</ISOCURRENCYCODE>
+<DECIMALPLACES>{curr.decimal_places}</DECIMALPLACES>
+<INMILLIONS>{in_millions}</INMILLIONS>
+<ISSUFFIX>{is_suffix}</ISSUFFIX>
+<HASSPACE>{has_space}</HASSPACE>
+<DECIMALSYMBOL>{decimal_word}</DECIMALSYMBOL>
+<DECIMALPLACESFORPRINTING>{curr.decimal_places_for_words}</DECIMALPLACESFORPRINTING>
+{rates_xml}
+</CURRENCY>
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>"""
+
+        response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
+        if check_tally_success(response):
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True))
+            await db.commit()
+            logger.info(f"Real-time Tally Push Success for Currency {curr.symbol} ({action})")
+        else:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+            await db.commit()
+            logger.error(f"Real-time Tally Push Failed for Currency {curr.symbol} ({action}). Tally Response: {response}")
+
+    except Exception as e:
+        logger.error(f"Error in try_push_currency_realtime: {str(e)}")
+
+async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, db: AsyncSession, old_name: str = None, deleted_name: str = None):
+    try:
+        from sqlalchemy.future import select
+        from sqlalchemy import update
+        from app.models.portal_core import SyncQueue, Company
+        from app.models.tally_core import MstVoucherType, MstVoucherTypeClass
+        from app.core.config import settings
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            return
+
+        from sqlalchemy.orm import selectinload
+        vt = None
+        if action != "Delete":
+            stmt = select(MstVoucherType).options(
+                selectinload(MstVoucherType.prefixes),
+                selectinload(MstVoucherType.suffixes),
+                selectinload(MstVoucherType.restarts),
+                selectinload(MstVoucherType.classes).selectinload(MstVoucherTypeClass.groups)
+            ).where(MstVoucherType.voucher_type_id == vt_id)
+            vt = (await db.execute(stmt)).scalars().first()
+            if not vt: return
+            
+        sq = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_id))).scalars().first()
+        if not sq: return
+        
+        comp = (await db.execute(select(Company).where(Company.company_id == sq.company_id))).scalars().first()
+        comp_name = comp.name if comp else ""
+
+        if action == "Delete":
+            logger.warning(f"Suppressing real-time Tally Push for VoucherType (Delete) because Tally crashes on this payload. vt_name={deleted_name}")
+            return
+        else:
+            vt_name = vt.name
+            original_name = old_name or vt.name
+            parent = vt.parent_type or ""
+            
+            prevent_duplicates = "Yes" if getattr(vt, 'prevent_duplicates', False) else "No"
+
+            xml_envelope = f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+<VOUCHERTYPE NAME="{vt_name}" ACTION="{action}">
+<ORIGINALNAME>{original_name}</ORIGINALNAME>
+<LANGUAGENAME.LIST>
+ <NAME.LIST TYPE="String">
+  <NAME>{vt_name}</NAME>
+ </NAME.LIST>
+</LANGUAGENAME.LIST>
+<PARENT>{parent}</PARENT>
+<NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
+<PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
+<EFFECTIVEDATE>{"Yes" if getattr(vt, 'use_effective_dates', False) else "No"}</EFFECTIVEDATE>
+<USEZEROENTRIES>{"Yes" if getattr(vt, 'allow_zero_valued_transactions', False) else "No"}</USEZEROENTRIES>
+<ISOPTIONAL>{"Yes" if getattr(vt, 'is_optional_by_default', False) else "No"}</ISOPTIONAL>
+<COMMONNARRATION>{"Yes" if getattr(vt, 'allow_narration_in_voucher', True) else "No"}</COMMONNARRATION>
+<MULTINARRATION>{"Yes" if getattr(vt, 'provide_narrations_for_each_ledger', False) else "No"}</MULTINARRATION>
+<PRINTAFTERSAVE>{"Yes" if getattr(vt, 'print_voucher_after_saving', False) else "No"}</PRINTAFTERSAVE>
+<WHATSAPPAFTERSAVE>{"Yes" if getattr(vt, 'whatsapp_voucher_after_saving', False) else "No"}</WHATSAPPAFTERSAVE>
+<ISDEFAULTALLOCENABLED>{"Yes" if getattr(vt, 'enable_default_accounting_allocations', False) else "No"}</ISDEFAULTALLOCENABLED>
+<TRACKADDLCOST>{"Yes" if getattr(vt, 'track_additional_costs_for_purchases', False) else "No"}</TRACKADDLCOST>
+{f'<VCHPRINTJURISDICTION>{vt.default_jurisdiction}</VCHPRINTJURISDICTION>' if getattr(vt, 'default_jurisdiction', None) else ''}
+{f'<VCHPRINTTITLE>{vt.default_title_to_print}</VCHPRINTTITLE>' if getattr(vt, 'default_title_to_print', None) else ''}
+<VOUCHERNUMBERSERIES.LIST>
+ <NAME>Default</NAME>
+ <NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
+ <NUMBERINGSUBMETHOD>{vt.numbering_behavior or ""}</NUMBERINGSUBMETHOD>
+ <PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
+ <PREFILLZERO>{"Yes" if getattr(vt, 'prefill_with_zero', False) else "No"}</PREFILLZERO>
+ <USEDELETEDVCHNUM>{"Yes" if getattr(vt, 'show_unused_vch_nos', False) else "No"}</USEDELETEDVCHNUM>
+ <WIDTHOFNUMBER>{getattr(vt, 'width_of_numerical_part', 0)}</WIDTHOFNUMBER>
+ {''.join(f"<PREFIXLIST.LIST><DATE>{p.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{p.particulars}</PARTICULARS></PREFIXLIST.LIST>" for p in vt.prefixes)}
+ {''.join(f"<SUFFIXLIST.LIST><DATE>{s.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{s.particulars}</PARTICULARS></SUFFIXLIST.LIST>" for s in vt.suffixes)}
+ {''.join(f"<RESTARTFROMLIST.LIST><DATE>{r.applicable_from.strftime('%Y%m%d')}</DATE><PERIODBEGINNIGNUM>{r.starting_number}</PERIODBEGINNIGNUM><RESTARTFROM>{r.periodicity}</RESTARTFROM></RESTARTFROMLIST.LIST>" for r in vt.restarts)}
+</VOUCHERNUMBERSERIES.LIST>
+{''.join(f'''<VOUCHERCLASSLIST.LIST>
+ <CLASSNAME>{c.class_name}</CLASSNAME>
+ {f"<BANKALLOCFOR>{c.bank_alloc_for}</BANKALLOCFOR>" if c.bank_alloc_for else ""}
+</VOUCHERCLASSLIST.LIST>''' for c in vt.classes)}
+</VOUCHERTYPE>
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>"""
+
+        response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
+        
+        if "<CREATED>1</CREATED>" in response or "<ALTERED>1</ALTERED>" in response or "<DELETED>1</DELETED>" in response or "<IGNORED>1</IGNORED>" in response:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True, attempts=SyncQueue.attempts + 1))
+            await db.commit()
+            logger.info(f"Real-time Tally Push Success for VoucherType {vt_name if action == 'Delete' else vt.name} ({action})")
+        else:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+            await db.commit()
+            logger.error(f"Real-time Tally Push Failed for VoucherType {vt_name if action == 'Delete' else vt.name} ({action}). Tally Response: {response}")
+
+    except Exception as e:
+        logger.error(f"Error in try_push_voucher_type_realtime: {str(e)}")
+
+async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: AsyncSession):
     try:
         tally_url = settings.TALLY_URL
         if not tally_url:
@@ -970,6 +1491,24 @@ async def run_once_sync_background(user_id: int):
 </BODY>
 </ENVELOPE>"""
                         
+                # 4. Cost Categories and Cost Centres
+                elif item.record_type == "CostCategory":
+                    await try_push_cost_category_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+                    continue
+                    
+                elif item.record_type == "CostCentre":
+                    await try_push_cost_centre_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+                    continue
+
+                elif item.record_type == "CostCentreClass":
+                    await try_push_cost_centre_class_realtime(item.record_id, item.sync_id, item.action, db)
+                    continue
+                elif item.record_type == "Currency":
+                    await try_push_currency_realtime(item.record_id, item.sync_id, item.action, db)
+                    continue
+                else:
+                    continue
+                        
                 if xml_envelope:
                     try:
                         resp_xml = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
@@ -1036,7 +1575,8 @@ async def run_once_sync_background(user_id: int):
             total_imported = {
                 "groups": 0, "ledgers": 0, "vouchers": 0,
                 "stock_groups": 0, "uoms": 0, "godowns": 0,
-                "stock_categories": 0, "stock_items": 0
+                "stock_categories": 0, "stock_items": 0,
+                "currencies": 0, "voucher_types": 0
             }
 
             async with sync_lock:
@@ -1080,6 +1620,30 @@ async def run_once_sync_background(user_id: int):
           <COLLECTION NAME="AllAlteredGroups">
             <TYPE>Group</TYPE>
             <FETCH>NAME,PARENT</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>""",
+                        "VoucherTypes": f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>AllVoucherTypes</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="AllVoucherTypes">
+            <TYPE>VoucherType</TYPE>
+            <FETCH>NAME,PARENT,NUMBERINGMETHOD,PREVENTDUPLICATES,ALTERID,GUID</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -1192,6 +1756,54 @@ async def run_once_sync_background(user_id: int):
     </DESC>
   </BODY>
 </ENVELOPE>""",
+                        "CostCategories": f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>AllCostCategories</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="AllCostCategories">
+            <TYPE>CostCategory</TYPE>
+            <FETCH>NAME,ALLOCATEREVENUE,ALLOCATENONREVENUE,LANGUAGENAME.LIST</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>""",
+                        "CostCentres": f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>AllCostCentres</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="AllCostCentres">
+            <TYPE>CostCentre</TYPE>
+            <FETCH>NAME,CATEGORY,PARENT,LANGUAGENAME.LIST</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>""",
                         "Godowns": f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
@@ -1267,6 +1879,30 @@ async def run_once_sync_background(user_id: int):
       </TDL>
     </DESC>
   </BODY>
+</ENVELOPE>""",
+                        "Currencies": f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>AllCurrencies</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="AllCurrencies">
+            <TYPE>Currency</TYPE>
+            <FETCH>NAME,ORIGINALNAME,MAILINGNAME.LIST,DECIMALPLACES,INMILLIONS,ISSUFFIX,HASSPACE,DECIMALSYMBOL,DECIMALPLACESFORPRINTING</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
 </ENVELOPE>"""
                     }
 
@@ -1292,11 +1928,13 @@ async def run_once_sync_background(user_id: int):
                                 c_godowns = res.get("imported_godowns", 0)
                                 c_stock_cats = res.get("imported_stock_categories", 0)
                                 c_stock_items = res.get("imported_stock_items", 0)
+                                c_currencies = res.get("imported_currencies", 0)
+                                c_voucher_types = res.get("imported_voucher_types", 0)
                                 
                                 logger.info(
                                     f"[SYNC SUCCESS] Collection '{name}' imported successfully. "
                                     f"Counts - Groups: {c_groups}, Ledgers: {c_ledgers}, Vouchers: {c_vouchers}, "
-                                    f"StockItems: {c_stock_items}"
+                                    f"StockItems: {c_stock_items}, Currencies: {c_currencies}, VoucherTypes: {c_voucher_types}"
                                 )
                                 
                                 total_imported["groups"] += c_groups
@@ -1307,6 +1945,8 @@ async def run_once_sync_background(user_id: int):
                                 total_imported["godowns"] += c_godowns
                                 total_imported["stock_categories"] += c_stock_cats
                                 total_imported["stock_items"] += c_stock_items
+                                total_imported["currencies"] += c_currencies
+                                total_imported["voucher_types"] += c_voucher_types
                                 
                                 res_cid = res.get("company_id")
                                 if res_cid:

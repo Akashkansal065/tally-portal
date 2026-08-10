@@ -38,16 +38,16 @@ INSERT INTO account_groups (company_id, name, parent_group_id, nature, affects_g
 -- ------------------------------------------------------------
 -- Default Voucher Types
 -- ------------------------------------------------------------
-INSERT INTO voucher_types (company_id, name, abbreviation, numbering_method, prefix, next_number, is_system_defined) VALUES
-(@company_id, 'Payment',      'Pymt', 'Automatic', 'PYT-', 1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Receipt',      'Rcpt', 'Automatic', 'RCT-', 1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Contra',       'Ctr',  'Automatic', 'CTR-', 1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Journal',      'Jrnl', 'Automatic', 'JRN-', 1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Sales',        'Sal',  'Automatic', 'SAL-', 1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Purchase',     'Pur',  'Automatic', 'PUR-', 1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Debit Note',   'DrN',  'Automatic', 'DN-',  1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Credit Note',  'CrN',  'Automatic', 'CN-',  1, TRUE, NULL, TRUE, FALSE, FALSE, 1000),
-(@company_id, 'Stock Journal','StkJ', 'Automatic', 'SJ-',  1, TRUE, NULL, TRUE, FALSE, FALSE, 1000);
+INSERT INTO voucher_types (company_id, name, parent_type, abbreviation, numbering_method, prefix, suffix, next_number, prevent_duplicates, is_system_defined, is_active) VALUES
+(@company_id, 'Payment',      'Payment',      'Pymt', 'Automatic', 'PYT-', '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Receipt',      'Receipt',      'Rcpt', 'Automatic', 'RCT-', '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Contra',       'Contra',       'Ctr',  'Automatic', 'CTR-', '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Journal',      'Journal',      'Jrnl', 'Automatic', 'JRN-', '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Sales',        'Sales',        'Sal',  'Automatic', 'SAL-', '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Purchase',     'Purchase',     'Pur',  'Automatic', 'PUR-', '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Debit Note',   'Debit Note',   'DrN',  'Automatic', 'DN-',  '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Credit Note',  'Credit Note',  'CrN',  'Automatic', 'CN-',  '', 1, FALSE, TRUE, TRUE),
+(@company_id, 'Stock Journal','Stock Journal','StkJ', 'Automatic', 'SJ-',  '', 1, FALSE, TRUE, TRUE);
 
 -- ------------------------------------------------------------
 -- Default Roles

@@ -26,18 +26,22 @@ async def get_bootstrap_status(db: AsyncSession = Depends(get_db)):
     if _SYSTEM_BOOTSTRAPPED is True:
         return {"need_bootstrap": False}
 
-    admin_role_query = await db.execute(select(Role.role_id).where(Role.name == "Admin"))
-    admin_role_id = admin_role_query.scalars().first()
-    if admin_role_id:
-        admin_users_exist = await db.execute(select(User.user_id).where(User.role_id == admin_role_id).limit(1))
-        has_admin = admin_users_exist.scalars().first() is not None
-    else:
-        has_admin = False
+    try:
+        admin_role_query = await db.execute(select(Role.role_id).where(Role.name == "Admin"))
+        admin_role_id = admin_role_query.scalars().first()
+        if admin_role_id:
+            admin_users_exist = await db.execute(select(User.user_id).where(User.role_id == admin_role_id).limit(1))
+            has_admin = admin_users_exist.scalars().first() is not None
+        else:
+            has_admin = False
 
-    if has_admin:
-        _SYSTEM_BOOTSTRAPPED = True
+        if has_admin:
+            _SYSTEM_BOOTSTRAPPED = True
 
-    return {"need_bootstrap": not has_admin}
+        return {"need_bootstrap": not has_admin}
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 class RegisterCompanyRequest(BaseModel):
     company_name: str

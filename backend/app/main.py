@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
-from app.routers import auth, companies, ledgers, vouchers, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health
+from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health, masters
 
 async def db_keep_alive_task(interval_seconds: int = 120):
     """Background task running every 2 minutes to keep the DB connection pool active."""
@@ -40,14 +40,14 @@ async def lifespan(app: FastAPI):
         if roles_count == 0:
             print("Database empty. Auto-seeding default global metadata...")
             def sync_seed(connection):
-                from sqlalchemy.orm import Session
-                sync_db = Session(bind=connection)
-                try:
+                with connection.begin():
+                    # We pass the underlying synchronous DBAPI connection wrapper
+                    from sqlalchemy.orm import Session
+                    sync_db = Session(bind=connection)
                     seed_global_data(sync_db)
-                finally:
-                    sync_db.close()
-            
-            async with engine.begin() as conn:
+            async with engine.connect() as conn:
+                # We need to run the sync function in a thread pool since it blocks
+                # and SQLAlchemy requires a special wrapper for sync execution
                 await conn.run_sync(sync_seed)
 
     # 4. Start background DB keep-alive worker task (pings every 2 minutes)
@@ -75,6 +75,7 @@ app.include_router(auth.router)
 app.include_router(companies.router)
 app.include_router(ledgers.router)
 app.include_router(vouchers.router)
+app.include_router(voucher_types.router, prefix="/voucher-type", tags=["Voucher Types"])
 app.include_router(currency_tds.router)
 app.include_router(payment.router)
 app.include_router(inventory.router)
@@ -88,6 +89,7 @@ app.include_router(expenses.router)
 app.include_router(orders.router)
 app.include_router(reports.router)
 app.include_router(attendance.router)
+app.include_router(masters.router)
 
 @app.get("/")
 def read_root():

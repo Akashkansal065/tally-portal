@@ -531,6 +531,8 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
     imported_godowns = 0
     imported_stock_categories = 0
     imported_stock_items = 0
+    imported_currencies = 0
+    imported_voucher_types = 0
     
     # 1. Parse Groups (<GROUP>)
     for group_node in root.findall(".//GROUP"):
@@ -603,8 +605,391 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
     if imported_uoms > 0:
         await db.commit()
         logger.info(f"Committed {imported_uoms} UOMs")
+        
+    # Parse Currencies (<CURRENCY>)
+    # Tally uses symbols (₹, $, €) as the NAME. Map them to ISO 4217 codes.
+    TALLY_SYMBOL_TO_ISO = {
+        '₹': 'INR', 'â¹': 'INR', 'INR': 'INR', 'Rs': 'INR', 'Rs.': 'INR',
+        '$': 'USD', 'US$': 'USD', 'USD': 'USD',
+        '€': 'EUR', 'EUR': 'EUR',
+        '£': 'GBP', 'GBP': 'GBP',
+        '¥': 'JPY', 'JPY': 'JPY', 'CN¥': 'CNY', 'CNY': 'CNY',
+        'A$': 'AUD', 'AUD': 'AUD', 'C$': 'CAD', 'CAD': 'CAD',
+        'CHF': 'CHF', 'Fr': 'CHF',
+        'HK$': 'HKD', 'HKD': 'HKD', 'S$': 'SGD', 'SGD': 'SGD',
+        'kr': 'SEK', 'SEK': 'SEK', 'NOK': 'NOK', 'DKK': 'DKK',
+        'NZ$': 'NZD', 'NZD': 'NZD', 'R': 'ZAR', 'ZAR': 'ZAR',
+        'AED': 'AED', 'SAR': 'SAR', 'QAR': 'QAR', 'OMR': 'OMR',
+        'KWD': 'KWD', 'BHD': 'BHD', 'MYR': 'MYR', 'RM': 'MYR',
+        'THB': 'THB', '฿': 'THB', 'IDR': 'IDR', 'Rp': 'IDR',
+        'PHP': 'PHP', '₱': 'PHP', 'KRW': 'KRW', '₩': 'KRW',
+        'BDT': 'BDT', '৳': 'BDT', 'LKR': 'LKR', 'NPR': 'NPR',
+        'PKR': 'PKR', 'RUB': 'RUB', '₽': 'RUB', 'TRY': 'TRY', '₺': 'TRY',
+        'BRL': 'BRL', 'R$': 'BRL', 'MXN': 'MXN', 'Mex$': 'MXN',
+        'PLN': 'PLN', 'zł': 'PLN', 'CZK': 'CZK', 'Kč': 'CZK',
+        'HUF': 'HUF', 'Ft': 'HUF', 'RON': 'RON', 'TWD': 'TWD', 'NT$': 'TWD',
+        'ILS': 'ILS', '₪': 'ILS', 'EGP': 'EGP', 'NGN': 'NGN', '₦': 'NGN',
+        'KES': 'KES', 'GHS': 'GHS', '₵': 'GHS', 'CLP': 'CLP',
+        'COP': 'COP', 'ARS': 'ARS', 'PEN': 'PEN', 'VND': 'VND', '₫': 'VND',
+        'MMK': 'MMK', 'KHR': 'KHR',
+    }
 
-    # 1.3. Parse Godowns (<GODOWN>)
+    for curr_node in root.findall(".//CURRENCY"):
+        symbol = curr_node.get("NAME") or curr_node.findtext("NAME") or curr_node.findtext("ORIGINALNAME")
+        if not symbol:
+            continue
+            
+        formal_name = curr_node.findtext("MAILINGNAME.LIST/MAILINGNAME")
+        iso_code_raw = curr_node.findtext("ISOCURRENCYCODE") or curr_node.findtext("EXPANDEDNAME")
+        
+        # Derive ISO code: prefer explicit XML field, then lookup, then formal_name, then symbol
+        code = None
+        if iso_code_raw and len(iso_code_raw.strip()) == 3:
+            code = iso_code_raw.strip().upper()
+        if not code:
+            code = TALLY_SYMBOL_TO_ISO.get(symbol.strip())
+        if not code and formal_name:
+            code = TALLY_SYMBOL_TO_ISO.get(formal_name.strip())
+        if not code:
+            # Last resort: use formal_name or symbol truncated to 3 chars
+            code = (formal_name or symbol)[:3].upper()
+        
+        logger.info(f"Parsing Currency from XML -> Symbol: {symbol}, FormalName: {formal_name}, ISO: {code}")
+        decimals = curr_node.findtext("DECIMALPLACES", "2")
+        decimals = int(decimals) if decimals.isdigit() else 2
+        
+        show_millions = curr_node.findtext("INMILLIONS", "No").lower() == "yes"
+        is_suffix = curr_node.findtext("ISSUFFIX", "No").lower() == "yes"
+        has_space = curr_node.findtext("HASSPACE", "Yes").lower() == "yes"
+        dec_symbol = curr_node.findtext("DECIMALSYMBOL", "")
+        dec_print = curr_node.findtext("DECIMALPLACESFORPRINTING", "2")
+        dec_print = int(dec_print) if dec_print.isdigit() else 2
+        
+        from app.models.portal_core import Currency
+        # Match by code OR by symbol to avoid duplicates
+        existing_curr = (await db.execute(
+            select(Currency).where((Currency.code == code) | (Currency.symbol == symbol))
+        )).scalars().first()
+        if existing_curr:
+            logger.info(f"Updating existing currency: {existing_curr.code} -> {code}")
+            existing_curr.code = code
+            existing_curr.symbol = symbol
+            existing_curr.formal_name = formal_name
+            existing_curr.decimal_places = decimals
+            existing_curr.show_amount_in_millions = show_millions
+            existing_curr.suffix_symbol_to_amount = is_suffix
+            existing_curr.add_space_between_amount_and_symbol = has_space
+            existing_curr.word_representing_amount_after_decimal = dec_symbol
+            existing_curr.decimal_places_for_words = dec_print
+        else:
+            logger.info(f"Creating new currency: {code}")
+            new_curr = Currency(
+                code=code,
+                symbol=symbol,
+                formal_name=formal_name,
+                decimal_places=decimals,
+                show_amount_in_millions=show_millions,
+                suffix_symbol_to_amount=is_suffix,
+                add_space_between_amount_and_symbol=has_space,
+                word_representing_amount_after_decimal=dec_symbol,
+                decimal_places_for_words=dec_print,
+                is_base_currency=False
+            )
+            db.add(new_curr)
+        
+        imported_currencies += 1
+        
+    await db.flush()
+    if imported_currencies > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_currencies} Currencies")
+
+    # 1.3 Parse Voucher Types (<VOUCHERTYPE>)
+    for vt_node in root.findall(".//VOUCHERTYPE"):
+        name = vt_node.get("NAME") or vt_node.findtext("NAME")
+        if not name:
+            continue
+            
+        parent_name = vt_node.findtext("PARENT")
+        numbering_method = vt_node.findtext("NUMBERINGMETHOD") or "Automatic"
+        allowed_methods = ['Automatic', 'Automatic (Manual Override)', 'Manual', 'Multi-user Auto', 'None']
+        if numbering_method not in allowed_methods:
+            numbering_method = 'Automatic'
+        prevent_dup = vt_node.findtext("PREVENTDUPLICATES", "No").lower() == "yes"
+        use_effective = vt_node.findtext("EFFECTIVEDATE", "No").lower() == "yes"
+        allow_zero = vt_node.findtext("USEZEROENTRIES", "No").lower() == "yes"
+        is_opt = vt_node.findtext("ISOPTIONAL", "No").lower() == "yes"
+        allow_narr = vt_node.findtext("COMMONNARRATION", "Yes").lower() == "yes"
+        multi_narr = vt_node.findtext("MULTINARRATION", "No").lower() == "yes"
+        print_save = vt_node.findtext("PRINTAFTERSAVE", "No").lower() == "yes"
+        default_alloc = vt_node.findtext("ISDEFAULTALLOCENABLED", "No").lower() == "yes"
+        track_costs = vt_node.findtext("TRACKADDLCOST", "No").lower() == "yes"
+        def_jurisdiction = vt_node.findtext("VCHPRINTJURISDICTION") or None
+        def_title = vt_node.findtext("VCHPRINTTITLE") or None
+
+        whatsapp = vt_node.findtext("WHATSAPPAFTERSAVE", "No").lower() == "yes"
+        
+        # Parse Advanced Numbering
+        num_series = vt_node.find("VOUCHERNUMBERSERIES.LIST")
+        num_behavior = None
+        width = 0
+        prefill = False
+        unused = False
+        prefixes_data = []
+        suffixes_data = []
+        restarts_data = []
+        
+        if num_series is not None:
+            num_behavior = num_series.findtext("NUMBERINGSUBMETHOD")
+            width = int(num_series.findtext("WIDTHOFNUMBER") or "0")
+            prefill = num_series.findtext("PREFILLZERO", "No").lower() == "yes"
+            unused = num_series.findtext("USEDELETEDVCHNUM", "No").lower() == "yes"
+            
+            for p in num_series.findall("PREFIXLIST.LIST"):
+                try:
+                    d_str = p.findtext("DATE")
+                    if d_str and len(d_str) >= 8:
+                        dt = datetime.strptime(d_str[:8], "%Y%m%d").date()
+                        prefixes_data.append({"applicable_from": dt, "particulars": p.findtext("PARTICULARS") or ""})
+                except Exception: pass
+                
+            for s in num_series.findall("SUFFIXLIST.LIST"):
+                try:
+                    d_str = s.findtext("DATE")
+                    if d_str and len(d_str) >= 8:
+                        dt = datetime.strptime(d_str[:8], "%Y%m%d").date()
+                        suffixes_data.append({"applicable_from": dt, "particulars": s.findtext("PARTICULARS") or ""})
+                except Exception: pass
+                
+            for r in num_series.findall("RESTARTFROMLIST.LIST"):
+                try:
+                    d_str = r.findtext("DATE")
+                    if d_str and len(d_str) >= 8:
+                        dt = datetime.strptime(d_str[:8], "%Y%m%d").date()
+                        restarts_data.append({"applicable_from": dt, "starting_number": int(r.findtext("PERIODBEGINNIGNUM") or "1"), "periodicity": r.findtext("RESTARTFROM") or ""})
+                except Exception: pass
+                
+        # Parse Classes
+        classes_data = []
+        for c_node in vt_node.findall("VOUCHERCLASSLIST.LIST"):
+            c_name = c_node.findtext("CLASSNAME")
+            if not c_name: continue
+            alloc = c_node.findtext("BANKALLOCFOR")
+            def_ledger = None
+            groups = []
+            
+            # (Groups parsing could go here if needed, but Tally usually exports it differently)
+            classes_data.append({
+                "class_name": c_name,
+                "bank_alloc_for": alloc,
+                "default_ledger_name": def_ledger,
+                "groups": groups
+            })
+            
+        guid = vt_node.findtext("GUID") or vt_node.get("GUID")
+        alter_id_str = vt_node.findtext("ALTERID")
+        
+        alter_id = None
+        if alter_id_str and alter_id_str.isdigit():
+            alter_id = int(alter_id_str)
+
+        from app.models.tally_core import MstVoucherType, MstVoucherTypePrefix, MstVoucherTypeSuffix, MstVoucherTypeRestart, MstVoucherTypeClass, MstVoucherTypeClassGroup
+        from sqlalchemy import delete
+        stmt = select(MstVoucherType).where(MstVoucherType.company_id == company_id, MstVoucherType.name == name)
+        existing_vt = (await db.execute(stmt)).scalars().first()
+        
+        if existing_vt:
+            if alter_id and existing_vt.tally_alter_id and existing_vt.tally_alter_id >= alter_id:
+                continue
+                
+            existing_vt.parent_type = parent_name
+            existing_vt.numbering_method = numbering_method
+            existing_vt.prevent_duplicates = prevent_dup
+            existing_vt.use_effective_dates = use_effective
+            existing_vt.allow_zero_valued_transactions = allow_zero
+            existing_vt.is_optional_by_default = is_opt
+            existing_vt.allow_narration_in_voucher = allow_narr
+            existing_vt.provide_narrations_for_each_ledger = multi_narr
+            existing_vt.print_voucher_after_saving = print_save
+            existing_vt.enable_default_accounting_allocations = default_alloc
+            existing_vt.track_additional_costs_for_purchases = track_costs
+            existing_vt.default_jurisdiction = def_jurisdiction
+            existing_vt.default_title_to_print = def_title
+            
+            existing_vt.numbering_behavior = num_behavior
+            existing_vt.width_of_numerical_part = width
+            existing_vt.prefill_with_zero = prefill
+            existing_vt.show_unused_vch_nos = unused
+            existing_vt.whatsapp_voucher_after_saving = whatsapp
+            
+            if guid: existing_vt.tally_guid = guid
+            if alter_id: existing_vt.tally_alter_id = alter_id
+            
+            # Recreate nested
+            await db.execute(delete(MstVoucherTypePrefix).where(MstVoucherTypePrefix.voucher_type_id == existing_vt.voucher_type_id))
+            await db.execute(delete(MstVoucherTypeSuffix).where(MstVoucherTypeSuffix.voucher_type_id == existing_vt.voucher_type_id))
+            await db.execute(delete(MstVoucherTypeRestart).where(MstVoucherTypeRestart.voucher_type_id == existing_vt.voucher_type_id))
+            await db.execute(delete(MstVoucherTypeClass).where(MstVoucherTypeClass.voucher_type_id == existing_vt.voucher_type_id))
+            
+            vt_id = existing_vt.voucher_type_id
+            for p in prefixes_data: db.add(MstVoucherTypePrefix(voucher_type_id=vt_id, **p))
+            for s in suffixes_data: db.add(MstVoucherTypeSuffix(voucher_type_id=vt_id, **s))
+            for r in restarts_data: db.add(MstVoucherTypeRestart(voucher_type_id=vt_id, **r))
+            for c in classes_data:
+                g_data = c.pop("groups", [])
+                nc = MstVoucherTypeClass(voucher_type_id=vt_id, **c)
+                db.add(nc)
+                await db.flush()
+                for g in g_data: db.add(MstVoucherTypeClassGroup(class_id=nc.class_id, **g))
+                
+        else:
+            new_vt = MstVoucherType(
+                company_id=company_id,
+                name=name,
+                parent_type=parent_name,
+                numbering_method=numbering_method,
+                numbering_behavior=num_behavior,
+                prevent_duplicates=prevent_dup,
+                use_effective_dates=use_effective,
+                allow_zero_valued_transactions=allow_zero,
+                is_optional_by_default=is_opt,
+                allow_narration_in_voucher=allow_narr,
+                provide_narrations_for_each_ledger=multi_narr,
+                print_voucher_after_saving=print_save,
+                enable_default_accounting_allocations=default_alloc,
+                track_additional_costs_for_purchases=track_costs,
+                default_jurisdiction=def_jurisdiction,
+                default_title_to_print=def_title,
+                width_of_numerical_part=width,
+                prefill_with_zero=prefill,
+                show_unused_vch_nos=unused,
+                whatsapp_voucher_after_saving=whatsapp,
+                tally_guid=guid,
+                tally_alter_id=alter_id,
+                is_system_defined=False
+            )
+            db.add(new_vt)
+            await db.flush()
+            
+            vt_id = new_vt.voucher_type_id
+            for p in prefixes_data: db.add(MstVoucherTypePrefix(voucher_type_id=vt_id, **p))
+            for s in suffixes_data: db.add(MstVoucherTypeSuffix(voucher_type_id=vt_id, **s))
+            for r in restarts_data: db.add(MstVoucherTypeRestart(voucher_type_id=vt_id, **r))
+            for c in classes_data:
+                g_data = c.pop("groups", [])
+                nc = MstVoucherTypeClass(voucher_type_id=vt_id, **c)
+                db.add(nc)
+                await db.flush()
+                for g in g_data: db.add(MstVoucherTypeClassGroup(class_id=nc.class_id, **g))
+            
+        imported_voucher_types += 1
+
+    await db.flush()
+    if imported_voucher_types > 0:
+        await db.commit()
+        logger.info(f"Committed {imported_voucher_types} Voucher Types")
+
+    # 1.3 Parse Cost Categories (<COSTCATEGORY>)
+    for cc_node in root.findall(".//COSTCATEGORY"):
+        name = cc_node.get("NAME") or cc_node.findtext("NAME")
+        if not name:
+            continue
+        
+        allocate_revenue = cc_node.findtext("ALLOCATEREVENUE", "Yes").lower() == "yes"
+        allocate_non_revenue = cc_node.findtext("ALLOCATENONREVENUE", "No").lower() == "yes"
+        
+        alias = None
+        name_list = cc_node.findall(".//NAME.LIST/NAME")
+        if len(name_list) > 1 and name_list[1].text:
+            alias = name_list[1].text
+
+        from app.models.tally_core import MstCostCategory
+        existing_cc = (await db.execute(select(MstCostCategory).where(
+            MstCostCategory.company_id == company_id, 
+            func.lower(MstCostCategory.name) == name.lower()
+        ))).scalars().first()
+        
+        if existing_cc:
+            existing_cc.allocate_revenue = allocate_revenue
+            existing_cc.allocate_non_revenue = allocate_non_revenue
+            existing_cc.alias = alias
+        else:
+            new_cc = MstCostCategory(
+                company_id=company_id,
+                name=name,
+                alias=alias,
+                allocate_revenue=allocate_revenue,
+                allocate_non_revenue=allocate_non_revenue,
+                is_active=True
+            )
+            db.add(new_cc)
+            
+        imported_stock_categories += 1
+        
+    await db.flush()
+    if imported_stock_categories > 0:
+        await db.commit()
+        logger.info(f"Committed Cost Categories")
+
+    # 1.4 Parse Cost Centres (<COSTCENTRE>)
+    for cc_node in root.findall(".//COSTCENTRE"):
+        name = cc_node.get("NAME") or cc_node.findtext("NAME")
+        if not name:
+            continue
+            
+        category_name = cc_node.findtext("CATEGORY") or "Primary Cost Category"
+        parent_name = cc_node.findtext("PARENT")
+        
+        alias = None
+        name_list = cc_node.findall(".//NAME.LIST/NAME")
+        if len(name_list) > 1 and name_list[1].text:
+            alias = name_list[1].text
+
+        from app.models.tally_core import MstCostCentre, MstCostCategory
+        
+        # Resolve category ID
+        cat = (await db.execute(select(MstCostCategory).where(
+            MstCostCategory.company_id == company_id, 
+            func.lower(MstCostCategory.name) == category_name.lower()
+        ))).scalars().first()
+        if not cat:
+            continue
+            
+        # Resolve parent ID
+        parent_id = None
+        if parent_name:
+            parent = (await db.execute(select(MstCostCentre).where(
+                MstCostCentre.company_id == company_id, 
+                func.lower(MstCostCentre.name) == parent_name.lower()
+            ))).scalars().first()
+            if parent:
+                parent_id = parent.cost_centre_id
+
+        existing_cc = (await db.execute(select(MstCostCentre).where(
+            MstCostCentre.company_id == company_id, 
+            func.lower(MstCostCentre.name) == name.lower()
+        ))).scalars().first()
+        
+        if existing_cc:
+            existing_cc.category_id = cat.category_id
+            existing_cc.parent_id = parent_id
+            existing_cc.alias = alias
+        else:
+            new_cc = MstCostCentre(
+                company_id=company_id,
+                name=name,
+                alias=alias,
+                category_id=cat.category_id,
+                parent_id=parent_id,
+                is_active=True
+            )
+            db.add(new_cc)
+            
+    await db.flush()
+    await db.commit()
+    logger.info(f"Committed Cost Centres")
+
+    # 1.5. Parse Godowns (<GODOWN>)
     for gd_node in root.findall(".//GODOWN"):
         name = gd_node.get("NAME") or gd_node.findtext("NAME")
         if not name:
@@ -1386,7 +1771,8 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
         f"UOMs: {imported_uoms}, "
         f"Godowns: {imported_godowns}, "
         f"StockCategories: {imported_stock_categories}, "
-        f"StockItems: {imported_stock_items}"
+        f"StockItems: {imported_stock_items}, "
+        f"Currencies: {imported_currencies}"
     )
     
     return {
@@ -1400,5 +1786,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
         "imported_uoms": imported_uoms,
         "imported_godowns": imported_godowns,
         "imported_stock_categories": imported_stock_categories,
-        "imported_stock_items": imported_stock_items
+        "imported_stock_items": imported_stock_items,
+        "imported_currencies": imported_currencies,
+        "imported_voucher_types": imported_voucher_types
     }

@@ -34,6 +34,9 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  FolderTree,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -296,37 +299,63 @@ export function GlobalHeader() {
               {isAdmin && (
                 <DrawerLink href="/admin" icon={Shield} label="Admin Panel" onClick={() => setDrawerOpen(false)} />
               )}
-              {(permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments) && (
-                <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
-              )}
+              
               {permissions.showLedger && (
-                <>
-                  <DrawerLink href="/ledgers" icon={BookOpen} label="Ledgers" onClick={() => setDrawerOpen(false)} />
+                <CollapsibleMenu label="Accounting Masters" icon={BookOpen} defaultOpen={true}>
                   {permissions.showLedger && (
-                    <DrawerLink href="/ledgers/groups" icon={BookOpen} label="Group Master" onClick={() => setDrawerOpen(false)} />
+                    <DrawerLink href="/ledgers/groups" icon={Layers} label="Group" onClick={() => setDrawerOpen(false)} />
                   )}
-                </>
+                  <DrawerLink href="/ledgers" icon={BookOpen} label="Ledger" onClick={() => setDrawerOpen(false)} />
+                  {isAdmin && (
+                    <>
+                      <DrawerLink href="/masters/cost-categories" icon={Layers} label="Cost Category" onClick={() => setDrawerOpen(false)} />
+                      <DrawerLink href="/masters/cost-centres" icon={FolderTree} label="Cost Centre" onClick={() => setDrawerOpen(false)} />
+                      <DrawerLink href="/masters/cost-centre-classes" icon={BookOpen} label="Cost Centre Class" onClick={() => setDrawerOpen(false)} />
+                      <DrawerLink href="/masters/currencies" icon={BookOpen} label="Currencies" onClick={() => setDrawerOpen(false)} />
+                      <DrawerLink href="/masters/voucher-types" icon={BookOpen} label="Voucher Types" onClick={() => setDrawerOpen(false)} />
+                    </>
+                  )}
+                </CollapsibleMenu>
               )}
+
               {permissions.showStocks && (
-                <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />
+                <CollapsibleMenu label="Inventory Masters" icon={Layers} defaultOpen={true}>
+                  <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />
+                </CollapsibleMenu>
               )}
-              {permissions.showOrders && (
-                <DrawerLink href="/temporders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
+
+              {(permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments || permissions.showOrders || permissions.showExpenses) && (
+                <CollapsibleMenu label="Transactions" icon={FileText} defaultOpen={true}>
+                  {(permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments) && (
+                    <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {permissions.showOrders && (
+                    <DrawerLink href="/temporders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {permissions.showPayments && (
+                    <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {permissions.showExpenses && (
+                    <DrawerLink href="/expenses" icon={Wallet} label="Expenses" onClick={() => setDrawerOpen(false)} />
+                  )}
+                </CollapsibleMenu>
               )}
-              {permissions.showPayments && (
-                <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
-              )}
+
               {permissions.showCheckIn && (
-                <DrawerLink href="/check-in" icon={MapPin} label="Check-In" onClick={() => setDrawerOpen(false)} />
+                <CollapsibleMenu label="Utilities" icon={MapPin}>
+                  <DrawerLink href="/check-in" icon={MapPin} label="Check-In" onClick={() => setDrawerOpen(false)} />
+                </CollapsibleMenu>
               )}
-              {permissions.showExpenses && (
-                <DrawerLink href="/expenses" icon={Wallet} label="Expenses" onClick={() => setDrawerOpen(false)} />
-              )}
-              {permissions.showReports && (
-                <DrawerLink href="/reports" icon={BarChart3} label="Reports" onClick={() => setDrawerOpen(false)} />
-              )}
-              {permissions.showGst && (
-                <DrawerLink href="/gst" icon={FileSpreadsheet} label="GST Returns" onClick={() => setDrawerOpen(false)} />
+
+              {(permissions.showReports || permissions.showGst) && (
+                <CollapsibleMenu label="Reports" icon={BarChart3} defaultOpen={true}>
+                  {permissions.showReports && (
+                    <DrawerLink href="/reports" icon={BarChart3} label="Reports" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {permissions.showGst && (
+                    <DrawerLink href="/gst" icon={FileSpreadsheet} label="GST Returns" onClick={() => setDrawerOpen(false)} />
+                  )}
+                </CollapsibleMenu>
               )}
             </nav>
 
@@ -656,6 +685,44 @@ export function GlobalHeader() {
         </div>
       )}
     </>
+  )
+}
+
+function CollapsibleMenu({ 
+  label, 
+  icon: Icon, 
+  children,
+  defaultOpen = false
+}: { 
+  label: string, 
+  icon: LucideIcon, 
+  children: React.ReactNode,
+  defaultOpen?: boolean
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen)
+  
+  return (
+    <div className="mb-1">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        <div className="flex items-center gap-3">
+          <Icon className="h-4 w-4 shrink-0" />
+          {label}
+        </div>
+        {isOpen ? (
+          <ChevronDown className="h-4 w-4" />
+        ) : (
+          <ChevronRight className="h-4 w-4" />
+        )}
+      </button>
+      {isOpen && (
+        <div className="pl-6 space-y-1 mt-1 border-l-2 border-border ml-5 py-1">
+          {children}
+        </div>
+      )}
+    </div>
   )
 }
 

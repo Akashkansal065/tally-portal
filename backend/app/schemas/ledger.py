@@ -20,6 +20,9 @@ class GroupGstDetailSchema(BaseModel):
     taxability_type: Optional[str] = None
     gst_rate: Optional[float] = None
 
+    class Config:
+        from_attributes = True
+
 class AccountGroupBase(BaseModel):
     name: str
     parent_group_id: Optional[int] = None
@@ -34,6 +37,8 @@ class AccountGroupBase(BaseModel):
     is_billwise_on: bool = False
     used_for_calculation: bool = False
     method_to_allocate: Optional[str] = None
+    sort_position: int = 1000
+    language_id: int = 1033
 
 class AccountGroupCreate(AccountGroupBase):
     gst_details: Optional[List[GroupGstDetailSchema]] = []
@@ -48,7 +53,6 @@ class AccountGroupResponse(AccountGroupBase):
     company_id: int
     is_system_defined: bool
     is_deemed_positive: bool = False
-    sort_position: int = 1000
     gst_details: Optional[List[GroupGstDetailSchema]] = []
 
     class Config:
