@@ -546,6 +546,7 @@ class TrnAccounting(Base):
     voucher = relationship("TrnVoucher", back_populates="entries")
     ledger = relationship("MstLedger")
     bank_allocations = relationship("TrnBankAllocation", back_populates="entry", cascade="all, delete-orphan")
+    bill_allocations = relationship("BillAllocation", back_populates="entry", cascade="all, delete-orphan")
 
 class TrnBankAllocation(Base):
     __tablename__ = "bank_allocations"
@@ -867,3 +868,4 @@ class BillAllocation(Base):
     amount = Column(Numeric(18, 2), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), index=True)
     bill = relationship("TrnBill", back_populates="allocations")
+    entry = relationship("TrnAccounting", back_populates="bill_allocations")

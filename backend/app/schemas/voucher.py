@@ -17,6 +17,19 @@ class BankAllocationResponse(BankAllocationCreate):
     class Config:
         from_attributes = True
 
+class BillAllocationCreate(BaseModel):
+    bill_id: Optional[int] = None
+    bill_reference: Optional[str] = None
+    allocation_type: str = "Against Ref"  # Against Ref, Advance, On Account, New Ref
+    amount: Decimal
+
+class BillAllocationResponse(BillAllocationCreate):
+    allocation_id: int
+    voucher_entry_id: int
+    
+    class Config:
+        from_attributes = True
+
 class VoucherEntryCreate(BaseModel):
     ledger_id: int
     cost_center_id: Optional[int] = None
@@ -30,6 +43,7 @@ class VoucherEntryCreate(BaseModel):
     exchange_rate_used: Optional[Decimal] = None
     
     bank_allocations: Optional[List[BankAllocationCreate]] = None
+    bill_allocations: Optional[List[BillAllocationCreate]] = None
 
 from pydantic import model_validator
 
@@ -37,6 +51,7 @@ class VoucherEntryResponse(VoucherEntryCreate):
     entry_id: int
     voucher_id: int
     bank_allocations: Optional[List[BankAllocationResponse]] = []
+    bill_allocations: Optional[List[BillAllocationResponse]] = []
     
     class Config:
         from_attributes = True

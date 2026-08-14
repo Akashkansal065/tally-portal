@@ -168,7 +168,7 @@ class StockItemCreate(BaseModel):
     name: str
     stock_group_id: Optional[int] = None
     stock_category_id: Optional[int] = None
-    unit_id: int
+    unit_id: Optional[int] = None
     alt_unit_id: Optional[int] = None
     alt_unit_conversion: Optional[Decimal] = None
     description: Optional[str] = None

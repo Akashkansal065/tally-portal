@@ -46,8 +46,10 @@ async def create_uom(
         if not base_uom.is_simple_unit or not add_uom.is_simple_unit:
             raise HTTPException(status_code=400, detail="Base and additional units must be simple units.")
             
-        req.symbol = f"{add_uom.symbol} of {req.conversion_factor} {base_uom.symbol}"
-        req.name = req.symbol
+        cf_val = req.conversion_factor or 1
+        cf_str = str(int(cf_val)) if cf_val % 1 == 0 else str(cf_val)
+        req.symbol = req.symbol or f"{base_uom.symbol} of {cf_str} {add_uom.symbol}"
+        req.name = req.name or req.symbol
     else:
         if not req.symbol:
             raise HTTPException(status_code=400, detail="Simple units require a symbol.")
@@ -65,8 +67,23 @@ async def create_uom(
         conversion_factor=req.conversion_factor if not req.is_simple_unit else None
     )
     db.add(uom)
+    await db.flush()
+
+    # Sync Queue & Realtime Push to Tally
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Unit",
+        record_id=uom.unit_id,
+        action="Create",
+    )
+    db.add(sync_item)
     await db.commit()
     await db.refresh(uom)
+
+    from app.routers.sync import try_push_uom_realtime
+    await try_push_uom_realtime(uom.unit_id, sync_item.sync_id, "Create", db)
+
     return uom
 
 @router.put("/uoms/{unit_id}", response_model=UnitOfMeasureResponse)
@@ -90,8 +107,10 @@ async def update_uom(
         if not base_uom or not add_uom:
             raise HTTPException(status_code=400, detail="Invalid base or additional unit.")
             
-        req.symbol = f"{add_uom.symbol} of {req.conversion_factor} {base_uom.symbol}"
-        req.name = req.symbol
+        cf_val = req.conversion_factor or 1
+        cf_str = str(int(cf_val)) if cf_val % 1 == 0 else str(cf_val)
+        req.symbol = req.symbol or f"{base_uom.symbol} of {cf_str} {add_uom.symbol}"
+        req.name = req.name or req.symbol
     else:
         req.name = req.name or req.symbol
 
@@ -126,7 +145,11 @@ async def get_uoms(
     user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(MstUom).where(MstUom.company_id == user.company_id)
+    from sqlalchemy import func
+    stmt = select(MstUom).where(
+        MstUom.company_id == user.company_id,
+        func.trim(func.lower(MstUom.symbol)) != 'not applicable'
+    ).order_by(MstUom.symbol.asc())
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -481,15 +504,30 @@ async def create_stock_item(
     user: User = Depends(require_permission("inventory", "create")),
     db: AsyncSession = Depends(get_db)
 ):
-    # Verify UOM exists
-    uom_query = await db.execute(
-        select(MstUom).where(
-            MstUom.unit_id == req.unit_id,
-            MstUom.company_id == user.company_id
+    # Verify or resolve UOM
+    unit_id = req.unit_id
+    if unit_id:
+        uom_query = await db.execute(
+            select(MstUom).where(
+                MstUom.unit_id == unit_id,
+                MstUom.company_id == user.company_id
+            )
         )
-    )
-    if not uom_query.scalars().first():
-        raise HTTPException(status_code=400, detail="Unit of Measure not found.")
+        if not uom_query.scalars().first():
+            raise HTTPException(status_code=400, detail="Unit of Measure not found.")
+    else:
+        # Resolve default UOM for company or create standard 'nos'
+        uom_query = await db.execute(
+            select(MstUom).where(MstUom.company_id == user.company_id)
+        )
+        first_uom = uom_query.scalars().first()
+        if first_uom:
+            unit_id = first_uom.unit_id
+        else:
+            new_uom = MstUom(company_id=user.company_id, name="nos", symbol="nos")
+            db.add(new_uom)
+            await db.flush()
+            unit_id = new_uom.unit_id
         
     if req.alt_unit_id:
         alt_uom_query = await db.execute(select(MstUom).where(MstUom.unit_id == req.alt_unit_id, MstUom.company_id == user.company_id))
@@ -523,7 +561,7 @@ async def create_stock_item(
         name=req.name,
         stock_group_id=req.stock_group_id,
         stock_category_id=req.stock_category_id,
-        unit_id=req.unit_id,
+        unit_id=unit_id,
         alt_unit_id=req.alt_unit_id,
         alt_unit_conversion=req.alt_unit_conversion,
         description=req.description,
@@ -562,7 +600,19 @@ async def create_stock_item(
     for plr in req.price_level_rates:
         db.add(StockItemPriceLevelRate(stock_item_id=item.stock_item_id, price_level_id=plr.price_level_id, effective_from=plr.effective_from, qty_from=plr.qty_from, qty_to=plr.qty_to, rate=plr.rate, discount_percent=plr.discount_percent))
 
+    # Sync Queue & Realtime Push to Tally
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockItem",
+        record_id=item.stock_item_id,
+        action="Create",
+    )
+    db.add(sync_item)
     await db.commit()
+    
+    from app.routers.sync import try_push_stock_item_realtime
+    await try_push_stock_item_realtime(item.stock_item_id, sync_item.sync_id, "Create", db)
     
     final = await db.execute(
         select(MstStockItem)
@@ -776,9 +826,19 @@ async def update_stock_item(
             db.add(StockItemBOMComponent(bom_id=bom.bom_id, component_item_id=comp.component_item_id, godown_id=comp.godown_id, quantity=comp.quantity, component_type=comp.component_type))
             
     await db.execute(StockItemPriceLevelRate.__table__.delete().where(StockItemPriceLevelRate.stock_item_id == item_id))
-    for plr in req.price_level_rates: db.add(StockItemPriceLevelRate(stock_item_id=item_id, price_level_id=plr.price_level_id, effective_from=plr.effective_from, qty_from=plr.qty_from, qty_to=plr.qty_to, rate=plr.rate, discount_percent=plr.discount_percent))
-    
+    # Sync Queue & Realtime Push to Tally
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockItem",
+        record_id=item_id,
+        action="Alter",
+    )
+    db.add(sync_item)
     await db.commit()
+    
+    from app.routers.sync import try_push_stock_item_realtime
+    await try_push_stock_item_realtime(item_id, sync_item.sync_id, "Alter", db)
     
     final = await db.execute(
         select(MstStockItem)

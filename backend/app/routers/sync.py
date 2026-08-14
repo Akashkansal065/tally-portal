@@ -349,8 +349,11 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
       {addr_list_xml}
     </LEDMAILINGDETAILS.LIST>""" if (state_val or country_val or pincode_val or addr_list_xml) else ""
 
+    applicable_from = getattr(ledger, 'gst_applicable_from', None)
+    app_from_str = applicable_from.strftime("%Y%m%d") if applicable_from else "20250401"
+
     gst_reg_details_xml = f"""<LEDGSTREGDETAILS.LIST>
-      <APPLICABLEFROM>20250401</APPLICABLEFROM>
+      <APPLICABLEFROM>{app_from_str}</APPLICABLEFROM>
       <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
       <GSTIN>{gstin_val}</GSTIN>
     </LEDGSTREGDETAILS.LIST>""" if (gst_reg_type or gstin_val) else ""
@@ -470,6 +473,9 @@ def build_ledger_json_payload(ledger: MstLedger, group_name: str, comp_name: str
     is_transporter_val = bool(transporter_id_val)
     pos_val = getattr(ledger, 'place_of_supply', None) or state_val or ''
 
+    applicable_from = getattr(ledger, 'gst_applicable_from', None)
+    app_from_str = applicable_from.strftime("%Y%m%d") if applicable_from else "20250401"
+
     msg_obj = {
         "metadata": {
             "type": "Ledger",
@@ -488,7 +494,7 @@ def build_ledger_json_payload(ledger: MstLedger, group_name: str, comp_name: str
         "ledmailingdetails": [
             {
                 "address": addr_lines,
-                "applicablefrom": "20250401",
+                "applicablefrom": app_from_str,
                 "pincode": pincode_val,
                 "mailingname": ledger.name,
                 "state": state_val,
@@ -506,7 +512,7 @@ def build_ledger_json_payload(ledger: MstLedger, group_name: str, comp_name: str
         "vatdealertype": gst_reg_type,
         "ledgstregdetails": [
             {
-                "applicablefrom": "20250401",
+                "applicablefrom": app_from_str,
                 "gstregistrationtype": gst_reg_type,
                 "transporterid": transporter_id_val,
                 "state": state_val,
@@ -1264,7 +1270,7 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
 
 async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, db: AsyncSession):
     try:
-        from app.models.tally_core import TrnVoucher, TrnAccounting, MstLedger, MstVoucherType
+        from app.models.tally_core import TrnVoucher, TrnAccounting, MstLedger, MstVoucherType, BillAllocation, TrnInventory, MstStockItem, MstGodown, Batch, VoucherAccountingAllocation
         from app.models.portal_core import Company
         tally_url = settings.TALLY_URL
         if not tally_url:
@@ -1274,7 +1280,12 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
         v_stmt = select(TrnVoucher).options(
             selectinload(TrnVoucher.voucher_type),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
-            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations)
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.godown),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.batch),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations).selectinload(VoucherAccountingAllocation.ledger)
         ).where(TrnVoucher.voucher_id == voucher_id)
         v_res = await db.execute(v_stmt)
         voucher = v_res.scalars().first()
@@ -1288,93 +1299,176 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
             logger.warning(f"Suppressing real-time Tally Push for Voucher (Delete) as it might crash Tally or needs specific handling. voucher_id={voucher_id}")
             return
 
+        # Identify if this is an inventory invoice
+        is_inv = getattr(voucher, 'is_invoice', False) or bool(getattr(voucher, 'inventory_entries', None))
+        is_sales = voucher.voucher_type.parent_type in ['Sales', 'Debit Note'] or voucher.voucher_type.name in ['Sales', 'Debit Note']
+
+        # Determine default sales / purchase ledger name
+        sales_pur_ledger_name = "GST Sales" if is_sales else "GST Purchase"
+        for ent in voucher.entries:
+            if ent.ledger and ent.ledger.group:
+                gname = ent.ledger.group.name.lower()
+                if ("sales" in gname if is_sales else "purchase" in gname):
+                    sales_pur_ledger_name = ent.ledger.name
+                    break
+
+        # Refine party ledger details (prefer explicit party_ledger_id if set)
+        party_ledger = None
+        party_ledger_name = ""
+        if voucher.party_ledger_id:
+            p_res = await db.execute(select(MstLedger).where(MstLedger.ledger_id == voucher.party_ledger_id))
+            party_ledger = p_res.scalars().first()
+            if party_ledger:
+                party_ledger_name = party_ledger.name
+        elif voucher.voucher_type.name in ["Sales", "Purchase", "Payment", "Receipt"]:
+            for ent in voucher.entries:
+                if ent.ledger and ent.ledger.group:
+                    gname = ent.ledger.group.name.lower()
+                    if "bank" not in gname and "cash" not in gname and "sales" not in gname and "purchase" not in gname and "duty" not in gname and "tax" not in gname:
+                        party_ledger_name = ent.ledger.name
+                        party_ledger = ent.ledger
+                        break
+        if not party_ledger_name and voucher.entries:
+            party_ledger_name = voucher.entries[0].ledger.name if voucher.entries[0].ledger else "Suspense A/c"
+
+        # Party & Company GST Attributes
+        party_state = (party_ledger.state if party_ledger and party_ledger.state else (comp.state if comp else "Karnataka")) or "Karnataka"
+        party_gstin = (party_ledger.gstin if party_ledger and party_ledger.gstin else "") or ""
+        party_reg_type = (party_ledger.gst_registration_type if party_ledger and party_ledger.gst_registration_type else "Regular") or "Regular"
+        party_country = (party_ledger.country if party_ledger and party_ledger.country else "India") or "India"
+        pos = (party_ledger.place_of_supply if party_ledger and party_ledger.place_of_supply else party_state) or party_state
+        comp_state = (comp.state if comp and comp.state else "Karnataka") or "Karnataka"
+
+        # Build nested inventory allocations XML for the Sales / Purchase ledger entry
+        inv_allocations_xml = ""
+        if is_inv and getattr(voucher, 'inventory_entries', None):
+            for inv in voucher.inventory_entries:
+                item_name = inv.stock_item.name if inv.stock_item else "Item"
+                uom_name = inv.stock_item.unit.name if (inv.stock_item and inv.stock_item.unit) else "nos"
+                is_dp = 'No' if is_sales else 'Yes'
+                inv_amt = float(abs(inv.amount))
+                rate_str = f"{inv.rate}/{uom_name}" if inv.rate else ""
+                qty_str = f" {inv.quantity} {uom_name}" if inv.quantity else ""
+                
+                godown_name = inv.godown.name if (inv.godown and inv.godown.name) else "Main Location"
+                batch_name = inv.batch.batch_number if (inv.batch and inv.batch.batch_number) else "Primary Batch"
+                
+                inv_allocations_xml += f'''
+               <INVENTORYALLOCATIONS.LIST>
+                <STOCKITEMNAME>{item_name}</STOCKITEMNAME>
+                <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
+                <RATE>{rate_str}</RATE>
+                <AMOUNT>{inv_amt:.2f}</AMOUNT>
+                <ACTUALQTY>{qty_str}</ACTUALQTY>
+                <BILLEDQTY>{qty_str}</BILLEDQTY>
+                <BATCHALLOCATIONS.LIST>
+                 <GODOWNNAME>{godown_name}</GODOWNNAME>
+                 <BATCHNAME>{batch_name}</BATCHNAME>
+                 <DESTINATIONGODOWNNAME>{godown_name}</DESTINATIONGODOWNNAME>
+                 <AMOUNT>{inv_amt:.2f}</AMOUNT>
+                 <ACTUALQTY>{qty_str}</ACTUALQTY>
+                 <BILLEDQTY>{qty_str}</BILLEDQTY>
+                </BATCHALLOCATIONS.LIST>
+               </INVENTORYALLOCATIONS.LIST>'''
+
         # Build ledger entries XML
         vdate_str = voucher.voucher_date.strftime("%Y%m%d")
         entries_xml = ""
-        party_ledger_name = ""
         for ent in voucher.entries:
             led_name = ent.ledger.name if ent.ledger else "Suspense A/c"
-            # In Tally XML:
-            # Debit amount is negative
-            # Credit amount is positive
             amt = -ent.debit_amount if ent.debit_amount > 0 else ent.credit_amount
-            
-            # Party ledger name is generally the first debtor/creditor, but Tally requires <PARTYLEDGERNAME> 
-            # for accounting vouchers like Sales, Purchase, Payment, Receipt. We'll set it to the first ledger 
-            # that isn't a bank/cash/sales/purchase (if possible), or just the first entry.
-            
+            is_party = (ent.ledger_id == voucher.party_ledger_id) if voucher.party_ledger_id else False
+            is_sales_pur = False
+            if ent.ledger and ent.ledger.group:
+                gname = ent.ledger.group.name.lower()
+                if "sales" in gname or "purchase" in gname:
+                    is_sales_pur = True
+
+            nested_inv = inv_allocations_xml if (is_sales_pur and is_inv) else ""
+
             entries_xml += f'''
-          <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>{led_name}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>{'Yes' if ent.debit_amount > 0 else 'No'}</ISDEEMEDPOSITIVE>
-            <AMOUNT>{amt}</AMOUNT>'''
+              <ALLLEDGERENTRIES.LIST>
+               <LEDGERNAME>{led_name}</LEDGERNAME>
+               <ISDEEMEDPOSITIVE>{'Yes' if ent.debit_amount > 0 else 'No'}</ISDEEMEDPOSITIVE>
+               <ISPARTYLEDGER>{'Yes' if is_party else 'No'}</ISPARTYLEDGER>
+               <AMOUNT>{amt:.2f}</AMOUNT>'''
             
             if getattr(ent, 'bank_allocations', None):
                 for ba in ent.bank_allocations:
                     inst_date = ba.instrument_date.strftime("%Y%m%d") if ba.instrument_date else ""
                     entries_xml += f'''
-            <BANKALLOCATIONS.LIST>
-             <DATE>{vdate_str}</DATE>
-             <TRANSACTIONTYPE>{ba.transaction_type}</TRANSACTIONTYPE>
-             <AMOUNT>{amt}</AMOUNT>'''
+               <BANKALLOCATIONS.LIST>
+                <DATE>{vdate_str}</DATE>
+                <TRANSACTIONTYPE>{ba.transaction_type}</TRANSACTIONTYPE>
+                <AMOUNT>{amt:.2f}</AMOUNT>'''
                     if inst_date:
-                        entries_xml += f'\n             <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>'
+                        entries_xml += f'\n                <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>'
                     if ba.payment_favouring:
-                        entries_xml += f'\n             <PAYMENTFAVOURING>{ba.payment_favouring}</PAYMENTFAVOURING>'
+                        entries_xml += f'\n                <PAYMENTFAVOURING>{ba.payment_favouring}</PAYMENTFAVOURING>'
                     if ba.instrument_number:
-                        entries_xml += f'\n             <INSTRUMENTNUMBER>{ba.instrument_number}</INSTRUMENTNUMBER>'
+                        entries_xml += f'\n                <INSTRUMENTNUMBER>{ba.instrument_number}</INSTRUMENTNUMBER>'
                     
                     entries_xml += '''
-            </BANKALLOCATIONS.LIST>'''
-            
-            entries_xml += '''
-          </ALLLEDGERENTRIES.LIST>'''
-            
-            if not party_ledger_name:
-                party_ledger_name = led_name
+               </BANKALLOCATIONS.LIST>'''
+
+            if getattr(ent, 'bill_allocations', None):
+                for ba in ent.bill_allocations:
+                    bname = ba.bill.bill_reference if getattr(ba, 'bill', None) and ba.bill else (getattr(ba, 'bill_reference', '') or f"{voucher.voucher_number or '1'}")
+                    b_amt = -abs(ba.amount) if ent.debit_amount > 0 else abs(ba.amount)
+                    entries_xml += f'''
+               <BILLALLOCATIONS.LIST>
+                <NAME>{bname}</NAME>
+                <BILLTYPE>{ba.allocation_type}</BILLTYPE>
+                <AMOUNT>{b_amt:.2f}</AMOUNT>
+               </BILLALLOCATIONS.LIST>'''
+            elif is_party:
+                # Default bill allocation for Party ledger
+                bname = str(voucher.reference_number or voucher.voucher_number or '1')
+                entries_xml += f'''
+               <BILLALLOCATIONS.LIST>
+                <NAME>{bname}</NAME>
+                <BILLTYPE>New Ref</BILLTYPE>
+                <AMOUNT>{amt:.2f}</AMOUNT>
+               </BILLALLOCATIONS.LIST>'''
+
+            if nested_inv:
+                entries_xml += nested_inv
                 
-        # Refine party ledger name (simple heuristic)
-        if voucher.voucher_type.name in ["Sales", "Purchase", "Payment", "Receipt"]:
-            for ent in voucher.entries:
-                if ent.ledger and ent.ledger.group:
-                    gname = ent.ledger.group.name.lower()
-                    if "bank" not in gname and "cash" not in gname and "sales" not in gname and "purchase" not in gname:
-                        party_ledger_name = ent.ledger.name
-                        break
-        if not party_ledger_name and voucher.entries:
-            party_ledger_name = voucher.entries[0].ledger.name if voucher.entries[0].ledger else "Suspense A/c"
+            entries_xml += '''
+              </ALLLEDGERENTRIES.LIST>'''
 
         vtype_name = voucher.voucher_type.name
 
         xml_envelope = f'''<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import Data</TALLYREQUEST>
-  </HEADER>
-  <BODY>
-    <IMPORTDATA>
-      <REQUESTDESC>
-        <REPORTNAME>Vouchers</REPORTNAME>
-        <STATICVARIABLES>
-          <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-        </STATICVARIABLES>
-      </REQUESTDESC>
-      <REQUESTDATA>
-        <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <VOUCHER VCHTYPE="{vtype_name}" ACTION="{action}">
-            <DATE>{vdate_str}</DATE>
-            <VOUCHERTYPENAME>{vtype_name}</VOUCHERTYPENAME>
-            <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>
-            <PARTYLEDGERNAME>{party_ledger_name}</PARTYLEDGERNAME>
-            <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
-            <ISINVOICE>No</ISINVOICE>
-            <NARRATION>{voucher.narration or ''}</NARRATION>
-            {entries_xml}
-          </VOUCHER>
-        </TALLYMESSAGE>
-      </REQUESTDATA>
-    </IMPORTDATA>
-  </BODY>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Import</TALLYREQUEST>
+        <TYPE>Data</TYPE>
+        <ID>Vouchers</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+        </DESC>
+        <DATA>
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+             <VOUCHER VCHTYPE="{vtype_name}" ACTION="{action}" OBJVIEW="{'Invoice Voucher View' if is_inv else 'Accounting Voucher View'}">
+              <DATE>{vdate_str}</DATE>
+              <EFFECTIVEDATE>{vdate_str}</EFFECTIVEDATE>
+              <VCHSTATUSDATE>{vdate_str}</VCHSTATUSDATE>
+              <VOUCHERTYPENAME>{vtype_name}</VOUCHERTYPENAME>
+              <PARTYNAME>{party_ledger_name}</PARTYNAME>
+              <PARTYLEDGERNAME>{party_ledger_name}</PARTYLEDGERNAME>
+              <PERSISTEDVIEW>{'Invoice Voucher View' if is_inv else 'Accounting Voucher View'}</PERSISTEDVIEW>
+              <NARRATION>{voucher.narration or ''}</NARRATION>
+              {entries_xml}
+             </VOUCHER>
+            </TALLYMESSAGE>
+        </DATA>
+    </BODY>
 </ENVELOPE>'''
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY XML PUSH (voucher_id={voucher_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
@@ -1423,7 +1517,7 @@ async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: 
         resp_str = await asyncio.to_thread(_post_json_to_tally_sync, tally_url, json_payload, 5)
 
         if check_tally_json_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True)
             await db.execute(sq_stmt)
             await db.commit()
             return True
@@ -1479,6 +1573,204 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
     return False
 
 
+async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    """
+    Attempts real-time push of a Stock Item to Tally Prime XML Server on the fly.
+    If Tally is reachable and succeeds, marks SyncQueue item as processed (is_processed=True).
+    If Tally is unreachable/times out, leaves SyncQueue item as is_processed=False to sync later.
+    """
+    try:
+        from app.models.tally_core import MstStockItem
+        from app.models.portal_core import SyncQueue, Company
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return False
+
+        item_stmt = select(MstStockItem).options(
+            selectinload(MstStockItem.unit),
+            selectinload(MstStockItem.group),
+            selectinload(MstStockItem.category)
+        ).where(MstStockItem.stock_item_id == stock_item_id)
+        item_res = await db.execute(item_stmt)
+        item = item_res.scalars().first()
+        if not item:
+            logger.warning(f"Real-time Tally push skipped: stock_item_id={stock_item_id} not found.")
+            return False
+
+        c_stmt = select(Company).where(Company.company_id == item.company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        uom_symbol = item.unit.symbol if item.unit else "nos"
+        raw_group_name = item.group.name.strip() if item.group and item.group.name else ""
+        group_name = "" if raw_group_name.lower() in ("primary", " primary", "not applicable") else raw_group_name
+        category_name = item.category.name if item.category else ""
+
+        parent_tag = f"<PARENT>{group_name}</PARENT>" if group_name else "<PARENT/>"
+        category_tag = f"<CATEGORY>{category_name}</CATEGORY>" if category_name else "<CATEGORY/>"
+        desc_tag = f"<DESCRIPTION>{item.description}</DESCRIPTION>" if item.description else "<DESCRIPTION/>"
+        hsn_tag = f"<INFGSTHSNCODE>{item.hsn_code}</INFGSTHSNCODE>" if item.hsn_code else "<INFGSTHSNCODE/>"
+        gst_tag = f"<INFGSTIGSTRATE>{item.gst_rate_percent}</INFGSTIGSTRATE>" if item.gst_rate_percent else "<INFGSTIGSTRATE>0</INFGSTIGSTRATE>"
+        
+        is_batchwise = "Yes" if getattr(item, 'tracking_type', None) in ("Batches", "Serial", "Batch") else "No"
+        supply_type = "Services" if (item.unit and item.unit.name and item.unit.name.lower() in ['hrs', 'srv', 'serv', 'service']) else "Goods"
+
+        xml_envelope = f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+<STOCKITEM NAME="{item.name}" ACTION="{action}">
+<NAME>{item.name}</NAME>
+{parent_tag}
+{category_tag}
+<BASEUNITS>{uom_symbol}</BASEUNITS>
+{desc_tag}
+{hsn_tag}
+{gst_tag}
+<GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>
+<GSTTYPEOFSUPPLY>{supply_type}</GSTTYPEOFSUPPLY>
+<ISCOSTCENTRESON>No</ISCOSTCENTRESON>
+<ISBATCHWISEON>{is_batchwise}</ISBATCHWISEON>
+</STOCKITEM>
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>"""
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM PUSH (stock_item_id={stock_item_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        logger.info(f"\n=======================================================\nTALLY STOCKITEM PUSH RESPONSE (stock_item_id={stock_item_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+
+        if check_tally_success(resp_str):
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            await db.execute(sq_stmt)
+            await db.commit()
+            logger.info(f"Real-time Tally push successful for stock_item_id={stock_item_id}, action={action}")
+            return True
+        else:
+            logger.error(f"Real-time Tally push failed for stock_item_id={stock_item_id}: {resp_str}")
+    except Exception as e:
+        logger.warning(f"Real-time Tally push exception for stock_item_id={stock_item_id}: {str(e)}", exc_info=True)
+    return False
+
+
+async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    """
+    Attempts real-time push of a Unit of Measure (UOM) to Tally Prime XML Server on the fly.
+    If Tally is reachable and succeeds, marks SyncQueue item as processed (is_processed=True).
+    If Tally is unreachable/times out, leaves SyncQueue item as is_processed=False to sync later.
+    """
+    try:
+        from app.models.tally_core import MstUom
+        from app.models.portal_core import SyncQueue, Company
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return False
+
+        u_stmt = select(MstUom).where(MstUom.unit_id == unit_id)
+        u_res = await db.execute(u_stmt)
+        uom = u_res.scalars().first()
+        if not uom:
+            logger.warning(f"Real-time Tally push skipped: unit_id={unit_id} not found.")
+            return False
+
+        c_stmt = select(Company).where(Company.company_id == uom.company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        symbol = uom.symbol or uom.name or ""
+        formal_name = uom.original_name or uom.name or ""
+        is_simple = "Yes" if uom.is_simple_unit else "No"
+        dec_places = uom.decimal_places if uom.decimal_places is not None else 0
+
+        if uom.is_simple_unit:
+            unit_inner_xml = f"""<UNIT NAME="{symbol}" ACTION="{action}">
+<NAME>{symbol}</NAME>
+<ORIGINALNAME>{formal_name}</ORIGINALNAME>
+<ISSIMPLEUNIT>Yes</ISSIMPLEUNIT>
+<DECIMALPLACES>{dec_places}</DECIMALPLACES>
+</UNIT>"""
+        else:
+            base_unit_sym = ""
+            add_unit_sym = ""
+            if uom.base_unit_id:
+                b_res = await db.execute(select(MstUom).where(MstUom.unit_id == uom.base_unit_id))
+                b_obj = b_res.scalars().first()
+                if b_obj:
+                    base_unit_sym = b_obj.symbol or b_obj.name or ""
+            if uom.additional_unit_id:
+                a_res = await db.execute(select(MstUom).where(MstUom.unit_id == uom.additional_unit_id))
+                a_obj = a_res.scalars().first()
+                if a_obj:
+                    add_unit_sym = a_obj.symbol or a_obj.name or ""
+            
+            conv_val = uom.conversion_factor or 1
+            conv_str = str(int(conv_val)) if conv_val % 1 == 0 else str(conv_val)
+
+            unit_inner_xml = f"""<UNIT NAME="{symbol}" ACTION="{action}">
+<NAME>{symbol}</NAME>
+<BASEUNITS>{base_unit_sym}</BASEUNITS>
+<ADDITIONALUNITS>{add_unit_sym}</ADDITIONALUNITS>
+<CONVERSION>{conv_str}</CONVERSION>
+<ISSIMPLEUNIT>No</ISSIMPLEUNIT>
+<DECIMALPLACES>{dec_places}</DECIMALPLACES>
+</UNIT>"""
+
+        xml_envelope = f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+{unit_inner_xml}
+</TALLYMESSAGE>
+</REQUESTDATA>
+</IMPORTDATA>
+</BODY>
+</ENVELOPE>"""
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY UOM PUSH (unit_id={unit_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        logger.info(f"\n=======================================================\nTALLY UOM PUSH RESPONSE (unit_id={unit_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+
+        if check_tally_success(resp_str):
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            await db.execute(sq_stmt)
+            await db.commit()
+            logger.info(f"Real-time Tally push successful for unit_id={unit_id}, action={action}")
+            return True
+        else:
+            logger.error(f"Real-time Tally push failed for unit_id={unit_id}: {resp_str}")
+    except Exception as e:
+        logger.warning(f"Real-time Tally push exception for unit_id={unit_id}: {str(e)}", exc_info=True)
+    return False
+
+
 async def run_once_sync_background(user_id: int):
     """
     Executes a single cycle of bidirectional synchronization with the Tally XML Server in the background.
@@ -1529,55 +1821,8 @@ async def run_once_sync_background(user_id: int):
                         
                 # 2. Map Voucher Creation
                 elif item.record_type == "Voucher":
-                    v_stmt = select(TrnVoucher).where(TrnVoucher.voucher_id == item.record_id)
-                    v_res = await db.execute(v_stmt)
-                    voucher = v_res.scalars().first()
-                    if voucher:
-                        # Get entries
-                        ent_stmt = select(TrnAccounting).where(TrnAccounting.voucher_id == voucher.voucher_id)
-                        ent_res = await db.execute(ent_stmt)
-                        entries = ent_res.scalars().all()
-                        
-                        entries_xml = ""
-                        for ent in entries:
-                            l_stmt = select(MstLedger).where(MstLedger.ledger_id == ent.ledger_id)
-                            l_res = await db.execute(l_stmt)
-                            ledger = l_res.scalars().first()
-                            led_name = ledger.name if ledger else "Suspense A/c"
-                            
-                            # Convert Debit/Credit back to Tally amount: Negative -> Debit, Positive -> Credit
-                            amt = -ent.debit_amount if ent.debit_amount > 0 else ent.credit_amount
-                            
-                            entries_xml += f"""
-                  <ALLLEDGERENTRIES.LIST>
-                    <LEDGERNAME>{led_name}</LEDGERNAME>
-                    <ISDEEMEDPOSITIVE>{'Yes' if ent.debit_amount > 0 else 'No'}</ISDEEMEDPOSITIVE>
-                    <AMOUNT>{amt}</AMOUNT>
-                  </ALLLEDGERENTRIES.LIST>"""
-                        
-                        vdate_str = voucher.voucher_date.strftime("%Y%m%d")
-                        xml_envelope = f"""<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import Data</TALLYREQUEST>
-    <TYPE>Data</TYPE>
-    <ID>Vouchers</ID>
-  </HEADER>
-  <BODY>
-    <DESC></DESC>
-    <DATA>
-      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHER DATE="{vdate_str}" VOUCHERTYPENAME="Journal" ACTION="Create">
-          <DATE>{vdate_str}</DATE>
-          <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>
-          <VOUCHERTYPENAME>Journal</VOUCHERTYPENAME>
-          {entries_xml}
-          <NARRATION>{voucher.narration or ''}</NARRATION>
-        </VOUCHER>
-      </TALLYMESSAGE>
-    </DATA>
-  </BODY>
-</ENVELOPE>"""
+                    await try_push_voucher_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+                    continue
 
                 # 3. Map Company Profile Alteration
                 elif item.record_type == "Company":

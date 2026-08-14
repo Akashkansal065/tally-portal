@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useMemo } from 'react'
-import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus } from 'lucide-react'
+import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders } from '@/lib/utils'
@@ -15,6 +15,7 @@ export type VoucherFormModalProps = {
   ledgers: any[]
   voucherTypes: any[]
   onLedgerCreated?: (newLedger: any) => void
+  onItemCreated?: (newItem: any) => void
 }
 
 export default function VoucherFormModal({
@@ -24,7 +25,8 @@ export default function VoucherFormModal({
   isSaving,
   ledgers,
   voucherTypes,
-  onLedgerCreated
+  onLedgerCreated,
+  onItemCreated
 }: VoucherFormModalProps) {
   const { token } = useAuth()
   // 1. Basic Form States
@@ -62,6 +64,8 @@ export default function VoucherFormModal({
   // 6. Fetched Data States
   const [stockItems, setStockItems] = useState<any[]>([])
   const [godowns, setGodowns] = useState<any[]>([])
+  const [uomsList, setUomsList] = useState<any[]>([])
+  const [stockGroupsList, setStockGroupsList] = useState<any[]>([])
 
   // 7. Quick Ledger Creation Sub-Modal States
   const [isQuickLedgerOpen, setIsQuickLedgerOpen] = useState(false)
@@ -74,7 +78,36 @@ export default function VoucherFormModal({
   const [isCreatingLedger, setIsCreatingLedger] = useState(false)
   const [quickLedgerError, setQuickLedgerError] = useState<string | null>(null)
 
-  // 8. Derived Sorted Lists (A-Z)
+  const wasOpenRef = React.useRef(false)
+
+  // 8. Quick Stock Item Creation Sub-Modal States
+  const [isQuickItemOpen, setIsQuickItemOpen] = useState(false)
+  const [quickItemTarget, setQuickItemTarget] = useState<{ type: 'inventory' | 'source' | 'dest', id?: number | 'new' } | null>(null)
+  const [quickItemName, setQuickItemName] = useState('')
+  const [quickItemUnitId, setQuickItemUnitId] = useState<string>('')
+  const [quickItemStockGroupId, setQuickItemStockGroupId] = useState<string>('')
+  const [quickItemHsn, setQuickItemHsn] = useState('')
+  const [quickItemGstRate, setQuickItemGstRate] = useState('18')
+  const [quickItemSellingPrice, setQuickItemSellingPrice] = useState('')
+  const [quickItemCostPrice, setQuickItemCostPrice] = useState('')
+  const [quickItemOpeningQty, setQuickItemOpeningQty] = useState('')
+  const [quickItemOpeningRate, setQuickItemOpeningRate] = useState('')
+  const [isCreatingItem, setIsCreatingItem] = useState(false)
+  const [quickItemError, setQuickItemError] = useState<string | null>(null)
+
+  // 9. Quick Unit of Measure (UOM) Sub-Modal States
+  const [isQuickUnitOpen, setIsQuickUnitOpen] = useState(false)
+  const [quickUnitType, setQuickUnitType] = useState<'simple' | 'compound'>('simple')
+  const [quickUnitSymbol, setQuickUnitSymbol] = useState('')
+  const [quickUnitFormalName, setQuickUnitFormalName] = useState('')
+  const [quickUnitDecimalPlaces, setQuickUnitDecimalPlaces] = useState('0')
+  const [quickCompoundFirstUnitId, setQuickCompoundFirstUnitId] = useState('')
+  const [quickCompoundConversion, setQuickCompoundConversion] = useState('6')
+  const [quickCompoundSecondUnitId, setQuickCompoundSecondUnitId] = useState('')
+  const [isCreatingUnit, setIsCreatingUnit] = useState(false)
+  const [quickUnitError, setQuickUnitError] = useState<string | null>(null)
+
+  // 10. Derived Sorted Lists (A-Z)
   const sortedLedgers = useMemo(() => {
     return [...localLedgers].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
   }, [localLedgers])
@@ -87,12 +120,29 @@ export default function VoucherFormModal({
     return [...stockItems].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
   }, [stockItems])
 
+  const sortedStockGroups = useMemo(() => {
+    return [...stockGroupsList]
+      .filter(g => (g.name || '').trim().toLowerCase() !== 'primary')
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
+  }, [stockGroupsList])
+
+  const sortedUoms = useMemo(() => {
+    return [...uomsList]
+      .filter(u => (u.symbol || '').trim().toLowerCase() !== 'not applicable')
+      .sort((a, b) => (a.symbol || '').localeCompare(b.symbol || '', undefined, { sensitivity: 'base' }))
+  }, [uomsList])
+
+  const simpleUoms = useMemo(() => {
+    return sortedUoms.filter(u => u.is_simple_unit !== false)
+  }, [sortedUoms])
+
   const activeVoucherTypes = useMemo(() => {
     return voucherTypes.filter(t => t.is_active !== false)
   }, [voucherTypes])
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !wasOpenRef.current) {
+      wasOpenRef.current = true
       const typeSales = activeVoucherTypes.find(t => t.name.toLowerCase() === 'sales')
       setSelectedType(typeSales || (activeVoucherTypes.length > 0 ? activeVoucherTypes[0] : null))
       setVoucherDate(new Date().toISOString().slice(0, 10))
@@ -106,11 +156,17 @@ export default function VoucherFormModal({
         { id: 1, ledger_id: '', type: 'Debit', amount: '' },
         { id: 2, ledger_id: '', type: 'Credit', amount: '' }
       ])
-      setInventoryEntries([])
-      setSourceEntries([])
-      setDestEntries([])
+      setInventoryEntries([
+        { id: 1, stock_item_id: '', quantity: '1', rate: '', amount: '0.00' }
+      ])
+      setSourceEntries([
+        { id: 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }
+      ])
+      setDestEntries([
+        { id: 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }
+      ])
       
-      // Fetch items, godowns, and groups
+      // Fetch items, godowns, groups, uoms, stock groups
       fetch(`${API_BASE}/inventory/items`, { headers: authHeaders(token) })
         .then(r => r.json())
         .then(data => setStockItems(Array.isArray(data) ? data : []))
@@ -123,8 +179,18 @@ export default function VoucherFormModal({
         .then(r => r.json())
         .then(data => setGroupsList(Array.isArray(data) ? data : []))
         .catch(console.error)
+      fetch(`${API_BASE}/inventory/uoms`, { headers: authHeaders(token) })
+        .then(r => r.json())
+        .then(data => setUomsList(Array.isArray(data) ? data : []))
+        .catch(console.error)
+      fetch(`${API_BASE}/inventory/groups`, { headers: authHeaders(token) })
+        .then(r => r.json())
+        .then(data => setStockGroupsList(Array.isArray(data) ? data : []))
+        .catch(console.error)
+    } else if (!isOpen) {
+      wasOpenRef.current = false
     }
-  }, [isOpen, voucherTypes, token])
+  }, [isOpen, token])
 
   const parentType = selectedType?.parent_type || selectedType?.name || ''
   const isInvoiceView = ['Sales', 'Purchase', 'Credit Note', 'Debit Note'].includes(parentType)
@@ -288,6 +354,250 @@ export default function VoucherFormModal({
       setQuickLedgerError(e.message || "Failed to create ledger")
     } finally {
       setIsCreatingLedger(false)
+    }
+  }
+
+  // --- Inline Quick Stock Item Creation Logic ---
+  const openQuickItemModal = (type: 'inventory' | 'source' | 'dest', id?: number | 'new') => {
+    setQuickItemTarget({ type, id: id ?? 'new' })
+    setQuickItemName('')
+    setQuickItemHsn('')
+    setQuickItemGstRate('18')
+    setQuickItemSellingPrice('')
+    setQuickItemCostPrice('')
+    setQuickItemOpeningQty('')
+    setQuickItemOpeningRate('')
+    setQuickItemError(null)
+
+    const defaultUom = uomsList.find(u => ['nos', 'pcs', 'unit', 'pkt'].includes((u.symbol || '').toLowerCase())) || uomsList[0]
+    setQuickItemUnitId(defaultUom?.unit_id ? String(defaultUom.unit_id) : '')
+    setQuickItemStockGroupId('')
+
+    setIsQuickItemOpen(true)
+  }
+
+  const handleSaveQuickItem = async () => {
+    setQuickItemError(null)
+    if (!quickItemName.trim()) {
+      setQuickItemError("Please enter an item name.")
+      return
+    }
+
+    setIsCreatingItem(true)
+    try {
+      const payload: any = {
+        name: quickItemName.trim(),
+        unit_id: quickItemUnitId ? parseInt(quickItemUnitId) : undefined,
+        stock_group_id: quickItemStockGroupId ? parseInt(quickItemStockGroupId) : undefined,
+        hsn_code: quickItemHsn.trim() || undefined,
+        gst_rate_percent: parseFloat(quickItemGstRate || '0'),
+        standard_selling_price: quickItemSellingPrice ? parseFloat(quickItemSellingPrice) : undefined,
+        standard_cost_price: quickItemCostPrice ? parseFloat(quickItemCostPrice) : undefined,
+        opening_qty: parseFloat(quickItemOpeningQty || '0'),
+        opening_rate: parseFloat(quickItemOpeningRate || '0'),
+        is_active: true
+      }
+
+      const res = await fetch(`${API_BASE}/inventory/items`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(token)
+        },
+        body: JSON.stringify(payload)
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || 'Failed to create stock item')
+      }
+
+      const newItem = await res.json()
+
+      // Update local stock items list
+      setStockItems(prev => [...prev, newItem])
+      if (onItemCreated) {
+        onItemCreated(newItem)
+      }
+
+      // Auto-select in target row or append new row without overwriting populated rows
+      if (quickItemTarget) {
+        const rateToFill = isInvoiceView && parentType.toLowerCase() === 'sales'
+          ? (newItem.standard_selling_price ? String(newItem.standard_selling_price) : '')
+          : (newItem.standard_cost_price ? String(newItem.standard_cost_price) : (newItem.standard_selling_price ? String(newItem.standard_selling_price) : ''))
+
+        if (quickItemTarget.type === 'inventory') {
+          setInventoryEntries(prev => {
+            const targetId = quickItemTarget.id
+            // If a specific row ID was targeted and exists, update that specific row
+            if (typeof targetId === 'number') {
+              const rowExists = prev.some(x => x.id === targetId)
+              if (rowExists) {
+                return prev.map(x => {
+                  if (x.id === targetId) {
+                    const rate = rateToFill || x.rate || ''
+                    const qty = x.quantity || '1'
+                    const amount = rate ? (parseFloat(qty || '0') * parseFloat(rate || '0')).toFixed(2) : '0.00'
+                    return { ...x, stock_item_id: String(newItem.stock_item_id), rate, quantity: qty, amount }
+                  }
+                  return x
+                })
+              }
+            }
+
+            // If header "+ Quick Create Item" was clicked or targetId is 'new':
+            // Check if there is an unselected empty row
+            const emptyIdx = prev.findIndex(x => !x.stock_item_id)
+            if (emptyIdx !== -1) {
+              return prev.map((x, idx) => {
+                if (idx === emptyIdx) {
+                  const rate = rateToFill || x.rate || ''
+                  const qty = x.quantity || '1'
+                  const amount = rate ? (parseFloat(qty || '0') * parseFloat(rate || '0')).toFixed(2) : '0.00'
+                  return { ...x, stock_item_id: String(newItem.stock_item_id), rate, quantity: qty, amount }
+                }
+                return x
+              })
+            }
+
+            // Otherwise, append a brand new row with the newly created item!
+            const nextId = prev.length > 0 ? Math.max(...prev.map(x => x.id)) + 1 : 1
+            const rate = rateToFill || ''
+            const qty = '1'
+            const amount = rate ? (parseFloat(qty) * parseFloat(rate)).toFixed(2) : '0.00'
+            return [
+              ...prev,
+              { id: nextId, stock_item_id: String(newItem.stock_item_id), quantity: qty, rate, amount }
+            ]
+          })
+        } else if (quickItemTarget.type === 'source') {
+          setSourceEntries(prev => {
+            const targetId = quickItemTarget.id
+            if (typeof targetId === 'number' && prev.some(x => x.id === targetId)) {
+              return prev.map(x => x.id === targetId ? { ...x, stock_item_id: String(newItem.stock_item_id) } : x)
+            }
+            const emptyIdx = prev.findIndex(x => !x.stock_item_id)
+            if (emptyIdx !== -1) {
+              return prev.map((x, idx) => idx === emptyIdx ? { ...x, stock_item_id: String(newItem.stock_item_id) } : x)
+            }
+            const nextId = prev.length > 0 ? Math.max(...prev.map(x => x.id)) + 1 : 1
+            return [...prev, { id: nextId, stock_item_id: String(newItem.stock_item_id), godown_id: '', quantity: '1', rate: '', amount: '0.00' }]
+          })
+        } else if (quickItemTarget.type === 'dest') {
+          setDestEntries(prev => {
+            const targetId = quickItemTarget.id
+            if (typeof targetId === 'number' && prev.some(x => x.id === targetId)) {
+              return prev.map(x => x.id === targetId ? { ...x, stock_item_id: String(newItem.stock_item_id) } : x)
+            }
+            const emptyIdx = prev.findIndex(x => !x.stock_item_id)
+            if (emptyIdx !== -1) {
+              return prev.map((x, idx) => idx === emptyIdx ? { ...x, stock_item_id: String(newItem.stock_item_id) } : x)
+            }
+            const nextId = prev.length > 0 ? Math.max(...prev.map(x => x.id)) + 1 : 1
+            return [...prev, { id: nextId, stock_item_id: String(newItem.stock_item_id), godown_id: '', quantity: '1', rate: '', amount: '0.00' }]
+          })
+        }
+      }
+
+      toast.success(`Stock item "${newItem.name}" registered & synced with Tally!`)
+      setIsQuickItemOpen(false)
+    } catch (e: any) {
+      setQuickItemError(e.message || "Failed to create stock item")
+    } finally {
+      setIsCreatingItem(false)
+    }
+  }
+
+  // --- Inline Quick Unit of Measure (UOM) Creation Logic ---
+  const openQuickUnitModal = () => {
+    setQuickUnitType('simple')
+    setQuickUnitSymbol('')
+    setQuickUnitFormalName('')
+    setQuickUnitDecimalPlaces('0')
+
+    const firstUom = simpleUoms.find(u => ['set', 'box', 'pkt', 'doz'].includes((u.symbol || '').toLowerCase())) || simpleUoms[0]
+    const secondUom = simpleUoms.find(u => ['nos', 'pcs', 'unit', 'gm', 'kg'].includes((u.symbol || '').toLowerCase()) && u.unit_id !== firstUom?.unit_id) || simpleUoms[1] || simpleUoms[0]
+
+    setQuickCompoundFirstUnitId(firstUom?.unit_id ? String(firstUom.unit_id) : '')
+    setQuickCompoundConversion('6')
+    setQuickCompoundSecondUnitId(secondUom?.unit_id ? String(secondUom.unit_id) : '')
+    setQuickUnitError(null)
+    setIsQuickUnitOpen(true)
+  }
+
+  const handleSaveQuickUnit = async () => {
+    setQuickUnitError(null)
+    setIsCreatingUnit(true)
+    try {
+      let payload: any = {}
+
+      if (quickUnitType === 'simple') {
+        if (!quickUnitSymbol.trim()) {
+          setQuickUnitError("Please enter a unit symbol (e.g. PCS, BOX, SET).")
+          setIsCreatingUnit(false)
+          return
+        }
+        payload = {
+          symbol: quickUnitSymbol.trim(),
+          name: quickUnitSymbol.trim(),
+          original_name: quickUnitFormalName.trim() || undefined,
+          decimal_places: parseInt(quickUnitDecimalPlaces || '0'),
+          is_simple_unit: true
+        }
+      } else {
+        if (!quickCompoundFirstUnitId || !quickCompoundSecondUnitId || !quickCompoundConversion) {
+          setQuickUnitError("Please select both units and enter a conversion quantity (e.g. 6 or 4).")
+          setIsCreatingUnit(false)
+          return
+        }
+        const conv = parseFloat(quickCompoundConversion)
+        if (isNaN(conv) || conv <= 0) {
+          setQuickUnitError("Conversion quantity must be a positive number (e.g. 6 or 4).")
+          setIsCreatingUnit(false)
+          return
+        }
+        if (quickCompoundFirstUnitId === quickCompoundSecondUnitId) {
+          setQuickUnitError("First unit and second unit cannot be the same.")
+          setIsCreatingUnit(false)
+          return
+        }
+        payload = {
+          is_simple_unit: false,
+          base_unit_id: parseInt(quickCompoundFirstUnitId),
+          conversion_factor: conv,
+          additional_unit_id: parseInt(quickCompoundSecondUnitId),
+          decimal_places: 0
+        }
+      }
+
+      const res = await fetch(`${API_BASE}/inventory/uoms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(token)
+        },
+        body: JSON.stringify(payload)
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.detail || 'Failed to create unit of measure')
+      }
+
+      const newUom = await res.json()
+
+      // Update local UOMs list
+      setUomsList(prev => [...prev, newUom])
+
+      // Auto-select in the quick stock item form
+      setQuickItemUnitId(String(newUom.unit_id))
+
+      toast.success(`Unit "${newUom.symbol || newUom.name}" registered & synced with Tally!`)
+      setIsQuickUnitOpen(false)
+    } catch (e: any) {
+      setQuickUnitError(e.message || "Failed to create unit")
+    } finally {
+      setIsCreatingUnit(false)
     }
   }
 
@@ -590,48 +900,128 @@ export default function VoucherFormModal({
 
           {isInvoiceView && (
             <div className="space-y-4">
-              <h3 className="font-bold text-slate-800 dark:text-slate-200">Inventory Items</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-slate-800 dark:text-slate-200">Inventory Items</h3>
+                <button 
+                  type="button" 
+                  onClick={() => openQuickItemModal('inventory', 'new')} 
+                  className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <PackagePlus className="w-3.5 h-3.5" /> + Quick Create Item
+                </button>
+              </div>
               {inventoryEntries.map((e, idx) => (
                 <div key={e.id} className="flex gap-3 items-center">
-                  <select 
-                    className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
-                    value={e.stock_item_id} 
-                    onChange={evt => setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value } : x))}
-                  >
-                    <option value="">Select Item...</option>
-                    {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
-                  </select>
+                  <div className="flex-1 flex gap-2">
+                    <select 
+                      className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      value={e.stock_item_id} 
+                      onChange={evt => {
+                        if (evt.target.value === '__create_new__') {
+                          openQuickItemModal('inventory', e.id)
+                        } else {
+                          const chosenItem = stockItems.find(si => String(si.stock_item_id) === evt.target.value)
+                          const rateToFill = isInvoiceView && parentType.toLowerCase() === 'sales'
+                            ? (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate)
+                            : (chosenItem?.standard_cost_price ? String(chosenItem.standard_cost_price) : (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate))
+                          const qty = e.quantity || '1'
+                          const amount = rateToFill ? (parseFloat(qty || '0') * parseFloat(rateToFill || '0')).toFixed(2) : '0.00'
+                          setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value, rate: rateToFill, quantity: qty, amount } : x))
+                        }
+                      }}
+                    >
+                      <option value="">Select Item...</option>
+                      <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Item (Syncs to Tally)...</option>
+                      {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
+                    </select>
+
+                    <button 
+                      type="button" 
+                      onClick={() => openQuickItemModal('inventory', e.id)} 
+                      title="Create New Stock Item"
+                      className="px-2.5 h-10 bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 hover:text-emerald-600 text-slate-500 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> New
+                    </button>
+                  </div>
+
                   <input type="number" className="w-24 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Qty" value={e.quantity} onChange={evt => setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, quantity: evt.target.value, amount: (parseFloat(evt.target.value||'0') * parseFloat(x.rate||'0')).toFixed(2) } : x))} />
                   <input type="number" className="w-24 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Rate" value={e.rate} onChange={evt => setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, rate: evt.target.value, amount: (parseFloat(evt.target.value||'0') * parseFloat(x.quantity||'0')).toFixed(2) } : x))} />
-                  <input type="number" className="w-32 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-slate-50 dark:bg-slate-800" placeholder="Amount" value={e.amount} readOnly />
-                  <button onClick={() => removeInventoryEntry(e.id)} className="p-2 text-slate-400 hover:text-rose-500 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                  <input type="number" className="w-32 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-slate-50 dark:bg-slate-800 font-semibold" placeholder="Amount" value={e.amount} readOnly />
+                  <button onClick={() => removeInventoryEntry(e.id)} className="p-2 text-slate-400 hover:text-rose-500 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
                 </div>
               ))}
-              <button onClick={addInventoryEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline"><Plus className="w-4 h-4" /> Add Item</button>
+              <button onClick={addInventoryEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Item</button>
             </div>
           )}
 
           {isStockJournal && (
             <div className="grid grid-cols-2 gap-6">
               <div className="space-y-4">
-                <h3 className="font-bold text-slate-800 dark:text-slate-200">Source (Consumption)</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-slate-800 dark:text-slate-200">Source (Consumption)</h3>
+                  <button 
+                    type="button" 
+                    onClick={() => openQuickItemModal('source', 'new')} 
+                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" /> Quick Item
+                  </button>
+                </div>
                 {sourceEntries.map((e, idx) => (
                   <div key={e.id} className="flex gap-2 items-center">
-                    <select className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" value={e.stock_item_id} onChange={evt => setSourceEntries(sourceEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value } : x))}><option value="">Item...</option>{stockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}</select>
+                    <select 
+                      className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      value={e.stock_item_id} 
+                      onChange={evt => {
+                        if (evt.target.value === '__create_new__') {
+                          openQuickItemModal('source', e.id)
+                        } else {
+                          setSourceEntries(sourceEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value } : x))
+                        }
+                      }}
+                    >
+                      <option value="">Item...</option>
+                      <option value="__create_new__" className="font-bold text-emerald-600">+ Create Item...</option>
+                      {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
+                    </select>
                     <input type="number" className="w-20 h-10 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Qty" value={e.quantity} onChange={evt => setSourceEntries(sourceEntries.map(x => x.id === e.id ? { ...x, quantity: evt.target.value } : x))} />
                   </div>
                 ))}
-                <button onClick={addSourceEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline"><Plus className="w-4 h-4" /> Add Source</button>
+                <button onClick={addSourceEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Source</button>
               </div>
               <div className="space-y-4">
-                <h3 className="font-bold text-slate-800 dark:text-slate-200">Destination (Production)</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-slate-800 dark:text-slate-200">Destination (Production)</h3>
+                  <button 
+                    type="button" 
+                    onClick={() => openQuickItemModal('dest', 'new')} 
+                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" /> Quick Item
+                  </button>
+                </div>
                 {destEntries.map((e, idx) => (
                   <div key={e.id} className="flex gap-2 items-center">
-                    <select className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" value={e.stock_item_id} onChange={evt => setDestEntries(destEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value } : x))}><option value="">Item...</option>{stockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}</select>
+                    <select 
+                      className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      value={e.stock_item_id} 
+                      onChange={evt => {
+                        if (evt.target.value === '__create_new__') {
+                          openQuickItemModal('dest', e.id)
+                        } else {
+                          setDestEntries(destEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value } : x))
+                        }
+                      }}
+                    >
+                      <option value="">Item...</option>
+                      <option value="__create_new__" className="font-bold text-emerald-600">+ Create Item...</option>
+                      {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
+                    </select>
                     <input type="number" className="w-20 h-10 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Qty" value={e.quantity} onChange={evt => setDestEntries(destEntries.map(x => x.id === e.id ? { ...x, quantity: evt.target.value } : x))} />
                   </div>
                 ))}
-                <button onClick={addDestEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline"><Plus className="w-4 h-4" /> Add Destination</button>
+                <button onClick={addDestEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Destination</button>
               </div>
             </div>
           )}
@@ -670,23 +1060,35 @@ export default function VoucherFormModal({
 
         {/* --- Quick Create Ledger Sub-Modal Overlay --- */}
         {isQuickLedgerOpen && (
-          <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-            <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
               
               {/* Quick Modal Header */}
-              <div className="flex items-center justify-between p-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40">
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/40">
                 <div className="flex items-center gap-2">
-                  <FolderPlus className="w-5 h-5 text-emerald-600" />
-                  <h3 className="font-bold text-slate-900 dark:text-white">Quick Create Ledger</h3>
+                  <div className="p-1.5 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-lg">
+                    <FolderPlus className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Quick Create Ledger</h3>
+                    <p className="text-[11px] text-slate-400">Creates ledger & auto-syncs with Tally</p>
+                  </div>
                 </div>
-                <button onClick={() => setIsQuickLedgerOpen(false)} className="p-1.5 text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg"><X className="w-4 h-4" /></button>
+                <button 
+                  type="button" 
+                  onClick={() => setIsQuickLedgerOpen(false)}
+                  className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
 
-              {/* Quick Modal Form Body */}
+              {/* Quick Modal Body */}
               <div className="p-5 space-y-4">
                 {quickLedgerError && (
-                  <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 text-xs font-medium rounded-lg">
-                    {quickLedgerError}
+                  <div className="p-3 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-xs rounded-xl flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{quickLedgerError}</span>
                   </div>
                 )}
 
@@ -695,7 +1097,7 @@ export default function VoucherFormModal({
                   <input 
                     type="text" 
                     autoFocus
-                    placeholder="e.g. ICICI Bank, Ramesh Traders, Office Rent" 
+                    placeholder="e.g. Acme Corp / Office Supplies" 
                     className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
                     value={quickName}
                     onChange={e => setQuickName(e.target.value)}
@@ -758,6 +1160,465 @@ export default function VoucherFormModal({
                 >
                   {isCreatingLedger && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   Save & Select
+                </button>
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {/* --- Quick Create Stock Item Sub-Modal Overlay --- */}
+        {isQuickItemOpen && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+              
+              {/* Quick Modal Header */}
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/40">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-lg">
+                    <PackagePlus className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Quick Create Stock Item</h3>
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                        <Zap className="w-3 h-3" /> Real-time Tally Sync
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Registers item and pushes directly to Tally Prime</p>
+                  </div>
+                </div>
+                <button 
+                  type="button" 
+                  onClick={() => setIsQuickItemOpen(false)}
+                  className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Quick Modal Body */}
+              <div className="p-5 space-y-3.5 max-h-[70vh] overflow-y-auto">
+                {quickItemError && (
+                  <div className="p-3 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-xs rounded-xl flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{quickItemError}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Item Name *</label>
+                  <input 
+                    type="text" 
+                    autoFocus
+                    placeholder="e.g. Wireless Mouse X1 / 4K Gaming Monitor" 
+                    className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                    value={quickItemName}
+                    onChange={e => setQuickItemName(e.target.value)}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center justify-between mb-1.5 gap-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate">Base Unit (UOM) *</label>
+                      <button 
+                        type="button" 
+                        onClick={openQuickUnitModal}
+                        className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-0.5 shrink-0 cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" /> New
+                      </button>
+                    </div>
+                    <select 
+                      className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                      value={quickItemUnitId}
+                      onChange={e => {
+                        if (e.target.value === '__create_new_unit__') {
+                          openQuickUnitModal()
+                        } else {
+                          setQuickItemUnitId(e.target.value)
+                        }
+                      }}
+                    >
+                      <option value="">Select Unit...</option>
+                      <option value="__create_new_unit__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Unit...</option>
+                      {sortedUoms.map(u => (
+                        <option key={u.unit_id} value={u.unit_id}>
+                          {u.symbol} {u.original_name ? `(${u.original_name})` : (u.name && u.name !== u.symbol ? `(${u.name})` : '')}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="min-w-0">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">Stock Group</label>
+                    <select 
+                      className="w-full min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium truncate"
+                      value={quickItemStockGroupId}
+                      onChange={e => setQuickItemStockGroupId(e.target.value)}
+                    >
+                      <option value="">Primary</option>
+                      {sortedStockGroups.map(g => (
+                        <option key={g.stock_group_id} value={g.stock_group_id}>{g.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">HSN / SAC Code</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 84716060" 
+                      className="w-full min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                      value={quickItemHsn}
+                      onChange={e => setQuickItemHsn(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">GST Rate %</label>
+                    <select 
+                      className="w-full min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold truncate"
+                      value={quickItemGstRate}
+                      onChange={e => setQuickItemGstRate(e.target.value)}
+                    >
+                      <option value="0">0% (Nil / Exempt)</option>
+                      <option value="5">5%</option>
+                      <option value="12">12%</option>
+                      <option value="18">18% (Standard GST)</option>
+                      <option value="28">28%</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">Selling Rate (₹)</label>
+                    <input 
+                      type="number" 
+                      placeholder="0.00" 
+                      className="w-full min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                      value={quickItemSellingPrice}
+                      onChange={e => setQuickItemSellingPrice(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">Purchase / Cost Rate (₹)</label>
+                    <input 
+                      type="number" 
+                      placeholder="0.00" 
+                      className="w-full min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                      value={quickItemCostPrice}
+                      onChange={e => setQuickItemCostPrice(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 pt-1 border-t border-slate-100 dark:border-slate-800">
+                  <div className="min-w-0">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">Opening Qty</label>
+                    <input 
+                      type="number" 
+                      placeholder="0" 
+                      className="w-full min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                      value={quickItemOpeningQty}
+                      onChange={e => setQuickItemOpeningQty(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="min-w-0">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">Opening Rate (₹)</label>
+                    <input 
+                      type="number" 
+                      placeholder="0.00" 
+                      className="w-full min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                      value={quickItemOpeningRate}
+                      onChange={e => setQuickItemOpeningRate(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Modal Footer */}
+              <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex justify-end gap-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsQuickItemOpen(false)} 
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="button" 
+                  onClick={handleSaveQuickItem} 
+                  disabled={isCreatingItem}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg shadow flex items-center gap-1.5 cursor-pointer"
+                >
+                  {isCreatingItem && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Save & Select
+                </button>
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {/* --- Quick Create Unit of Measure (UOM) Sub-Modal Overlay --- */}
+        {isQuickUnitOpen && (
+          <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+              
+              {/* Quick Unit Header */}
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/40">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-xl">
+                    <Box className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Create Unit of Measure</h3>
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                        <Zap className="w-2.5 h-2.5" /> Real-time Tally
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Registers unit and pushes directly to Tally Prime</p>
+                  </div>
+                </div>
+                <button 
+                  type="button" 
+                  onClick={() => setIsQuickUnitOpen(false)}
+                  className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Unit Type Tab Selector */}
+              <div className="px-4 pt-3.5 pb-1">
+                <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setQuickUnitType('simple')}
+                    className={cn(
+                      "flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                      quickUnitType === 'simple' 
+                        ? "bg-white dark:bg-slate-900 shadow-xs text-slate-800 dark:text-slate-100" 
+                        : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                    )}
+                  >
+                    Simple Unit (e.g. PCS, SET, KG)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQuickUnitType('compound')}
+                    className={cn(
+                      "flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                      quickUnitType === 'compound' 
+                        ? "bg-white dark:bg-slate-900 shadow-xs text-emerald-600 dark:text-emerald-400" 
+                        : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                    )}
+                  >
+                    Compound Unit (e.g. SET of 6)
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Unit Body */}
+              <div className="p-4 space-y-3.5">
+                {quickUnitError && (
+                  <div className="p-2.5 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 text-xs rounded-xl flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{quickUnitError}</span>
+                  </div>
+                )}
+
+                {quickUnitType === 'simple' ? (
+                  <>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Unit Symbol *</label>
+                      <input 
+                        type="text" 
+                        autoFocus
+                        placeholder="e.g. PCS, BOX, MTR, LTR, SET, BAG" 
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-bold"
+                        value={quickUnitSymbol}
+                        onChange={e => {
+                          const val = e.target.value
+                          setQuickUnitSymbol(val)
+                          const formalMap: Record<string, string> = {
+                            PCS: 'Pieces',
+                            BOX: 'Boxes',
+                            MTR: 'Meters',
+                            LTR: 'Litres',
+                            SET: 'Sets',
+                            BAG: 'Bags',
+                            DOZ: 'Dozens',
+                            ROLL: 'Rolls',
+                            KG: 'Kilograms',
+                            GM: 'Grams',
+                            PKT: 'Packets',
+                            NOS: 'Numbers'
+                          }
+                          const upper = val.trim().toUpperCase()
+                          if (formalMap[upper]) {
+                            setQuickUnitFormalName(formalMap[upper])
+                          }
+                        }}
+                      />
+                      {/* Quick Preset Chips */}
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {['PCS', 'BOX', 'MTR', 'LTR', 'SET', 'BAG', 'DOZ', 'ROLL'].map(preset => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => {
+                              setQuickUnitSymbol(preset)
+                              const formalMap: Record<string, string> = {
+                                PCS: 'Pieces',
+                                BOX: 'Boxes',
+                                MTR: 'Meters',
+                                LTR: 'Litres',
+                                SET: 'Sets',
+                                BAG: 'Bags',
+                                DOZ: 'Dozens',
+                                ROLL: 'Rolls',
+                                KG: 'Kilograms',
+                                GM: 'Grams',
+                                PKT: 'Packets',
+                                NOS: 'Numbers'
+                              }
+                              setQuickUnitFormalName(formalMap[preset] || preset)
+                            }}
+                            className="px-1.5 py-0.5 text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 hover:text-emerald-600 text-slate-600 dark:text-slate-300 rounded border border-slate-200 dark:border-slate-700 cursor-pointer"
+                          >
+                            +{preset}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Formal Name</label>
+                      <input 
+                        type="text" 
+                        placeholder="e.g. Pieces, Boxes, Meters, Sets" 
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium"
+                        value={quickUnitFormalName}
+                        onChange={e => setQuickUnitFormalName(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Decimal Places</label>
+                      <select 
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold"
+                        value={quickUnitDecimalPlaces}
+                        onChange={e => setQuickUnitDecimalPlaces(e.target.value)}
+                      >
+                        <option value="0">0 (Countable e.g. PCS, BOX, SET)</option>
+                        <option value="1">1</option>
+                        <option value="2">2 (Standard Weight/Length e.g. 1.25)</option>
+                        <option value="3">3 (Precision e.g. 1.250)</option>
+                        <option value="4">4</option>
+                      </select>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">First Unit</label>
+                        <select
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold"
+                          value={quickCompoundFirstUnitId}
+                          onChange={e => setQuickCompoundFirstUnitId(e.target.value)}
+                        >
+                          {simpleUoms.map(u => (
+                            <option key={u.unit_id} value={u.unit_id}>{u.symbol} {u.original_name ? `(${u.original_name})` : ''}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Sub Unit</label>
+                        <select
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold"
+                          value={quickCompoundSecondUnitId}
+                          onChange={e => setQuickCompoundSecondUnitId(e.target.value)}
+                        >
+                          {simpleUoms.map(u => (
+                            <option key={u.unit_id} value={u.unit_id}>{u.symbol} {u.original_name ? `(${u.original_name})` : ''}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Contains Quantity / Units</label>
+                      <input 
+                        type="number" 
+                        min="1"
+                        step="any"
+                        placeholder="Enter quantity e.g. 6 or 4" 
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-bold"
+                        value={quickCompoundConversion}
+                        onChange={e => setQuickCompoundConversion(e.target.value)}
+                      />
+                      {/* Popular Quick Conversion Chips */}
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {['2', '4', '6', '8', '10', '12', '24', '50', '100'].map(val => (
+                          <button
+                            key={val}
+                            type="button"
+                            onClick={() => setQuickCompoundConversion(val)}
+                            className={cn(
+                              "px-2.5 py-1 text-xs font-bold rounded-lg border transition-all cursor-pointer",
+                              quickCompoundConversion === val 
+                                ? "bg-emerald-600 text-white border-emerald-600 shadow-xs" 
+                                : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-emerald-500"
+                            )}
+                          >
+                            {val}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Live Preview Box */}
+                    <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl">
+                      <div className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider mb-0.5">Live Unit Preview</div>
+                      <div className="text-sm font-black text-emerald-950 dark:text-emerald-100">
+                        {simpleUoms.find(u => String(u.unit_id) === String(quickCompoundFirstUnitId))?.symbol || 'SET'} of {quickCompoundConversion || '6'} {simpleUoms.find(u => String(u.unit_id) === String(quickCompoundSecondUnitId))?.symbol || 'nos'}
+                      </div>
+                      <div className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-0.5">
+                        1 {simpleUoms.find(u => String(u.unit_id) === String(quickCompoundFirstUnitId))?.symbol || 'SET'} = {quickCompoundConversion || '6'} {simpleUoms.find(u => String(u.unit_id) === String(quickCompoundSecondUnitId))?.symbol || 'nos'}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Quick Unit Footer */}
+              <div className="p-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex justify-end gap-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsQuickUnitOpen(false)} 
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="button" 
+                  onClick={handleSaveQuickUnit} 
+                  disabled={isCreatingUnit}
+                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg shadow flex items-center gap-1.5 cursor-pointer"
+                >
+                  {isCreatingUnit && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Save & Select Unit
                 </button>
               </div>
 

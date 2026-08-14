@@ -5,13 +5,14 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import delete
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 import json
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata
-from app.models.tally_core import MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, MstLedger, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration
+from app.models.tally_core import MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, BillAllocation, MstLedger, MstGroup, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration
 
 from app.schemas.voucher import (
     VoucherCreate, VoucherResponse, VoucherListResponse,
@@ -59,9 +60,9 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                 if item:
                     qty = float(old_inv.quantity)
                     if old_inv.is_inward:
-                        item.closing_quantity = float(item.closing_quantity or 0) - qty
+                        item.closing_qty = float(item.closing_qty or 0) - qty
                     else:
-                        item.closing_quantity = float(item.closing_quantity or 0) + qty
+                        item.closing_qty = float(item.closing_qty or 0) + qty
         
         # Delete old child records
         await db.execute(delete(TrnAccounting).where(TrnAccounting.voucher_id == voucher.voucher_id))
@@ -75,12 +76,14 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
         # GST auto-calc
         auto_gst = []
         if req.is_invoice and vtype.parent_type in ['Sales', 'Purchase', 'Credit Note', 'Debit Note']:
+            is_sales_type = vtype.parent_type in ['Sales', 'Debit Note'] or vtype.name in ['Sales', 'Debit Note']
             auto_gst = await compute_gst_allocations(
                 company_id=user.company_id,
                 party_ledger_id=req.party_ledger_id,
                 gst_registration_id=req.gst_registration_id,
                 inventory_entries=req.inventory_entries,
-                db=db
+                db=db,
+                is_sales=is_sales_type
             )
             
         for idx, inv_req in enumerate(req.inventory_entries):
@@ -136,9 +139,9 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                 if item:
                     qty = float(inv.quantity)
                     if inv.is_inward:
-                        item.closing_quantity = float(item.closing_quantity or 0) + qty
+                        item.closing_qty = float(item.closing_qty or 0) + qty
                     else:
-                        item.closing_quantity = float(item.closing_quantity or 0) - qty
+                        item.closing_qty = float(item.closing_qty or 0) - qty
 
     # Post accounting entries
     for e in req.entries:
@@ -166,6 +169,93 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                     instrument_number=ba.instrument_number,
                     amount=ba.amount
                 ))
+
+        if getattr(e, 'bill_allocations', None):
+            for ba in e.bill_allocations:
+                bill = None
+                if ba.bill_id:
+                    b_res = await db.execute(select(TrnBill).where(TrnBill.bill_id == ba.bill_id, TrnBill.company_id == user.company_id))
+                    bill = b_res.scalars().first()
+                elif ba.bill_reference:
+                    b_res = await db.execute(select(TrnBill).where(
+                        TrnBill.company_id == user.company_id,
+                        TrnBill.party_ledger_id == e.ledger_id,
+                        TrnBill.bill_reference == ba.bill_reference
+                    ))
+                    bill = b_res.scalars().first()
+
+                norm_type = "Against Ref" if ba.allocation_type in ["Against Ref", "Agst Ref"] else ba.allocation_type
+
+                if norm_type in ['Advance', 'New Ref']:
+                    if not bill:
+                        vdate = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
+                        b_ref = ba.bill_reference or req.reference_number or voucher.voucher_number
+                        bill = TrnBill(
+                            company_id=user.company_id,
+                            party_ledger_id=e.ledger_id,
+                            voucher_id=voucher.voucher_id,
+                            bill_reference=b_ref[:50],
+                            bill_date=vdate,
+                            due_date=vdate,
+                            bill_amount=ba.amount,
+                            settled_amount=0.00,
+                            status="Open"
+                        )
+                        db.add(bill)
+                        await db.flush()
+                elif norm_type == 'Against Ref':
+                    if bill:
+                        bill.settled_amount = float(bill.settled_amount or 0) + float(ba.amount)
+                        if float(bill.settled_amount) >= float(bill.bill_amount):
+                            bill.status = "Settled"
+                        else:
+                            bill.status = "Partially Settled"
+
+                db.add(BillAllocation(
+                    voucher_entry_id=entry.entry_id,
+                    bill_id=bill.bill_id if bill else None,
+                    allocation_type=norm_type,
+                    amount=ba.amount
+                ))
+    
+    # If req.is_invoice with inventory entries and no manual req.entries, auto-create balanced party & sales/purchase entries
+    if req.is_invoice and req.inventory_entries and not req.entries:
+        items_total = sum(float(inv.amount) for inv in req.inventory_entries)
+        tax_total = sum(amount for (ledger_id, is_dp), amount in tax_ledger_entries.items())
+        gross_total = items_total + tax_total
+        voucher.total_amount = Decimal(str(gross_total))
+        
+        is_sales = vtype.parent_type in ['Sales', 'Debit Note'] or vtype.name in ['Sales', 'Debit Note']
+        
+        # 1. Party ledger entry
+        if req.party_ledger_id:
+            db.add(TrnAccounting(
+                voucher_id=voucher.voucher_id,
+                ledger_id=req.party_ledger_id,
+                debit_amount=gross_total if is_sales else 0,
+                credit_amount=0 if is_sales else gross_total
+            ))
+            
+        # 2. Sales / Purchase account entry
+        acct_group_name = 'Sales' if is_sales else 'Purchase'
+        acct_res = await db.execute(
+            select(MstLedger).join(MstGroup, MstLedger.group_id == MstGroup.group_id)
+            .where(MstLedger.company_id == user.company_id, MstGroup.name.ilike(f'%{acct_group_name}%'))
+        )
+        main_acct_ledger = acct_res.scalars().first()
+        if not main_acct_ledger:
+            acct_res = await db.execute(
+                select(MstLedger).where(MstLedger.company_id == user.company_id, MstLedger.name.ilike(f'%{acct_group_name}%'))
+            )
+            main_acct_ledger = acct_res.scalars().first()
+            
+        if main_acct_ledger:
+            db.add(TrnAccounting(
+                voucher_id=voucher.voucher_id,
+                ledger_id=main_acct_ledger.ledger_id,
+                debit_amount=0 if is_sales else items_total,
+                credit_amount=items_total if is_sales else 0
+            ))
     
     # Roll up tax allocations to TrnAccounting
     for (ledger_id, is_dp), amount in tax_ledger_entries.items():
@@ -176,8 +266,9 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
             credit_amount=0 if is_dp else amount
         ))
         
-    # Auto-create outstanding bill for Sales/Purchase if confirmed
-    if req.status == 'confirmed' and vtype.parent_type in ['Sales', 'Purchase'] and req.party_ledger_id:
+    # Auto-create outstanding bill for Sales/Purchase if confirmed and no manual bill allocations provided
+    has_manual_allocations = any(getattr(e, 'bill_allocations', None) for e in req.entries)
+    if not has_manual_allocations and req.status == 'confirmed' and vtype.parent_type in ['Sales', 'Purchase'] and req.party_ledger_id:
         ledg_query = await db.execute(select(MstLedger).where(MstLedger.ledger_id == req.party_ledger_id))
         ledger = ledg_query.scalars().first()
         if ledger:
@@ -187,18 +278,21 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
             amount = sum([float(e.debit_amount) for e in req.entries if e.ledger_id == ledger.ledger_id])
             if amount == 0:
                 amount = sum([float(e.credit_amount) for e in req.entries if e.ledger_id == ledger.ledger_id])
+            if amount == 0 and req.inventory_entries:
+                amount = float(voucher.total_amount)
                 
-            db.add(TrnBill(
-                company_id=user.company_id,
-                party_ledger_id=ledger.ledger_id,
-                voucher_id=voucher.voucher_id,
-                bill_reference=req.reference_number or voucher.voucher_number,
-                bill_date=vdate,
-                due_date=due,
-                bill_amount=amount,
-                settled_amount=0.00,
-                status="Open"
-            ))
+            if amount > 0:
+                db.add(TrnBill(
+                    company_id=user.company_id,
+                    party_ledger_id=ledger.ledger_id,
+                    voucher_id=voucher.voucher_id,
+                    bill_reference=req.reference_number or voucher.voucher_number,
+                    bill_date=vdate,
+                    due_date=due,
+                    bill_amount=amount,
+                    settled_amount=0.00,
+                    status="Open"
+                ))
 
 # --- Voucher Endpoints ---
 
@@ -300,6 +394,7 @@ async def create_voucher(
             selectinload(TrnVoucher.voucher_type),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
         .where(TrnVoucher.voucher_id == voucher.voucher_id)
@@ -348,6 +443,7 @@ async def update_voucher(
             selectinload(TrnVoucher.voucher_type),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
         .where(TrnVoucher.voucher_id == voucher.voucher_id)
@@ -375,9 +471,9 @@ async def delete_voucher(
             if item:
                 qty = float(old_inv.quantity)
                 if old_inv.is_inward:
-                    item.closing_quantity = float(item.closing_quantity or 0) - qty
+                    item.closing_qty = float(item.closing_qty or 0) - qty
                 else:
-                    item.closing_quantity = float(item.closing_quantity or 0) + qty
+                    item.closing_qty = float(item.closing_qty or 0) + qty
                     
     await db.delete(voucher)
     await log_audit(db, user.company_id, user.user_id, "DELETE", "Voucher", voucher_id)
@@ -415,12 +511,12 @@ async def update_voucher_status(
                 qty = float(inv.quantity)
                 # To confirmed = apply stock
                 if status_val == 'confirmed':
-                    if inv.is_inward: item.closing_quantity = float(item.closing_quantity or 0) + qty
-                    else: item.closing_quantity = float(item.closing_quantity or 0) - qty
+                    if inv.is_inward: item.closing_qty = float(item.closing_qty or 0) + qty
+                    else: item.closing_qty = float(item.closing_qty or 0) - qty
                 # From confirmed = reverse stock
                 else:
-                    if inv.is_inward: item.closing_quantity = float(item.closing_quantity or 0) - qty
-                    else: item.closing_quantity = float(item.closing_quantity or 0) + qty
+                    if inv.is_inward: item.closing_qty = float(item.closing_qty or 0) - qty
+                    else: item.closing_qty = float(item.closing_qty or 0) + qty
                     
     voucher.status = status_val
     await db.commit()

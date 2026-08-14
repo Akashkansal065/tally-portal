@@ -9,7 +9,7 @@ async def get_tax_ledger(db: AsyncSession, company_id: int, tax_type: str) -> Op
     """Finds a tax ledger by name (CGST, SGST, IGST) under Duties & Taxes."""
     stmt = (
         select(MstLedger)
-        .join(MstGroup, MstLedger.parent_id == MstGroup.group_id)
+        .join(MstGroup, MstLedger.group_id == MstGroup.group_id)
         .where(
             MstLedger.company_id == company_id,
             MstGroup.name.ilike('%Duties & Taxes%'),
@@ -25,7 +25,8 @@ async def compute_gst_allocations(
     party_ledger_id: int,
     gst_registration_id: Optional[int],
     inventory_entries: List[InventoryEntryCreate],
-    db: AsyncSession
+    db: AsyncSession,
+    is_sales: bool = False
 ):
     """
     Computes automatic GST allocations for inventory entries.
@@ -55,6 +56,10 @@ async def compute_gst_allocations(
     
     allocations = []
     
+    # In Sales: Tax is Credit (is_deemed_positive = False)
+    # In Purchase: Tax is Debit (is_deemed_positive = True)
+    is_dp = not is_sales
+    
     for idx, entry in enumerate(inventory_entries):
         # Ignore if user already provided manual allocations
         if entry.accounting_allocations:
@@ -67,9 +72,6 @@ async def compute_gst_allocations(
             
         rate = Decimal(item.gst_rate_percent)
         amount = entry.amount
-        
-        # polarity: tax follows the item polarity
-        is_dp = entry.is_deemed_positive
         
         if is_interstate and igst_ledger_id:
             tax_amount = (amount * rate) / Decimal('100.0')
