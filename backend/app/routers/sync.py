@@ -1261,6 +1261,139 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
     except Exception as e:
         logger.error(f"Error in try_push_voucher_type_realtime: {str(e)}")
 
+
+async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, db: AsyncSession):
+    try:
+        from app.models.tally_core import TrnVoucher, TrnAccounting, MstLedger, MstVoucherType
+        from app.models.portal_core import Company
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            return
+
+        # Fetch voucher and entries
+        v_stmt = select(TrnVoucher).options(
+            selectinload(TrnVoucher.voucher_type),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations)
+        ).where(TrnVoucher.voucher_id == voucher_id)
+        v_res = await db.execute(v_stmt)
+        voucher = v_res.scalars().first()
+        if not voucher:
+            return
+
+        comp = (await db.execute(select(Company).where(Company.company_id == voucher.company_id))).scalars().first()
+        comp_name = comp.name if comp else ""
+
+        if action == "Delete":
+            logger.warning(f"Suppressing real-time Tally Push for Voucher (Delete) as it might crash Tally or needs specific handling. voucher_id={voucher_id}")
+            return
+
+        # Build ledger entries XML
+        vdate_str = voucher.voucher_date.strftime("%Y%m%d")
+        entries_xml = ""
+        party_ledger_name = ""
+        for ent in voucher.entries:
+            led_name = ent.ledger.name if ent.ledger else "Suspense A/c"
+            # In Tally XML:
+            # Debit amount is negative
+            # Credit amount is positive
+            amt = -ent.debit_amount if ent.debit_amount > 0 else ent.credit_amount
+            
+            # Party ledger name is generally the first debtor/creditor, but Tally requires <PARTYLEDGERNAME> 
+            # for accounting vouchers like Sales, Purchase, Payment, Receipt. We'll set it to the first ledger 
+            # that isn't a bank/cash/sales/purchase (if possible), or just the first entry.
+            
+            entries_xml += f'''
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>{led_name}</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>{'Yes' if ent.debit_amount > 0 else 'No'}</ISDEEMEDPOSITIVE>
+            <AMOUNT>{amt}</AMOUNT>'''
+            
+            if getattr(ent, 'bank_allocations', None):
+                for ba in ent.bank_allocations:
+                    inst_date = ba.instrument_date.strftime("%Y%m%d") if ba.instrument_date else ""
+                    entries_xml += f'''
+            <BANKALLOCATIONS.LIST>
+             <DATE>{vdate_str}</DATE>
+             <TRANSACTIONTYPE>{ba.transaction_type}</TRANSACTIONTYPE>
+             <AMOUNT>{amt}</AMOUNT>'''
+                    if inst_date:
+                        entries_xml += f'\n             <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>'
+                    if ba.payment_favouring:
+                        entries_xml += f'\n             <PAYMENTFAVOURING>{ba.payment_favouring}</PAYMENTFAVOURING>'
+                    if ba.instrument_number:
+                        entries_xml += f'\n             <INSTRUMENTNUMBER>{ba.instrument_number}</INSTRUMENTNUMBER>'
+                    
+                    entries_xml += '''
+            </BANKALLOCATIONS.LIST>'''
+            
+            entries_xml += '''
+          </ALLLEDGERENTRIES.LIST>'''
+            
+            if not party_ledger_name:
+                party_ledger_name = led_name
+                
+        # Refine party ledger name (simple heuristic)
+        if voucher.voucher_type.name in ["Sales", "Purchase", "Payment", "Receipt"]:
+            for ent in voucher.entries:
+                if ent.ledger and ent.ledger.group:
+                    gname = ent.ledger.group.name.lower()
+                    if "bank" not in gname and "cash" not in gname and "sales" not in gname and "purchase" not in gname:
+                        party_ledger_name = ent.ledger.name
+                        break
+        if not party_ledger_name and voucher.entries:
+            party_ledger_name = voucher.entries[0].ledger.name if voucher.entries[0].ledger else "Suspense A/c"
+
+        vtype_name = voucher.voucher_type.name
+
+        xml_envelope = f'''<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>Vouchers</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          <VOUCHER VCHTYPE="{vtype_name}" ACTION="{action}">
+            <DATE>{vdate_str}</DATE>
+            <VOUCHERTYPENAME>{vtype_name}</VOUCHERTYPENAME>
+            <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>
+            <PARTYLEDGERNAME>{party_ledger_name}</PARTYLEDGERNAME>
+            <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
+            <ISINVOICE>No</ISINVOICE>
+            <NARRATION>{voucher.narration or ''}</NARRATION>
+            {entries_xml}
+          </VOUCHER>
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>'''
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY XML PUSH (voucher_id={voucher_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+
+        response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
+        
+        if "<CREATED>1</CREATED>" in response or "<ALTERED>1</ALTERED>" in response or "<DELETED>1</DELETED>" in response or "<IGNORED>1</IGNORED>" in response:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True, attempts=SyncQueue.attempts + 1))
+            await db.commit()
+            logger.info(f"Real-time Tally Push Success for Voucher {voucher.voucher_number} ({action})")
+        else:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+            await db.commit()
+            logger.error(f"Real-time Tally Push Failed for Voucher {voucher.voucher_number} ({action}). Tally Response: {response}")
+
+    except Exception as e:
+        logger.error(f"Error in try_push_voucher_realtime: {str(e)}")
+
+
 async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: AsyncSession):
     try:
         tally_url = settings.TALLY_URL
@@ -1643,7 +1776,7 @@ async def run_once_sync_background(user_id: int):
         <TDLMESSAGE>
           <COLLECTION NAME="AllVoucherTypes">
             <TYPE>VoucherType</TYPE>
-            <FETCH>NAME,PARENT,NUMBERINGMETHOD,PREVENTDUPLICATES,ALTERID,GUID</FETCH>
+            <FETCH>NAME,PARENT,NUMBERINGMETHOD,PREVENTDUPLICATES,ALTERID,GUID,ISACTIVE</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -1908,15 +2041,16 @@ async def run_once_sync_background(user_id: int):
 
                     for name, xml_payload in queries.items():
                         try:
+                            logger.info(f"📡 [SYNC QUERY] Requesting collection '{name}' from Tally at {tally_url}...")
                             resp_xml = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_payload)
                             if not resp_xml:
-                                logger.warning(f"[SYNC WARNING] Empty response from Tally for collection '{name}'. Skipping.")
+                                logger.warning(f"⚠️ [SYNC WARNING] Empty response from Tally for collection '{name}'. Skipping.")
                                 continue
                             if "<ENVELOPE>" not in resp_xml:
-                                logger.warning(f"[SYNC WARNING] Invalid response (no <ENVELOPE> tag) from Tally for collection '{name}'. Response snippet: {resp_xml[:200]}...")
+                                logger.warning(f"⚠️ [SYNC WARNING] Invalid response (no <ENVELOPE> tag) from Tally for collection '{name}'. Response snippet: {resp_xml[:200]}...")
                                 continue
                             
-                            logger.info(f"[SYNC INFO] Received {len(resp_xml)} bytes from Tally for collection '{name}'.")
+                            logger.info(f"📥 [SYNC RECEIVED] Got {len(resp_xml)} bytes from Tally for collection '{name}'. Processing import...")
                             res = await import_tally_xml(resp_xml, db, user_id, override_company_name=company_name)
                             
                             if res.get("status") == "success":
@@ -1930,12 +2064,15 @@ async def run_once_sync_background(user_id: int):
                                 c_stock_items = res.get("imported_stock_items", 0)
                                 c_currencies = res.get("imported_currencies", 0)
                                 c_voucher_types = res.get("imported_voucher_types", 0)
+                                item_errors = res.get("errors", [])
                                 
                                 logger.info(
-                                    f"[SYNC SUCCESS] Collection '{name}' imported successfully. "
+                                    f"✅ [SYNC SUCCESS] Collection '{name}' imported successfully. "
                                     f"Counts - Groups: {c_groups}, Ledgers: {c_ledgers}, Vouchers: {c_vouchers}, "
                                     f"StockItems: {c_stock_items}, Currencies: {c_currencies}, VoucherTypes: {c_voucher_types}"
                                 )
+                                if item_errors:
+                                    logger.warning(f"⚠️ [SYNC ITEM ERRORS] Collection '{name}' had {len(item_errors)} record error(s): {item_errors[:5]}")
                                 
                                 total_imported["groups"] += c_groups
                                 total_imported["ledgers"] += c_ledgers
@@ -1953,13 +2090,13 @@ async def run_once_sync_background(user_id: int):
                                     clear_company_cache(res_cid)
                             else:
                                 err_msg = res.get("message", "Unknown error")
-                                logger.error(f"[SYNC ERROR] Failed to import collection '{name}'. Error: {err_msg}")
+                                logger.error(f"❌ [SYNC ERROR] Failed to import collection '{name}'. Error: {err_msg}")
                         except Exception as e:
-                            logger.error(f"[SYNC FATAL] Exception while processing collection '{name}': {str(e)}", exc_info=True)
+                            logger.error(f"💥 [SYNC FATAL] Exception while processing collection '{name}': {str(e)}", exc_info=True)
 
-            logger.info(f"[SYNC COMPLETED] Background run-once sync finished for user_id={user_id}: {total_imported}")
+            logger.info(f"🏁 [SYNC COMPLETED] Background run-once sync finished for user_id={user_id}: {total_imported}")
         except Exception as e:
-            logger.error(f"[SYNC FATAL] Background run-once sync failed with exception for user_id={user_id}: {str(e)}", exc_info=True)
+            logger.error(f"💥 [SYNC FATAL] Background run-once sync failed with exception for user_id={user_id}: {str(e)}", exc_info=True)
 
 
 @router.post("/run-once")

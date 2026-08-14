@@ -3,6 +3,20 @@ from typing import Optional, List
 from decimal import Decimal
 from datetime import date, datetime
 
+class BankAllocationCreate(BaseModel):
+    instrument_date: Optional[date] = None
+    transaction_type: str
+    payment_favouring: Optional[str] = None
+    instrument_number: Optional[str] = None
+    amount: Decimal
+
+class BankAllocationResponse(BankAllocationCreate):
+    allocation_id: int
+    entry_id: int
+    
+    class Config:
+        from_attributes = True
+
 class VoucherEntryCreate(BaseModel):
     ledger_id: int
     cost_center_id: Optional[int] = None
@@ -14,12 +28,15 @@ class VoucherEntryCreate(BaseModel):
     forex_currency_id: Optional[int] = None
     forex_amount: Optional[Decimal] = None
     exchange_rate_used: Optional[Decimal] = None
+    
+    bank_allocations: Optional[List[BankAllocationCreate]] = None
 
 from pydantic import model_validator
 
 class VoucherEntryResponse(VoucherEntryCreate):
     entry_id: int
     voucher_id: int
+    bank_allocations: Optional[List[BankAllocationResponse]] = []
     
     class Config:
         from_attributes = True
@@ -48,13 +65,50 @@ class VoucherListResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class AccountingAllocationCreate(BaseModel):
+    ledger_id: int
+    is_deemed_positive: bool
+    amount: Decimal
+
+class InventoryEntryCreate(BaseModel):
+    stock_item_id: int
+    quantity: Decimal
+    rate: Decimal
+    amount: Decimal
+    billed_qty: Optional[Decimal] = None
+    rate_unit_id: Optional[int] = None
+    godown_id: Optional[int] = None
+    batch_id: Optional[int] = None
+    is_deemed_positive: bool = True
+    flow_type: Optional[str] = None
+    accounting_allocations: Optional[List[AccountingAllocationCreate]] = []
+
+class AccountingAllocationResponse(AccountingAllocationCreate):
+    id: int
+    
+    class Config:
+        from_attributes = True
+
+class InventoryEntryResponse(InventoryEntryCreate):
+    stock_entry_id: int
+    stock_item_name: Optional[str] = None
+    accounting_allocations: Optional[List[AccountingAllocationResponse]] = []
+    
+    class Config:
+        from_attributes = True
+
 class VoucherCreate(BaseModel):
     voucher_type_id: int
     voucher_date: str  # YYYY-MM-DD
     reference_number: Optional[str] = None
     narration: Optional[str] = None
-    is_optional: bool = False
+    status: str = 'confirmed'
+    party_ledger_id: Optional[int] = None
+    is_invoice: bool = False
+    original_voucher_id: Optional[int] = None
+    gst_registration_id: Optional[int] = None
     entries: List[VoucherEntryCreate]
+    inventory_entries: Optional[List[InventoryEntryCreate]] = []
 
 class VoucherResponse(BaseModel):
     voucher_id: int
@@ -65,13 +119,17 @@ class VoucherResponse(BaseModel):
     reference_number: Optional[str] = None
     narration: Optional[str] = None
     total_amount: Decimal
-    is_cancelled: bool
-    is_optional: bool
+    status: str
+    party_ledger_id: Optional[int] = None
+    is_invoice: bool
+    original_voucher_id: Optional[int] = None
+    gst_registration_id: Optional[int] = None
     created_by: int
     created_at: datetime
     tally_guid: Optional[str] = None
     tally_alter_id: Optional[int] = None
     entries: List[VoucherEntryResponse]
+    inventory_entries: Optional[List[InventoryEntryResponse]] = []
     
     # Frontend compatibility fields
     date: date

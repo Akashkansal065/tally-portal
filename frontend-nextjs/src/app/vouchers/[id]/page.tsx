@@ -82,8 +82,8 @@ export default function VoucherDetailPage() {
           referenceNumber: voucher.reference_number,
           partyName: voucher.party_name
         },
-        accounts: voucher.accounts,
-        inventory: voucher.inventory,
+        accounts: voucher.entries || voucher.accounts || [],
+        inventory: voucher.inventory || [],
         partyLedger: voucher.party_ledger,
         shouldDownload: true
       })
@@ -241,8 +241,8 @@ export default function VoucherDetailPage() {
         {/* Interactive Voucher details listing */}
         <VoucherDetailsClient
           header={{ partyName: voucher.party_name }}
-          accounts={voucher.accounts}
-          inventory={voucher.inventory}
+          accounts={voucher.entries || voucher.accounts || []}
+          inventory={voucher.inventory || []}
           isInventoryVoucher={voucher.is_inventory_voucher}
         />
 

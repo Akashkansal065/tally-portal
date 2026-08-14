@@ -2,25 +2,23 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from sqlalchemy import delete
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import json
 
-from app.models.tally_core import TrnBill
-
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
-from app.models.portal_core import User, Module
-from app.models.tally_core import MstVoucherType, TrnVoucher, TrnAccounting
-from app.models.portal_core import ApprovalRule, ApprovalRequest, AuditLog
-from app.models.tally_core import MstLedger
-from app.models.portal_core import SyncQueue
+from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata
+from app.models.tally_core import MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, MstLedger, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration
+
 from app.schemas.voucher import (
     VoucherCreate, VoucherResponse, VoucherListResponse,
     ApprovalRuleCreate, ApprovalRuleResponse,
     ApprovalRequestResponse
 )
+from app.services.gst_service import compute_gst_allocations
 
 router = APIRouter(prefix="/vouchers", tags=["Vouchers & Posting"])
 
@@ -37,18 +35,172 @@ async def log_audit(db: AsyncSession, company_id: int, user_id: int, action: str
     db.add(audit)
 
 # --- Voucher Types ---
-
 @router.get("/types")
 async def get_voucher_types(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await db.execute(
-        select(MstVoucherType).where(MstVoucherType.company_id == user.company_id)
-    )
+    res = await db.execute(select(MstVoucherType).where(MstVoucherType.company_id == user.company_id))
     return res.scalars().all()
 
-# --- Voucher Posting ---
+# --- Voucher Posting Logic ---
+
+async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=False):
+    # Reverse existing stock if update
+    if is_update:
+        # Stock quantities are updated when voucher status is 'confirmed'
+        # We need to reverse them before deleting if the old status was 'confirmed'
+        if voucher.status == 'confirmed':
+            old_inv_stmt = select(TrnInventory).where(TrnInventory.voucher_id == voucher.voucher_id)
+            old_inv_res = await db.execute(old_inv_stmt)
+            for old_inv in old_inv_res.scalars().all():
+                item_res = await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == old_inv.stock_item_id))
+                item = item_res.scalars().first()
+                if item:
+                    qty = float(old_inv.quantity)
+                    if old_inv.is_inward:
+                        item.closing_quantity = float(item.closing_quantity or 0) - qty
+                    else:
+                        item.closing_quantity = float(item.closing_quantity or 0) + qty
+        
+        # Delete old child records
+        await db.execute(delete(TrnAccounting).where(TrnAccounting.voucher_id == voucher.voucher_id))
+        await db.execute(delete(TrnInventory).where(TrnInventory.voucher_id == voucher.voucher_id))
+        await db.execute(delete(TrnBill).where(TrnBill.voucher_id == voucher.voucher_id))
+
+    # Process new inventory entries
+    tax_ledger_entries = {}
+    
+    if req.inventory_entries:
+        # GST auto-calc
+        auto_gst = []
+        if req.is_invoice and vtype.parent_type in ['Sales', 'Purchase', 'Credit Note', 'Debit Note']:
+            auto_gst = await compute_gst_allocations(
+                company_id=user.company_id,
+                party_ledger_id=req.party_ledger_id,
+                gst_registration_id=req.gst_registration_id,
+                inventory_entries=req.inventory_entries,
+                db=db
+            )
+            
+        for idx, inv_req in enumerate(req.inventory_entries):
+            is_inward = True
+            if vtype.parent_type in ['Sales', 'Debit Note']:
+                is_inward = False
+                
+            inv = TrnInventory(
+                voucher_id=voucher.voucher_id,
+                stock_item_id=inv_req.stock_item_id,
+                godown_id=inv_req.godown_id,
+                batch_id=inv_req.batch_id,
+                quantity=inv_req.quantity,
+                billed_qty=inv_req.billed_qty or inv_req.quantity,
+                rate=inv_req.rate,
+                rate_unit_id=inv_req.rate_unit_id,
+                amount=inv_req.amount,
+                is_inward=is_inward,
+                is_deemed_positive=inv_req.is_deemed_positive,
+                flow_type=inv_req.flow_type
+            )
+            db.add(inv)
+            await db.flush()
+            
+            # Post manual allocations
+            if inv_req.accounting_allocations:
+                for alloc in inv_req.accounting_allocations:
+                    db.add(VoucherAccountingAllocation(
+                        stock_entry_id=inv.stock_entry_id,
+                        ledger_id=alloc.ledger_id,
+                        is_deemed_positive=alloc.is_deemed_positive,
+                        amount=alloc.amount
+                    ))
+                    key = (alloc.ledger_id, alloc.is_deemed_positive)
+                    tax_ledger_entries[key] = tax_ledger_entries.get(key, 0) + float(alloc.amount)
+            else:
+                # Post auto-gst allocations for this item
+                item_auto_gst = [g for g in auto_gst if g['item_index'] == idx]
+                for g in item_auto_gst:
+                    db.add(VoucherAccountingAllocation(
+                        stock_entry_id=inv.stock_entry_id,
+                        ledger_id=g['ledger_id'],
+                        is_deemed_positive=g['is_deemed_positive'],
+                        amount=g['amount']
+                    ))
+                    key = (g['ledger_id'], g['is_deemed_positive'])
+                    tax_ledger_entries[key] = tax_ledger_entries.get(key, 0) + float(g['amount'])
+
+            # Update stock balance if confirmed
+            if req.status == 'confirmed':
+                item_res = await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == inv_req.stock_item_id))
+                item = item_res.scalars().first()
+                if item:
+                    qty = float(inv.quantity)
+                    if inv.is_inward:
+                        item.closing_quantity = float(item.closing_quantity or 0) + qty
+                    else:
+                        item.closing_quantity = float(item.closing_quantity or 0) - qty
+
+    # Post accounting entries
+    for e in req.entries:
+        entry = TrnAccounting(
+            voucher_id=voucher.voucher_id,
+            ledger_id=e.ledger_id,
+            cost_center_id=e.cost_center_id,
+            debit_amount=e.debit_amount,
+            credit_amount=e.credit_amount,
+            entry_narration=e.entry_narration,
+            forex_currency_id=e.forex_currency_id,
+            forex_amount=e.forex_amount,
+            exchange_rate_used=e.exchange_rate_used
+        )
+        db.add(entry)
+        await db.flush()
+        
+        if e.bank_allocations:
+            for ba in e.bank_allocations:
+                db.add(TrnBankAllocation(
+                    entry_id=entry.entry_id,
+                    instrument_date=ba.instrument_date,
+                    transaction_type=ba.transaction_type,
+                    payment_favouring=ba.payment_favouring,
+                    instrument_number=ba.instrument_number,
+                    amount=ba.amount
+                ))
+    
+    # Roll up tax allocations to TrnAccounting
+    for (ledger_id, is_dp), amount in tax_ledger_entries.items():
+        db.add(TrnAccounting(
+            voucher_id=voucher.voucher_id,
+            ledger_id=ledger_id,
+            debit_amount=amount if is_dp else 0,
+            credit_amount=0 if is_dp else amount
+        ))
+        
+    # Auto-create outstanding bill for Sales/Purchase if confirmed
+    if req.status == 'confirmed' and vtype.parent_type in ['Sales', 'Purchase'] and req.party_ledger_id:
+        ledg_query = await db.execute(select(MstLedger).where(MstLedger.ledger_id == req.party_ledger_id))
+        ledger = ledg_query.scalars().first()
+        if ledger:
+            days = ledger.credit_period_days or 0
+            vdate = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
+            due = vdate + timedelta(days=days)
+            amount = sum([float(e.debit_amount) for e in req.entries if e.ledger_id == ledger.ledger_id])
+            if amount == 0:
+                amount = sum([float(e.credit_amount) for e in req.entries if e.ledger_id == ledger.ledger_id])
+                
+            db.add(TrnBill(
+                company_id=user.company_id,
+                party_ledger_id=ledger.ledger_id,
+                voucher_id=voucher.voucher_id,
+                bill_reference=req.reference_number or voucher.voucher_number,
+                bill_date=vdate,
+                due_date=due,
+                bill_amount=amount,
+                settled_amount=0.00,
+                status="Open"
+            ))
+
+# --- Voucher Endpoints ---
 
 @router.post("", response_model=VoucherResponse, status_code=status.HTTP_201_CREATED)
 async def create_voucher(
@@ -57,45 +209,27 @@ async def create_voucher(
     user: User = Depends(require_permission("vouchers", "create")),
     db: AsyncSession = Depends(get_db)
 ):
-    if not req.entries:
+    if not req.entries and not req.inventory_entries:
         raise HTTPException(status_code=400, detail="Voucher must have at least one entry.")
         
     total_debits = sum(e.debit_amount for e in req.entries)
     total_credits = sum(e.credit_amount for e in req.entries)
     
-    if total_debits != total_credits:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Voucher is unbalanced. Total Debits: {total_debits}, Total Credits: {total_credits}"
-        )
-    if total_debits <= 0:
-        raise HTTPException(status_code=400, detail="Voucher amount must be greater than zero.")
+    if req.entries and total_debits != total_credits:
+        raise HTTPException(status_code=400, detail=f"Voucher is unbalanced. Debits: {total_debits}, Credits: {total_credits}")
         
-    # Get voucher type
-    vtype_query = await db.execute(
-        select(MstVoucherType).where(
-            MstVoucherType.voucher_type_id == req.voucher_type_id,
-            MstVoucherType.company_id == user.company_id
-        )
-    )
+    vtype_query = await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == req.voucher_type_id, MstVoucherType.company_id == user.company_id))
     vtype = vtype_query.scalars().first()
     if not vtype:
         raise HTTPException(status_code=400, detail="Voucher type not found.")
         
-    # Generate auto-numbering
     if vtype.numbering_method == "Automatic":
         vnum = f"{vtype.prefix or ''}{vtype.next_number}"
         vtype.next_number += 1
     else:
-        if not req.reference_number:
-            raise HTTPException(status_code=400, detail="Manual voucher number must be provided in reference_number.")
-        vnum = req.reference_number
+        vnum = req.reference_number or 'MANUAL'
         
-    # Parse date
-    try:
-        vdate = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+    vdate = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
         
     # Check Maker-Checker rule threshold
     mod_query = await db.execute(select(Module).where(Module.code == 'vouchers'))
@@ -120,9 +254,9 @@ async def create_voucher(
                 matching_rule = r
                 break
                 
-    is_held_for_approval = False
+    final_status = req.status
     if matching_rule:
-        is_held_for_approval = True
+        final_status = 'optional'
         
     voucher = TrnVoucher(
         company_id=user.company_id,
@@ -132,129 +266,181 @@ async def create_voucher(
         reference_number=req.reference_number,
         narration=req.narration,
         total_amount=total_debits,
-        is_optional=True if is_held_for_approval else req.is_optional,
+        status=final_status,
+        party_ledger_id=req.party_ledger_id,
+        is_invoice=req.is_invoice,
+        original_voucher_id=req.original_voucher_id,
+        gst_registration_id=req.gst_registration_id,
         created_by=user.user_id
     )
     db.add(voucher)
-    await db.flush() # Populate voucher_id
+    await db.flush()
     
-    # Save entries
-    for e in req.entries:
-        # Verify ledger exists and load group
-        ledg_query = await db.execute(
-            select(MstLedger).options(selectinload(MstLedger.group)).where(MstLedger.ledger_id == e.ledger_id, MstLedger.company_id == user.company_id)
-        )
-        ledger = ledg_query.scalars().first()
-        if not ledger:
-            raise HTTPException(status_code=400, detail=f"Ledger ID {e.ledger_id} not found in this company.")
-            
-        entry = TrnAccounting(
-            voucher_id=voucher.voucher_id,
-            ledger_id=e.ledger_id,
-            cost_center_id=e.cost_center_id,
-            debit_amount=e.debit_amount,
-            credit_amount=e.credit_amount,
-            entry_narration=e.entry_narration,
-            forex_currency_id=e.forex_currency_id,
-            forex_amount=e.forex_amount,
-            exchange_rate_used=e.exchange_rate_used
-        )
-        db.add(entry)
+    await handle_inventory_posting(db, user, voucher, vtype, req)
         
-        # Auto-create outstanding bill for party ledger entries in Sales/Purchase
-        if vtype.name in ['Sales', 'Purchase'] and ('Debtors' in ledger.group.name or 'Creditors' in ledger.group.name):
-            days = ledger.credit_period_days or 0
-            due = vdate + timedelta(days=days)
-            amount = e.debit_amount if e.debit_amount > 0 else e.credit_amount
-            
-            bill = TrnBill(
-                company_id=user.company_id,
-                party_ledger_id=ledger.ledger_id,
-                voucher_id=voucher.voucher_id,
-                bill_reference=vnum,
-                bill_date=vdate,
-                due_date=due,
-                bill_amount=amount,
-                settled_amount=0.00,
-                status="Open"
-            )
-            db.add(bill)
+    if matching_rule:
+        db.add(ApprovalRequest(rule_id=matching_rule.rule_id, voucher_id=voucher.voucher_id, requested_by=user.user_id, status="Pending"))
         
-    # If maker-checker was triggered, save approval request
-    if is_held_for_approval:
-        app_req = ApprovalRequest(
-            rule_id=matching_rule.rule_id,
-            voucher_id=voucher.voucher_id,
-            requested_by=user.user_id,
-            status="Pending"
-        )
-        db.add(app_req)
-        
-    # Log audit trail
-    new_value_snapshot = {
-        "voucher_number": vnum,
-        "total_amount": float(total_debits),
-        "is_optional": voucher.is_optional,
-        "held_for_approval": is_held_for_approval
-    }
-    await log_audit(
-        db,
-        user.company_id,
-        user.user_id,
-        "CREATE",
-        "Voucher",
-        voucher.voucher_id,
-        new_val=new_value_snapshot
-    )
+    await log_audit(db, user.company_id, user.user_id, "CREATE", "Voucher", voucher.voucher_id)
     
-    if not voucher.is_optional:
-        sync_item = SyncQueue(
-            company_id=user.company_id,
-            record_type="Voucher",
-            record_id=voucher.voucher_id,
-            action="Create"
-        )
+    if final_status == 'confirmed':
+        sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher.voucher_id, action="Create")
         db.add(sync_item)
         
     await db.commit()
     
-    # Fetch completed object with entries loaded
+    if final_status == 'confirmed':
+        await db.refresh(sync_item)
+        from app.routers.sync import try_push_voucher_realtime
+        await try_push_voucher_realtime(voucher.voucher_id, sync_item.sync_id, "Create", db)
+    
     final_query = await db.execute(
         select(TrnVoucher)
         .options(
             selectinload(TrnVoucher.voucher_type),
-            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
         .where(TrnVoucher.voucher_id == voucher.voucher_id)
     )
-    final_voucher = final_query.scalars().first()
     
-    if is_held_for_approval:
+    if matching_rule:
         response.status_code = status.HTTP_202_ACCEPTED
         
     clear_company_cache(user.company_id)
-    return final_voucher
+    return final_query.scalars().first()
+
+@router.put("/{voucher_id}", response_model=VoucherResponse)
+async def update_voucher(
+    voucher_id: int,
+    req: VoucherCreate,
+    user: User = Depends(require_permission("vouchers", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    v_query = await db.execute(select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id))
+    voucher = v_query.scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    vtype_query = await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == req.voucher_type_id))
+    vtype = vtype_query.scalars().first()
+    
+    voucher.voucher_date = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
+    voucher.reference_number = req.reference_number
+    voucher.narration = req.narration
+    voucher.total_amount = sum(e.debit_amount for e in req.entries)
+    voucher.status = req.status
+    voucher.party_ledger_id = req.party_ledger_id
+    voucher.is_invoice = req.is_invoice
+    voucher.original_voucher_id = req.original_voucher_id
+    voucher.gst_registration_id = req.gst_registration_id
+    
+    await handle_inventory_posting(db, user, voucher, vtype, req, is_update=True)
+    
+    await log_audit(db, user.company_id, user.user_id, "UPDATE", "Voucher", voucher.voucher_id)
+    await db.commit()
+    
+    clear_company_cache(user.company_id)
+    final_query = await db.execute(
+        select(TrnVoucher)
+        .options(
+            selectinload(TrnVoucher.voucher_type),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
+        )
+        .where(TrnVoucher.voucher_id == voucher.voucher_id)
+    )
+    return final_query.scalars().first()
+
+@router.delete("/{voucher_id}")
+async def delete_voucher(
+    voucher_id: int,
+    user: User = Depends(require_permission("vouchers", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    v_query = await db.execute(select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id))
+    voucher = v_query.scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    # Reverse stock if confirmed
+    if voucher.status == 'confirmed':
+        old_inv_stmt = select(TrnInventory).where(TrnInventory.voucher_id == voucher.voucher_id)
+        old_inv_res = await db.execute(old_inv_stmt)
+        for old_inv in old_inv_res.scalars().all():
+            item_res = await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == old_inv.stock_item_id))
+            item = item_res.scalars().first()
+            if item:
+                qty = float(old_inv.quantity)
+                if old_inv.is_inward:
+                    item.closing_quantity = float(item.closing_quantity or 0) - qty
+                else:
+                    item.closing_quantity = float(item.closing_quantity or 0) + qty
+                    
+    await db.delete(voucher)
+    await log_audit(db, user.company_id, user.user_id, "DELETE", "Voucher", voucher_id)
+    await db.commit()
+    clear_company_cache(user.company_id)
+    return {"detail": "Voucher deleted successfully"}
+
+@router.patch("/{voucher_id}/status")
+async def update_voucher_status(
+    voucher_id: int,
+    status_val: str,
+    user: User = Depends(require_permission("vouchers", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    if status_val not in ['draft', 'optional', 'confirmed', 'cancelled']:
+        raise HTTPException(status_code=400, detail="Invalid status")
+        
+    v_query = await db.execute(select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id))
+    voucher = v_query.scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    old_status = voucher.status
+    if old_status == status_val:
+        return {"detail": "Status unchanged"}
+        
+    # If transitioning to/from confirmed, adjust stock
+    if old_status == 'confirmed' or status_val == 'confirmed':
+        inv_stmt = select(TrnInventory).where(TrnInventory.voucher_id == voucher.voucher_id)
+        inv_res = await db.execute(inv_stmt)
+        for inv in inv_res.scalars().all():
+            item_res = await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == inv.stock_item_id))
+            item = item_res.scalars().first()
+            if item:
+                qty = float(inv.quantity)
+                # To confirmed = apply stock
+                if status_val == 'confirmed':
+                    if inv.is_inward: item.closing_quantity = float(item.closing_quantity or 0) + qty
+                    else: item.closing_quantity = float(item.closing_quantity or 0) - qty
+                # From confirmed = reverse stock
+                else:
+                    if inv.is_inward: item.closing_quantity = float(item.closing_quantity or 0) - qty
+                    else: item.closing_quantity = float(item.closing_quantity or 0) + qty
+                    
+    voucher.status = status_val
+    await db.commit()
+    clear_company_cache(user.company_id)
+    return {"detail": f"Status updated to {status_val}"}
 
 def _resolve_party_and_amount(entries):
-    """Score entries by ledger group to find primary party name and compute true Gross Amount (before taxes/duties)."""
-    if not entries:
-        return "Cash Account", 0.0
-
+    if not entries: return "Cash Account", 0.0
     primary_entry = entries[0]
     max_score = -100
-
     sales_purchase_sum = 0.0
     has_sales_purchase = False
 
     for entry in entries:
         ledger = getattr(entry, "ledger", None)
-        if not ledger:
-            continue
+        if not ledger: continue
         group = getattr(ledger, "group", None)
         gname = (getattr(group, "name", "") or "").lower() if group else ""
         lname = (getattr(ledger, "name", "") or "").lower()
 
-        # Sum base Sales / Purchase ledger amounts (excluding taxes, duties, and round off)
         if "sales accounts" in gname or "purchase accounts" in gname or "sales" in gname or "purchase" in gname:
             if "tax" not in lname and "duty" not in lname and "round" not in lname and "discount" not in lname:
                 damt = float(entry.debit_amount or 0)
@@ -263,14 +449,10 @@ def _resolve_party_and_amount(entries):
                 has_sales_purchase = True
 
         score = 0
-        if "debtors" in gname or "creditors" in gname:
-            score = 10
-        elif "bank" in gname or "cash" in gname:
-            score = 5
-        elif "sales" in gname or "purchase" in gname or "tax" in gname or "duty" in gname or "round" in lname:
-            score = -10
-        else:
-            score = 1
+        if "debtors" in gname or "creditors" in gname: score = 10
+        elif "bank" in gname or "cash" in gname: score = 5
+        elif "sales" in gname or "purchase" in gname or "tax" in gname or "duty" in gname or "round" in lname: score = -10
+        else: score = 1
 
         if score > max_score:
             max_score = score
@@ -278,22 +460,16 @@ def _resolve_party_and_amount(entries):
 
     ledger = getattr(primary_entry, "ledger", None)
     party_name = getattr(ledger, "name", "Cash Account") if ledger else "Cash Account"
-
     debit = float(primary_entry.debit_amount or 0)
     credit = float(primary_entry.credit_amount or 0)
     party_net_amount = debit if debit > 0 else credit
 
-    if has_sales_purchase and sales_purchase_sum > 0:
-        gross_amount = sales_purchase_sum
-    else:
-        gross_amount = party_net_amount
-
+    gross_amount = sales_purchase_sum if (has_sales_purchase and sales_purchase_sum > 0) else party_net_amount
     return party_name, abs(gross_amount)
-
 
 @router.get("", response_model=List[VoucherListResponse])
 async def get_vouchers(
-    is_optional: Optional[bool] = None,
+    status: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     date: Optional[str] = None,
@@ -303,32 +479,21 @@ async def get_vouchers(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
-    cache_key = f"vouchers_list_{is_optional}_{from_date}_{to_date}_{date}_{ledger_id}_{party_name}_{voucher_type}"
+    cache_key = f"vouchers_list_{status}_{from_date}_{to_date}_{date}_{ledger_id}_{party_name}_{voucher_type}"
     cached = get_cached_response(user.company_id, cache_key)
-    if cached is not None:
-        return cached
+    if cached is not None: return cached
 
     stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
     ).where(TrnVoucher.company_id == user.company_id)
 
-    if is_optional is not None:
-        stmt = stmt.where(TrnVoucher.is_optional == is_optional)
-
-    from datetime import date as dt_date
-    if date:
-        stmt = stmt.where(TrnVoucher.voucher_date == dt_date.fromisoformat(date))
-    if from_date:
-        stmt = stmt.where(TrnVoucher.voucher_date >= dt_date.fromisoformat(from_date))
-    if to_date:
-        stmt = stmt.where(TrnVoucher.voucher_date <= dt_date.fromisoformat(to_date))
-
-    if voucher_type:
-        stmt = stmt.join(MstVoucherType).where(MstVoucherType.name == voucher_type)
-
-    if ledger_id:
-        stmt = stmt.join(TrnAccounting).where(TrnAccounting.ledger_id == ledger_id)
+    if status: stmt = stmt.where(TrnVoucher.status == status)
+    if date: stmt = stmt.where(TrnVoucher.voucher_date == datetime.strptime(date, "%Y-%m-%d").date())
+    if from_date: stmt = stmt.where(TrnVoucher.voucher_date >= datetime.strptime(from_date, "%Y-%m-%d").date())
+    if to_date: stmt = stmt.where(TrnVoucher.voucher_date <= datetime.strptime(to_date, "%Y-%m-%d").date())
+    if voucher_type: stmt = stmt.join(MstVoucherType).where(MstVoucherType.name == voucher_type)
+    if ledger_id: stmt = stmt.join(TrnAccounting).where(TrnAccounting.ledger_id == ledger_id)
 
     stmt = stmt.order_by(TrnVoucher.voucher_date.desc(), TrnVoucher.voucher_id.desc())
     res = await db.execute(stmt)
@@ -337,10 +502,7 @@ async def get_vouchers(
     result = []
     for v in vouchers:
         resolved_party, amount = _resolve_party_and_amount(v.entries)
-        if amount == 0:
-            continue
-        if party_name and party_name.lower() not in resolved_party.lower():
-            continue
+        if party_name and party_name.lower() not in resolved_party.lower(): continue
 
         result.append({
             "voucher_id": v.voucher_id,
@@ -363,29 +525,22 @@ async def get_voucher_detail(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
-    cache_key = f"voucher_detail_{voucher_id}"
-    cached = get_cached_response(user.company_id, cache_key)
-    if cached is not None:
-        return cached
-
     stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
-        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
-    ).where(
-        TrnVoucher.voucher_id == voucher_id,
-        TrnVoucher.company_id == user.company_id
-    )
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+        selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit)
+    ).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
+    
     res = await db.execute(stmt)
     voucher = res.scalars().first()
-    if not voucher:
-        raise HTTPException(status_code=404, detail="Voucher not found")
+    if not voucher: raise HTTPException(status_code=404, detail="Voucher not found")
 
     party_name, amount = _resolve_party_and_amount(voucher.entries)
 
     entries = []
     for entry in voucher.entries:
-        ledger = getattr(entry, "ledger", None)
-        ledger_name = getattr(ledger, "name", "Unknown") if ledger else "Unknown"
+        ledger_name = entry.ledger.name if entry.ledger else "Unknown"
         debit = float(entry.debit_amount or 0)
         credit = float(entry.credit_amount or 0)
         entries.append({
@@ -394,101 +549,17 @@ async def get_voucher_detail(
             "entry_type": "Debit" if debit > 0 else "Credit",
         })
 
-    from app.models.tally_core import TrnInventory, MstStockItem
-    inv_stmt = select(TrnInventory).options(
-        selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit)
-    ).where(TrnInventory.voucher_id == voucher_id)
-    inv_res = await db.execute(inv_stmt)
-    inv_entries = inv_res.scalars().all()
-
     inventory = []
-    for inv in inv_entries:
+    for inv in voucher.inventory_entries:
         item_name = inv.stock_item.name if inv.stock_item else "Unknown Item"
         uom_sym = inv.stock_item.unit.symbol if inv.stock_item and inv.stock_item.unit else "PCS"
-        gst_pct = float(inv.stock_item.gst_rate_percent or 0) if inv.stock_item else 0.0
-        hsn_code = inv.stock_item.hsn_code if inv.stock_item else ""
-        
-        qty = float(inv.quantity or 0)
-        rate = float(inv.rate or 0)
-        amt = float(inv.amount or 0)
-        
-        expected_amt = abs(qty * rate)
-        actual_amt = abs(amt)
-        discount_percent = 0.0
-        if expected_amt > actual_amt and expected_amt > 0:
-            diff = expected_amt - actual_amt
-            if diff > 1.0:
-                discount_percent = round((diff / expected_amt) * 100, 2)
-
         inventory.append({
             "item": item_name,
-            "quantity": qty,
-            "rate": rate,
+            "quantity": float(inv.quantity or 0),
+            "rate": float(inv.rate or 0),
             "uom": uom_sym,
-            "gstRate": gst_pct,
-            "gstHsnCode": hsn_code,
-            "discountAmount": str(discount_percent) if discount_percent > 0 else "0",
-            "amount": amt,
+            "amount": float(inv.amount or 0),
         })
-
-    party_ledger = None
-    if party_name:
-        party_stmt = select(MstLedger).where(
-            MstLedger.name == party_name,
-            MstLedger.company_id == user.company_id
-        )
-        party_res = await db.execute(party_stmt)
-        party_led = party_res.scalars().first()
-        if party_led:
-            addr = party_led.address or ""
-            mobile_val = ""
-            if addr and " | Mobile: " in addr:
-                parts = addr.split(" | Mobile: ")
-                addr = parts[0]
-                mobile_val = parts[1]
-            party_ledger = {
-                "mailingName": party_led.name,
-                "mailingAddress": addr,
-                "gstn": party_led.gstin,
-                "mailingState": party_led.state,
-                "mobile": mobile_val,
-            }
-
-    accounts_mapped = []
-    seen = set()
-    for entry in entries:
-        ledger = entry["ledger_name"]
-        amt = entry["amount"] if entry["entry_type"] == "Credit" else -entry["amount"]
-        key = (ledger, amt)
-        if key in seen:
-            continue
-        seen.add(key)
-        accounts_mapped.append({
-            "ledger": ledger,
-            "amount": amt
-        })
-
-    from app.models.portal_core import Company
-    comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
-    company = comp_q.scalars().first()
-    active_env = company.einvoice_env if company else "mock"
-
-    from app.models.portal_core import EinvoiceMetadata
-    meta_stmt = select(EinvoiceMetadata).where(
-        EinvoiceMetadata.voucher_id == voucher_id,
-        EinvoiceMetadata.environment == active_env
-    )
-    meta_res = await db.execute(meta_stmt)
-    meta = meta_res.scalars().first()
-    einvoice_metadata = None
-    if meta:
-        einvoice_metadata = {
-            "irn": meta.irn,
-            "ack_no": meta.ack_no,
-            "ack_date": str(meta.ack_date) if meta.ack_date else None,
-            "eway_bill_no": meta.eway_bill_no,
-            "eway_bill_date": str(meta.eway_bill_date) if meta.eway_bill_date else None,
-        }
 
     output = {
         "voucher_id": voucher.voucher_id,
@@ -501,161 +572,7 @@ async def get_voucher_detail(
         "amount": amount,
         "total_amount": float(voucher.total_amount or 0),
         "entries": entries,
-        "accounts": accounts_mapped,
         "inventory": inventory,
         "is_inventory_voucher": len(inventory) > 0,
-        "party_ledger": party_ledger,
-        "einvoice_metadata": einvoice_metadata,
     }
-
-    set_cached_response(user.company_id, cache_key, output)
     return output
-
-# --- Rules ---
-
-@router.post("/rules", response_model=ApprovalRuleResponse)
-async def create_approval_rule(
-    req: ApprovalRuleCreate,
-    user: User = Depends(require_permission("roles", "create")),
-    db: AsyncSession = Depends(get_db)
-):
-    rule = ApprovalRule(
-        company_id=user.company_id,
-        **req.model_dump()
-    )
-    db.add(rule)
-    await db.commit()
-    await db.refresh(rule)
-    return rule
-
-# --- Maker Checker Actions ---
-
-@router.get("/pending-approvals", response_model=List[ApprovalRequestResponse])
-async def get_pending_approvals(
-    user: User = Depends(require_permission("vouchers", "read")),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = (
-        select(ApprovalRequest)
-        .join(ApprovalRule, ApprovalRequest.rule_id == ApprovalRule.rule_id)
-        .where(
-            ApprovalRequest.status == "Pending",
-            ApprovalRule.company_id == user.company_id
-        )
-    )
-    
-    admin_query = await db.execute(
-        select(User).where(User.user_id == user.user_id).options(selectinload(User.role))
-    )
-    curr_user = admin_query.scalars().first()
-    if curr_user.role.name != "Admin":
-        stmt = stmt.where(ApprovalRule.approver_role_id == user.role_id)
-        
-    res = await db.execute(stmt)
-    return res.scalars().all()
-
-@router.post("/approve/{request_id}")
-async def approve_voucher(
-    request_id: int,
-    comments: Optional[str] = None,
-    user: User = Depends(require_permission("vouchers", "update")),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = (
-        select(ApprovalRequest)
-        .options(selectinload(ApprovalRequest.voucher))
-        .join(ApprovalRule, ApprovalRequest.rule_id == ApprovalRule.rule_id)
-        .where(
-            ApprovalRequest.request_id == request_id,
-            ApprovalRule.company_id == user.company_id
-        )
-    )
-    res = await db.execute(stmt)
-    req = res.scalars().first()
-    if not req:
-        raise HTTPException(status_code=404, detail="Approval request not found.")
-        
-    admin_query = await db.execute(
-        select(User).where(User.user_id == user.user_id).options(selectinload(User.role))
-    )
-    curr_user = admin_query.scalars().first()
-    
-    rule_res = await db.execute(select(ApprovalRule).where(ApprovalRule.rule_id == req.rule_id))
-    rule = rule_res.scalars().first()
-    
-    if curr_user.role.name != "Admin" and rule.approver_role_id != user.role_id:
-        raise HTTPException(status_code=403, detail="You do not have permission to approve this request.")
-        
-    req.status = "Approved"
-    req.acted_by = user.user_id
-    req.acted_at = datetime.now(timezone.utc)
-    req.comments = comments
-    
-    req.voucher.is_optional = False
-    
-    await log_audit(
-        db,
-        user.company_id,
-        user.user_id,
-        "UPDATE",
-        "Voucher",
-        req.voucher_id,
-        old_val={"is_optional": True},
-        new_val={"is_optional": False, "approved_by": user.user_id}
-    )
-    
-    await db.commit()
-    return {"detail": "Voucher approved and posted successfully."}
-
-@router.post("/reject/{request_id}")
-async def reject_voucher(
-    request_id: int,
-    comments: Optional[str] = None,
-    user: User = Depends(require_permission("vouchers", "update")),
-    db: AsyncSession = Depends(get_db)
-):
-    stmt = (
-        select(ApprovalRequest)
-        .options(selectinload(ApprovalRequest.voucher))
-        .join(ApprovalRule, ApprovalRequest.rule_id == ApprovalRule.rule_id)
-        .where(
-            ApprovalRequest.request_id == request_id,
-            ApprovalRule.company_id == user.company_id
-        )
-    )
-    res = await db.execute(stmt)
-    req = res.scalars().first()
-    if not req:
-        raise HTTPException(status_code=404, detail="Approval request not found.")
-        
-    admin_query = await db.execute(
-        select(User).where(User.user_id == user.user_id).options(selectinload(User.role))
-    )
-    curr_user = admin_query.scalars().first()
-    
-    rule_res = await db.execute(select(ApprovalRule).where(ApprovalRule.rule_id == req.rule_id))
-    rule = rule_res.scalars().first()
-    
-    if curr_user.role.name != "Admin" and rule.approver_role_id != user.role_id:
-        raise HTTPException(status_code=403, detail="You do not have permission to reject this request.")
-        
-    req.status = "Rejected"
-    req.acted_by = user.user_id
-    req.acted_at = datetime.now(timezone.utc)
-    req.comments = comments
-    
-    req.voucher.is_cancelled = True
-    
-    await log_audit(
-        db,
-        user.company_id,
-        user.user_id,
-        "CANCEL",
-        "Voucher",
-        req.voucher_id,
-        old_val={"is_cancelled": False},
-        new_val={"is_cancelled": True, "rejected_by": user.user_id}
-    )
-    
-    await db.commit()
-    return {"detail": "Voucher rejected and cancelled."}

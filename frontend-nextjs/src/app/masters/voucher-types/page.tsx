@@ -44,6 +44,10 @@ export default function VoucherTypesPage() {
         const err = await res.json()
         throw new Error(err.detail || 'Failed to delete voucher type')
       }
+      const data = await res.json()
+      if (data.warning) {
+        alert(data.warning)
+      }
       fetchVoucherTypes()
     } catch (e: any) {
       alert(e.message)

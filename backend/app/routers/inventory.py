@@ -8,7 +8,7 @@ from datetime import datetime, date
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user
 from app.models.portal_core import User
-from app.models.tally_core import MstUom, MstStockGroup, MstStockCategory, MstGodown, MstStockItem, Batch
+from app.models.tally_core import MstUom, MstStockGroup, StockGroupAlias, MstStockCategory, MstGodown, MstStockItem, Batch, MstPriceLevel
 from app.models.portal_core import BillOfMaterials, BomItem, SerialNumber
 from app.schemas.inventory import (
     UnitOfMeasureCreate, UnitOfMeasureResponse,
@@ -18,7 +18,9 @@ from app.schemas.inventory import (
     StockItemCreate, StockItemResponse,
     BillOfMaterialsCreate, BillOfMaterialsResponse,
     BatchCreate, BatchResponse,
-    SerialNumberCreate, SerialNumberResponse
+    SerialNumberCreate, SerialNumberResponse,
+    PriceLevelCreate, PriceLevelResponse,
+    PriceLevelRatesBulkCreate
 )
 
 router = APIRouter(prefix="/inventory", tags=["Inventory Management"])
@@ -31,16 +33,93 @@ async def create_uom(
     user: User = Depends(require_permission("inventory", "create")),
     db: AsyncSession = Depends(get_db)
 ):
+    if not req.is_simple_unit:
+        if not req.base_unit_id or not req.additional_unit_id or not req.conversion_factor:
+            raise HTTPException(status_code=400, detail="Compound units require base unit, additional unit, and conversion factor.")
+        
+        # Verify base and additional units are simple
+        base_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.base_unit_id, MstUom.company_id == user.company_id))).scalars().first()
+        add_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.additional_unit_id, MstUom.company_id == user.company_id))).scalars().first()
+        
+        if not base_uom or not add_uom:
+            raise HTTPException(status_code=400, detail="Invalid base or additional unit.")
+        if not base_uom.is_simple_unit or not add_uom.is_simple_unit:
+            raise HTTPException(status_code=400, detail="Base and additional units must be simple units.")
+            
+        req.symbol = f"{add_uom.symbol} of {req.conversion_factor} {base_uom.symbol}"
+        req.name = req.symbol
+    else:
+        if not req.symbol:
+            raise HTTPException(status_code=400, detail="Simple units require a symbol.")
+        req.name = req.name or req.symbol
+
     uom = MstUom(
         company_id=user.company_id,
         name=req.name,
         symbol=req.symbol,
-        decimal_places=req.decimal_places
+        original_name=req.original_name,
+        is_simple_unit=req.is_simple_unit,
+        decimal_places=req.decimal_places,
+        base_unit_id=req.base_unit_id if not req.is_simple_unit else None,
+        additional_unit_id=req.additional_unit_id if not req.is_simple_unit else None,
+        conversion_factor=req.conversion_factor if not req.is_simple_unit else None
     )
     db.add(uom)
     await db.commit()
     await db.refresh(uom)
     return uom
+
+@router.put("/uoms/{unit_id}", response_model=UnitOfMeasureResponse)
+async def update_uom(
+    unit_id: int,
+    req: UnitOfMeasureCreate,
+    user: User = Depends(require_permission("inventory", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
+    if not uom:
+        raise HTTPException(status_code=404, detail="Unit of measure not found.")
+        
+    if not req.is_simple_unit:
+        if not req.base_unit_id or not req.additional_unit_id or not req.conversion_factor:
+            raise HTTPException(status_code=400, detail="Compound units require base unit, additional unit, and conversion factor.")
+        
+        base_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.base_unit_id, MstUom.company_id == user.company_id))).scalars().first()
+        add_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.additional_unit_id, MstUom.company_id == user.company_id))).scalars().first()
+        
+        if not base_uom or not add_uom:
+            raise HTTPException(status_code=400, detail="Invalid base or additional unit.")
+            
+        req.symbol = f"{add_uom.symbol} of {req.conversion_factor} {base_uom.symbol}"
+        req.name = req.symbol
+    else:
+        req.name = req.name or req.symbol
+
+    uom.name = req.name
+    uom.symbol = req.symbol
+    uom.original_name = req.original_name
+    uom.is_simple_unit = req.is_simple_unit
+    uom.decimal_places = req.decimal_places
+    uom.base_unit_id = req.base_unit_id if not req.is_simple_unit else None
+    uom.additional_unit_id = req.additional_unit_id if not req.is_simple_unit else None
+    uom.conversion_factor = req.conversion_factor if not req.is_simple_unit else None
+    
+    await db.commit()
+    await db.refresh(uom)
+    return uom
+
+@router.delete("/uoms/{unit_id}")
+async def delete_uom(
+    unit_id: int,
+    user: User = Depends(require_permission("inventory", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
+    if not uom:
+        raise HTTPException(status_code=404, detail="Unit of measure not found.")
+    await db.delete(uom)
+    await db.commit()
+    return {"message": "Unit of measure deleted successfully."}
 
 @router.get("/uoms", response_model=List[UnitOfMeasureResponse])
 async def get_uoms(
@@ -72,19 +151,71 @@ async def create_stock_group(
     group = MstStockGroup(
         company_id=user.company_id,
         name=req.name,
-        parent_id=req.parent_id
+        parent_id=req.parent_id,
+        is_active=req.is_active
     )
     db.add(group)
+    await db.flush()
+    
+    for alias in req.aliases:
+        db.add(StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias))
+        
     await db.commit()
-    await db.refresh(group)
-    return group
+    
+    final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group.stock_group_id))
+    return final.scalars().first()
+
+@router.put("/groups/{group_id}", response_model=StockGroupResponse)
+async def update_stock_group(
+    group_id: int,
+    req: StockGroupCreate,
+    user: User = Depends(require_permission("inventory", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    group = (await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Stock group not found.")
+        
+    if req.parent_id:
+        if req.parent_id == group_id:
+            raise HTTPException(status_code=400, detail="Group cannot be its own parent.")
+        p_query = await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == req.parent_id, MstStockGroup.company_id == user.company_id))
+        if not p_query.scalars().first():
+            raise HTTPException(status_code=400, detail="Parent group not found.")
+            
+    group.name = req.name
+    group.parent_id = req.parent_id
+    group.is_active = req.is_active
+    
+    # Update aliases
+    await db.execute(StockGroupAlias.__table__.delete().where(StockGroupAlias.stock_group_id == group_id))
+    for alias in req.aliases:
+        db.add(StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias))
+        
+    await db.commit()
+    
+    final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group.stock_group_id))
+    return final.scalars().first()
+
+@router.delete("/groups/{group_id}")
+async def delete_stock_group(
+    group_id: int,
+    user: User = Depends(require_permission("inventory", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    group = (await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Stock group not found.")
+    await db.delete(group)
+    await db.commit()
+    return {"message": "Stock group deleted successfully."}
 
 @router.get("/groups", response_model=List[StockGroupResponse])
 async def get_stock_groups(
     user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(MstStockGroup).where(MstStockGroup.company_id == user.company_id)
+    stmt = select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.company_id == user.company_id)
     res = await db.execute(stmt)
     return res.scalars().all()
 
@@ -109,12 +240,52 @@ async def create_stock_category(
     cat = MstStockCategory(
         company_id=user.company_id,
         name=req.name,
-        parent_id=req.parent_id
+        parent_id=req.parent_id,
+        is_active=req.is_active
     )
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
     return cat
+
+@router.put("/categories/{category_id}", response_model=StockCategoryResponse)
+async def update_stock_category(
+    category_id: int,
+    req: StockCategoryCreate,
+    user: User = Depends(require_permission("inventory", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    cat = (await db.execute(select(MstStockCategory).where(MstStockCategory.stock_category_id == category_id, MstStockCategory.company_id == user.company_id))).scalars().first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Stock category not found.")
+        
+    if req.parent_id:
+        if req.parent_id == category_id:
+            raise HTTPException(status_code=400, detail="Category cannot be its own parent.")
+        p_query = await db.execute(select(MstStockCategory).where(MstStockCategory.stock_category_id == req.parent_id, MstStockCategory.company_id == user.company_id))
+        if not p_query.scalars().first():
+            raise HTTPException(status_code=400, detail="Parent category not found.")
+            
+    cat.name = req.name
+    cat.parent_id = req.parent_id
+    cat.is_active = req.is_active
+    
+    await db.commit()
+    await db.refresh(cat)
+    return cat
+
+@router.delete("/categories/{category_id}")
+async def delete_stock_category(
+    category_id: int,
+    user: User = Depends(require_permission("inventory", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    cat = (await db.execute(select(MstStockCategory).where(MstStockCategory.stock_category_id == category_id, MstStockCategory.company_id == user.company_id))).scalars().first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Stock category not found.")
+    await db.delete(cat)
+    await db.commit()
+    return {"message": "Stock category deleted successfully."}
 
 @router.get("/categories", response_model=List[StockCategoryResponse])
 async def get_stock_categories(
@@ -133,15 +304,71 @@ async def create_godown(
     user: User = Depends(require_permission("inventory", "create")),
     db: AsyncSession = Depends(get_db)
 ):
+    if req.parent_id:
+        p_query = await db.execute(
+            select(MstGodown).where(
+                MstGodown.godown_id == req.parent_id,
+                MstGodown.company_id == user.company_id
+            )
+        )
+        if not p_query.scalars().first():
+            raise HTTPException(status_code=400, detail="Parent godown not found.")
+            
     g = MstGodown(
         company_id=user.company_id,
         name=req.name,
-        address=req.address
+        address=req.address,
+        parent_id=req.parent_id,
+        is_active=req.is_active,
+        contact_person=req.contact_person,
+        phone=req.phone
     )
     db.add(g)
     await db.commit()
     await db.refresh(g)
     return g
+
+@router.put("/godowns/{godown_id}", response_model=GodownResponse)
+async def update_godown(
+    godown_id: int,
+    req: GodownCreate,
+    user: User = Depends(require_permission("inventory", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    g = (await db.execute(select(MstGodown).where(MstGodown.godown_id == godown_id, MstGodown.company_id == user.company_id))).scalars().first()
+    if not g:
+        raise HTTPException(status_code=404, detail="Godown not found.")
+        
+    if req.parent_id:
+        if req.parent_id == godown_id:
+            raise HTTPException(status_code=400, detail="Godown cannot be its own parent.")
+        p_query = await db.execute(select(MstGodown).where(MstGodown.godown_id == req.parent_id, MstGodown.company_id == user.company_id))
+        if not p_query.scalars().first():
+            raise HTTPException(status_code=400, detail="Parent godown not found.")
+            
+    g.name = req.name
+    g.address = req.address
+    g.parent_id = req.parent_id
+    g.is_active = req.is_active
+    g.contact_person = req.contact_person
+    g.phone = req.phone
+    
+    await db.commit()
+    await db.refresh(g)
+    return g
+
+@router.delete("/godowns/{godown_id}")
+async def delete_godown(
+    godown_id: int,
+    user: User = Depends(require_permission("inventory", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    g = (await db.execute(select(MstGodown).where(MstGodown.godown_id == godown_id, MstGodown.company_id == user.company_id))).scalars().first()
+    if not g:
+        raise HTTPException(status_code=404, detail="Godown not found.")
+    await db.delete(g)
+    await db.commit()
+    return {"message": "Godown deleted successfully."}
 
 @router.get("/godowns", response_model=List[GodownResponse])
 async def get_godowns(
@@ -152,7 +379,101 @@ async def get_godowns(
     res = await db.execute(stmt)
     return res.scalars().all()
 
+# --- Price Levels ---
+
+@router.post("/price-levels", response_model=PriceLevelResponse)
+async def create_price_level(
+    req: PriceLevelCreate,
+    user: User = Depends(require_permission("inventory", "create")),
+    db: AsyncSession = Depends(get_db)
+):
+    pl = MstPriceLevel(company_id=user.company_id, name=req.name, is_active=req.is_active)
+    db.add(pl)
+    await db.commit()
+    await db.refresh(pl)
+    return pl
+
+@router.put("/price-levels/{level_id}", response_model=PriceLevelResponse)
+async def update_price_level(
+    level_id: int,
+    req: PriceLevelCreate,
+    user: User = Depends(require_permission("inventory", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    pl = (await db.execute(select(MstPriceLevel).where(MstPriceLevel.price_level_id == level_id, MstPriceLevel.company_id == user.company_id))).scalars().first()
+    if not pl:
+        raise HTTPException(status_code=404, detail="Price level not found.")
+    pl.name = req.name
+    pl.is_active = req.is_active
+    await db.commit()
+    await db.refresh(pl)
+    return pl
+
+@router.delete("/price-levels/{level_id}")
+async def delete_price_level(
+    level_id: int,
+    user: User = Depends(require_permission("inventory", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    pl = (await db.execute(select(MstPriceLevel).where(MstPriceLevel.price_level_id == level_id, MstPriceLevel.company_id == user.company_id))).scalars().first()
+    if not pl:
+        raise HTTPException(status_code=404, detail="Price level not found.")
+    await db.delete(pl)
+    await db.commit()
+    return {"message": "Price level deleted successfully."}
+
+@router.get("/price-levels", response_model=List[PriceLevelResponse])
+async def get_price_levels(
+    user: User = Depends(require_permission("inventory", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(MstPriceLevel).where(MstPriceLevel.company_id == user.company_id)
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+@router.post("/price-levels/{level_id}/rates")
+async def save_price_level_rates(
+    level_id: int,
+    req: PriceLevelRatesBulkCreate,
+    user: User = Depends(require_permission("inventory", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    pl = (await db.execute(select(MstPriceLevel).where(MstPriceLevel.price_level_id == level_id, MstPriceLevel.company_id == user.company_id))).scalars().first()
+    if not pl:
+        raise HTTPException(status_code=404, detail="Price level not found.")
+
+    if not req.rates:
+        return {"message": "No rates to save."}
+
+    item_ids = list(set([r.stock_item_id for r in req.rates]))
+    
+    # Delete existing rates for these items, this level, and this date
+    await db.execute(
+        StockItemPriceLevelRate.__table__.delete().where(
+            StockItemPriceLevelRate.stock_item_id.in_(item_ids),
+            StockItemPriceLevelRate.price_level_id == level_id,
+            StockItemPriceLevelRate.effective_from == req.effective_from
+        )
+    )
+    
+    # Insert new rates
+    for r in req.rates:
+        db.add(StockItemPriceLevelRate(
+            stock_item_id=r.stock_item_id,
+            price_level_id=level_id,
+            effective_from=req.effective_from,
+            qty_from=r.qty_from,
+            qty_to=r.qty_to,
+            rate=r.rate,
+            discount_percent=r.discount_percent
+        ))
+        
+    await db.commit()
+    return {"message": "Rates saved successfully."}
+
 # --- Stock Items ---
+
+from app.models.tally_core import StockItemAlias, StockItemPriceList, StockItemOpeningBalance, StockItemBOM, StockItemBOMComponent, StockItemPriceLevelRate
 
 @router.post("/items", response_model=StockItemResponse)
 async def create_stock_item(
@@ -169,6 +490,11 @@ async def create_stock_item(
     )
     if not uom_query.scalars().first():
         raise HTTPException(status_code=400, detail="Unit of Measure not found.")
+        
+    if req.alt_unit_id:
+        alt_uom_query = await db.execute(select(MstUom).where(MstUom.unit_id == req.alt_unit_id, MstUom.company_id == user.company_id))
+        if not alt_uom_query.scalars().first():
+            raise HTTPException(status_code=400, detail="Alternate Unit of Measure not found.")
         
     # Verify group if provided
     if req.stock_group_id:
@@ -198,19 +524,338 @@ async def create_stock_item(
         stock_group_id=req.stock_group_id,
         stock_category_id=req.stock_category_id,
         unit_id=req.unit_id,
+        alt_unit_id=req.alt_unit_id,
+        alt_unit_conversion=req.alt_unit_conversion,
+        description=req.description,
+        standard_cost_price=req.standard_cost_price,
+        standard_selling_price=req.standard_selling_price,
+        image_url=req.image_url,
         hsn_code=req.hsn_code,
         gst_rate_percent=req.gst_rate_percent,
         opening_qty=req.opening_qty,
         opening_rate=req.opening_rate,
         reorder_level=req.reorder_level,
+        minimum_order_qty=req.minimum_order_qty,
         tracking_type=req.tracking_type,
         shelf_life_days=req.shelf_life_days,
-        is_active=True
+        is_active=req.is_active
     )
     db.add(item)
+    await db.flush()
+    
+    for alias in req.aliases:
+        db.add(StockItemAlias(stock_item_id=item.stock_item_id, alias=alias.alias, alias_type=alias.alias_type))
+    
+    for pl in req.price_lists:
+        db.add(StockItemPriceList(stock_item_id=item.stock_item_id, price_type=pl.price_type, effective_from=pl.effective_from, rate=pl.rate))
+        
+    for ob in req.opening_balances:
+        db.add(StockItemOpeningBalance(stock_item_id=item.stock_item_id, godown_id=ob.godown_id, batch_name=ob.batch_name, quantity=ob.quantity, rate=ob.rate, amount=ob.amount))
+    
+    for bom_req in req.boms:
+        bom = StockItemBOM(stock_item_id=item.stock_item_id, bom_name=bom_req.bom_name, unit_of_manufacture=bom_req.unit_of_manufacture, is_active=bom_req.is_active)
+        db.add(bom)
+        await db.flush()
+        for comp in bom_req.components:
+            db.add(StockItemBOMComponent(bom_id=bom.bom_id, component_item_id=comp.component_item_id, godown_id=comp.godown_id, quantity=comp.quantity, component_type=comp.component_type))
+            
+    for plr in req.price_level_rates:
+        db.add(StockItemPriceLevelRate(stock_item_id=item.stock_item_id, price_level_id=plr.price_level_id, effective_from=plr.effective_from, qty_from=plr.qty_from, qty_to=plr.qty_to, rate=plr.rate, discount_percent=plr.discount_percent))
+
     await db.commit()
-    await db.refresh(item)
-    return item
+    
+    final = await db.execute(
+        select(MstStockItem)
+        .options(
+            selectinload(MstStockItem.unit),
+            selectinload(MstStockItem.group),
+            selectinload(MstStockItem.aliases),
+            selectinload(MstStockItem.price_lists),
+            selectinload(MstStockItem.opening_balances),
+            selectinload(MstStockItem.boms).selectinload(StockItemBOM.components).selectinload(StockItemBOMComponent.component_item),
+            selectinload(MstStockItem.price_level_rates)
+        )
+        .where(MstStockItem.stock_item_id == item.stock_item_id)
+    )
+    res_item = final.scalars().first()
+    
+    # We need to build the response dict to match StockItemResponse
+    res_dict = {
+        "stock_item_id": res_item.stock_item_id,
+        "item_id": res_item.stock_item_id,
+        "company_id": res_item.company_id,
+        "name": res_item.name,
+        "stock_group_id": res_item.stock_group_id,
+        "stock_category_id": res_item.stock_category_id,
+        "unit_id": res_item.unit_id,
+        "alt_unit_id": res_item.alt_unit_id,
+        "alt_unit_conversion": res_item.alt_unit_conversion,
+        "description": res_item.description,
+        "standard_cost_price": res_item.standard_cost_price,
+        "standard_selling_price": res_item.standard_selling_price,
+        "image_url": res_item.image_url,
+        "hsn_code": res_item.hsn_code,
+        "gst_rate_percent": res_item.gst_rate_percent,
+        "opening_qty": res_item.opening_qty,
+        "opening_rate": res_item.opening_rate,
+        "reorder_level": res_item.reorder_level,
+        "minimum_order_qty": res_item.minimum_order_qty,
+        "tracking_type": res_item.tracking_type,
+        "shelf_life_days": res_item.shelf_life_days,
+        "is_active": res_item.is_active,
+        "group_name": res_item.group.name if res_item.group else None,
+        "uom": res_item.unit.symbol if res_item.unit else None,
+        "closing_balance": res_item.closing_qty,
+        "closing_rate": res_item.closing_rate,
+        "closing_value": res_item.closing_value,
+        "aliases": res_item.aliases,
+        "price_lists": res_item.price_lists,
+        "opening_balances": res_item.opening_balances,
+        "boms": [{
+            "bom_id": b.bom_id,
+            "bom_name": b.bom_name,
+            "unit_of_manufacture": b.unit_of_manufacture,
+            "is_active": b.is_active,
+            "components": [{
+                "id": c.id,
+                "component_item_id": c.component_item_id,
+                "component_name": c.component_item.name if c.component_item else None,
+                "godown_id": c.godown_id,
+                "quantity": c.quantity,
+                "component_type": c.component_type
+            } for c in b.components]
+        } for b in res_item.boms],
+        "price_level_rates": res_item.price_level_rates
+    }
+    return StockItemResponse(**res_dict)
+
+@router.get("/items/{item_id}", response_model=StockItemResponse)
+async def get_stock_item(
+    item_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = (
+        select(MstStockItem)
+        .options(
+            selectinload(MstStockItem.unit),
+            selectinload(MstStockItem.group),
+            selectinload(MstStockItem.aliases),
+            selectinload(MstStockItem.price_lists),
+            selectinload(MstStockItem.opening_balances),
+            selectinload(MstStockItem.boms).selectinload(StockItemBOM.components).selectinload(StockItemBOMComponent.component_item),
+            selectinload(MstStockItem.price_level_rates)
+        )
+        .where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id)
+    )
+    res = await db.execute(stmt)
+    item = res.scalars().first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Stock item not found.")
+        
+    res_dict = {
+        "stock_item_id": item.stock_item_id,
+        "item_id": item.stock_item_id,
+        "company_id": item.company_id,
+        "name": item.name,
+        "stock_group_id": item.stock_group_id,
+        "stock_category_id": item.stock_category_id,
+        "unit_id": item.unit_id,
+        "alt_unit_id": item.alt_unit_id,
+        "alt_unit_conversion": item.alt_unit_conversion,
+        "description": item.description,
+        "standard_cost_price": item.standard_cost_price,
+        "standard_selling_price": item.standard_selling_price,
+        "image_url": item.image_url,
+        "hsn_code": item.hsn_code,
+        "gst_rate_percent": item.gst_rate_percent,
+        "opening_qty": item.opening_qty,
+        "opening_rate": item.opening_rate,
+        "reorder_level": item.reorder_level,
+        "minimum_order_qty": item.minimum_order_qty,
+        "tracking_type": item.tracking_type,
+        "shelf_life_days": item.shelf_life_days,
+        "is_active": item.is_active,
+        "group_name": item.group.name if item.group else None,
+        "uom": item.unit.symbol if item.unit else None,
+        "closing_balance": item.closing_qty,
+        "closing_rate": item.closing_rate,
+        "closing_value": item.closing_value,
+        "aliases": item.aliases,
+        "price_lists": item.price_lists,
+        "opening_balances": item.opening_balances,
+        "boms": [{
+            "bom_id": b.bom_id,
+            "bom_name": b.bom_name,
+            "unit_of_manufacture": b.unit_of_manufacture,
+            "is_active": b.is_active,
+            "components": [{
+                "id": c.id,
+                "component_item_id": c.component_item_id,
+                "component_name": c.component_item.name if c.component_item else None,
+                "godown_id": c.godown_id,
+                "quantity": c.quantity,
+                "component_type": c.component_type
+            } for c in b.components]
+        } for b in item.boms],
+        "price_level_rates": item.price_level_rates
+    }
+    return StockItemResponse(**res_dict)
+
+@router.put("/items/{item_id}", response_model=StockItemResponse)
+async def update_stock_item(
+    item_id: int,
+    req: StockItemCreate,
+    user: User = Depends(require_permission("inventory", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = (
+        select(MstStockItem)
+        .options(
+            selectinload(MstStockItem.aliases),
+            selectinload(MstStockItem.price_lists),
+            selectinload(MstStockItem.opening_balances),
+            selectinload(MstStockItem.boms),
+            selectinload(MstStockItem.price_level_rates)
+        )
+        .where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id)
+    )
+    res = await db.execute(stmt)
+    item = res.scalars().first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Stock item not found.")
+        
+    # Validations similar to create
+    uom_query = await db.execute(select(MstUom).where(MstUom.unit_id == req.unit_id, MstUom.company_id == user.company_id))
+    if not uom_query.scalars().first(): raise HTTPException(status_code=400, detail="Unit of Measure not found.")
+    
+    if req.stock_group_id:
+        g_query = await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == req.stock_group_id, MstStockGroup.company_id == user.company_id))
+        if not g_query.scalars().first(): raise HTTPException(status_code=400, detail="Stock group not found.")
+            
+    if req.stock_category_id:
+        c_query = await db.execute(select(MstStockCategory).where(MstStockCategory.stock_category_id == req.stock_category_id, MstStockCategory.company_id == user.company_id))
+        if not c_query.scalars().first(): raise HTTPException(status_code=400, detail="Stock category not found.")
+        
+    item.name = req.name
+    item.stock_group_id = req.stock_group_id
+    item.stock_category_id = req.stock_category_id
+    item.unit_id = req.unit_id
+    item.alt_unit_id = req.alt_unit_id
+    item.alt_unit_conversion = req.alt_unit_conversion
+    item.description = req.description
+    item.standard_cost_price = req.standard_cost_price
+    item.standard_selling_price = req.standard_selling_price
+    item.image_url = req.image_url
+    item.hsn_code = req.hsn_code
+    item.gst_rate_percent = req.gst_rate_percent
+    item.opening_qty = req.opening_qty
+    item.opening_rate = req.opening_rate
+    item.reorder_level = req.reorder_level
+    item.minimum_order_qty = req.minimum_order_qty
+    item.tracking_type = req.tracking_type
+    item.shelf_life_days = req.shelf_life_days
+    item.is_active = req.is_active
+    
+    # Update nested records
+    await db.execute(StockItemAlias.__table__.delete().where(StockItemAlias.stock_item_id == item_id))
+    for alias in req.aliases: db.add(StockItemAlias(stock_item_id=item_id, alias=alias.alias, alias_type=alias.alias_type))
+        
+    await db.execute(StockItemPriceList.__table__.delete().where(StockItemPriceList.stock_item_id == item_id))
+    for pl in req.price_lists: db.add(StockItemPriceList(stock_item_id=item_id, price_type=pl.price_type, effective_from=pl.effective_from, rate=pl.rate))
+        
+    await db.execute(StockItemOpeningBalance.__table__.delete().where(StockItemOpeningBalance.stock_item_id == item_id))
+    for ob in req.opening_balances: db.add(StockItemOpeningBalance(stock_item_id=item_id, godown_id=ob.godown_id, batch_name=ob.batch_name, quantity=ob.quantity, rate=ob.rate, amount=ob.amount))
+    
+    await db.execute(StockItemBOM.__table__.delete().where(StockItemBOM.stock_item_id == item_id))
+    for bom_req in req.boms:
+        bom = StockItemBOM(stock_item_id=item_id, bom_name=bom_req.bom_name, unit_of_manufacture=bom_req.unit_of_manufacture, is_active=bom_req.is_active)
+        db.add(bom)
+        await db.flush()
+        for comp in bom_req.components:
+            db.add(StockItemBOMComponent(bom_id=bom.bom_id, component_item_id=comp.component_item_id, godown_id=comp.godown_id, quantity=comp.quantity, component_type=comp.component_type))
+            
+    await db.execute(StockItemPriceLevelRate.__table__.delete().where(StockItemPriceLevelRate.stock_item_id == item_id))
+    for plr in req.price_level_rates: db.add(StockItemPriceLevelRate(stock_item_id=item_id, price_level_id=plr.price_level_id, effective_from=plr.effective_from, qty_from=plr.qty_from, qty_to=plr.qty_to, rate=plr.rate, discount_percent=plr.discount_percent))
+    
+    await db.commit()
+    
+    final = await db.execute(
+        select(MstStockItem)
+        .options(
+            selectinload(MstStockItem.unit),
+            selectinload(MstStockItem.group),
+            selectinload(MstStockItem.aliases),
+            selectinload(MstStockItem.price_lists),
+            selectinload(MstStockItem.opening_balances),
+            selectinload(MstStockItem.boms).selectinload(StockItemBOM.components).selectinload(StockItemBOMComponent.component_item),
+            selectinload(MstStockItem.price_level_rates)
+        )
+        .where(MstStockItem.stock_item_id == item_id)
+    )
+    res_item = final.scalars().first()
+    
+    res_dict = {
+        "stock_item_id": res_item.stock_item_id,
+        "item_id": res_item.stock_item_id,
+        "company_id": res_item.company_id,
+        "name": res_item.name,
+        "stock_group_id": res_item.stock_group_id,
+        "stock_category_id": res_item.stock_category_id,
+        "unit_id": res_item.unit_id,
+        "alt_unit_id": res_item.alt_unit_id,
+        "alt_unit_conversion": res_item.alt_unit_conversion,
+        "description": res_item.description,
+        "standard_cost_price": res_item.standard_cost_price,
+        "standard_selling_price": res_item.standard_selling_price,
+        "image_url": res_item.image_url,
+        "hsn_code": res_item.hsn_code,
+        "gst_rate_percent": res_item.gst_rate_percent,
+        "opening_qty": res_item.opening_qty,
+        "opening_rate": res_item.opening_rate,
+        "reorder_level": res_item.reorder_level,
+        "minimum_order_qty": res_item.minimum_order_qty,
+        "tracking_type": res_item.tracking_type,
+        "shelf_life_days": res_item.shelf_life_days,
+        "is_active": res_item.is_active,
+        "group_name": res_item.group.name if res_item.group else None,
+        "uom": res_item.unit.symbol if res_item.unit else None,
+        "closing_balance": res_item.closing_qty,
+        "closing_rate": res_item.closing_rate,
+        "closing_value": res_item.closing_value,
+        "aliases": res_item.aliases,
+        "price_lists": res_item.price_lists,
+        "opening_balances": res_item.opening_balances,
+        "boms": [{
+            "bom_id": b.bom_id,
+            "bom_name": b.bom_name,
+            "unit_of_manufacture": b.unit_of_manufacture,
+            "is_active": b.is_active,
+            "components": [{
+                "id": c.id,
+                "component_item_id": c.component_item_id,
+                "component_name": c.component_item.name if c.component_item else None,
+                "godown_id": c.godown_id,
+                "quantity": c.quantity,
+                "component_type": c.component_type
+            } for c in res_item.boms]
+        } for b in res_item.boms],
+        "price_level_rates": res_item.price_level_rates
+    }
+    return StockItemResponse(**res_dict)
+
+@router.delete("/items/{item_id}")
+async def delete_stock_item(
+    item_id: int,
+    user: User = Depends(require_permission("inventory", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    item = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id))).scalars().first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Stock item not found.")
+    await db.delete(item)
+    await db.commit()
+    return {"message": "Stock item deleted successfully."}
 
 @router.get("/items", response_model=List[StockItemResponse])
 async def get_stock_items(

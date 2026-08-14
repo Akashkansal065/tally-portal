@@ -241,7 +241,7 @@ async def get_trial_balance(
                    SUM(e.credit_amount) as total_credit
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
             GROUP BY e.ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE l.company_id = :comp_id
@@ -315,7 +315,7 @@ async def get_dashboard_details(
                 SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
                 FROM tally_sync.voucher_entries e
                 JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
                 GROUP BY ledger_id
             ) sub ON l.ledger_id = sub.ledger_id
             WHERE g.name = 'Sales Accounts' AND l.company_id = :comp_id
@@ -331,7 +331,7 @@ async def get_dashboard_details(
                 SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
                 FROM tally_sync.voucher_entries e
                 JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
                 GROUP BY ledger_id
             ) sub ON l.ledger_id = sub.ledger_id
             WHERE g.name IN ('Cash-in-hand', 'Bank Accounts') AND l.company_id = :comp_id
@@ -347,7 +347,7 @@ async def get_dashboard_details(
                 SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
                 FROM tally_sync.voucher_entries e
                 JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
                 GROUP BY ledger_id
             ) sub ON l.ledger_id = sub.ledger_id
             WHERE g.name = 'Sundry Debtors' AND l.company_id = :comp_id
@@ -363,7 +363,7 @@ async def get_dashboard_details(
                 SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
                 FROM tally_sync.voucher_entries e
                 JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-                WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+                WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
                 GROUP BY ledger_id
             ) sub ON l.ledger_id = sub.ledger_id
             WHERE g.name = 'Sundry Creditors' AND l.company_id = :comp_id
@@ -438,7 +438,7 @@ async def get_dashboard_summary(
     # 2. Fetch Date of Last Entry from database (tally_sync.vouchers)
     last_entry_stmt = text("""
         SELECT MAX(voucher_date) FROM tally_sync.vouchers 
-        WHERE company_id = :comp_id AND is_cancelled = False
+        WHERE company_id = :comp_id AND COALESCE(is_cancelled, FALSE) = FALSE
     """)
     last_entry_res = await db.execute(last_entry_stmt, {"comp_id": user.company_id})
     last_date = last_entry_res.scalar()
@@ -467,7 +467,7 @@ async def get_dashboard_summary(
             SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id {date_where}
+            WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id {date_where}
             GROUP BY ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE g.name = 'Sales Accounts' AND l.company_id = :comp_id
@@ -483,7 +483,7 @@ async def get_dashboard_summary(
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         WHERE vt.name = 'Sales'
           AND g.name IN ('Sundry Debtors', 'Cash-in-hand', 'Bank Accounts', 'Sundry Creditors', 'Primary')
-          AND v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+          AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_sales_gross = gross_sales_query.scalar() or 0.0
 
@@ -491,7 +491,7 @@ async def get_dashboard_summary(
         SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
         FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        WHERE vt.name = 'Receipt' AND v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+        WHERE vt.name = 'Receipt' AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_receipts = receipts_query.scalar() or 0.0
 
@@ -504,7 +504,7 @@ async def get_dashboard_summary(
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         WHERE vt.name = 'Purchase'
           AND g.name IN ('Sundry Creditors', 'Cash-in-hand', 'Bank Accounts', 'Sundry Debtors', 'Primary')
-          AND v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+          AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_purchases = purchases_query.scalar() or 0.0
 
@@ -512,7 +512,7 @@ async def get_dashboard_summary(
         SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
         FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        WHERE vt.name = 'Payment' AND v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+        WHERE vt.name = 'Payment' AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_payments = payments_query.scalar() or 0.0
     
@@ -524,7 +524,7 @@ async def get_dashboard_summary(
             SELECT ledger_id, SUM(debit_amount) - SUM(credit_amount) as net_bal
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
             GROUP BY ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE g.name = 'Sundry Debtors' AND l.company_id = :comp_id
@@ -539,7 +539,7 @@ async def get_dashboard_summary(
             SELECT ledger_id, SUM(credit_amount) - SUM(debit_amount) as net_bal
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
             GROUP BY ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE g.name = 'Sundry Creditors' AND l.company_id = :comp_id
@@ -600,7 +600,7 @@ async def get_executive_analytics(
             SUM(CASE WHEN vt.name = 'Purchase' THEN v.total_amount ELSE 0 END) as purchases
         FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        WHERE v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+        WHERE v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
         GROUP BY month_label, sort_key
         ORDER BY sort_key ASC
         LIMIT 12
@@ -627,7 +627,7 @@ async def get_executive_analytics(
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
         WHERE g.name = 'Sundry Debtors' AND l.company_id = :comp_id
         GROUP BY l.ledger_id, l.name
         HAVING net_balance > 0
@@ -641,7 +641,7 @@ async def get_executive_analytics(
             FROM tally_sync.vouchers v
             JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
             JOIN tally_sync.voucher_entries e ON v.voucher_id = e.voucher_id
-            WHERE e.ledger_id = :ledger_id AND vt.name = 'Sales' AND v.is_cancelled = False AND v.is_optional = False
+            WHERE e.ledger_id = :ledger_id AND vt.name = 'Sales' AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
             ORDER BY v.voucher_date DESC, v.voucher_id DESC
         """), {"ledger_id": d.ledger_id})
 
@@ -682,7 +682,7 @@ async def get_executive_analytics(
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
         WHERE g.name = 'Sundry Creditors' AND l.company_id = :comp_id
         GROUP BY l.ledger_id
         HAVING net_balance > 0
@@ -695,7 +695,7 @@ async def get_executive_analytics(
             FROM tally_sync.vouchers v
             JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
             JOIN tally_sync.voucher_entries e ON v.voucher_id = e.voucher_id
-            WHERE e.ledger_id = :ledger_id AND vt.name = 'Purchase' AND v.is_cancelled = False AND v.is_optional = False
+            WHERE e.ledger_id = :ledger_id AND vt.name = 'Purchase' AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
             ORDER BY v.voucher_date DESC, v.voucher_id DESC
         """), {"ledger_id": c.ledger_id})
 
@@ -718,7 +718,7 @@ async def get_executive_analytics(
         JOIN tally_sync.ledgers l ON e.ledger_id = l.ledger_id
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-        WHERE v.company_id = :comp_id AND v.is_cancelled = False {date_where}
+        WHERE v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE {date_where}
           AND (g.name LIKE '%%Expense%%' OR g.name LIKE '%%Direct%%' OR g.name LIKE '%%Indirect%%' OR g.name LIKE '%%Tax%%' OR g.name LIKE '%%Bank%%')
         GROUP BY g.name
         HAVING amount > 0
@@ -864,20 +864,15 @@ async def get_inventory_analytics(
         "group_valuation": group_chart,
         "top_items": item_list
     }
-
-    set_cached_response(user.company_id, cache_key, output)
-    return output
-
-
-@router.get("/profit-loss")
+@router.get("/pnl")
 async def get_profit_and_loss(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return Profit & Loss Statement grouped by Trading and Income/Expense categories."""
-    cache_key = f"profit_loss_{from_date}_{to_date}"
+    """Return Profit & Loss summary categorized into Trading and Indirect expenses/incomes."""
+    cache_key = f"pnl_{from_date}_{to_date}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -900,7 +895,7 @@ async def get_profit_and_loss(
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
         WHERE l.company_id = :comp_id AND (
             g.name IN ('Sales Accounts', 'Purchase Accounts', 'Direct Expenses', 'Indirect Expenses', 'Direct Incomes', 'Indirect Incomes')
             OR g.name LIKE '%Sales%' OR g.name LIKE '%Purchase%' OR g.name LIKE '%Expense%' OR g.name LIKE '%Income%'
@@ -990,7 +985,7 @@ async def get_balance_sheet(
                    SUM(e.credit_amount) as total_credit
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
-            WHERE v.is_cancelled = False AND v.is_optional = False AND v.company_id = :comp_id
+            WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
             GROUP BY e.ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE l.company_id = :comp_id AND (
@@ -1074,7 +1069,7 @@ async def get_cash_flow(
         SELECT vt.name as voucher_type, SUM(v.total_amount) as total_amt
         FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        WHERE v.company_id = :comp_id AND v.is_cancelled = False AND v.is_optional = False {date_where}
+        WHERE v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
         GROUP BY vt.name
     """), params)
 
@@ -1132,7 +1127,7 @@ async def get_ratio_analysis(
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
         WHERE l.company_id = :comp_id AND g.name IN ('Current Assets', 'Sundry Debtors', 'Cash-in-hand', 'Bank Accounts', 'Stock-in-hand')
     """), {"comp_id": user.company_id})
     current_assets = abs(float(ca_query.scalar() or 0.0))
@@ -1142,7 +1137,7 @@ async def get_ratio_analysis(
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
         WHERE l.company_id = :comp_id AND g.name IN ('Current Liabilities', 'Sundry Creditors', 'Duties & Taxes')
     """), {"comp_id": user.company_id})
     current_liabilities = abs(float(cl_query.scalar() or 0.0))
@@ -1181,7 +1176,7 @@ async def get_inactive_parties(
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND v.is_cancelled = False AND v.is_optional = False
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
         WHERE l.company_id = :comp_id AND g.name IN ('Sundry Debtors', 'Sundry Creditors')
         GROUP BY l.ledger_id, l.name, g.name, l.gstin
         HAVING last_txn_date IS NULL OR DATEDIFF(CURRENT_DATE(), last_txn_date) >= :days

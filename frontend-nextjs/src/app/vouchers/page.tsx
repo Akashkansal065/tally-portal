@@ -7,6 +7,7 @@ import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '
 import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+import VoucherFormModal from '@/components/VoucherFormModal'
 
 type Voucher = {
   voucher_id: number
@@ -92,6 +93,12 @@ export default function VouchersPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all')
   const [filterModalOpen, setFilterModalOpen] = useState(false)
   const [showGrossInfoModal, setShowGrossInfoModal] = useState(false)
+  
+  // Voucher creation state
+  const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [ledgers, setLedgers] = useState<any[]>([])
+  const [voucherTypes, setVoucherTypes] = useState<any[]>([])
 
   const { fyLabel, fyStartYear, fyEndYear, months: fyMonths } = useMemo(() => getFinancialYearMonths(), [])
 
@@ -108,12 +115,13 @@ export default function VouchersPage() {
   }, [])
 
   const isVoucherAllowed = useCallback((vType: string) => {
-    const vt = (vType || '').toLowerCase()
-    if (vt.includes('sales')) return permissions.showSalesLedgers
-    if (vt.includes('purchase')) return permissions.showPurchaseLedgers
-    if (vt.includes('receipt')) return permissions.showReceipts
-    if (vt.includes('payment')) return permissions.showPayments
-    return permissions.showLedger
+    if (!vType) return false
+    const t = vType.toLowerCase()
+    if (t === 'sales' && !permissions.showSalesLedgers) return false
+    if (t === 'purchase' && !permissions.showPurchaseLedgers) return false
+    if (t === 'receipt' && !permissions.showReceipts) return false
+    if (t === 'payment' && !permissions.showPayments) return false
+    return true
   }, [permissions])
 
   const hasAnyVoucherPermission = 
@@ -128,17 +136,28 @@ export default function VouchersPage() {
     if (permissions.showPurchaseLedgers) cats.push('Purchase')
     if (permissions.showReceipts) cats.push('Receipt')
     if (permissions.showPayments) cats.push('Payment')
+    cats.push('Journal', 'Contra')
     return cats
   }, [permissions])
 
-  // Fetch all vouchers once on mount
+  // Fetch all vouchers, ledgers, and voucherTypes on mount
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
     if (!hasAnyVoucherPermission) { router.replace('/'); return }
-    fetch(`${API_BASE}/vouchers`, { headers: authHeaders(token) })
-      .then(r => r.json())
-      .then(data => setAllVouchers(Array.isArray(data) ? data : []))
-      .catch(() => setAllVouchers([]))
+    
+    Promise.all([
+      fetch(`${API_BASE}/vouchers`, { headers: authHeaders(token) }).then(r => r.json()),
+      fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()),
+      fetch(`${API_BASE}/voucher-type`, { headers: authHeaders(token) }).then(r => r.json())
+    ])
+      .then(([vouchersData, ledgersData, vtData]) => {
+        setAllVouchers(Array.isArray(vouchersData) ? vouchersData : [])
+        setLedgers(Array.isArray(ledgersData) ? ledgersData : [])
+        setVoucherTypes(Array.isArray(vtData) ? vtData : [])
+      })
+      .catch(() => {
+        setAllVouchers([])
+      })
       .finally(() => setLoading(false))
   }, [user, token, router, hasAnyVoucherPermission])
 
@@ -280,6 +299,34 @@ export default function VouchersPage() {
     }, 500)
   }
 
+  const handleSaveVoucher = async (data: any) => {
+    setIsSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/vouchers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(token)
+        },
+        body: JSON.stringify(data)
+      })
+      if (!res.ok) throw new Error('Failed to create voucher')
+      toast.success('Voucher created successfully!')
+      setCreateModalOpen(false)
+      
+      // Refresh vouchers
+      const vRes = await fetch(`${API_BASE}/vouchers`, { headers: authHeaders(token) })
+      if (vRes.ok) {
+        const vData = await vRes.json()
+        setAllVouchers(Array.isArray(vData) ? vData : [])
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Error saving voucher')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full bg-background pb-20">
       {/* Sticky Header Controls Panel */}
@@ -331,7 +378,7 @@ export default function VouchersPage() {
                   <Search className="h-4.5 w-4.5" />
                 </button>
 
-                {/* Switch & Download PDF Icon */}
+                {/* Switch & Download PDF Icon & Create */}
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
@@ -367,6 +414,13 @@ export default function VouchersPage() {
                     title="Export PDF Report"
                   >
                     <FileDown className="h-4.5 w-4.5" />
+                  </button>
+                  <button 
+                    onClick={() => setCreateModalOpen(true)}
+                    className="h-8 w-8 flex items-center justify-center bg-primary hover:bg-primary/90 text-primary-foreground rounded-full shrink-0"
+                    title="Create Voucher"
+                  >
+                    <Plus className="h-4.5 w-4.5" />
                   </button>
                 </div>
               </>
@@ -815,6 +869,15 @@ export default function VouchersPage() {
           </div>
         </div>
       )}
+      <VoucherFormModal
+        isOpen={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        onSave={handleSaveVoucher}
+        isSaving={isSaving}
+        ledgers={ledgers}
+        voucherTypes={voucherTypes}
+        onLedgerCreated={(newLedger) => setLedgers(prev => [...prev, newLedger])}
+      />
     </div>
   )
 }

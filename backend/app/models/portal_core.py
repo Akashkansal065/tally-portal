@@ -800,7 +800,7 @@ class BillOfMaterials(Base):
     qty_to_produce = Column(Numeric(14, 3), default=1.000)
     created_at = Column(DateTime, server_default=func.now())
     
-    stock_item = relationship("MstStockItem", backref="boms")
+    stock_item = relationship("MstStockItem")
     bom_items = relationship("BomItem", back_populates="bom", cascade="all, delete-orphan")
 
 class BomItem(Base):

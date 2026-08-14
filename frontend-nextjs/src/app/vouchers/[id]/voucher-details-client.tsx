@@ -18,7 +18,7 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
 
   // Filter and sort items list
   const processedInventory = useMemo(() => {
-    let result = [...inventory]
+    let result = Array.isArray(inventory) ? [...inventory] : []
 
     // 1. Filter out if "accounts-only" is selected
     if (filterType === 'accounts') return []
@@ -62,7 +62,7 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
 
   // Filter accounts splits list
   const processedAccounts = useMemo(() => {
-    let result = [...accounts]
+    let result = Array.isArray(accounts) ? [...accounts] : []
 
     // 1. Filter out if "items-only" or "discounted-only" is selected
     if (filterType === 'items' || filterType === 'discounted') return []
@@ -70,7 +70,7 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
     // 2. Search query filter
     if (searchQuery.trim()) {
       const lower = searchQuery.toLowerCase()
-      result = result.filter(acc => (acc.ledger || '').toLowerCase().includes(lower))
+      result = result.filter(acc => ((acc.ledger_name || acc.ledger) || '').toLowerCase().includes(lower))
     }
 
     return result
@@ -244,16 +244,17 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
             <div className="border border-border/50 rounded bg-card/30 divide-y divide-border/40 font-sans">
               {processedAccounts.map((acc, idx) => {
                 const amt = parseFloat(acc.amount || '0')
-                // Skip party ledger if items exist (to avoid double listing the total)
-                if (isInventoryVoucher && acc.ledger === header.partyName) return null
+                const ledgerName = acc.ledger_name || acc.ledger || ''
+                const isDebit = acc.entry_type === 'Debit' || (acc.debit_amount && parseFloat(acc.debit_amount) > 0) || amt < 0
+                if (isInventoryVoucher && ledgerName === header.partyName) return null
 
                 return (
                   <div key={`mob-acc-${idx}`} className="p-3 flex justify-between items-center text-base">
                     <span className="text-muted-foreground font-semibold">
                       <span className="text-foreground font-extrabold">
-                        {amt < 0 ? 'Dr ' : 'To '}
+                        {isDebit ? 'Dr ' : 'To '}
                       </span>
-                      {toTitleCase(acc.ledger)}
+                      {toTitleCase(ledgerName)}
                     </span>
                     <span className="font-mono font-black text-foreground text-base sm:text-lg">
                       ₹{Math.abs(amt).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
@@ -338,10 +339,12 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
             {/* Ledger Splits (GST, Round off, etc.) */}
             {processedAccounts.map((acc, idx) => {
               const amt = parseFloat(acc.amount || '0')
-              // Skip party ledger if items exist (to avoid double listing the total)
-              if (isInventoryVoucher && acc.ledger === header.partyName) return null
+              const ledgerName = acc.ledger_name || acc.ledger || ''
+              const isDebit = acc.entry_type === 'Debit' || (acc.debit_amount && parseFloat(acc.debit_amount) > 0) || amt < 0
 
-              const ledgerName = acc.ledger || ''
+              // Skip party ledger if items exist (to avoid double listing the total)
+              if (isInventoryVoucher && ledgerName === header.partyName) return null
+
               const isDiscount = ledgerName.toUpperCase().includes('DISCOUNT')
 
               if (isInventoryVoucher && isDiscount) {
@@ -379,9 +382,9 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                 <tr key={`acc-${idx}`} className="hover:bg-muted/30 transition-colors">
                   <td className="py-2 px-2 italic text-muted-foreground" colSpan={isInventoryVoucher ? 6 : 1}>
                     <span className="text-foreground not-italic font-medium">
-                      {amt < 0 ? 'Dr ' : 'To '}
+                      {isDebit ? 'Dr ' : 'To '}
                     </span>
-                    {toTitleCase(acc.ledger)}
+                    {toTitleCase(ledgerName)}
                   </td>
                   <td className="py-2 text-right px-2 font-mono tabular-nums font-medium">
                     {formattedAmt}

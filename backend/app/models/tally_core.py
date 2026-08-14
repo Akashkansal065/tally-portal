@@ -397,6 +397,15 @@ class BankTransactionType(Base):
 # ==========================================
 # MOVED FROM voucher.py
 # ==========================================
+class GstRegistration(Base):
+    __tablename__ = "gst_registrations"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    gstin = Column(String(15), nullable=False)
+    registered_state = Column(String(100), nullable=False)
+    is_default = Column(Boolean, default=True)
+
 class MstVoucherType(Base):
     __tablename__ = "voucher_types"
     __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
@@ -501,15 +510,23 @@ class TrnVoucher(Base):
     reference_number = Column(String(50), nullable=True)
     narration = Column(TEXT, nullable=True)
     total_amount = Column(Numeric(18, 2), nullable=False, default=0.00)
-    is_cancelled = Column(Boolean, default=False)
-    is_optional = Column(Boolean, default=False)
+    status = Column(Enum('draft', 'optional', 'confirmed', 'cancelled', name='voucher_status'), default='confirmed')
+    party_ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id", ondelete="SET NULL"), nullable=True)
+    persisted_view = Column(String(50), default='Accounting Voucher View')
+    is_invoice = Column(Boolean, default=False)
+    is_cancelled = Column(Boolean, default=False, nullable=False)
+    is_optional = Column(Boolean, default=False, nullable=False)
+    original_voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="SET NULL"), nullable=True)
+    gst_registration_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.gst_registrations.id", ondelete="SET NULL"), nullable=True)
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(Integer, nullable=True)
     created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
     voucher_type = relationship("MstVoucherType", back_populates="vouchers")
     entries = relationship("TrnAccounting", back_populates="voucher", cascade="all, delete-orphan")
+    inventory_entries = relationship("TrnInventory", back_populates="voucher", cascade="all, delete-orphan")
     # Will be available when voucher module is imported
     # approvals = relationship("ApprovalRequest", back_populates="voucher", cascade="all, delete-orphan")
 
@@ -528,7 +545,20 @@ class TrnAccounting(Base):
     exchange_rate_used = Column(Numeric(14, 6), nullable=True)
     voucher = relationship("TrnVoucher", back_populates="entries")
     ledger = relationship("MstLedger")
+    bank_allocations = relationship("TrnBankAllocation", back_populates="entry", cascade="all, delete-orphan")
 
+class TrnBankAllocation(Base):
+    __tablename__ = "bank_allocations"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    allocation_id = Column(BigInteger, primary_key=True, index=True)
+    entry_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_entries.entry_id", ondelete="CASCADE"), nullable=False, index=True)
+    instrument_date = Column(Date, nullable=True)
+    transaction_type = Column(String(50), nullable=False)
+    payment_favouring = Column(String(150), nullable=True)
+    instrument_number = Column(String(50), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    
+    entry = relationship("TrnAccounting", back_populates="bank_allocations")
 # ==========================================
 # MOVED FROM inventory.py
 # ==========================================
@@ -539,9 +569,26 @@ class MstUom(Base):
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     symbol = Column(String(100), nullable=False)
+    original_name = Column(String(100), nullable=True)
+    is_simple_unit = Column(Boolean, default=True)
     decimal_places = Column(Integer, default=2)
+    base_unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="SET NULL"), nullable=True)
+    additional_unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="SET NULL"), nullable=True)
+    conversion_factor = Column(Numeric(12, 4), nullable=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
-    items = relationship("MstStockItem", back_populates="unit")
+    
+    base_unit = relationship("MstUom", foreign_keys=[base_unit_id], remote_side=[unit_id])
+    additional_unit = relationship("MstUom", foreign_keys=[additional_unit_id], remote_side=[unit_id])
+    items = relationship("MstStockItem", back_populates="unit", foreign_keys="MstStockItem.unit_id")
+
+class StockGroupAlias(Base):
+    __tablename__ = "stock_group_aliases"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    stock_group_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_groups.stock_group_id", ondelete="CASCADE"), nullable=False)
+    alias = Column(String(255), nullable=False)
+    
+    stock_group = relationship("MstStockGroup", back_populates="aliases")
 
 class MstStockGroup(Base):
     __tablename__ = "stock_groups"
@@ -550,9 +597,12 @@ class MstStockGroup(Base):
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_groups.stock_group_id", ondelete="SET NULL"), nullable=True)
+    is_active = Column(Boolean, default=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
+    
     parent = relationship("MstStockGroup", remote_side=[stock_group_id], backref="sub_groups")
     items = relationship("MstStockItem", back_populates="group")
+    aliases = relationship("StockGroupAlias", back_populates="stock_group", cascade="all, delete-orphan")
 
 class MstStockCategory(Base):
     __tablename__ = "stock_categories"
@@ -561,7 +611,9 @@ class MstStockCategory(Base):
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
     parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_categories.stock_category_id", ondelete="SET NULL"), nullable=True)
+    is_active = Column(Boolean, default=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
+    
     parent = relationship("MstStockCategory", remote_side=[stock_category_id], backref="sub_categories")
     items = relationship("MstStockItem", back_populates="category")
 
@@ -571,35 +623,149 @@ class MstGodown(Base):
     godown_id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(100), nullable=False)
-    address = Column(String(300), nullable=True)
+    address = Column(TEXT, nullable=True)
+    parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.godowns.godown_id", ondelete="SET NULL"), nullable=True)
+    is_active = Column(Boolean, default=True)
+    contact_person = Column(String(100), nullable=True)
+    phone = Column(String(20), nullable=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
+    
+    parent = relationship("MstGodown", remote_side=[godown_id], backref="sub_godowns")
     stock_entries = relationship("TrnInventory", back_populates="godown")
+
+class StockItemAlias(Base):
+    __tablename__ = "stock_item_aliases"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id", ondelete="CASCADE"), nullable=False)
+    alias = Column(String(255), nullable=False)
+    alias_type = Column(String(20), default="name")  # "name" or "part_number"
+    
+    stock_item = relationship("MstStockItem", back_populates="aliases")
+
+class StockItemPriceList(Base):
+    __tablename__ = "stock_item_price_lists"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id", ondelete="CASCADE"), nullable=False)
+    price_type = Column(String(20), nullable=False)  # "cost" or "selling"
+    effective_from = Column(Date, nullable=False)
+    rate = Column(Numeric(14, 2), nullable=False)
+    
+    stock_item = relationship("MstStockItem", back_populates="price_lists")
+
+class StockItemOpeningBalance(Base):
+    __tablename__ = "stock_item_opening_balances"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id", ondelete="CASCADE"), nullable=False)
+    godown_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.godowns.godown_id"), nullable=True)
+    batch_name = Column(String(50), nullable=True)
+    quantity = Column(Numeric(14, 3), nullable=False, default=0)
+    rate = Column(Numeric(14, 2), nullable=False, default=0)
+    amount = Column(Numeric(18, 2), nullable=False, default=0)
+    
+    stock_item = relationship("MstStockItem", back_populates="opening_balances")
+    godown = relationship("MstGodown")
+
+class MstPriceLevel(Base):
+    __tablename__ = "price_levels"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    price_level_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    is_active = Column(Boolean, default=True)
+    tally_alter_id = Column(BigInteger, nullable=True, index=True)
+
+class StockItemPriceLevelRate(Base):
+    __tablename__ = "stock_item_price_level_rates"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id", ondelete="CASCADE"), nullable=False)
+    price_level_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.price_levels.price_level_id", ondelete="CASCADE"), nullable=False)
+    effective_from = Column(Date, nullable=False)
+    qty_from = Column(Numeric(14, 3), nullable=True)
+    qty_to = Column(Numeric(14, 3), nullable=True)
+    rate = Column(Numeric(14, 2), nullable=False)
+    discount_percent = Column(Numeric(5, 2), nullable=True, default=0)
+    
+    stock_item = relationship("MstStockItem", back_populates="price_level_rates")
+    price_level = relationship("MstPriceLevel")
+
+class StockItemBOM(Base):
+    __tablename__ = "stock_item_boms"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    bom_id = Column(Integer, primary_key=True, index=True)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id", ondelete="CASCADE"), nullable=False)
+    bom_name = Column(String(100), nullable=False)
+    unit_of_manufacture = Column(Numeric(14, 3), nullable=False, default=1)
+    is_active = Column(Boolean, default=True)
+    
+    stock_item = relationship("MstStockItem", back_populates="boms")
+    components = relationship("StockItemBOMComponent", back_populates="bom", cascade="all, delete-orphan")
+
+class StockItemBOMComponent(Base):
+    __tablename__ = "stock_item_bom_components"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    bom_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_item_boms.bom_id", ondelete="CASCADE"), nullable=False)
+    component_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id", ondelete="RESTRICT"), nullable=False)
+    godown_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.godowns.godown_id", ondelete="SET NULL"), nullable=True)
+    quantity = Column(Numeric(14, 3), nullable=False)
+    component_type = Column(String(50), nullable=False, default="Component") # Component, Scrap, By-Product, Co-Product
+    
+    bom = relationship("StockItemBOM", back_populates="components")
+    component_item = relationship("MstStockItem", foreign_keys=[component_item_id])
+    godown = relationship("MstGodown")
 
 class MstStockItem(Base):
     __tablename__ = "stock_items"
     __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
     stock_item_id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(150), nullable=False)
+    name = Column(String(100), nullable=False)
     stock_group_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_groups.stock_group_id", ondelete="SET NULL"), nullable=True)
     stock_category_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_categories.stock_category_id", ondelete="SET NULL"), nullable=True)
-    unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id"), nullable=False)
-    hsn_code = Column(String(10), nullable=True)
-    gst_rate_percent = Column(Numeric(5, 2), default=0.00)
-    opening_qty = Column(Numeric(14, 3), default=0.00)
-    opening_rate = Column(Numeric(14, 2), default=0.00)
-    closing_qty = Column(Numeric(14, 3), default=0.00)
-    closing_rate = Column(Numeric(14, 2), default=0.00)
-    closing_value = Column(Numeric(14, 2), default=0.00)
-    reorder_level = Column(Numeric(14, 3), default=0.00)
-    tracking_type = Column(Enum('None', 'Batch', 'Serial', name='tracking_type_enum'), default='None')
+    unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="RESTRICT"), nullable=False)
+    
+    # New Phase C fields
+    alt_unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="SET NULL"), nullable=True)
+    alt_unit_conversion = Column(Numeric(12, 4), nullable=True)
+    description = Column(TEXT, nullable=True)
+    standard_cost_price = Column(Numeric(14, 2), nullable=True)
+    standard_selling_price = Column(Numeric(14, 2), nullable=True)
+    image_url = Column(String(255), nullable=True) # If Tally supports, we can at least store an image URL for the web
+    
+    hsn_code = Column(String(20), nullable=True)
+    gst_rate_percent = Column(Numeric(5, 2), default=0)
+    
+    opening_qty = Column(Numeric(14, 3), default=0)
+    opening_rate = Column(Numeric(14, 2), default=0)
+    closing_qty = Column(Numeric(14, 3), default=0)
+    closing_rate = Column(Numeric(14, 2), default=0)
+    closing_value = Column(Numeric(18, 2), default=0)
+    
+    reorder_level = Column(Numeric(14, 3), default=0)
+    minimum_order_qty = Column(Numeric(14, 3), default=0)
+    tracking_type = Column(String(20), default="None")
     shelf_life_days = Column(Integer, nullable=True)
+    
     is_active = Column(Boolean, default=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
-    unit = relationship("MstUom", back_populates="items")
+    
     group = relationship("MstStockGroup", back_populates="items")
     category = relationship("MstStockCategory", back_populates="items")
-    # Will be available when inventory module is imported
+    unit = relationship("MstUom", foreign_keys=[unit_id], back_populates="items")
+    alt_unit = relationship("MstUom", foreign_keys=[alt_unit_id])
+    
+    aliases = relationship("StockItemAlias", back_populates="stock_item", cascade="all, delete-orphan")
+    price_lists = relationship("StockItemPriceList", back_populates="stock_item", cascade="all, delete-orphan")
+    opening_balances = relationship("StockItemOpeningBalance", back_populates="stock_item", cascade="all, delete-orphan")
+    
+    boms = relationship("StockItemBOM", back_populates="stock_item", cascade="all, delete-orphan")
+    price_level_rates = relationship("StockItemPriceLevelRate", back_populates="stock_item", cascade="all, delete-orphan")
+    
+    stock_entries = relationship("TrnInventory", back_populates="stock_item")# Will be available when inventory module is imported
     # boms = relationship("BillOfMaterials", back_populates="stock_item", cascade="all, delete-orphan")
 
     @property
@@ -641,14 +807,34 @@ class TrnInventory(Base):
     batch_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.batches.batch_id", ondelete="SET NULL"), nullable=True)
     serial_id = Column(BigInteger, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.serial_numbers.serial_id", ondelete="SET NULL"), nullable=True)
     quantity = Column(Numeric(14, 3), nullable=False)
+    billed_qty = Column(Numeric(14, 3), nullable=True)
     rate = Column(Numeric(14, 2), nullable=False)
+    rate_unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="SET NULL"), nullable=True)
     amount = Column(Numeric(18, 2), nullable=False)
     is_inward = Column(Boolean, default=True)
+    is_deemed_positive = Column(Boolean, default=True)
+    flow_type = Column(Enum('source', 'destination', name='stock_flow_type'), nullable=True)
+    
+    voucher = relationship("TrnVoucher", back_populates="inventory_entries")
     godown = relationship("MstGodown", back_populates="stock_entries")
     stock_item = relationship("MstStockItem")
     batch = relationship("Batch")
+    rate_unit = relationship("MstUom")
+    accounting_allocations = relationship("VoucherAccountingAllocation", back_populates="stock_entry", cascade="all, delete-orphan")
     # Will be available when inventory module is imported
     # serial = relationship("SerialNumber")
+
+class VoucherAccountingAllocation(Base):
+    __tablename__ = "voucher_accounting_allocations"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    stock_entry_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_entries.stock_entry_id", ondelete="CASCADE"), nullable=False, index=True)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=False)
+    is_deemed_positive = Column(Boolean, nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
+    
+    stock_entry = relationship("TrnInventory", back_populates="accounting_allocations")
+    ledger = relationship("MstLedger")
 
 # ==========================================
 # MOVED FROM payment.py

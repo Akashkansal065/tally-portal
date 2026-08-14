@@ -164,6 +164,9 @@ export async function generateVoucherPdf({
   partyLedger: PartyLedger | null
   shouldDownload?: boolean
 }) {
+  const safeAccounts = Array.isArray(accounts) ? accounts : []
+  const safeInventory = Array.isArray(inventory) ? inventory : []
+
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -178,16 +181,16 @@ export async function generateVoucherPdf({
   const pageHeight = 272 // inside borders
 
   // Calculate totals
-  const totalQty = inventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.quantity || '0')), 0)
-  const uom = inventory[0]?.uom || 'PCS'
+  const totalQty = safeInventory.reduce((sum, item) => sum + Math.abs(parseFloat(String(item.quantity || '0'))), 0)
+  const uom = safeInventory[0]?.uom || 'PCS'
   
-  const partyEntry = accounts.find(a => (a.ledger || '').trim().toLowerCase() === (header.partyName || '').trim().toLowerCase())
-  let totalAmount = Math.abs(parseFloat(partyEntry?.amount || '0'))
+  const partyEntry = safeAccounts.find(a => ((a.ledger_name || a.ledger) || '').trim().toLowerCase() === (header.partyName || '').trim().toLowerCase())
+  let totalAmount = Math.abs(parseFloat(String(partyEntry?.amount || '0')))
   if (totalAmount === 0) {
-    const invSum = inventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.amount || '0')), 0)
-    const ledgerSum = accounts
-      .filter(a => (a.ledger || '').trim().toLowerCase() !== (header.partyName || '').trim().toLowerCase())
-      .reduce((sum, a) => sum + parseFloat(a.amount || '0'), 0)
+    const invSum = safeInventory.reduce((sum, item) => sum + Math.abs(parseFloat(String(item.amount || '0'))), 0)
+    const ledgerSum = safeAccounts
+      .filter(a => ((a.ledger_name || a.ledger) || '').trim().toLowerCase() !== (header.partyName || '').trim().toLowerCase())
+      .reduce((sum, a) => sum + parseFloat(String(a.amount || '0')), 0)
     totalAmount = Math.abs(invSum + ledgerSum)
   }
 
@@ -196,16 +199,19 @@ export async function generateVoucherPdf({
     const groups: Record<string, { taxableValue: number; gstRate: number; cgstAmount: number; sgstAmount: number }> = {}
     
     // Find discount ledgers total to adjust taxable values proportionately
-    const totalInvAmount = inventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.amount || '0')), 0)
-    const discountLedgersTotal = accounts
-      .filter(acc => acc.ledger && acc.ledger.toUpperCase().includes('DISCOUNT'))
-      .reduce((sum, acc) => sum + parseFloat(acc.amount || '0'), 0)
+    const totalInvAmount = safeInventory.reduce((sum, item) => sum + Math.abs(parseFloat(String(item.amount || '0'))), 0)
+    const discountLedgersTotal = safeAccounts
+      .filter(acc => {
+        const lName = acc.ledger_name || acc.ledger || ''
+        return lName.toUpperCase().includes('DISCOUNT')
+      })
+      .reduce((sum, acc) => sum + parseFloat(String(acc.amount || '0')), 0)
     const discountFactor = totalInvAmount > 0 ? (totalInvAmount + discountLedgersTotal) / totalInvAmount : 1
 
-    inventory.forEach(item => {
+    safeInventory.forEach(item => {
       const hsn = item.gstHsnCode || 'N/A'
-      const amount = Math.abs(parseFloat(item.amount || '0')) * discountFactor
-      const gstRate = parseFloat(item.gstRate || '0')
+      const amount = Math.abs(parseFloat(String(item.amount || '0'))) * discountFactor
+      const gstRate = parseFloat(String(item.gstRate || '0'))
       const cgstRate = gstRate / 2
       const sgstRate = gstRate / 2
       const cgstAmount = amount * (cgstRate / 100)
@@ -227,18 +233,20 @@ export async function generateVoucherPdf({
   // Total row (8) + amount words (13) + hsn table + gap (1) + tax words (9) + bank section (27) + declaration/signatory (22)
   const bottomSectionHeight = 8 + 13 + 1 + hsnTableHeight + 9 + 27 + 22
 
+  // Helper for ledger name
+  const getLedgerName = (acc: AccountEntry) => (acc.ledger_name || acc.ledger || '').trim()
+
   // Collect all table rows:
   // 1. Items
-  // 2. Subtotal (if taxes are present)
-  // 3. Tax ledgers (CGST, SGST, IGST etc.)
-  // 4. ROUND OFF
+  // 2. Subtotal (if taxes/splits are present)
+  // 3. Tax ledgers (CGST, SGST, IGST etc.), Round off, Discounts
   const tableRows: TableRow[] = []
-  inventory.forEach((item, idx) => {
-    const rate = parseFloat(item.rate || '0')
-    const gstRate = parseFloat(item.gstRate || '0')
+  safeInventory.forEach((item, idx) => {
+    const rate = parseFloat(String(item.rate || '0'))
+    const gstRate = parseFloat(String(item.gstRate || '0'))
     const rateInclTax = rate * (1 + gstRate / 100)
-    const discPercent = parseFloat(item.discountAmount || '0')
-    const amount = Math.abs(parseFloat(item.amount || '0'))
+    const discPercent = parseFloat(String(item.discountAmount || '0'))
+    const amount = Math.abs(parseFloat(String(item.amount || '0')))
 
     tableRows.push({
       type: 'item',
@@ -246,7 +254,7 @@ export async function generateVoucherPdf({
       description: item.item || '',
       hsn: item.gstHsnCode || '',
       gstRate: gstRate > 0 ? `${gstRate} %` : '',
-      quantity: `${Math.abs(parseFloat(item.quantity || '0')).toLocaleString('en-IN', { maximumFractionDigits: 4 })} ${item.uom || ''}`,
+      quantity: `${Math.abs(parseFloat(String(item.quantity || '0'))).toLocaleString('en-IN', { maximumFractionDigits: 4 })} ${item.uom || ''}`,
       rateInclTax: rateInclTax > 0 ? rateInclTax.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '',
       rate: rate.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
       per: item.uom || '',
@@ -255,26 +263,38 @@ export async function generateVoucherPdf({
     })
   })
 
-  // Check if we need subtotal & ledger rows
-  const ledgerSplits = accounts.filter(acc => acc.ledger !== header.partyName && acc.ledger !== 'SALES AC')
+  // Filter ledger splits: exclude party ledger and main sales/purchase ledgers when items exist
+  const partyNameLower = (header.partyName || '').trim().toLowerCase()
+  const ledgerSplits = safeAccounts.filter(acc => {
+    const lName = getLedgerName(acc)
+    if (!lName) return false
+    const lLower = lName.toLowerCase()
+    if (lLower === partyNameLower) return false
+    if (safeInventory.length > 0) {
+      if (['sales', 'sales a/c', 'sales account', 'purchase', 'purchase a/c', 'purchase account'].includes(lLower)) return false
+    }
+    return true
+  })
+
   if (ledgerSplits.length > 0) {
-    // Add Subtotal Row
-    const subtotalAmount = inventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.amount || '0')), 0)
-    tableRows.push({
-      type: 'subtotal',
-      description: '',
-      amount: subtotalAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    })
+    // Add Subtotal Row if items exist
+    if (safeInventory.length > 0) {
+      const subtotalAmount = safeInventory.reduce((sum, item) => sum + Math.abs(parseFloat(String(item.amount || '0'))), 0)
+      tableRows.push({
+        type: 'subtotal',
+        description: '',
+        amount: subtotalAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      })
+    }
 
     // Add Ledger Splits
     ledgerSplits.forEach(acc => {
-      const ledgerName = acc.ledger || ''
+      const ledgerName = getLedgerName(acc)
       const isDiscount = ledgerName.toUpperCase().includes('DISCOUNT')
-      const rawAmt = parseFloat(acc.amount || '0')
+      const rawAmt = parseFloat(String(acc.amount || '0'))
 
-      if (isDiscount) {
-        // Calculate total taxable value of inventory items
-        const subtotalAmount = inventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.amount || '0')), 0)
+      if (isDiscount && safeInventory.length > 0) {
+        const subtotalAmount = safeInventory.reduce((sum, item) => sum + Math.abs(parseFloat(String(item.amount || '0'))), 0)
         const discRate = subtotalAmount > 0 ? Math.round((Math.abs(rawAmt) / subtotalAmount) * 100) : 0
         
         tableRows.push({
@@ -490,12 +510,12 @@ export async function generateVoucherPdf({
       doc.setFont('helvetica', 'bold')
       const isDiscount = row.description.toUpperCase().includes('LESS :')
       if (isDiscount) {
-        doc.text(row.description || '', 74, y + 4.5, { align: 'right' })
+        doc.text(row.description || '', 22, y + 4.5)
         doc.text(row.rate || '', 159, y + 4.5, { align: 'right' })
         doc.text(row.per || '', 165, y + 4.5, { align: 'center' })
         doc.text(row.amount || '', 198, y + 4.5, { align: 'right' })
       } else {
-        doc.text(row.description || '', 74, y + 4.5, { align: 'right' })
+        doc.text(row.description || '', 22, y + 4.5)
         doc.text(row.amount || '', 198, y + 4.5, { align: 'right' })
       }
     }

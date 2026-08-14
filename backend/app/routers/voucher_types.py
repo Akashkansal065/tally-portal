@@ -287,4 +287,7 @@ async def delete_voucher_type(
 
     await try_push_voucher_type_realtime(vt_id, sq.sync_id, "Delete", db, deleted_name=vt_name)
 
-    return {"message": "Voucher Type deleted successfully"}
+    return {
+        "message": "Voucher Type deleted successfully",
+        "warning": "Tally currently does not support deleting Voucher Types via API. Please manually delete this voucher type in Tally (Gateway of Tally > Alter > Voucher Type > Alt+D) to keep the systems fully synced."
+    }
