@@ -558,6 +558,13 @@ class TrnBankAllocation(Base):
     payment_favouring = Column(String(150), nullable=True)
     instrument_number = Column(String(50), nullable=True)
     amount = Column(Numeric(18, 2), nullable=False)
+    transfer_mode = Column(String(50), nullable=True)
+    virtual_payment_address = Column(String(100), nullable=True)
+    cheque_cross_comment = Column(String(50), nullable=True)
+    bank_name = Column(String(150), nullable=True)
+    account_number = Column(String(50), nullable=True)
+    ifs_code = Column(String(20), nullable=True)
+    is_connected_payment = Column(Boolean, default=False)
     
     entry = relationship("TrnAccounting", back_populates="bank_allocations")
 # ==========================================
@@ -812,6 +819,8 @@ class TrnInventory(Base):
     rate = Column(Numeric(14, 2), nullable=False)
     rate_unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="SET NULL"), nullable=True)
     amount = Column(Numeric(18, 2), nullable=False)
+    discount_percent = Column(Numeric(5, 2), nullable=True, default=0.00)
+    discount_amount = Column(Numeric(18, 2), nullable=True, default=0.00)
     is_inward = Column(Boolean, default=True)
     is_deemed_positive = Column(Boolean, default=True)
     flow_type = Column(Enum('source', 'destination', name='stock_flow_type'), nullable=True)

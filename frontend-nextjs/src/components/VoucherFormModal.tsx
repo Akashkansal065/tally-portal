@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useMemo } from 'react'
-import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap } from 'lucide-react'
+import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap, Landmark, CreditCard, QrCode, Percent, ShieldCheck, Info } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders } from '@/lib/utils'
@@ -10,10 +10,11 @@ import { toast } from 'sonner'
 export type VoucherFormModalProps = {
   isOpen: boolean
   onClose: () => void
-  onSave: (data: any) => Promise<void>
+  onSave: (data: any, voucherId?: number | null) => Promise<void>
   isSaving: boolean
   ledgers: any[]
   voucherTypes: any[]
+  editVoucher?: any | null
   onLedgerCreated?: (newLedger: any) => void
   onItemCreated?: (newItem: any) => void
 }
@@ -25,6 +26,7 @@ export default function VoucherFormModal({
   isSaving,
   ledgers,
   voucherTypes,
+  editVoucher,
   onLedgerCreated,
   onItemCreated
 }: VoucherFormModalProps) {
@@ -36,18 +38,28 @@ export default function VoucherFormModal({
   const [narration, setNarration] = useState('')
   const [status, setStatus] = useState('confirmed')
   const [validationError, setValidationError] = useState<string | null>(null)
+  const [showRefInfo, setShowRefInfo] = useState(false)
   
   // 2. Ledgers State & Sync
   const [localLedgers, setLocalLedgers] = useState<any[]>(ledgers || [])
 
   useEffect(() => {
-    setLocalLedgers(ledgers || [])
-  }, [ledgers])
+    const list = ledgers || []
+    setLocalLedgers(list)
+    if (editVoucher && list.length > 0) {
+      if (editVoucher.party_ledger_id) {
+        setPartyLedgerId(String(editVoucher.party_ledger_id))
+      } else if (editVoucher.party_name) {
+        const match = list.find(l => (l.name || '').trim().toLowerCase() === (editVoucher.party_name || '').trim().toLowerCase())
+        if (match) setPartyLedgerId(String(match.ledger_id))
+      }
+    }
+  }, [ledgers, editVoucher])
 
   // 3. Accounting View States
   const [entries, setEntries] = useState([
-    { id: 1, ledger_id: '', type: 'Debit', amount: '' },
-    { id: 2, ledger_id: '', type: 'Credit', amount: '' }
+    { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [] as any[] },
+    { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [] as any[] }
   ])
   const [nextId, setNextId] = useState(3)
   
@@ -107,6 +119,96 @@ export default function VoucherFormModal({
   const [isCreatingUnit, setIsCreatingUnit] = useState(false)
   const [quickUnitError, setQuickUnitError] = useState<string | null>(null)
 
+  // 10. Interactive Banking Allocations Modal States
+  const [isBankingModalOpen, setIsBankingModalOpen] = useState(false)
+  const [activeBankingEntryId, setActiveBankingEntryId] = useState<number | null>(null)
+  const [bankingTxType, setBankingTxType] = useState('Cheque')
+  const [bankingVpa, setBankingVpa] = useState('')
+  const [bankingInstNumber, setBankingInstNumber] = useState('')
+  const [bankingInstDate, setBankingInstDate] = useState(new Date().toISOString().slice(0, 10))
+  const [bankingChequeCrossing, setBankingChequeCrossing] = useState('A/c Payee')
+  const [bankingTransferMode, setBankingTransferMode] = useState('NEFT')
+  const [bankingBankName, setBankingBankName] = useState('')
+  const [bankingAccountNumber, setBankingAccountNumber] = useState('')
+  const [bankingIfsc, setBankingIfsc] = useState('')
+  const [bankingFavouring, setBankingFavouring] = useState('')
+
+  const isBankLedger = (ledgerId: string | number) => {
+    if (!ledgerId) return false
+    const led = localLedgers.find(l => String(l.ledger_id) === String(ledgerId))
+    if (!led) return false
+    const grp = groupsList.find(g => g.group_id === led.group_id)
+    const grpName = (grp?.name || '').toLowerCase()
+    const ledName = (led?.name || '').toLowerCase()
+    return grpName.includes('bank') || ledName.includes('bank')
+  }
+
+  const openBankingModal = (entryId: number) => {
+    setActiveBankingEntryId(entryId)
+    const entry = entries.find(e => e.id === entryId)
+    const existing = entry?.bank_allocations?.[0]
+    if (existing) {
+      setBankingTxType(existing.transaction_type || 'Cheque')
+      setBankingVpa(existing.virtual_payment_address || '')
+      setBankingInstNumber(existing.instrument_number || '')
+      setBankingInstDate(existing.instrument_date || voucherDate)
+      setBankingChequeCrossing(existing.cheque_cross_comment || 'A/c Payee')
+      setBankingTransferMode(existing.transfer_mode || 'NEFT')
+      setBankingBankName(existing.bank_name || '')
+      setBankingAccountNumber(existing.account_number || '')
+      setBankingIfsc(existing.ifs_code || '')
+      setBankingFavouring(existing.payment_favouring || '')
+    } else {
+      setBankingTxType('Cheque')
+      setBankingVpa('')
+      setBankingInstNumber('')
+      setBankingInstDate(voucherDate)
+      setBankingChequeCrossing('A/c Payee')
+      setBankingTransferMode('NEFT')
+      setBankingBankName('')
+      setBankingAccountNumber('')
+      setBankingIfsc('')
+      setBankingFavouring('')
+    }
+    setIsBankingModalOpen(true)
+  }
+
+  const saveBankingAllocation = () => {
+    if (activeBankingEntryId === null) return
+    setEntries(entries.map(x => {
+      if (x.id === activeBankingEntryId) {
+        return {
+          ...x,
+          bank_allocations: [{
+            transaction_type: bankingTxType,
+            virtual_payment_address: bankingTxType === 'UPI' ? bankingVpa : undefined,
+            instrument_number: bankingInstNumber || undefined,
+            instrument_date: bankingInstDate || undefined,
+            cheque_cross_comment: (bankingTxType === 'Cheque' || bankingTxType === 'Cheque/DD') ? bankingChequeCrossing : undefined,
+            transfer_mode: bankingTxType === 'Inter Bank Transfer' ? bankingTransferMode : undefined,
+            bank_name: bankingBankName || undefined,
+            account_number: bankingAccountNumber || undefined,
+            ifs_code: bankingIfsc || undefined,
+            payment_favouring: bankingFavouring || undefined,
+            amount: parseFloat(x.amount || '0')
+          }]
+        }
+      }
+      return x
+    }))
+    setIsBankingModalOpen(false)
+    toast.success('Banking details updated for entry row')
+  }
+
+  const calculateItemAmount = (qty: string, rate: string, disc: string) => {
+    const q = parseFloat(qty || '0')
+    const r = parseFloat(rate || '0')
+    const d = parseFloat(disc || '0')
+    const gross = q * r
+    const discountAmt = gross * (d / 100)
+    return Math.max(0, gross - discountAmt).toFixed(2)
+  }
+
   // 10. Derived Sorted Lists (A-Z)
   const sortedLedgers = useMemo(() => {
     return [...localLedgers].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }))
@@ -143,33 +245,115 @@ export default function VoucherFormModal({
   useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
       wasOpenRef.current = true
-      const typeSales = activeVoucherTypes.find(t => t.name.toLowerCase() === 'sales')
-      setSelectedType(typeSales || (activeVoucherTypes.length > 0 ? activeVoucherTypes[0] : null))
-      setVoucherDate(new Date().toISOString().slice(0, 10))
-      setRefNumber('')
-      setNarration('')
-      setStatus('confirmed')
-      setValidationError(null)
-      setPartyLedgerId('')
-      setOriginalVoucherId('')
-      setEntries([
-        { id: 1, ledger_id: '', type: 'Debit', amount: '' },
-        { id: 2, ledger_id: '', type: 'Credit', amount: '' }
-      ])
-      setInventoryEntries([
-        { id: 1, stock_item_id: '', quantity: '1', rate: '', amount: '0.00' }
-      ])
-      setSourceEntries([
-        { id: 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }
-      ])
-      setDestEntries([
-        { id: 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }
-      ])
+
+      if (editVoucher) {
+        // Edit / Alter mode: Prepopulate from existing voucher
+        const vtype = voucherTypes.find(t => 
+          t.voucher_type_id === editVoucher.voucher_type_id || 
+          (t.name || '').toLowerCase() === (editVoucher.voucher_type || editVoucher.voucher_type_name || '').toLowerCase()
+        )
+        setSelectedType(vtype || (activeVoucherTypes.length > 0 ? activeVoucherTypes[0] : null))
+        setVoucherDate(
+          editVoucher.date || editVoucher.voucher_date
+            ? String(editVoucher.date || editVoucher.voucher_date).slice(0, 10)
+            : new Date().toISOString().slice(0, 10)
+        )
+        setRefNumber(editVoucher.reference_number || '')
+        setNarration(editVoucher.narration || '')
+        setStatus(editVoucher.status || 'confirmed')
+        setValidationError(null)
+        setPartyLedgerId(editVoucher.party_ledger_id ? String(editVoucher.party_ledger_id) : '')
+        setOriginalVoucherId(editVoucher.original_voucher_id ? String(editVoucher.original_voucher_id) : '')
+
+        // Accounting Entries
+        const rawEntries = editVoucher.entries || editVoucher.accounts || []
+        if (rawEntries.length > 0) {
+          setEntries(rawEntries.map((e: any, idx: number) => {
+            const dr = parseFloat(e.debit_amount || (e.entry_type === 'Debit' ? e.amount : '0') || '0')
+            const cr = parseFloat(e.credit_amount || (e.entry_type === 'Credit' ? e.amount : '0') || '0')
+            const isDr = dr > 0 || e.entry_type === 'Debit'
+            return {
+              id: idx + 1,
+              ledger_id: String(e.ledger_id || ''),
+              type: isDr ? 'Debit' : 'Credit',
+              amount: String(isDr ? (dr || e.amount || '') : (cr || e.amount || '')),
+              cost_center_id: e.cost_center_id ? String(e.cost_center_id) : '',
+              bank_allocations: e.bank_allocations || []
+            }
+          }))
+          setNextId(rawEntries.length + 1)
+        } else {
+          setEntries([
+            { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [] },
+            { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [] }
+          ])
+          setNextId(3)
+        }
+
+        // Inventory Entries
+        const rawInv = editVoucher.inventory_entries || editVoucher.inventory || []
+        if (rawInv.length > 0) {
+          setInventoryEntries(rawInv.map((inv: any, idx: number) => ({
+            id: idx + 1,
+            stock_item_id: String(inv.stock_item_id || ''),
+            quantity: String(inv.quantity || '1'),
+            rate: String(inv.rate || ''),
+            discount_percent: String(inv.discount_percent || '0'),
+            amount: String(inv.amount || '0.00')
+          })))
+          setNextInvId(rawInv.length + 1)
+        } else {
+          setInventoryEntries([
+            { id: 1, stock_item_id: '', quantity: '1', rate: '', discount_percent: '0', amount: '0.00' }
+          ])
+          setNextInvId(2)
+        }
+      } else {
+        // Create mode
+        const typeSales = activeVoucherTypes.find(t => t.name.toLowerCase() === 'sales')
+        setSelectedType(typeSales || (activeVoucherTypes.length > 0 ? activeVoucherTypes[0] : null))
+        setVoucherDate(new Date().toISOString().slice(0, 10))
+        setRefNumber('')
+        setNarration('')
+        setStatus('confirmed')
+        setValidationError(null)
+        setPartyLedgerId('')
+        setOriginalVoucherId('')
+        setEntries([
+          { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [] },
+          { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [] }
+        ])
+        setNextId(3)
+        setInventoryEntries([
+          { id: 1, stock_item_id: '', quantity: '1', rate: '', discount_percent: '0', amount: '0.00' }
+        ])
+        setNextInvId(2)
+        setSourceEntries([
+          { id: 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }
+        ])
+        setDestEntries([
+          { id: 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }
+        ])
+      }
       
       // Fetch items, godowns, groups, uoms, stock groups
       fetch(`${API_BASE}/inventory/items`, { headers: authHeaders(token) })
         .then(r => r.json())
-        .then(data => setStockItems(Array.isArray(data) ? data : []))
+        .then(data => {
+          const items = Array.isArray(data) ? data : []
+          setStockItems(items)
+          if (editVoucher) {
+            const rawInv = editVoucher.inventory_entries || editVoucher.inventory || []
+            setInventoryEntries(prev => prev.map((e, idx) => {
+              if ((!e.stock_item_id || e.stock_item_id === '') && rawInv[idx]) {
+                const nameToMatch = rawInv[idx].item || rawInv[idx].stock_item_name
+                const match = items.find(si => (si.name || '').trim().toLowerCase() === (nameToMatch || '').trim().toLowerCase())
+                if (match) return { ...e, stock_item_id: String(match.stock_item_id) }
+              }
+              return e
+            }))
+          }
+        })
         .catch(console.error)
       fetch(`${API_BASE}/inventory/godowns`, { headers: authHeaders(token) })
         .then(r => r.json())
@@ -190,7 +374,7 @@ export default function VoucherFormModal({
     } else if (!isOpen) {
       wasOpenRef.current = false
     }
-  }, [isOpen, token])
+  }, [isOpen, token, editVoucher])
 
   const parentType = selectedType?.parent_type || selectedType?.name || ''
   const isInvoiceView = ['Sales', 'Purchase', 'Credit Note', 'Debit Note'].includes(parentType)
@@ -221,13 +405,13 @@ export default function VoucherFormModal({
     const diff = Math.abs(totals.debits - totals.credits)
     const autoAmount = diff > 0 ? diff.toFixed(2) : ''
 
-    setEntries([...entries, { id: nextId, ledger_id: '', type: newType, amount: autoAmount }])
+    setEntries([...entries, { id: nextId, ledger_id: '', type: newType, amount: autoAmount, cost_center_id: '', bank_allocations: [] }])
     setNextId(nextId + 1)
   }
 
   const removeEntry = (id: number) => {
     if (entries.length <= 2) {
-      setEntries(entries.map(e => e.id === id ? { ...e, ledger_id: '', amount: '' } : e))
+      setEntries(entries.map(e => e.id === id ? { ...e, ledger_id: '', amount: '', cost_center_id: '', bank_allocations: [] } : e))
     } else {
       setEntries(entries.filter(e => e.id !== id))
     }
@@ -257,7 +441,7 @@ export default function VoucherFormModal({
   }
   
   const addInventoryEntry = () => {
-    setInventoryEntries([...inventoryEntries, { id: nextInvId, stock_item_id: '', quantity: '', rate: '', amount: '' }])
+    setInventoryEntries([...inventoryEntries, { id: nextInvId, stock_item_id: '', quantity: '1', rate: '', discount_percent: '0', amount: '' }])
     setNextInvId(nextInvId + 1)
   }
 
@@ -653,7 +837,9 @@ export default function VoucherFormModal({
       payload.entries = validRows.map(e => ({
         ledger_id: parseInt(e.ledger_id),
         debit_amount: e.type === 'Debit' ? parseFloat(e.amount) : 0,
-        credit_amount: e.type === 'Credit' ? parseFloat(e.amount) : 0
+        credit_amount: e.type === 'Credit' ? parseFloat(e.amount) : 0,
+        cost_center_id: e.cost_center_id ? parseInt(e.cost_center_id) : null,
+        bank_allocations: e.bank_allocations && e.bank_allocations.length > 0 ? e.bank_allocations : undefined
       }))
     } else if (isInvoiceView) {
       if (!partyLedgerId) {
@@ -672,12 +858,21 @@ export default function VoucherFormModal({
         return
       }
 
-      const invPayload = validInv.map(e => ({
-        stock_item_id: parseInt(e.stock_item_id),
-        quantity: parseFloat(e.quantity || '0'),
-        rate: parseFloat(e.rate || '0'),
-        amount: parseFloat(e.amount || '0')
-      }))
+      const invPayload = validInv.map(e => {
+        const qty = parseFloat(e.quantity || '0')
+        const rate = parseFloat(e.rate || '0')
+        const disc = parseFloat(e.discount_percent || '0')
+        const gross = qty * rate
+        const discAmt = gross * (disc / 100)
+        return {
+          stock_item_id: parseInt(e.stock_item_id),
+          quantity: qty,
+          rate: rate,
+          amount: parseFloat(e.amount || (gross - discAmt).toFixed(2)),
+          discount_percent: disc,
+          discount_amount: discAmt
+        }
+      })
       payload.inventory_entries = invPayload
     } else if (isStockJournal) {
       const src = sourceEntries.filter(e => e.stock_item_id).map(e => ({
@@ -701,7 +896,7 @@ export default function VoucherFormModal({
       payload.inventory_entries = [...src, ...dst]
     }
     
-    onSave(payload)
+    onSave(payload, editVoucher?.voucher_id || null)
   }
 
   if (!isOpen) return null
@@ -713,7 +908,9 @@ export default function VoucherFormModal({
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-4">
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white">Create Voucher</h2>
+            <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+              {editVoucher ? `Alter Voucher #${editVoucher.voucher_number || editVoucher.voucher_id}` : 'Create Voucher'}
+            </h2>
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-slate-500">Status:</span>
               <label className="relative inline-flex items-center cursor-pointer">
@@ -762,9 +959,90 @@ export default function VoucherFormModal({
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Date</label>
               <input type="date" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" value={voucherDate} onChange={e => setVoucherDate(e.target.value)} />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Reference No.</label>
-              <input type="text" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Ref No." value={refNumber} onChange={e => setRefNumber(e.target.value)} />
+            <div className="relative">
+              <div className="flex items-center gap-1.5 mb-1">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Reference No.</label>
+                <div className="relative inline-block">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setShowRefInfo(prev => !prev)
+                    }}
+                    className={cn(
+                      "p-1 rounded-md transition-colors cursor-pointer flex items-center justify-center",
+                      showRefInfo 
+                        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" 
+                        : "text-slate-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    )}
+                    title="Click for Reference No. details"
+                  >
+                    <Info className="w-4 h-4" />
+                  </button>
+
+                  {/* Popover / Dropdown below the icon */}
+                  {showRefInfo && (
+                    <div 
+                      className="absolute right-0 top-full mt-2 w-80 p-4 bg-slate-900 text-white rounded-xl shadow-2xl border border-slate-700 z-50 animate-in fade-in zoom-in-95 duration-150"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
+                        <span className="font-bold text-xs text-emerald-400 flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5" /> What is Reference No.?
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowRefInfo(false)}
+                          className="text-slate-400 hover:text-white p-0.5"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="space-y-2.5 text-[11px] text-slate-300 leading-relaxed">
+                        <p>
+                          <strong className="text-white">Purchase Vouchers:</strong> Enter the <span className="text-emerald-400 font-semibold">Supplier's Tax Invoice No.</span> for GSTR-2B ITC matching & vendor bill-by-bill tracking.
+                        </p>
+                        <p>
+                          <strong className="text-white">Sales Invoices:</strong> Enter the <span className="text-emerald-400 font-semibold">Buyer's PO No.</span> or Challan No. (prints under "Buyer's Order No.").
+                        </p>
+                        <p>
+                          <strong className="text-white">Receipts / Payments:</strong> Enter the <span className="text-emerald-400 font-semibold">Bank UTR or Cheque No.</span> for bank reconciliation (BRS).
+                        </p>
+                      </div>
+                      <div className="mt-3 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400">
+                        <span>Syncs to Tally as &lt;REFERENCE&gt;</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowRefInfo(false)}
+                          className="text-emerald-400 font-bold hover:underline cursor-pointer"
+                        >
+                          Got it
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <input 
+                type="text" 
+                className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium" 
+                placeholder={
+                  parentType.toLowerCase() === 'purchase'
+                    ? "Supplier Bill No. (e.g. INV-892)"
+                    : parentType.toLowerCase() === 'sales'
+                    ? "Buyer PO No. (e.g. PO-2026-01)"
+                    : "Ref / UTR / Cheque No."
+                }
+                value={refNumber} 
+                onChange={e => setRefNumber(e.target.value)} 
+              />
+              <p className="text-[10px] text-slate-400 mt-1">
+                {parentType.toLowerCase() === 'purchase'
+                  ? "Vendor's original invoice number for GSTR-2B ITC claiming"
+                  : parentType.toLowerCase() === 'sales'
+                  ? "Customer's PO / Order reference number"
+                  : "External transaction / bank UTR reference"}
+              </p>
             </div>
           </div>
 
@@ -826,66 +1104,99 @@ export default function VoucherFormModal({
                 </div>
               </div>
               
+              {/* Column Headers */}
+              <div className="flex gap-3 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+                <div className="w-24">Type (Dr/Cr)</div>
+                <div className="flex-1">Particulars / Ledger Account</div>
+                <div className="w-44 text-right pr-4">Amount (₹)</div>
+                <div className="w-8"></div>
+              </div>
+
               {entries.map((e, idx) => (
-                <div key={e.id} className="flex gap-3 items-center">
-                  <select 
-                    className="w-24 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold bg-white dark:bg-slate-900" 
-                    value={e.type} 
-                    onChange={evt => {
-                      setValidationError(null)
-                      setEntries(entries.map(x => x.id === e.id ? { ...x, type: evt.target.value } : x))
-                    }}
-                  >
-                    <option value="Debit">Dr</option>
-                    <option value="Credit">Cr</option>
-                  </select>
-                  
-                  <div className="flex-1 flex gap-2">
+                <div key={e.id} className="space-y-1">
+                  <div className="flex gap-3 items-center">
                     <select 
-                      className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
-                      value={e.ledger_id} 
+                      className="w-24 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold bg-white dark:bg-slate-900" 
+                      value={e.type} 
                       onChange={evt => {
                         setValidationError(null)
-                        if (evt.target.value === '__create_new__') {
-                          openQuickLedgerModal(e.id)
-                        } else {
-                          setEntries(entries.map(x => x.id === e.id ? { ...x, ledger_id: evt.target.value } : x))
-                        }
+                        setEntries(entries.map(x => x.id === e.id ? { ...x, type: evt.target.value } : x))
                       }}
                     >
-                      <option value="">Select Ledger...</option>
-                      <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
-                      {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>)}
+                      <option value="Debit">Dr</option>
+                      <option value="Credit">Cr</option>
                     </select>
                     
+                    <div className="flex-1 flex gap-2">
+                      <select 
+                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        value={e.ledger_id} 
+                        onChange={evt => {
+                          setValidationError(null)
+                          if (evt.target.value === '__create_new__') {
+                            openQuickLedgerModal(e.id)
+                          } else {
+                            setEntries(entries.map(x => x.id === e.id ? { ...x, ledger_id: evt.target.value } : x))
+                          }
+                        }}
+                      >
+                        <option value="">Select Ledger...</option>
+                        <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
+                        {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>)}
+                      </select>
+                      
+                      <button 
+                        type="button" 
+                        onClick={() => openQuickLedgerModal(e.id)} 
+                        title="Create New Ledger"
+                        className="px-2.5 h-10 bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 hover:text-emerald-600 text-slate-500 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> New
+                      </button>
+                    </div>
+                    
+                    <div className="relative w-44">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">₹</span>
+                      <input 
+                        type="number" 
+                        className="w-full h-10 pl-7 pr-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold bg-white dark:bg-slate-900" 
+                        placeholder="0.00" 
+                        value={e.amount} 
+                        onChange={evt => handleAmountChange(e.id, evt.target.value)} 
+                      />
+                    </div>
+
                     <button 
-                      type="button" 
-                      onClick={() => openQuickLedgerModal(e.id)} 
-                      title="Create New Ledger"
-                      className="px-2.5 h-10 bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 hover:text-emerald-600 text-slate-500 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors"
+                      onClick={() => removeEntry(e.id)} 
+                      title="Remove Entry"
+                      className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors"
                     >
-                      <Plus className="w-3.5 h-3.5" /> New
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
-                  
-                  <div className="relative w-44">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">₹</span>
-                    <input 
-                      type="number" 
-                      className="w-full h-10 pl-7 pr-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold bg-white dark:bg-slate-900" 
-                      placeholder="0.00" 
-                      value={e.amount} 
-                      onChange={evt => handleAmountChange(e.id, evt.target.value)} 
-                    />
-                  </div>
 
-                  <button 
-                    onClick={() => removeEntry(e.id)} 
-                    title="Remove Entry"
-                    className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {/* Bank Allocation Trigger for Bank Ledgers */}
+                  {isBankLedger(e.ledger_id) && (
+                    <div className="flex items-center gap-2 pl-28 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => openBankingModal(e.id)}
+                        className={cn(
+                          "text-xs px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all border cursor-pointer",
+                          e.bank_allocations && e.bank_allocations.length > 0
+                            ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 shadow-xs"
+                            : "bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-700 border-dashed hover:bg-blue-100 dark:hover:bg-blue-900/40"
+                        )}
+                      >
+                        <Landmark className="w-3.5 h-3.5" />
+                        {e.bank_allocations && e.bank_allocations.length > 0 ? (
+                          <span>Banking: <strong>{e.bank_allocations[0].transaction_type}</strong> ({e.bank_allocations[0].virtual_payment_address || e.bank_allocations[0].instrument_number || e.bank_allocations[0].transfer_mode || 'Configured'}) - Click to Edit</span>
+                        ) : (
+                          <span>+ Add Banking Allocations (UPI / Cheque / NEFT)</span>
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
               
@@ -910,6 +1221,17 @@ export default function VoucherFormModal({
                   <PackagePlus className="w-3.5 h-3.5" /> + Quick Create Item
                 </button>
               </div>
+
+              {/* Column Headers */}
+              <div className="flex gap-3 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+                <div className="flex-1">Item Description / Stock Item</div>
+                <div className="w-20 text-center">Qty</div>
+                <div className="w-24 text-right pr-2">Rate (₹)</div>
+                <div className="w-20 text-center">Disc %</div>
+                <div className="w-28 text-right pr-4">Amount (₹)</div>
+                <div className="w-8"></div>
+              </div>
+
               {inventoryEntries.map((e, idx) => (
                 <div key={e.id} className="flex gap-3 items-center">
                   <div className="flex-1 flex gap-2">
@@ -925,7 +1247,7 @@ export default function VoucherFormModal({
                             ? (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate)
                             : (chosenItem?.standard_cost_price ? String(chosenItem.standard_cost_price) : (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate))
                           const qty = e.quantity || '1'
-                          const amount = rateToFill ? (parseFloat(qty || '0') * parseFloat(rateToFill || '0')).toFixed(2) : '0.00'
+                          const amount = calculateItemAmount(qty, rateToFill, e.discount_percent || '0')
                           setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value, rate: rateToFill, quantity: qty, amount } : x))
                         }
                       }}
@@ -945,9 +1267,46 @@ export default function VoucherFormModal({
                     </button>
                   </div>
 
-                  <input type="number" className="w-24 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Qty" value={e.quantity} onChange={evt => setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, quantity: evt.target.value, amount: (parseFloat(evt.target.value||'0') * parseFloat(x.rate||'0')).toFixed(2) } : x))} />
-                  <input type="number" className="w-24 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Rate" value={e.rate} onChange={evt => setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, rate: evt.target.value, amount: (parseFloat(evt.target.value||'0') * parseFloat(x.quantity||'0')).toFixed(2) } : x))} />
-                  <input type="number" className="w-32 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-slate-50 dark:bg-slate-800 font-semibold" placeholder="Amount" value={e.amount} readOnly />
+                  <input 
+                    type="number" 
+                    className="w-20 h-10 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" 
+                    placeholder="Qty" 
+                    value={e.quantity} 
+                    onChange={evt => {
+                      const qty = evt.target.value
+                      const amount = calculateItemAmount(qty, e.rate, e.discount_percent || '0')
+                      setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, quantity: qty, amount } : x))
+                    }} 
+                  />
+                  <input 
+                    type="number" 
+                    className="w-24 h-10 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" 
+                    placeholder="Rate" 
+                    value={e.rate} 
+                    onChange={evt => {
+                      const rate = evt.target.value
+                      const amount = calculateItemAmount(e.quantity, rate, e.discount_percent || '0')
+                      setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, rate, amount } : x))
+                    }} 
+                  />
+                  <div className="relative w-20">
+                    <input 
+                      type="number" 
+                      step="any"
+                      min="0"
+                      max="100"
+                      className="w-full h-10 pl-2.5 pr-6 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      placeholder="Disc" 
+                      value={e.discount_percent || ''} 
+                      onChange={evt => {
+                        const disc = evt.target.value
+                        const amount = calculateItemAmount(e.quantity, e.rate, disc)
+                        setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, discount_percent: disc, amount } : x))
+                      }} 
+                    />
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">%</span>
+                  </div>
+                  <input type="number" className="w-28 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-slate-50 dark:bg-slate-800 font-semibold" placeholder="Amount" value={e.amount} readOnly />
                   <button onClick={() => removeInventoryEntry(e.id)} className="p-2 text-slate-400 hover:text-rose-500 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
                 </div>
               ))}
@@ -967,6 +1326,11 @@ export default function VoucherFormModal({
                   >
                     <Plus className="w-3 h-3" /> Quick Item
                   </button>
+                </div>
+                {/* Source Column Header */}
+                <div className="flex gap-2 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+                  <div className="flex-1">Source Item</div>
+                  <div className="w-20 text-center">Qty</div>
                 </div>
                 {sourceEntries.map((e, idx) => (
                   <div key={e.id} className="flex gap-2 items-center">
@@ -1000,6 +1364,11 @@ export default function VoucherFormModal({
                   >
                     <Plus className="w-3 h-3" /> Quick Item
                   </button>
+                </div>
+                {/* Destination Column Header */}
+                <div className="flex gap-2 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+                  <div className="flex-1">Destination Item</div>
+                  <div className="w-20 text-center">Qty</div>
                 </div>
                 {destEntries.map((e, idx) => (
                   <div key={e.id} className="flex gap-2 items-center">
@@ -1053,7 +1422,7 @@ export default function VoucherFormModal({
               className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2 cursor-pointer"
             >
               {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-              Save Voucher
+              {editVoucher ? 'Save Changes (Sync to Tally)' : 'Save Voucher'}
             </button>
           </div>
         </div>
@@ -1619,6 +1988,264 @@ export default function VoucherFormModal({
                 >
                   {isCreatingUnit && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   Save & Select Unit
+                </button>
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {/* 11. Interactive Banking Allocations Sub-Modal */}
+        {isBankingModalOpen && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+              
+              {/* Header */}
+              <div className="flex items-center justify-between p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                    <Landmark className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-white">Banking Allocations</h3>
+                    <p className="text-[11px] text-slate-500">Configures official Tally banking & e-transfer tags</p>
+                  </div>
+                </div>
+                <button 
+                  type="button" 
+                  onClick={() => setIsBankingModalOpen(false)} 
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-4 space-y-4 max-h-[75vh] overflow-y-auto">
+                
+                {/* Transaction Mode Selector */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Transaction Type</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { id: 'Cheque', label: 'Cheque / DD', icon: CreditCard },
+                      { id: 'UPI', label: 'UPI / QR', icon: QrCode },
+                      { id: 'Inter Bank Transfer', label: 'NEFT / RTGS', icon: Landmark }
+                    ].map(t => {
+                      const Icon = t.icon
+                      const isSel = bankingTxType === t.id
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => setBankingTxType(t.id)}
+                          className={cn(
+                            "px-2.5 py-2 rounded-xl text-xs font-bold flex flex-col items-center gap-1 transition-all border cursor-pointer",
+                            isSel 
+                              ? "bg-blue-600 text-white border-blue-600 shadow-sm" 
+                              : "bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400"
+                          )}
+                        >
+                          <Icon className="w-4 h-4" />
+                          <span>{t.label}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* UPI Fields */}
+                {bankingTxType === 'UPI' && (
+                  <div className="space-y-3 p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800/60 rounded-xl">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        Virtual Payment Address (UPI VPA / ID)
+                      </label>
+                      <input 
+                        type="text" 
+                        placeholder="e.g. partyname@okaxis or 9876543210@upi"
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold"
+                        value={bankingVpa}
+                        onChange={e => setBankingVpa(e.target.value)}
+                      />
+                      {/* Popular UPI Handles */}
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {['@okaxis', '@okhdfcbank', '@okicici', '@paytm', '@ybl', '@upi'].map(h => (
+                          <button
+                            key={h}
+                            type="button"
+                            onClick={() => {
+                              const base = bankingVpa.includes('@') ? bankingVpa.split('@')[0] : bankingVpa
+                              setBankingVpa(base ? `${base}${h}` : h)
+                            }}
+                            className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-blue-500 cursor-pointer"
+                          >
+                            {h}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        UPI Reference / UTR Number (Optional)
+                      </label>
+                      <input 
+                        type="text" 
+                        placeholder="12-digit UTR e.g. 523184920194"
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
+                        value={bankingInstNumber}
+                        onChange={e => setBankingInstNumber(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Cheque / DD Fields */}
+                {bankingTxType === 'Cheque' && (
+                  <div className="space-y-3 p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800/60 rounded-xl">
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                          Cheque Number
+                        </label>
+                        <input 
+                          type="text" 
+                          placeholder="6-digit e.g. 104523"
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold"
+                          value={bankingInstNumber}
+                          onChange={e => setBankingInstNumber(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                          Cheque Date
+                        </label>
+                        <input 
+                          type="date" 
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
+                          value={bankingInstDate}
+                          onChange={e => setBankingInstDate(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                          Cheque Crossing
+                        </label>
+                        <select 
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold"
+                          value={bankingChequeCrossing}
+                          onChange={e => setBankingChequeCrossing(e.target.value)}
+                        >
+                          <option value="A/c Payee">A/c Payee</option>
+                          <option value="Account Payee Only">Account Payee Only</option>
+                          <option value="Not Negotiable">Not Negotiable</option>
+                          <option value="None">None (Bearer)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                          Payment Favouring
+                        </label>
+                        <input 
+                          type="text" 
+                          placeholder="Party / Payee Name"
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
+                          value={bankingFavouring}
+                          onChange={e => setBankingFavouring(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* NEFT / RTGS Transfer Fields */}
+                {bankingTxType === 'Inter Bank Transfer' && (
+                  <div className="space-y-3 p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800/60 rounded-xl">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Transfer Mode</label>
+                      <div className="flex gap-2">
+                        {['NEFT', 'RTGS', 'IMPS'].map(mode => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setBankingTransferMode(mode)}
+                            className={cn(
+                              "flex-1 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer",
+                              bankingTransferMode === mode 
+                                ? "bg-blue-600 text-white border-blue-600" 
+                                : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                            )}
+                          >
+                            {mode}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                          Beneficiary Bank
+                        </label>
+                        <input 
+                          type="text" 
+                          placeholder="e.g. HDFC Bank"
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
+                          value={bankingBankName}
+                          onChange={e => setBankingBankName(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                          IFSC Code
+                        </label>
+                        <input 
+                          type="text" 
+                          placeholder="e.g. HDFC0001234"
+                          className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm uppercase"
+                          value={bankingIfsc}
+                          onChange={e => setBankingIfsc(e.target.value.toUpperCase())}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        Beneficiary Account Number
+                      </label>
+                      <input 
+                        type="text" 
+                        placeholder="Bank Account Number"
+                        className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold"
+                        value={bankingAccountNumber}
+                        onChange={e => setBankingAccountNumber(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+              </div>
+
+              {/* Footer */}
+              <div className="p-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex justify-end gap-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsBankingModalOpen(false)} 
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="button" 
+                  onClick={saveBankingAllocation} 
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  Save Banking Details
                 </button>
               </div>
 

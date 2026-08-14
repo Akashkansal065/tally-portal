@@ -17,7 +17,7 @@ from app.models.tally_core import (
     MstGodown, MstStockItem, MstVoucherType, MstUom,
     MstVoucherTypePrefix, MstVoucherTypeSuffix, MstVoucherTypeRestart,
     MstVoucherTypeClass, MstVoucherTypeClassGroup,
-    MstCostCategory, MstCostCentre,
+    MstCostCategory, MstCostCentre, CostCenter,
     TrnVoucher, TrnAccounting, TrnInventory, TrnBill, TrnBankAllocation,
     BillAllocation
 )
@@ -1559,6 +1559,18 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 db.add(entry)
                 await db.flush()
                 
+                # Parse cost category / cost centre allocations
+                cc_name = ent_node.findtext(".//COSTCENTREALLOCATIONS.LIST/NAME") or ent_node.findtext(".//COSTCENTRE")
+                if cc_name:
+                    cc_stmt = select(CostCenter).where(CostCenter.company_id == company_id, CostCenter.name == cc_name)
+                    cc_res = await db.execute(cc_stmt)
+                    cc_obj = cc_res.scalars().first()
+                    if not cc_obj:
+                        cc_obj = CostCenter(company_id=company_id, name=cc_name)
+                        db.add(cc_obj)
+                        await db.flush()
+                    entry.cost_center_id = cc_obj.cost_center_id
+
                 # Parse bank allocations inside <BANKALLOCATIONS.LIST>
                 for bank_node in ent_node.findall(".//BANKALLOCATIONS.LIST"):
                     inst_date_str = bank_node.findtext("INSTRUMENTDATE")
@@ -1575,13 +1587,21 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     except Exception:
                         b_amt = Decimal("0.00")
                     
+                    is_conn = bank_node.findtext("ISCONNECTEDPAYMENT") or "No"
                     bank_alloc = TrnBankAllocation(
                         entry_id=entry.entry_id,
                         instrument_date=inst_date,
                         transaction_type=bank_node.findtext("TRANSACTIONTYPE") or "Others",
                         payment_favouring=bank_node.findtext("PAYMENTFAVOURING") or bank_node.findtext("BANKPARTYNAME"),
                         instrument_number=bank_node.findtext("INSTRUMENTNUMBER"),
-                        amount=b_amt
+                        amount=b_amt,
+                        transfer_mode=bank_node.findtext("TRANSFERMODE"),
+                        virtual_payment_address=bank_node.findtext("VIRTUALPAYMENTADDRESS"),
+                        cheque_cross_comment=bank_node.findtext("CHEQUECROSSCOMMENT"),
+                        bank_name=bank_node.findtext("BANKNAME"),
+                        account_number=bank_node.findtext("ACCOUNTNUMBER"),
+                        ifs_code=bank_node.findtext("IFSCODE"),
+                        is_connected_payment=is_conn.strip().lower() == "yes"
                     )
                     db.add(bank_alloc)
                 
@@ -1791,6 +1811,13 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                         item.gst_rate_percent = gst_rate
                     await db.flush()
 
+                # Parse discount if present
+                disc_str = inv_node.findtext("DISCOUNT") or "0"
+                try:
+                    disc_val = Decimal(disc_str.replace("%", "").strip())
+                except Exception:
+                    disc_val = Decimal("0.00")
+
                 # Insert TrnInventory
                 stock_entry = TrnInventory(
                     voucher_id=voucher.voucher_id,
@@ -1798,6 +1825,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     quantity=qty_val,
                     rate=rate_val,
                     amount=inv_amt,
+                    discount_percent=disc_val,
                     is_inward=is_inward
                 )
                 db.add(stock_entry)

@@ -101,6 +101,8 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                 rate=inv_req.rate,
                 rate_unit_id=inv_req.rate_unit_id,
                 amount=inv_req.amount,
+                discount_percent=getattr(inv_req, 'discount_percent', Decimal('0.00')),
+                discount_amount=getattr(inv_req, 'discount_amount', Decimal('0.00')),
                 is_inward=is_inward,
                 is_deemed_positive=inv_req.is_deemed_positive,
                 flow_type=inv_req.flow_type
@@ -167,7 +169,14 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                     transaction_type=ba.transaction_type,
                     payment_favouring=ba.payment_favouring,
                     instrument_number=ba.instrument_number,
-                    amount=ba.amount
+                    amount=ba.amount,
+                    transfer_mode=getattr(ba, 'transfer_mode', None),
+                    virtual_payment_address=getattr(ba, 'virtual_payment_address', None),
+                    cheque_cross_comment=getattr(ba, 'cheque_cross_comment', None),
+                    bank_name=getattr(ba, 'bank_name', None),
+                    account_number=getattr(ba, 'account_number', None),
+                    ifs_code=getattr(ba, 'ifs_code', None),
+                    is_connected_payment=getattr(ba, 'is_connected_payment', False)
                 ))
 
         if getattr(e, 'bill_allocations', None):
@@ -524,7 +533,7 @@ async def update_voucher_status(
     return {"detail": f"Status updated to {status_val}"}
 
 def _resolve_party_and_amount(entries):
-    if not entries: return "Cash Account", 0.0
+    if not entries: return "Cash Account", 0.0, None
     primary_entry = entries[0]
     max_score = -100
     sales_purchase_sum = 0.0
@@ -556,12 +565,13 @@ def _resolve_party_and_amount(entries):
 
     ledger = getattr(primary_entry, "ledger", None)
     party_name = getattr(ledger, "name", "Cash Account") if ledger else "Cash Account"
+    party_ledger_id = getattr(primary_entry, "ledger_id", None)
     debit = float(primary_entry.debit_amount or 0)
     credit = float(primary_entry.credit_amount or 0)
     party_net_amount = debit if debit > 0 else credit
 
     gross_amount = sales_purchase_sum if (has_sales_purchase and sales_purchase_sum > 0) else party_net_amount
-    return party_name, abs(gross_amount)
+    return party_name, abs(gross_amount), party_ledger_id
 
 @router.get("", response_model=List[VoucherListResponse])
 async def get_vouchers(
@@ -597,7 +607,7 @@ async def get_vouchers(
 
     result = []
     for v in vouchers:
-        resolved_party, amount = _resolve_party_and_amount(v.entries)
+        resolved_party, amount, _ = _resolve_party_and_amount(v.entries)
         if party_name and party_name.lower() not in resolved_party.lower(): continue
 
         result.append({
@@ -632,43 +642,94 @@ async def get_voucher_detail(
     voucher = res.scalars().first()
     if not voucher: raise HTTPException(status_code=404, detail="Voucher not found")
 
-    party_name, amount = _resolve_party_and_amount(voucher.entries)
+    party_name, amount, party_ledger_id = _resolve_party_and_amount(voucher.entries)
+    if voucher.party_ledger_id:
+        party_ledger_id = voucher.party_ledger_id
 
     entries = []
     for entry in voucher.entries:
         ledger_name = entry.ledger.name if entry.ledger else "Unknown"
         debit = float(entry.debit_amount or 0)
         credit = float(entry.credit_amount or 0)
+        
+        bank_allocs = []
+        if entry.bank_allocations:
+            for ba in entry.bank_allocations:
+                bank_allocs.append({
+                    "allocation_id": ba.allocation_id,
+                    "instrument_date": str(ba.instrument_date) if ba.instrument_date else None,
+                    "transaction_type": ba.transaction_type,
+                    "payment_favouring": ba.payment_favouring,
+                    "instrument_number": ba.instrument_number,
+                    "amount": float(ba.amount or 0),
+                    "transfer_mode": ba.transfer_mode,
+                    "virtual_payment_address": ba.virtual_payment_address,
+                    "cheque_cross_comment": ba.cheque_cross_comment,
+                    "bank_name": ba.bank_name,
+                    "account_number": ba.account_number,
+                    "ifs_code": ba.ifs_code,
+                    "is_connected_payment": ba.is_connected_payment,
+                })
+
         entries.append({
+            "entry_id": entry.entry_id,
+            "ledger_id": entry.ledger_id,
             "ledger_name": ledger_name,
             "amount": debit if debit > 0 else credit,
+            "debit_amount": debit,
+            "credit_amount": credit,
             "entry_type": "Debit" if debit > 0 else "Credit",
+            "cost_center_id": entry.cost_center_id,
+            "bank_allocations": bank_allocs
         })
 
     inventory = []
+    inventory_entries = []
     for inv in voucher.inventory_entries:
         item_name = inv.stock_item.name if inv.stock_item else "Unknown Item"
         uom_sym = inv.stock_item.unit.symbol if inv.stock_item and inv.stock_item.unit else "PCS"
-        inventory.append({
+        qty = float(inv.quantity or 0)
+        rate = float(inv.rate or 0)
+        disc_pct = float(inv.discount_percent or 0)
+        amt = float(inv.amount or 0)
+
+        inv_dict = {
+            "stock_entry_id": inv.stock_entry_id,
+            "stock_item_id": inv.stock_item_id,
             "item": item_name,
-            "quantity": float(inv.quantity or 0),
-            "rate": float(inv.rate or 0),
+            "stock_item_name": item_name,
+            "quantity": qty,
+            "rate": rate,
+            "discount_percent": disc_pct,
+            "discount_amount": float(inv.discount_amount or 0),
             "uom": uom_sym,
-            "amount": float(inv.amount or 0),
-        })
+            "amount": amt,
+            "godown_id": inv.godown_id,
+            "batch_id": inv.batch_id,
+        }
+        inventory.append(inv_dict)
+        inventory_entries.append(inv_dict)
 
     output = {
         "voucher_id": voucher.voucher_id,
         "date": str(voucher.voucher_date),
+        "voucher_date": str(voucher.voucher_date),
         "voucher_type": voucher.voucher_type.name if voucher.voucher_type else "Unknown",
+        "voucher_type_id": voucher.voucher_type_id,
         "voucher_number": voucher.voucher_number,
         "reference_number": voucher.reference_number,
         "narration": voucher.narration,
+        "status": voucher.status,
         "party_name": party_name,
+        "party_ledger_id": party_ledger_id,
+        "original_voucher_id": voucher.original_voucher_id,
+        "is_invoice": voucher.is_invoice,
         "amount": amount,
         "total_amount": float(voucher.total_amount or 0),
         "entries": entries,
+        "accounts": entries,
         "inventory": inventory,
+        "inventory_entries": inventory_entries,
         "is_inventory_voucher": len(inventory) > 0,
     }
     return output

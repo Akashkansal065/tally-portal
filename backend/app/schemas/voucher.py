@@ -9,6 +9,13 @@ class BankAllocationCreate(BaseModel):
     payment_favouring: Optional[str] = None
     instrument_number: Optional[str] = None
     amount: Decimal
+    transfer_mode: Optional[str] = None
+    virtual_payment_address: Optional[str] = None
+    cheque_cross_comment: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_number: Optional[str] = None
+    ifs_code: Optional[str] = None
+    is_connected_payment: Optional[bool] = False
 
 class BankAllocationResponse(BankAllocationCreate):
     allocation_id: int
@@ -91,6 +98,8 @@ class InventoryEntryCreate(BaseModel):
     rate: Decimal
     amount: Decimal
     billed_qty: Optional[Decimal] = None
+    discount_percent: Optional[Decimal] = Decimal("0.00")
+    discount_amount: Optional[Decimal] = Decimal("0.00")
     rate_unit_id: Optional[int] = None
     godown_id: Optional[int] = None
     batch_id: Optional[int] = None

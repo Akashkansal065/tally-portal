@@ -7,6 +7,7 @@ from sqlalchemy import update, delete, text
 from sqlalchemy.sql import func
 from typing import List, Dict, Any, Optional
 import json
+import re
 from decimal import Decimal
 import urllib.request
 import logging
@@ -1270,13 +1271,17 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
 
 async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, db: AsyncSession):
     try:
-        from app.models.tally_core import TrnVoucher, TrnAccounting, MstLedger, MstVoucherType, BillAllocation, TrnInventory, MstStockItem, MstGodown, Batch, VoucherAccountingAllocation
+        from app.models.tally_core import (
+            TrnVoucher, TrnAccounting, MstLedger, MstVoucherType, BillAllocation, 
+            TrnInventory, MstStockItem, MstGodown, Batch, VoucherAccountingAllocation,
+            CostCenter
+        )
         from app.models.portal_core import Company
         tally_url = settings.TALLY_URL
         if not tally_url:
             return
 
-        # Fetch voucher and entries
+        # Fetch voucher and all associated relations
         v_stmt = select(TrnVoucher).options(
             selectinload(TrnVoucher.voucher_type),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
@@ -1294,13 +1299,50 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
 
         comp = (await db.execute(select(Company).where(Company.company_id == voucher.company_id))).scalars().first()
         comp_name = comp.name if comp else ""
+        vtype_name = voucher.voucher_type.name if voucher.voucher_type else "Journal"
+        is_inv = getattr(voucher, 'is_invoice', False) or bool(getattr(voucher, 'inventory_entries', None))
+        vdate_str = voucher.voucher_date.strftime("%Y%m%d")
+        obj_view = "Invoice Voucher View" if is_inv else "Accounting Voucher View"
 
+        # Handle Real-Time Voucher Deletion safely
         if action == "Delete":
-            logger.warning(f"Suppressing real-time Tally Push for Voucher (Delete) as it might crash Tally or needs specific handling. voucher_id={voucher_id}")
+            guid_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
+            remote_id_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
+            delete_xml = f'''<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Import</TALLYREQUEST>
+        <TYPE>Data</TYPE>
+        <ID>Vouchers</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+        </DESC>
+        <DATA>
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+             <VOUCHER REMOTEID="{remote_id_attr}" VCHTYPE="{vtype_name}" ACTION="Delete" OBJVIEW="{obj_view}">
+              <GUID>{guid_attr}</GUID>
+             </VOUCHER>
+            </TALLYMESSAGE>
+        </DATA>
+    </BODY>
+</ENVELOPE>'''
+            logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY XML PUSH (DELETE voucher_id={voucher_id})\nURL: {tally_url}\nPAYLOAD:\n{delete_xml}\n=======================================================\n")
+            response = await asyncio.to_thread(_post_to_tally_sync, tally_url, delete_xml)
+            if "<DELETED>1</DELETED>" in response or "<CREATED>1</CREATED>" in response or "<IGNORED>1</IGNORED>" in response:
+                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True, attempts=SyncQueue.attempts + 1))
+                await db.commit()
+                logger.info(f"Real-time Tally Push Success for Voucher Delete {voucher.voucher_number}")
+            else:
+                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+                await db.commit()
+                logger.error(f"Real-time Tally Push Failed for Voucher Delete {voucher.voucher_number}. Tally Response: {response}")
             return
 
-        # Identify if this is an inventory invoice
-        is_inv = getattr(voucher, 'is_invoice', False) or bool(getattr(voucher, 'inventory_entries', None))
         is_sales = voucher.voucher_type.parent_type in ['Sales', 'Debit Note'] or voucher.voucher_type.name in ['Sales', 'Debit Note']
 
         # Determine default sales / purchase ledger name
@@ -1312,7 +1354,7 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                     sales_pur_ledger_name = ent.ledger.name
                     break
 
-        # Refine party ledger details (prefer explicit party_ledger_id if set)
+        # Refine party ledger details
         party_ledger = None
         party_ledger_name = ""
         if voucher.party_ledger_id:
@@ -1331,16 +1373,8 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
         if not party_ledger_name and voucher.entries:
             party_ledger_name = voucher.entries[0].ledger.name if voucher.entries[0].ledger else "Suspense A/c"
 
-        # Party & Company GST Attributes
-        party_state = (party_ledger.state if party_ledger and party_ledger.state else (comp.state if comp else "Karnataka")) or "Karnataka"
-        party_gstin = (party_ledger.gstin if party_ledger and party_ledger.gstin else "") or ""
-        party_reg_type = (party_ledger.gst_registration_type if party_ledger and party_ledger.gst_registration_type else "Regular") or "Regular"
-        party_country = (party_ledger.country if party_ledger and party_ledger.country else "India") or "India"
-        pos = (party_ledger.place_of_supply if party_ledger and party_ledger.place_of_supply else party_state) or party_state
-        comp_state = (comp.state if comp and comp.state else "Karnataka") or "Karnataka"
-
-        # Build nested inventory allocations XML for the Sales / Purchase ledger entry
-        inv_allocations_xml = ""
+        # Build top-level Inventory Entries XML for Item Invoices
+        all_inventory_xml = ""
         if is_inv and getattr(voucher, 'inventory_entries', None):
             for inv in voucher.inventory_entries:
                 item_name = inv.stock_item.name if inv.stock_item else "Item"
@@ -1349,42 +1383,51 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                 inv_amt = float(abs(inv.amount))
                 rate_str = f"{inv.rate}/{uom_name}" if inv.rate else ""
                 qty_str = f" {inv.quantity} {uom_name}" if inv.quantity else ""
+                billed_qty_str = f" {inv.billed_qty} {uom_name}" if inv.billed_qty else qty_str
                 
                 godown_name = inv.godown.name if (inv.godown and inv.godown.name) else "Main Location"
                 batch_name = inv.batch.batch_number if (inv.batch and inv.batch.batch_number) else "Primary Batch"
                 
-                inv_allocations_xml += f'''
-               <INVENTORYALLOCATIONS.LIST>
-                <STOCKITEMNAME>{item_name}</STOCKITEMNAME>
-                <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
-                <RATE>{rate_str}</RATE>
+                discount_tag = f"\n               <DISCOUNT>{float(inv.discount_percent):g}</DISCOUNT>" if getattr(inv, 'discount_percent', None) and float(inv.discount_percent) > 0 else ""
+                
+                all_inventory_xml += f'''
+              <ALLINVENTORYENTRIES.LIST>
+               <STOCKITEMNAME>{item_name}</STOCKITEMNAME>
+               <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
+               <RATE>{rate_str}</RATE>{discount_tag}
+               <AMOUNT>{inv_amt:.2f}</AMOUNT>
+               <ACTUALQTY>{qty_str}</ACTUALQTY>
+               <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
+               <BATCHALLOCATIONS.LIST>
+                <GODOWNNAME>{godown_name}</GODOWNNAME>
+                <BATCHNAME>{batch_name}</BATCHNAME>
                 <AMOUNT>{inv_amt:.2f}</AMOUNT>
                 <ACTUALQTY>{qty_str}</ACTUALQTY>
-                <BILLEDQTY>{qty_str}</BILLEDQTY>
-                <BATCHALLOCATIONS.LIST>
-                 <GODOWNNAME>{godown_name}</GODOWNNAME>
-                 <BATCHNAME>{batch_name}</BATCHNAME>
-                 <DESTINATIONGODOWNNAME>{godown_name}</DESTINATIONGODOWNNAME>
-                 <AMOUNT>{inv_amt:.2f}</AMOUNT>
-                 <ACTUALQTY>{qty_str}</ACTUALQTY>
-                 <BILLEDQTY>{qty_str}</BILLEDQTY>
-                </BATCHALLOCATIONS.LIST>
-               </INVENTORYALLOCATIONS.LIST>'''
+                <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
+               </BATCHALLOCATIONS.LIST>
+               <ACCOUNTINGALLOCATIONS.LIST>
+                <LEDGERNAME>{sales_pur_ledger_name}</LEDGERNAME>
+                <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
+                <AMOUNT>{inv_amt:.2f}</AMOUNT>
+               </ACCOUNTINGALLOCATIONS.LIST>
+              </ALLINVENTORYENTRIES.LIST>'''
 
         # Build ledger entries XML
-        vdate_str = voucher.voucher_date.strftime("%Y%m%d")
         entries_xml = ""
         for ent in voucher.entries:
-            led_name = ent.ledger.name if ent.ledger else "Suspense A/c"
-            amt = -ent.debit_amount if ent.debit_amount > 0 else ent.credit_amount
-            is_party = (ent.ledger_id == voucher.party_ledger_id) if voucher.party_ledger_id else False
+            # Skip the Sales/Purchase ledger entry if it is already covered in top-level inventory accounting allocations
             is_sales_pur = False
             if ent.ledger and ent.ledger.group:
                 gname = ent.ledger.group.name.lower()
                 if "sales" in gname or "purchase" in gname:
                     is_sales_pur = True
+            
+            if is_inv and is_sales_pur:
+                continue
 
-            nested_inv = inv_allocations_xml if (is_sales_pur and is_inv) else ""
+            led_name = ent.ledger.name if ent.ledger else "Suspense A/c"
+            amt = -ent.debit_amount if ent.debit_amount > 0 else ent.credit_amount
+            is_party = (ent.ledger_id == voucher.party_ledger_id) if voucher.party_ledger_id else False
 
             entries_xml += f'''
               <ALLLEDGERENTRIES.LIST>
@@ -1392,29 +1435,69 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                <ISDEEMEDPOSITIVE>{'Yes' if ent.debit_amount > 0 else 'No'}</ISDEEMEDPOSITIVE>
                <ISPARTYLEDGER>{'Yes' if is_party else 'No'}</ISPARTYLEDGER>
                <AMOUNT>{amt:.2f}</AMOUNT>'''
-            
+
+            # Bank Allocations (complete fields: UPI, NEFT, Cheque Crossing, Bank details)
             if getattr(ent, 'bank_allocations', None):
                 for ba in ent.bank_allocations:
-                    inst_date = ba.instrument_date.strftime("%Y%m%d") if ba.instrument_date else ""
+                    inst_date = ba.instrument_date.strftime("%Y%m%d") if ba.instrument_date else vdate_str
+                    tx_type = ba.transaction_type or "Cheque"
+                    
+                    # Sign convention: in Receipts, Bank row is debited, and bank allocation amount is negative
+                    if vtype_name == "Receipt":
+                        ba_amt = -abs(float(ba.amount if ba.amount else ent.debit_amount))
+                    else:
+                        ba_amt = abs(float(ba.amount if ba.amount else ent.credit_amount))
+
                     entries_xml += f'''
                <BANKALLOCATIONS.LIST>
                 <DATE>{vdate_str}</DATE>
-                <TRANSACTIONTYPE>{ba.transaction_type}</TRANSACTIONTYPE>
-                <AMOUNT>{amt:.2f}</AMOUNT>'''
-                    if inst_date:
-                        entries_xml += f'\n                <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>'
+                <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>
+                <TRANSACTIONTYPE>{tx_type}</TRANSACTIONTYPE>'''
+                    
+                    if getattr(ba, 'bank_name', None) and ba.bank_name:
+                        entries_xml += f'\n                <BANKNAME>{ba.bank_name}</BANKNAME>'
+                    if getattr(ba, 'transfer_mode', None) and ba.transfer_mode:
+                        entries_xml += f'\n                <TRANSFERMODE>{ba.transfer_mode}</TRANSFERMODE>'
+                    if getattr(ba, 'virtual_payment_address', None) and ba.virtual_payment_address:
+                        entries_xml += f'\n                <VIRTUALPAYMENTADDRESS>{ba.virtual_payment_address}</VIRTUALPAYMENTADDRESS>'
                     if ba.payment_favouring:
                         entries_xml += f'\n                <PAYMENTFAVOURING>{ba.payment_favouring}</PAYMENTFAVOURING>'
                     if ba.instrument_number:
                         entries_xml += f'\n                <INSTRUMENTNUMBER>{ba.instrument_number}</INSTRUMENTNUMBER>'
+                    if getattr(ba, 'cheque_cross_comment', None) and ba.cheque_cross_comment:
+                        entries_xml += f'\n                <CHEQUECROSSCOMMENT>{ba.cheque_cross_comment}</CHEQUECROSSCOMMENT>'
+                    if getattr(ba, 'account_number', None) and ba.account_number:
+                        entries_xml += f'\n                <ACCOUNTNUMBER>{ba.account_number}</ACCOUNTNUMBER>'
+                    if getattr(ba, 'ifs_code', None) and ba.ifs_code:
+                        entries_xml += f'\n                <IFSCODE>{ba.ifs_code}</IFSCODE>'
                     
-                    entries_xml += '''
+                    entries_xml += f'''
+                <PAYMENTMODE>Transacted</PAYMENTMODE>
+                <BANKPARTYNAME>{ba.payment_favouring or party_ledger_name}</BANKPARTYNAME>
+                <ISCONNECTEDPAYMENT>{'Yes' if getattr(ba, 'is_connected_payment', False) else 'No'}</ISCONNECTEDPAYMENT>
+                <AMOUNT>{ba_amt:.2f}</AMOUNT>
                </BANKALLOCATIONS.LIST>'''
 
+            # Cost Category & Cost Centre Allocations
+            if getattr(ent, 'cost_center_id', None) and ent.cost_center_id:
+                cc_res = await db.execute(select(CostCenter).where(CostCenter.cost_center_id == ent.cost_center_id))
+                cc = cc_res.scalars().first()
+                if cc:
+                    entries_xml += f'''
+               <CATEGORYALLOCATIONS.LIST>
+                <CATEGORY>Primary Cost Category</CATEGORY>
+                <ISDEEMEDPOSITIVE>{'Yes' if ent.debit_amount > 0 else 'No'}</ISDEEMEDPOSITIVE>
+                <COSTCENTREALLOCATIONS.LIST>
+                 <NAME>{cc.name}</NAME>
+                 <AMOUNT>{amt:.2f}</AMOUNT>
+                </COSTCENTREALLOCATIONS.LIST>
+               </CATEGORYALLOCATIONS.LIST>'''
+
+            # Bill Allocations
             if getattr(ent, 'bill_allocations', None):
                 for ba in ent.bill_allocations:
                     bname = ba.bill.bill_reference if getattr(ba, 'bill', None) and ba.bill else (getattr(ba, 'bill_reference', '') or f"{voucher.voucher_number or '1'}")
-                    b_amt = -abs(ba.amount) if ent.debit_amount > 0 else abs(ba.amount)
+                    b_amt = -abs(float(ba.amount)) if ent.debit_amount > 0 else abs(float(ba.amount))
                     entries_xml += f'''
                <BILLALLOCATIONS.LIST>
                 <NAME>{bname}</NAME>
@@ -1422,7 +1505,6 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                 <AMOUNT>{b_amt:.2f}</AMOUNT>
                </BILLALLOCATIONS.LIST>'''
             elif is_party:
-                # Default bill allocation for Party ledger
                 bname = str(voucher.reference_number or voucher.voucher_number or '1')
                 entries_xml += f'''
                <BILLALLOCATIONS.LIST>
@@ -1431,13 +1513,15 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                 <AMOUNT>{amt:.2f}</AMOUNT>
                </BILLALLOCATIONS.LIST>'''
 
-            if nested_inv:
-                entries_xml += nested_inv
-                
             entries_xml += '''
               </ALLLEDGERENTRIES.LIST>'''
 
-        vtype_name = voucher.voucher_type.name
+        # Build alteration attributes if voucher already exists in Tally
+        vch_tag_attrs = f'VCHTYPE="{vtype_name}" ACTION="{action}" OBJVIEW="{obj_view}"'
+        guid_xml = ""
+        if voucher.tally_guid:
+            vch_tag_attrs += f' REMOTEID="{voucher.tally_guid}"'
+            guid_xml = f"\n              <GUID>{voucher.tally_guid}</GUID>"
 
         xml_envelope = f'''<ENVELOPE>
     <HEADER>
@@ -1455,7 +1539,7 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
         </DESC>
         <DATA>
             <TALLYMESSAGE xmlns:UDF="TallyUDF">
-             <VOUCHER VCHTYPE="{vtype_name}" ACTION="{action}" OBJVIEW="{'Invoice Voucher View' if is_inv else 'Accounting Voucher View'}">
+             <VOUCHER {vch_tag_attrs}>
               <DATE>{vdate_str}</DATE>
               <EFFECTIVEDATE>{vdate_str}</EFFECTIVEDATE>
               <VCHSTATUSDATE>{vdate_str}</VCHSTATUSDATE>
@@ -1463,8 +1547,8 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
               <PARTYNAME>{party_ledger_name}</PARTYNAME>
               <PARTYLEDGERNAME>{party_ledger_name}</PARTYLEDGERNAME>
               <PERSISTEDVIEW>{'Invoice Voucher View' if is_inv else 'Accounting Voucher View'}</PERSISTEDVIEW>
-              <NARRATION>{voucher.narration or ''}</NARRATION>
-              {entries_xml}
+              <NARRATION>{voucher.narration or ''}</NARRATION>{guid_xml}
+              {entries_xml}{all_inventory_xml}
              </VOUCHER>
             </TALLYMESSAGE>
         </DATA>
@@ -1485,7 +1569,7 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
             logger.error(f"Real-time Tally Push Failed for Voucher {voucher.voucher_number} ({action}). Tally Response: {response}")
 
     except Exception as e:
-        logger.error(f"Error in try_push_voucher_realtime: {str(e)}")
+        logger.error(f"Error in try_push_voucher_realtime: {str(e)}", exc_info=True)
 
 
 async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: AsyncSession):
@@ -2482,4 +2566,109 @@ async def clear_db(
         "cleared_tables": cleared_tables,
         "failed_tables": failed_tables
     }
+
+
+from pydantic import BaseModel
+from datetime import date as date_type
+
+class VoucherPeriodQueryRequest(BaseModel):
+    voucher_type: Optional[str] = None  # e.g. 'Sales', 'Purchase', 'Payment', 'Receipt', 'Journal', 'Contra'
+    from_date: date_type
+    to_date: date_type
+    auto_import: bool = True
+
+@router.post("/query-vouchers")
+async def query_vouchers_from_tally(
+    query_req: VoucherPeriodQueryRequest,
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    On-Demand Period & Voucher-Type TDL Query Engine.
+    Executes a high-performance filtered TDL collection query against live Tally and optionally imports into the database.
+    """
+    tally_url = settings.TALLY_URL
+    if not tally_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tally URL is not configured."
+        )
+
+    comp_stmt = select(Company).where(Company.company_id == user.company_id)
+    comp_res = await db.execute(comp_stmt)
+    comp = comp_res.scalars().first()
+    comp_name = comp.name if comp else "Bhrama Enterprises"
+
+    from_str = query_req.from_date.strftime("%d-%m-%Y")
+    to_str = query_req.to_date.strftime("%d-%m-%Y")
+
+    if query_req.voucher_type:
+        clean_vtype = query_req.voucher_type.strip()
+        type_tag = "Vouchers:VoucherType"
+        childof_tag = f"<CHILDOF>$$VchType{clean_vtype}</CHILDOF>"
+    else:
+        type_tag = "Voucher"
+        childof_tag = ""
+
+    tdl_payload = f"""<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Export</TALLYREQUEST>
+        <TYPE>Collection</TYPE>
+        <ID>TSPL_Filtered_Vouchers</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVEXPORTFORMAT>XML</SVEXPORTFORMAT>
+                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+            <TDL>
+              <TDLMESSAGE>
+                <COLLECTION NAME="TSPL_Filtered_Vouchers" ISMODIFY="No" ISFIXED="No" ISINITIALIZE="No" ISOPTION="No" ISINTERNAL="No">
+                 <TYPE>{type_tag}</TYPE>
+                 {childof_tag}
+                 <NATIVEMETHOD>Date, VoucherTypeName, VoucherNumber, Partyledgername, Narration, Amount, Guid, AlterId</NATIVEMETHOD>
+                 <NATIVEMETHOD>AllLedgerEntries.BankAllocations.*</NATIVEMETHOD>
+                 <NATIVEMETHOD>AllLedgerEntries.BillAllocations.*</NATIVEMETHOD>
+                 <NATIVEMETHOD>AllInventoryEntries.*</NATIVEMETHOD>
+                 <FILTERS>PeriodFilter</FILTERS>
+                </COLLECTION>
+                <SYSTEM TYPE="Formulae" NAME="PeriodFilter" ISMODIFY="Yes" ISFIXED="No" ISINTERNAL="No">
+                  $Date &gt;= ($$Date:"{from_str}") AND $Date &lt;= ($$Date:"{to_str}")
+                </SYSTEM>
+              </TDLMESSAGE>
+            </TDL>
+        </DESC>
+    </BODY>
+</ENVELOPE>"""
+
+    logger.info(f"Querying Tally TDL Vouchers ({query_req.voucher_type or 'All'}) from {from_str} to {to_str}...")
+    response_xml = await asyncio.to_thread(_post_to_tally_sync, tally_url, tdl_payload, 25)
+
+    if not response_xml or "<VOUCHER" not in response_xml:
+        return {
+            "status": "success",
+            "message": f"No vouchers found for period {from_str} to {to_str}.",
+            "voucher_count": 0,
+            "import_result": None
+        }
+
+    import_result = None
+    if query_req.auto_import:
+        async with sync_lock:
+            import_result = await import_tally_xml(response_xml, db, user.user_id, override_company_name=comp_name)
+
+    # Count matching vouchers in returned XML
+    vch_count = len(re.findall(r'<VOUCHER\b', response_xml, re.IGNORECASE))
+
+    return {
+        "status": "success",
+        "message": f"Successfully retrieved {vch_count} vouchers from Tally.",
+        "voucher_type": query_req.voucher_type or "All",
+        "period": {"from_date": str(query_req.from_date), "to_date": str(query_req.to_date)},
+        "voucher_count": vch_count,
+        "import_result": import_result
+    }
+
 

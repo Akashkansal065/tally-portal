@@ -4,30 +4,42 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, toTitleCase } from '@/lib/utils'
-import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 import VoucherDetailsClient from './voucher-details-client'
+import VoucherFormModal from '@/components/VoucherFormModal'
 import { generateVoucherPdf } from '@/lib/pdf-generator'
 
 type VoucherEntry = {
   ledger_name: string
+  ledger_id?: number
   amount: number
+  debit_amount?: number
+  credit_amount?: number
   entry_type: 'Debit' | 'Credit'
+  cost_center_id?: number | null
+  bank_allocations?: any[]
 }
 
 type VoucherDetail = {
   voucher_id: number
   date: string
   voucher_type: string
+  voucher_type_id?: number
   voucher_number: string
   reference_number: string | null
   narration: string | null
   party_name: string
+  party_ledger_id?: number
   amount: number
   total_amount: number
+  status?: string
+  original_voucher_id?: number | null
   entries: VoucherEntry[]
   accounts: any[]
   inventory: any[]
+  inventory_entries?: any[]
   is_inventory_voucher: boolean
   party_ledger: any
   einvoice_metadata?: {
@@ -51,6 +63,14 @@ export default function VoucherDetailPage() {
   const [downloading, setDownloading] = useState(false)
   const [generatingEinvoice, setGeneratingEinvoice] = useState(false)
 
+  // Alter (Edit) & Delete States
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [ledgers, setLedgers] = useState<any[]>([])
+  const [voucherTypes, setVoucherTypes] = useState<any[]>([])
+
   const fetchVoucher = useCallback(() => {
     if (!id || !token) return
     setLoading(true)
@@ -67,7 +87,67 @@ export default function VoucherDetailPage() {
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
     fetchVoucher()
-  }, [user, fetchVoucher, router])
+
+    // Fetch ledgers & voucher types for edit modal
+    if (token) {
+      fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) })
+        .then(r => r.json())
+        .then(d => setLedgers(Array.isArray(d) ? d : []))
+        .catch(console.error)
+      fetch(`${API_BASE}/vouchers/types`, { headers: authHeaders(token) })
+        .then(r => r.json())
+        .then(d => setVoucherTypes(Array.isArray(d) ? d : []))
+        .catch(console.error)
+    }
+  }, [user, fetchVoucher, token, router])
+
+  const handleAlterVoucher = async (payload: any, voucherId?: number | null) => {
+    if (!token || !id) return
+    setIsSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/vouchers/${id}`, {
+        method: 'PUT',
+        headers: {
+          ...authHeaders(token),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to update voucher')
+      }
+      toast.success('Voucher updated successfully and synced to Tally!')
+      setIsEditModalOpen(false)
+      fetchVoucher()
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to alter voucher')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleDeleteVoucher = async () => {
+    if (!token || !id) return
+    setIsDeleting(true)
+    try {
+      const res = await fetch(`${API_BASE}/vouchers/${id}`, {
+        method: 'DELETE',
+        headers: authHeaders(token)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to delete voucher')
+      }
+      toast.success('Voucher deleted successfully and synced to Tally!')
+      setIsDeleteDialogOpen(false)
+      router.push('/vouchers')
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete voucher')
+    } finally {
+      setIsDeleting(false)
+    }
+  }
 
   const handleDownloadPdf = async () => {
     if (!voucher || !id) return
@@ -178,26 +258,50 @@ export default function VoucherDetailPage() {
 
   return (
     <div className="max-w-5xl mx-auto my-1 sm:my-4 px-1 sm:px-4 pb-20 md:pb-6">
-      {/* Download PDF button at top right */}
-      <div className="flex justify-between items-center mb-3 sm:mb-4 px-2 sm:px-0 no-print">
+      {/* Top Action Bar */}
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-3 sm:mb-4 px-2 sm:px-0 no-print">
         <button
           onClick={() => router.back()}
-          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+          className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
         >
           <ArrowLeft className="h-4 w-4" /> Back to Vouchers
         </button>
-        <button
-          onClick={handleDownloadPdf}
-          disabled={downloading}
-          className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 text-white font-extrabold text-xs shadow-md rounded-xl h-11 px-6 border-none cursor-pointer flex items-center justify-center gap-1.5 transition-colors"
-        >
-          {downloading ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Download className="h-4 w-4" />
-          )}
-          Download PDF
-        </button>
+
+        <div className="flex items-center gap-2">
+          {/* Alter / Edit Voucher Button */}
+          <button
+            type="button"
+            onClick={() => setIsEditModalOpen(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-sm rounded-xl h-10 px-4 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+          >
+            <Edit3 className="h-3.5 w-3.5" />
+            Alter / Edit
+          </button>
+
+          {/* Delete Voucher Button */}
+          <button
+            type="button"
+            onClick={() => setIsDeleteDialogOpen(true)}
+            className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 font-bold text-xs shadow-xs rounded-xl h-10 px-3.5 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
+
+          {/* Download PDF button */}
+          <button
+            onClick={handleDownloadPdf}
+            disabled={downloading}
+            className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 text-white font-extrabold text-xs shadow-md rounded-xl h-10 px-5 border-none cursor-pointer flex items-center justify-center gap-1.5 transition-colors"
+          >
+            {downloading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            Download PDF
+          </button>
+        </div>
       </div>
 
       {/* Main voucher document panel */}
@@ -347,6 +451,61 @@ export default function VoucherDetailPage() {
 
       {/* Spacer to prevent content hiding behind MobileBottomNav */}
       <div className="h-20 lg:hidden" />
+
+      {/* Alter / Edit Voucher Modal */}
+      {isEditModalOpen && (
+        <VoucherFormModal
+          isOpen={isEditModalOpen}
+          onClose={() => setIsEditModalOpen(false)}
+          onSave={handleAlterVoucher}
+          isSaving={isSaving}
+          ledgers={ledgers}
+          voucherTypes={voucherTypes}
+          editVoucher={voucher}
+        />
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+            <div className="flex items-center gap-3 text-rose-600 dark:text-rose-400">
+              <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-xl">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">Delete Voucher</h3>
+                <p className="text-xs text-slate-500">Real-time sync to TallyPrime</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              Are you sure you want to delete <strong className="text-slate-900 dark:text-white">{voucher.voucher_type} #{voucher.voucher_number}</strong>? 
+              This will permanently delete the voucher from the database and push a real-time deletion request to Tally.
+            </p>
+
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsDeleteDialogOpen(false)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteVoucher}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5 cursor-pointer transition-all"
+              >
+                {isDeleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Yes, Delete Voucher
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
