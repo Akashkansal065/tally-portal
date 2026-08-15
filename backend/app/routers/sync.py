@@ -1381,6 +1381,7 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                 uom_name = inv.stock_item.unit.name if (inv.stock_item and inv.stock_item.unit) else "nos"
                 is_dp = 'No' if is_sales else 'Yes'
                 inv_amt = float(abs(inv.amount))
+                signed_inv_amt = -inv_amt if is_sales else inv_amt
                 rate_str = f"{inv.rate}/{uom_name}" if inv.rate else ""
                 qty_str = f" {inv.quantity} {uom_name}" if inv.quantity else ""
                 billed_qty_str = f" {inv.billed_qty} {uom_name}" if inv.billed_qty else qty_str
@@ -1395,20 +1396,20 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                <STOCKITEMNAME>{item_name}</STOCKITEMNAME>
                <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
                <RATE>{rate_str}</RATE>{discount_tag}
-               <AMOUNT>{inv_amt:.2f}</AMOUNT>
+               <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
                <ACTUALQTY>{qty_str}</ACTUALQTY>
                <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
                <BATCHALLOCATIONS.LIST>
                 <GODOWNNAME>{godown_name}</GODOWNNAME>
                 <BATCHNAME>{batch_name}</BATCHNAME>
-                <AMOUNT>{inv_amt:.2f}</AMOUNT>
+                <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
                 <ACTUALQTY>{qty_str}</ACTUALQTY>
                 <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
                </BATCHALLOCATIONS.LIST>
                <ACCOUNTINGALLOCATIONS.LIST>
                 <LEDGERNAME>{sales_pur_ledger_name}</LEDGERNAME>
                 <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
-                <AMOUNT>{inv_amt:.2f}</AMOUNT>
+                <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
                </ACCOUNTINGALLOCATIONS.LIST>
               </ALLINVENTORYENTRIES.LIST>'''
 
@@ -1659,12 +1660,11 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
 
 async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, action: str, db: AsyncSession):
     """
-    Attempts real-time push of a Stock Item to Tally Prime XML Server on the fly.
-    If Tally is reachable and succeeds, marks SyncQueue item as processed (is_processed=True).
-    If Tally is unreachable/times out, leaves SyncQueue item as is_processed=False to sync later.
+    Attempts real-time push of a Stock Item to Tally Prime XML Server on the fly
+    using official TallyPrime API Explorer standard envelope.
     """
     try:
-        from app.models.tally_core import MstStockItem
+        from app.models.tally_core import MstStockItem, StockItemOpeningBalance
         from app.models.portal_core import SyncQueue, Company
 
         tally_url = settings.TALLY_URL
@@ -1675,7 +1675,8 @@ async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, ac
         item_stmt = select(MstStockItem).options(
             selectinload(MstStockItem.unit),
             selectinload(MstStockItem.group),
-            selectinload(MstStockItem.category)
+            selectinload(MstStockItem.category),
+            selectinload(MstStockItem.opening_balances).selectinload(StockItemOpeningBalance.godown)
         ).where(MstStockItem.stock_item_id == stock_item_id)
         item_res = await db.execute(item_stmt)
         item = item_res.scalars().first()
@@ -1688,51 +1689,145 @@ async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, ac
         comp_obj = c_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
+        # Handle Delete action
+        if action == "Delete":
+            delete_xml = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <STOCKITEM NAME="{item.name}" Action="Delete">
+          <NAME>{item.name}</NAME>
+        </STOCKITEM>
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+            logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM DELETE (stock_item_id={stock_item_id})\nURL: {tally_url}\nPAYLOAD:\n{delete_xml}\n=======================================================\n")
+            resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, delete_xml, 5)
+            if check_tally_success(resp_str):
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+                await db.execute(sq_stmt)
+                await db.commit()
+                return True
+            else:
+                logger.error(f"Real-time Tally delete failed for stock_item_id={stock_item_id}: {resp_str}")
+                return False
+
         uom_symbol = item.unit.symbol if item.unit else "nos"
         raw_group_name = item.group.name.strip() if item.group and item.group.name else ""
-        group_name = "" if raw_group_name.lower() in ("primary", " primary", "not applicable") else raw_group_name
-        category_name = item.category.name if item.category else ""
+        if not raw_group_name or raw_group_name.lower() in ("primary", " primary", "not applicable"):
+            parent_tag = "<PARENT>&#4; Primary</PARENT>"
+        else:
+            parent_tag = f"<PARENT>{raw_group_name}</PARENT>"
 
-        parent_tag = f"<PARENT>{group_name}</PARENT>" if group_name else "<PARENT/>"
-        category_tag = f"<CATEGORY>{category_name}</CATEGORY>" if category_name else "<CATEGORY/>"
-        desc_tag = f"<DESCRIPTION>{item.description}</DESCRIPTION>" if item.description else "<DESCRIPTION/>"
-        hsn_tag = f"<INFGSTHSNCODE>{item.hsn_code}</INFGSTHSNCODE>" if item.hsn_code else "<INFGSTHSNCODE/>"
-        gst_tag = f"<INFGSTIGSTRATE>{item.gst_rate_percent}</INFGSTIGSTRATE>" if item.gst_rate_percent else "<INFGSTIGSTRATE>0</INFGSTIGSTRATE>"
+        category_name = item.category.name if item.category else ""
+        category_tag = f"\n          <CATEGORY>{category_name}</CATEGORY>" if category_name else ""
+        desc_tag = f"\n          <DESCRIPTION>{item.description}</DESCRIPTION>" if item.description else ""
         
         is_batchwise = "Yes" if getattr(item, 'tracking_type', None) in ("Batches", "Serial", "Batch") else "No"
         supply_type = "Services" if (item.unit and item.unit.name and item.unit.name.lower() in ['hrs', 'srv', 'serv', 'service']) else "Goods"
 
+        # GST Details List
+        gst_rate = float(item.gst_rate_percent) if item.gst_rate_percent else 0.0
+        hsn_str = item.hsn_code or ""
+        cgst_rate = gst_rate / 2.0
+        sgst_rate = gst_rate / 2.0
+        igst_rate = gst_rate
+
+        gst_block = f"""
+          <GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>
+          <GSTTYPEOFSUPPLY>{supply_type}</GSTTYPEOFSUPPLY>"""
+        if gst_rate > 0 or hsn_str:
+            gst_block += f"""
+          <GSTDETAILS.LIST>
+            <APPLICABLEFROM>20170701</APPLICABLEFROM>
+            <HSNCODE>{hsn_str}</HSNCODE>
+            <TAXABILITY>Taxable</TAXABILITY>
+            <STATEWISEDETAILS.LIST>
+              <RATEDETAILS.LIST>
+                <GSTRATE>{gst_rate:g}</GSTRATE>
+                <CGSTRATE>{cgst_rate:g}</CGSTRATE>
+                <SGSTRATE>{sgst_rate:g}</SGSTRATE>
+                <IGSTRATE>{igst_rate:g}</IGSTRATE>
+              </RATEDETAILS.LIST>
+            </STATEWISEDETAILS.LIST>
+          </GSTDETAILS.LIST>"""
+
+        # Opening Balance and Batch Allocations (valuation is negative in Tally)
+        ob_block = ""
+        if getattr(item, 'opening_balances', None) and len(item.opening_balances) > 0:
+            tot_qty = sum(float(ob.quantity) for ob in item.opening_balances)
+            tot_val = sum(float(ob.amount) for ob in item.opening_balances)
+            avg_rate = tot_val / tot_qty if tot_qty > 0 else 0.0
+            batches_xml = ""
+            for ob in item.opening_balances:
+                gname = ob.godown.name if getattr(ob, 'godown', None) and ob.godown else "Main Location"
+                bname = ob.batch_name or "Primary Batch"
+                q_val = float(ob.quantity)
+                r_val = float(ob.rate)
+                a_val = float(ob.amount)
+                batches_xml += f"""
+            <BATCHALLOCATIONS.LIST>
+              <GODOWNNAME>{gname}</GODOWNNAME>
+              <BATCHNAME>{bname}</BATCHNAME>
+              <OPENINGBALANCE>{q_val:g} {uom_symbol}</OPENINGBALANCE>
+              <OPENINGRATE>{r_val:.2f}/{uom_symbol}</OPENINGRATE>
+              <OPENINGVALUE>-{a_val:.2f}</OPENINGVALUE>
+            </BATCHALLOCATIONS.LIST>"""
+            ob_block = f"""
+          <OPENINGBALANCE>{tot_qty:g} {uom_symbol}</OPENINGBALANCE>
+          <OPENINGRATE>{avg_rate:.2f}/{uom_symbol}</OPENINGRATE>
+          <OPENINGVALUE>-{tot_val:.2f}</OPENINGVALUE>{batches_xml}"""
+        elif item.opening_qty and float(item.opening_qty) > 0:
+            op_qty = float(item.opening_qty)
+            op_rate = float(item.opening_rate) if item.opening_rate else 0.0
+            op_val = op_qty * op_rate
+            ob_block = f"""
+          <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
+          <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
+          <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
+          <BATCHALLOCATIONS.LIST>
+            <GODOWNNAME>Main Location</GODOWNNAME>
+            <BATCHNAME>Primary Batch</BATCHNAME>
+            <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
+            <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
+            <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
+          </BATCHALLOCATIONS.LIST>"""
+
         xml_envelope = f"""<ENVELOPE>
-<HEADER>
-<TALLYREQUEST>Import Data</TALLYREQUEST>
-</HEADER>
-<BODY>
-<IMPORTDATA>
-<REQUESTDESC>
-<REPORTNAME>All Masters</REPORTNAME>
-<STATICVARIABLES>
-<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-</STATICVARIABLES>
-</REQUESTDESC>
-<REQUESTDATA>
-<TALLYMESSAGE xmlns:UDF="TallyUDF">
-<STOCKITEM NAME="{item.name}" ACTION="{action}">
-<NAME>{item.name}</NAME>
-{parent_tag}
-{category_tag}
-<BASEUNITS>{uom_symbol}</BASEUNITS>
-{desc_tag}
-{hsn_tag}
-{gst_tag}
-<GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>
-<GSTTYPEOFSUPPLY>{supply_type}</GSTTYPEOFSUPPLY>
-<ISCOSTCENTRESON>No</ISCOSTCENTRESON>
-<ISBATCHWISEON>{is_batchwise}</ISBATCHWISEON>
-</STOCKITEM>
-</TALLYMESSAGE>
-</REQUESTDATA>
-</IMPORTDATA>
-</BODY>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <STOCKITEM NAME="{item.name}" Action="{action}">
+          <NAME>{item.name}</NAME>
+          {parent_tag}{category_tag}
+          <BASEUNITS>{uom_symbol}</BASEUNITS>{desc_tag}
+          <ISCOSTCENTRESON>No</ISCOSTCENTRESON>
+          <ISBATCHWISEON>{is_batchwise}</ISBATCHWISEON>{gst_block}{ob_block}
+        </STOCKITEM>
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
 </ENVELOPE>"""
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM PUSH (stock_item_id={stock_item_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
@@ -1754,9 +1849,8 @@ async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, ac
 
 async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db: AsyncSession):
     """
-    Attempts real-time push of a Unit of Measure (UOM) to Tally Prime XML Server on the fly.
-    If Tally is reachable and succeeds, marks SyncQueue item as processed (is_processed=True).
-    If Tally is unreachable/times out, leaves SyncQueue item as is_processed=False to sync later.
+    Attempts real-time push of a Unit of Measure (UOM) to Tally Prime XML Server on the fly
+    using official TallyPrime API Explorer standard envelope.
     """
     try:
         from app.models.tally_core import MstUom
@@ -1781,16 +1875,19 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
 
         symbol = uom.symbol or uom.name or ""
         formal_name = uom.original_name or uom.name or ""
-        is_simple = "Yes" if uom.is_simple_unit else "No"
         dec_places = uom.decimal_places if uom.decimal_places is not None else 0
 
-        if uom.is_simple_unit:
-            unit_inner_xml = f"""<UNIT NAME="{symbol}" ACTION="{action}">
-<NAME>{symbol}</NAME>
-<ORIGINALNAME>{formal_name}</ORIGINALNAME>
-<ISSIMPLEUNIT>Yes</ISSIMPLEUNIT>
-<DECIMALPLACES>{dec_places}</DECIMALPLACES>
-</UNIT>"""
+        if action == "Delete":
+            unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="Delete">
+          <NAME>{symbol}</NAME>
+        </UNIT>"""
+        elif uom.is_simple_unit:
+            unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="{action}">
+          <NAME>{symbol}</NAME>
+          <ORIGINALNAME>{formal_name}</ORIGINALNAME>
+          <ISSIMPLEUNIT>Yes</ISSIMPLEUNIT>
+          <DECIMALPLACES>{dec_places}</DECIMALPLACES>
+        </UNIT>"""
         else:
             base_unit_sym = ""
             add_unit_sym = ""
@@ -1808,34 +1905,33 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
             conv_val = uom.conversion_factor or 1
             conv_str = str(int(conv_val)) if conv_val % 1 == 0 else str(conv_val)
 
-            unit_inner_xml = f"""<UNIT NAME="{symbol}" ACTION="{action}">
-<NAME>{symbol}</NAME>
-<BASEUNITS>{base_unit_sym}</BASEUNITS>
-<ADDITIONALUNITS>{add_unit_sym}</ADDITIONALUNITS>
-<CONVERSION>{conv_str}</CONVERSION>
-<ISSIMPLEUNIT>No</ISSIMPLEUNIT>
-<DECIMALPLACES>{dec_places}</DECIMALPLACES>
-</UNIT>"""
+            unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="{action}">
+          <NAME>{symbol}</NAME>
+          <BASEUNITS>{base_unit_sym}</BASEUNITS>
+          <ADDITIONALUNITS>{add_unit_sym}</ADDITIONALUNITS>
+          <CONVERSION>{conv_str}</CONVERSION>
+          <ISSIMPLEUNIT>No</ISSIMPLEUNIT>
+          <DECIMALPLACES>{dec_places}</DECIMALPLACES>
+        </UNIT>"""
 
         xml_envelope = f"""<ENVELOPE>
-<HEADER>
-<TALLYREQUEST>Import Data</TALLYREQUEST>
-</HEADER>
-<BODY>
-<IMPORTDATA>
-<REQUESTDESC>
-<REPORTNAME>All Masters</REPORTNAME>
-<STATICVARIABLES>
-<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-</STATICVARIABLES>
-</REQUESTDESC>
-<REQUESTDATA>
-<TALLYMESSAGE xmlns:UDF="TallyUDF">
-{unit_inner_xml}
-</TALLYMESSAGE>
-</REQUESTDATA>
-</IMPORTDATA>
-</BODY>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        {unit_inner_xml}
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
 </ENVELOPE>"""
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY UOM PUSH (unit_id={unit_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
@@ -1852,6 +1948,243 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
             logger.error(f"Real-time Tally push failed for unit_id={unit_id}: {resp_str}")
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for unit_id={unit_id}: {str(e)}", exc_info=True)
+    return False
+
+
+async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    """
+    Attempts real-time push of a Stock Group to Tally Prime XML Server on the fly.
+    """
+    try:
+        from app.models.tally_core import MstStockGroup
+        from app.models.portal_core import SyncQueue, Company
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return False
+
+        g_stmt = select(MstStockGroup).options(selectinload(MstStockGroup.parent)).where(MstStockGroup.stock_group_id == group_id)
+        g_res = await db.execute(g_stmt)
+        group = g_res.scalars().first()
+        if not group:
+            logger.warning(f"Real-time Tally push skipped: stock_group_id={group_id} not found.")
+            return False
+
+        c_stmt = select(Company).where(Company.company_id == group.company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        if action == "Delete":
+            group_inner_xml = f"""<STOCKGROUP NAME="{group.name}" Action="Delete">
+          <NAME>{group.name}</NAME>
+        </STOCKGROUP>"""
+        else:
+            parent_name = group.parent.name if (group.parent and group.parent.name) else ""
+            if not parent_name or parent_name.lower() in ("primary", " primary"):
+                parent_tag = "<PARENT>&#4; Primary</PARENT>"
+            else:
+                parent_tag = f"<PARENT>{parent_name}</PARENT>"
+
+            group_inner_xml = f"""<STOCKGROUP NAME="{group.name}" Action="{action}">
+          <NAME>{group.name}</NAME>
+          {parent_tag}
+          <ISADDABLE>Yes</ISADDABLE>
+        </STOCKGROUP>"""
+
+        xml_envelope = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        {group_inner_xml}
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKGROUP PUSH (stock_group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        logger.info(f"\n=======================================================\nTALLY STOCKGROUP PUSH RESPONSE (stock_group_id={group_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+
+        if check_tally_success(resp_str):
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            await db.execute(sq_stmt)
+            await db.commit()
+            logger.info(f"Real-time Tally push successful for stock_group_id={group_id}, action={action}")
+            return True
+        else:
+            logger.error(f"Real-time Tally push failed for stock_group_id={group_id}: {resp_str}")
+    except Exception as e:
+        logger.warning(f"Real-time Tally push exception for stock_group_id={group_id}: {str(e)}", exc_info=True)
+    return False
+
+
+async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    """
+    Attempts real-time push of a Stock Category to Tally Prime XML Server on the fly.
+    """
+    try:
+        from app.models.tally_core import MstStockCategory
+        from app.models.portal_core import SyncQueue, Company
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return False
+
+        c_query = select(MstStockCategory).options(selectinload(MstStockCategory.parent)).where(MstStockCategory.stock_category_id == category_id)
+        c_res = await db.execute(c_query)
+        cat = c_res.scalars().first()
+        if not cat:
+            logger.warning(f"Real-time Tally push skipped: stock_category_id={category_id} not found.")
+            return False
+
+        comp_stmt = select(Company).where(Company.company_id == cat.company_id)
+        comp_res = await db.execute(comp_stmt)
+        comp_obj = comp_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        if action == "Delete":
+            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat.name}" Action="Delete">
+          <NAME>{cat.name}</NAME>
+        </STOCKCATEGORY>"""
+        else:
+            parent_name = cat.parent.name if (cat.parent and cat.parent.name) else ""
+            if not parent_name or parent_name.lower() in ("primary", " primary"):
+                parent_tag = "<PARENT>&#4; Primary</PARENT>"
+            else:
+                parent_tag = f"<PARENT>{parent_name}</PARENT>"
+
+            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat.name}" Action="{action}">
+          <NAME>{cat.name}</NAME>
+          {parent_tag}
+        </STOCKCATEGORY>"""
+
+        xml_envelope = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        {cat_inner_xml}
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKCATEGORY PUSH (stock_category_id={category_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        logger.info(f"\n=======================================================\nTALLY STOCKCATEGORY PUSH RESPONSE (stock_category_id={category_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+
+        if check_tally_success(resp_str):
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            await db.execute(sq_stmt)
+            await db.commit()
+            logger.info(f"Real-time Tally push successful for stock_category_id={category_id}, action={action}")
+            return True
+        else:
+            logger.error(f"Real-time Tally push failed for stock_category_id={category_id}: {resp_str}")
+    except Exception as e:
+        logger.warning(f"Real-time Tally push exception for stock_category_id={category_id}: {str(e)}", exc_info=True)
+    return False
+
+
+async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    """
+    Attempts real-time push of a Godown/Location to Tally Prime XML Server on the fly.
+    """
+    try:
+        from app.models.tally_core import MstGodown
+        from app.models.portal_core import SyncQueue, Company
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return False
+
+        g_query = select(MstGodown).options(selectinload(MstGodown.parent)).where(MstGodown.godown_id == godown_id)
+        g_res = await db.execute(g_query)
+        godown = g_res.scalars().first()
+        if not godown:
+            logger.warning(f"Real-time Tally push skipped: godown_id={godown_id} not found.")
+            return False
+
+        comp_stmt = select(Company).where(Company.company_id == godown.company_id)
+        comp_res = await db.execute(comp_stmt)
+        comp_obj = comp_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        if action == "Delete":
+            godown_inner_xml = f"""<GODOWN NAME="{godown.name}" Action="Delete">
+          <NAME>{godown.name}</NAME>
+        </GODOWN>"""
+        else:
+            parent_name = godown.parent.name if (godown.parent and godown.parent.name) else ""
+            if not parent_name or parent_name.lower() in ("primary", " primary"):
+                parent_tag = "<PARENT>&#4; Primary</PARENT>"
+            else:
+                parent_tag = f"<PARENT>{parent_name}</PARENT>"
+
+            addr_tag = f"\n          <ADDRESS>{godown.address}</ADDRESS>" if godown.address else ""
+
+            godown_inner_xml = f"""<GODOWN NAME="{godown.name}" Action="{action}">
+          <NAME>{godown.name}</NAME>
+          {parent_tag}{addr_tag}
+        </GODOWN>"""
+
+        xml_envelope = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        {godown_inner_xml}
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY GODOWN PUSH (godown_id={godown_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        logger.info(f"\n=======================================================\nTALLY GODOWN PUSH RESPONSE (godown_id={godown_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+
+        if check_tally_success(resp_str):
+            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+            await db.execute(sq_stmt)
+            await db.commit()
+            logger.info(f"Real-time Tally push successful for godown_id={godown_id}, action={action}")
+            return True
+        else:
+            logger.error(f"Real-time Tally push failed for godown_id={godown_id}: {resp_str}")
+    except Exception as e:
+        logger.warning(f"Real-time Tally push exception for godown_id={godown_id}: {str(e)}", exc_info=True)
     return False
 
 
@@ -1967,6 +2300,21 @@ async def run_once_sync_background(user_id: int):
                     continue
                 elif item.record_type == "Currency":
                     await try_push_currency_realtime(item.record_id, item.sync_id, item.action, db)
+                    continue
+                elif item.record_type == "StockItem":
+                    await try_push_stock_item_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+                    continue
+                elif item.record_type == "Unit":
+                    await try_push_uom_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+                    continue
+                elif item.record_type == "StockGroup":
+                    await try_push_stock_group_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+                    continue
+                elif item.record_type == "StockCategory":
+                    await try_push_stock_category_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+                    continue
+                elif item.record_type == "Godown":
+                    await try_push_godown_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
                     continue
                 else:
                     continue

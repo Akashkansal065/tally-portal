@@ -125,6 +125,20 @@ async def update_uom(
     
     await db.commit()
     await db.refresh(uom)
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Unit",
+        record_id=uom.unit_id,
+        action="Alter",
+    )
+    db.add(sync_item)
+    await db.commit()
+
+    from app.routers.sync import try_push_uom_realtime
+    await try_push_uom_realtime(uom.unit_id, sync_item.sync_id, "Alter", db)
+
     return uom
 
 @router.delete("/uoms/{unit_id}")
@@ -136,6 +150,20 @@ async def delete_uom(
     uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
     if not uom:
         raise HTTPException(status_code=404, detail="Unit of measure not found.")
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Unit",
+        record_id=unit_id,
+        action="Delete",
+    )
+    db.add(sync_item)
+    await db.flush()
+
+    from app.routers.sync import try_push_uom_realtime
+    await try_push_uom_realtime(unit_id, sync_item.sync_id, "Delete", db)
+
     await db.delete(uom)
     await db.commit()
     return {"message": "Unit of measure deleted successfully."}
@@ -183,7 +211,18 @@ async def create_stock_group(
     for alias in req.aliases:
         db.add(StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias))
         
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockGroup",
+        record_id=group.stock_group_id,
+        action="Create",
+    )
+    db.add(sync_item)
     await db.commit()
+
+    from app.routers.sync import try_push_stock_group_realtime
+    await try_push_stock_group_realtime(group.stock_group_id, sync_item.sync_id, "Create", db)
     
     final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group.stock_group_id))
     return final.scalars().first()
@@ -215,7 +254,18 @@ async def update_stock_group(
     for alias in req.aliases:
         db.add(StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias))
         
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockGroup",
+        record_id=group_id,
+        action="Alter",
+    )
+    db.add(sync_item)
     await db.commit()
+
+    from app.routers.sync import try_push_stock_group_realtime
+    await try_push_stock_group_realtime(group_id, sync_item.sync_id, "Alter", db)
     
     final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group.stock_group_id))
     return final.scalars().first()
@@ -229,6 +279,20 @@ async def delete_stock_group(
     group = (await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
     if not group:
         raise HTTPException(status_code=404, detail="Stock group not found.")
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockGroup",
+        record_id=group_id,
+        action="Delete",
+    )
+    db.add(sync_item)
+    await db.flush()
+
+    from app.routers.sync import try_push_stock_group_realtime
+    await try_push_stock_group_realtime(group_id, sync_item.sync_id, "Delete", db)
+
     await db.delete(group)
     await db.commit()
     return {"message": "Stock group deleted successfully."}
@@ -267,8 +331,22 @@ async def create_stock_category(
         is_active=req.is_active
     )
     db.add(cat)
+    await db.flush()
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockCategory",
+        record_id=cat.stock_category_id,
+        action="Create",
+    )
+    db.add(sync_item)
     await db.commit()
     await db.refresh(cat)
+
+    from app.routers.sync import try_push_stock_category_realtime
+    await try_push_stock_category_realtime(cat.stock_category_id, sync_item.sync_id, "Create", db)
+
     return cat
 
 @router.put("/categories/{category_id}", response_model=StockCategoryResponse)
@@ -293,8 +371,20 @@ async def update_stock_category(
     cat.parent_id = req.parent_id
     cat.is_active = req.is_active
     
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockCategory",
+        record_id=category_id,
+        action="Alter",
+    )
+    db.add(sync_item)
     await db.commit()
     await db.refresh(cat)
+
+    from app.routers.sync import try_push_stock_category_realtime
+    await try_push_stock_category_realtime(category_id, sync_item.sync_id, "Alter", db)
+
     return cat
 
 @router.delete("/categories/{category_id}")
@@ -306,6 +396,20 @@ async def delete_stock_category(
     cat = (await db.execute(select(MstStockCategory).where(MstStockCategory.stock_category_id == category_id, MstStockCategory.company_id == user.company_id))).scalars().first()
     if not cat:
         raise HTTPException(status_code=404, detail="Stock category not found.")
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockCategory",
+        record_id=category_id,
+        action="Delete",
+    )
+    db.add(sync_item)
+    await db.flush()
+
+    from app.routers.sync import try_push_stock_category_realtime
+    await try_push_stock_category_realtime(category_id, sync_item.sync_id, "Delete", db)
+
     await db.delete(cat)
     await db.commit()
     return {"message": "Stock category deleted successfully."}
@@ -347,8 +451,22 @@ async def create_godown(
         phone=req.phone
     )
     db.add(g)
+    await db.flush()
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Godown",
+        record_id=g.godown_id,
+        action="Create",
+    )
+    db.add(sync_item)
     await db.commit()
     await db.refresh(g)
+
+    from app.routers.sync import try_push_godown_realtime
+    await try_push_godown_realtime(g.godown_id, sync_item.sync_id, "Create", db)
+
     return g
 
 @router.put("/godowns/{godown_id}", response_model=GodownResponse)
@@ -376,8 +494,20 @@ async def update_godown(
     g.contact_person = req.contact_person
     g.phone = req.phone
     
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Godown",
+        record_id=godown_id,
+        action="Alter",
+    )
+    db.add(sync_item)
     await db.commit()
     await db.refresh(g)
+
+    from app.routers.sync import try_push_godown_realtime
+    await try_push_godown_realtime(godown_id, sync_item.sync_id, "Alter", db)
+
     return g
 
 @router.delete("/godowns/{godown_id}")
@@ -389,6 +519,20 @@ async def delete_godown(
     g = (await db.execute(select(MstGodown).where(MstGodown.godown_id == godown_id, MstGodown.company_id == user.company_id))).scalars().first()
     if not g:
         raise HTTPException(status_code=404, detail="Godown not found.")
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Godown",
+        record_id=godown_id,
+        action="Delete",
+    )
+    db.add(sync_item)
+    await db.flush()
+
+    from app.routers.sync import try_push_godown_realtime
+    await try_push_godown_realtime(godown_id, sync_item.sync_id, "Delete", db)
+
     await db.delete(g)
     await db.commit()
     return {"message": "Godown deleted successfully."}
@@ -826,6 +970,17 @@ async def update_stock_item(
             db.add(StockItemBOMComponent(bom_id=bom.bom_id, component_item_id=comp.component_item_id, godown_id=comp.godown_id, quantity=comp.quantity, component_type=comp.component_type))
             
     await db.execute(StockItemPriceLevelRate.__table__.delete().where(StockItemPriceLevelRate.stock_item_id == item_id))
+    for plr in req.price_level_rates:
+        db.add(StockItemPriceLevelRate(
+            stock_item_id=item_id,
+            price_level_id=plr.price_level_id,
+            effective_from=plr.effective_from,
+            qty_from=plr.qty_from,
+            qty_to=plr.qty_to,
+            rate=plr.rate,
+            discount_percent=plr.discount_percent
+        ))
+
     # Sync Queue & Realtime Push to Tally
     from app.models.portal_core import SyncQueue
     sync_item = SyncQueue(
@@ -913,6 +1068,20 @@ async def delete_stock_item(
     item = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id))).scalars().first()
     if not item:
         raise HTTPException(status_code=404, detail="Stock item not found.")
+
+    from app.models.portal_core import SyncQueue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="StockItem",
+        record_id=item_id,
+        action="Delete",
+    )
+    db.add(sync_item)
+    await db.flush()
+
+    from app.routers.sync import try_push_stock_item_realtime
+    await try_push_stock_item_realtime(item_id, sync_item.sync_id, "Delete", db)
+
     await db.delete(item)
     await db.commit()
     return {"message": "Stock item deleted successfully."}
