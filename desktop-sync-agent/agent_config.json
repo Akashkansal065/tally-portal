@@ -1,0 +1,11 @@
+{
+    "backend_url": "http://192.168.71.1:8000",
+    "tally_url": "http://127.0.0.1:9000",
+    "email": "",
+    "password": "",
+    "auth_token": "",
+    "company_name": "Bhrama Enterprises",
+    "sync_interval_seconds": 5,
+    "inbound_interval_seconds": 60,
+    "auto_discover_paths": true
+}

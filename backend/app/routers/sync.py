@@ -104,6 +104,219 @@ async def inbound_sync(
             clear_company_cache(company_id)
         return result
 
+async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSession) -> str:
+    try:
+        from app.models.tally_core import (
+            TrnVoucher, TrnAccounting, MstLedger, MstVoucherType, BillAllocation, 
+            TrnInventory, MstStockItem, MstGodown, Batch, VoucherAccountingAllocation,
+            CostCenter
+        )
+        from app.models.portal_core import Company
+        
+        v_stmt = select(TrnVoucher).options(
+            selectinload(TrnVoucher.voucher_type),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.godown),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.batch),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations).selectinload(VoucherAccountingAllocation.ledger)
+        ).where(TrnVoucher.voucher_id == voucher_id)
+        v_res = await db.execute(v_stmt)
+        voucher = v_res.scalars().first()
+        if not voucher:
+            return ""
+
+        comp = (await db.execute(select(Company).where(Company.company_id == voucher.company_id))).scalars().first()
+        comp_name = comp.name if comp else ""
+        vtype_name = voucher.voucher_type.name if voucher.voucher_type else "Journal"
+        is_inv = getattr(voucher, 'is_invoice', False) or bool(getattr(voucher, 'inventory_entries', None))
+        vdate_str = voucher.voucher_date.strftime("%Y%m%d")
+        obj_view = "Invoice Voucher View" if is_inv else "Accounting Voucher View"
+
+        if action == "Delete":
+            guid_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
+            remote_id_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
+            return f'''<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Import</TALLYREQUEST>
+        <TYPE>Data</TYPE>
+        <ID>Vouchers</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+        </DESC>
+        <DATA>
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+             <VOUCHER REMOTEID="{remote_id_attr}" VCHTYPE="{vtype_name}" ACTION="Delete" OBJVIEW="{obj_view}">
+              <GUID>{guid_attr}</GUID>
+             </VOUCHER>
+            </TALLYMESSAGE>
+        </DATA>
+    </BODY>
+</ENVELOPE>'''
+
+        is_sales = (voucher.voucher_type and voucher.voucher_type.parent_type in ['Sales', 'Debit Note']) or vtype_name in ['Sales', 'Debit Note']
+        sales_pur_ledger_name = "GST Sales" if is_sales else "GST Purchase"
+        for ent in voucher.entries:
+            if ent.ledger and ent.ledger.group:
+                gname = ent.ledger.group.name.lower()
+                if ("sales" in gname if is_sales else "purchase" in gname):
+                    sales_pur_ledger_name = ent.ledger.name
+                    break
+
+        party_ledger_name = ""
+        if voucher.party_ledger_id:
+            p_res = await db.execute(select(MstLedger).where(MstLedger.ledger_id == voucher.party_ledger_id))
+            party_ledger = p_res.scalars().first()
+            if party_ledger:
+                party_ledger_name = party_ledger.name
+        elif vtype_name in ["Sales", "Purchase", "Payment", "Receipt"]:
+            for ent in voucher.entries:
+                if ent.ledger and ent.ledger.group:
+                    gname = ent.ledger.group.name.lower()
+                    if "bank" not in gname and "cash" not in gname and "sales" not in gname and "purchase" not in gname and "duty" not in gname and "tax" not in gname:
+                        party_ledger_name = ent.ledger.name
+                        break
+        if not party_ledger_name and voucher.entries:
+            party_ledger_name = voucher.entries[0].ledger.name if voucher.entries[0].ledger else "Suspense A/c"
+
+        all_inventory_xml = ""
+        if is_inv and getattr(voucher, 'inventory_entries', None):
+            for inv in voucher.inventory_entries:
+                item_name = inv.stock_item.name if inv.stock_item else "Item"
+                uom_name = inv.stock_item.unit.name if (inv.stock_item and inv.stock_item.unit) else "nos"
+                is_dp = 'No' if is_sales else 'Yes'
+                inv_amt = float(abs(inv.amount))
+                signed_inv_amt = -inv_amt if is_sales else inv_amt
+                rate_str = f"{inv.rate}/{uom_name}" if inv.rate else ""
+                qty_str = f" {inv.quantity} {uom_name}" if inv.quantity else ""
+                billed_qty_str = f" {inv.billed_qty} {uom_name}" if inv.billed_qty else qty_str
+                godown_name = inv.godown.name if (inv.godown and inv.godown.name) else "Main Location"
+                batch_name = inv.batch.batch_number if (inv.batch and inv.batch.batch_number) else "Primary Batch"
+                discount_tag = f"\n               <DISCOUNT>{float(inv.discount_percent):g}</DISCOUNT>" if getattr(inv, 'discount_percent', None) and float(inv.discount_percent) > 0 else ""
+                
+                all_inventory_xml += f'''
+              <ALLINVENTORYENTRIES.LIST>
+               <STOCKITEMNAME>{item_name}</STOCKITEMNAME>
+               <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
+               <RATE>{rate_str}</RATE>{discount_tag}
+               <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
+               <ACTUALQTY>{qty_str}</ACTUALQTY>
+               <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
+               <BATCHALLOCATIONS.LIST>
+                <GODOWNNAME>{godown_name}</GODOWNNAME>
+                <BATCHNAME>{batch_name}</BATCHNAME>
+                <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
+                <ACTUALQTY>{qty_str}</ACTUALQTY>
+                <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
+               </BATCHALLOCATIONS.LIST>
+               <ACCOUNTINGALLOCATIONS.LIST>
+                <LEDGERNAME>{sales_pur_ledger_name}</LEDGERNAME>
+                <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
+                <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
+               </ACCOUNTINGALLOCATIONS.LIST>
+              </ALLINVENTORYENTRIES.LIST>'''
+
+        entries_xml = ""
+        for ent in voucher.entries:
+            lname = ent.ledger.name if ent.ledger else "Suspense A/c"
+            amt = -float(ent.debit_amount) if ent.debit_amount > 0 else float(ent.credit_amount)
+            is_dp = 'Yes' if ent.debit_amount > 0 else 'No'
+            is_party = (party_ledger_name and lname.strip().lower() == party_ledger_name.strip().lower())
+            
+            entries_xml += f'''
+              <ALLLEDGERENTRIES.LIST>
+               <LEDGERNAME>{lname}</LEDGERNAME>
+               <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
+               <ISPARTYLEDGER>{'Yes' if is_party else 'No'}</ISPARTYLEDGER>
+               <AMOUNT>{amt:.2f}</AMOUNT>'''
+
+            if getattr(ent, 'bank_allocations', None):
+                for ba in ent.bank_allocations:
+                    ba_amt = -float(ba.amount) if ent.debit_amount > 0 else float(ba.amount)
+                    inst_date = ba.instrument_date.strftime("%Y%m%d") if ba.instrument_date else vdate_str
+                    tx_type = ba.transaction_type or "Others"
+                    entries_xml += f'''
+               <BANKALLOCATIONS.LIST>
+                <DATE>{vdate_str}</DATE>
+                <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>
+                <TRANSACTIONTYPE>{tx_type}</TRANSACTIONTYPE>
+                <PAYMENTMODE>Transacted</PAYMENTMODE>
+                <BANKPARTYNAME>{ba.payment_favouring or party_ledger_name}</BANKPARTYNAME>
+                <AMOUNT>{ba_amt:.2f}</AMOUNT>
+               </BANKALLOCATIONS.LIST>'''
+
+            if getattr(ent, 'bill_allocations', None):
+                for ba in ent.bill_allocations:
+                    bname = ba.bill.bill_reference if getattr(ba, 'bill', None) and ba.bill else (getattr(ba, 'bill_reference', '') or f"{voucher.voucher_number or '1'}")
+                    b_amt = -abs(float(ba.amount)) if ent.debit_amount > 0 else abs(float(ba.amount))
+                    entries_xml += f'''
+               <BILLALLOCATIONS.LIST>
+                <NAME>{bname}</NAME>
+                <BILLTYPE>{ba.allocation_type}</BILLTYPE>
+                <AMOUNT>{b_amt:.2f}</AMOUNT>
+               </BILLALLOCATIONS.LIST>'''
+            elif is_party:
+                bname = str(voucher.reference_number or voucher.voucher_number or '1')
+                entries_xml += f'''
+               <BILLALLOCATIONS.LIST>
+                <NAME>{bname}</NAME>
+                <BILLTYPE>New Ref</BILLTYPE>
+                <AMOUNT>{amt:.2f}</AMOUNT>
+               </BILLALLOCATIONS.LIST>'''
+
+            entries_xml += '''
+              </ALLLEDGERENTRIES.LIST>'''
+
+        vch_tag_attrs = f'VCHTYPE="{vtype_name}" ACTION="{action}" OBJVIEW="{obj_view}"'
+        guid_xml = ""
+        if voucher.tally_guid:
+            vch_tag_attrs += f' REMOTEID="{voucher.tally_guid}"'
+            guid_xml = f"\n              <GUID>{voucher.tally_guid}</GUID>"
+
+        return f'''<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Import</TALLYREQUEST>
+        <TYPE>Data</TYPE>
+        <ID>Vouchers</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+        </DESC>
+        <DATA>
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+             <VOUCHER {vch_tag_attrs}>
+              <DATE>{vdate_str}</DATE>
+              <EFFECTIVEDATE>{vdate_str}</EFFECTIVEDATE>
+              <VCHSTATUSDATE>{vdate_str}</VCHSTATUSDATE>
+              <VOUCHERTYPENAME>{vtype_name}</VOUCHERTYPENAME>
+              <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>
+              <PARTYNAME>{party_ledger_name}</PARTYNAME>
+              <PARTYLEDGERNAME>{party_ledger_name}</PARTYLEDGERNAME>
+              <PERSISTEDVIEW>{obj_view}</PERSISTEDVIEW>
+              <NARRATION>{voucher.narration or ''}</NARRATION>{guid_xml}
+              {entries_xml}{all_inventory_xml}
+             </VOUCHER>
+            </TALLYMESSAGE>
+        </DATA>
+    </BODY>
+</ENVELOPE>'''
+    except Exception as e:
+        logger.error(f"Error in build_voucher_xml_payload for voucher {voucher_id}: {e}", exc_info=True)
+        return ""
+
 @router.get("/outbound-queue")
 async def get_outbound_queue(
     user: User = Depends(require_permission("ledgers", "read")),
@@ -146,57 +359,9 @@ async def get_outbound_queue(
                 # Build Tally XML Envelope
                 xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create')
                 
-        # 2. Map Voucher Creation
+        # 2. Map Voucher Creation / Alteration
         elif item.record_type == "Voucher":
-            v_stmt = select(TrnVoucher).where(TrnVoucher.voucher_id == item.record_id)
-            v_res = await db.execute(v_stmt)
-            voucher = v_res.scalars().first()
-            if voucher:
-                # Get entries
-                ent_stmt = select(TrnAccounting).where(TrnAccounting.voucher_id == voucher.voucher_id)
-                ent_res = await db.execute(ent_stmt)
-                entries = ent_res.scalars().all()
-                
-                entries_xml = ""
-                for ent in entries:
-                    l_stmt = select(MstLedger).where(MstLedger.ledger_id == ent.ledger_id)
-                    l_res = await db.execute(l_stmt)
-                    ledger = l_res.scalars().first()
-                    led_name = ledger.name if ledger else "Suspense A/c"
-                    
-                    # Convert Debit/Credit back to Tally amount: Negative -> Debit, Positive -> Credit
-                    amt = -ent.debit_amount if ent.debit_amount > 0 else ent.credit_amount
-                    
-                    entries_xml += f"""
-          <ALLLEDGERENTRIES.LIST>
-            <LEDGERNAME>{led_name}</LEDGERNAME>
-            <ISDEEMEDPOSITIVE>{'Yes' if ent.debit_amount > 0 else 'No'}</ISDEEMEDPOSITIVE>
-            <AMOUNT>{amt}</AMOUNT>
-          </ALLLEDGERENTRIES.LIST>"""
-                
-                vdate_str = voucher.voucher_date.strftime("%Y%m%d")
-                xml_envelope = f"""<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import Data</TALLYREQUEST>
-    <TYPE>Data</TYPE>
-    <ID>Vouchers</ID>
-  </HEADER>
-  <BODY>
-    <DESC></DESC>
-    <DATA>
-      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHER DATE="{vdate_str}" VOUCHERTYPENAME="Journal" ACTION="Create">
-          <DATE>{vdate_str}</DATE>
-          <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>
-          <VOUCHERTYPENAME>Journal</VOUCHERTYPENAME>
-          {entries_xml}
-          <NARRATION>{voucher.narration or ''}</NARRATION>
-        </VOUCHER>
-      </TALLYMESSAGE>
-    </DATA>
-  </BODY>
-</ENVELOPE>"""
+            xml_envelope = await build_voucher_xml_payload(item.record_id, item.action or 'Create', db)
                 
         if xml_envelope:
             outbound_payloads.append({
@@ -233,23 +398,39 @@ async def get_last_alter_id(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns the maximum tally_alter_id from ledgers and vouchers to use for incremental inbound sync.
+    Returns the maximum tally_alter_id across all masters and vouchers to use for incremental inbound sync.
     """
     from sqlalchemy.sql import func
-    # Get max alter_id from ledgers
-    ledger_stmt = select(func.max(MstLedger.tally_alter_id)).where(MstLedger.company_id == user.company_id)
-    ledger_res = await db.execute(ledger_stmt)
-    max_ledger_alter = ledger_res.scalar() or 0
+    from app.models.tally_core import (
+        MstGroup, MstLedger, MstVoucherType, TrnVoucher, 
+        MstStockGroup, MstStockCategory, MstUom, MstGodown, MstStockItem, CostCenter
+    )
     
-    # Get max alter_id from vouchers
-    voucher_stmt = select(func.max(TrnVoucher.tally_alter_id)).where(TrnVoucher.company_id == user.company_id)
-    voucher_res = await db.execute(voucher_stmt)
-    max_voucher_alter = voucher_res.scalar() or 0
+    tables_to_check = [
+        MstLedger, TrnVoucher, MstStockItem, MstGroup, 
+        MstVoucherType, MstStockGroup, MstStockCategory, MstGodown, CostCenter
+    ]
     
+    max_alter_id = 0
+    details = {}
+    
+    for model in tables_to_check:
+        try:
+            stmt = select(func.max(model.tally_alter_id)).where(model.company_id == user.company_id)
+            res = await db.execute(stmt)
+            val = res.scalar() or 0
+            details[model.__tablename__] = int(val)
+            if int(val) > max_alter_id:
+                max_alter_id = int(val)
+        except Exception:
+            pass
+
     return {
-        "last_ledger_alter_id": int(max_ledger_alter),
-        "last_voucher_alter_id": int(max_voucher_alter),
-        "last_alter_id": int(max(max_ledger_alter, max_voucher_alter))
+        "last_alter_id": int(max_alter_id),
+        "last_ledger_alter_id": details.get("mst_ledgers", 0),
+        "last_voucher_alter_id": details.get("trn_vouchers", 0),
+        "last_stock_item_alter_id": details.get("mst_stock_items", 0),
+        "details": details
     }
 
 

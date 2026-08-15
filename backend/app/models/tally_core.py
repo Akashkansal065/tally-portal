@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
 from app.core.config import settings
+import app.models.portal_core as portal_models
 
 # ==========================================
 # NEW MISSING MODELS (13 tables)
