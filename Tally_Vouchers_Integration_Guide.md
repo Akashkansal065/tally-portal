@@ -6,60 +6,24 @@ This guide is the complete technical reference for all **Sales, Purchase, Paymen
 
 ## Table of Contents
 1. [Core Architecture & Protocol Rules](#1-core-architecture--protocol-rules)
-2. [Comparative Accounting Matrix (Sales vs Purchase vs Payment vs Receipt)](#2-comparative-accounting-matrix-sales-vs-purchase-vs-payment-vs-receipt)
+2. [Comparative Accounting Matrix (Sales vs Purchase vs Payment vs Receipt vs Contra)](#2-comparative-accounting-matrix-sales-vs-purchase-vs-payment-vs-receipt-vs-contra)
 3. [Master Field Specifications & Banking / Cost Allocations Hierarchy](#3-master-field-specifications--banking--cost-allocations-hierarchy)
 4. [Part I: Sales Voucher Operations](#4-part-i-sales-voucher-operations)
-   - [Sales 1: Create Sales Voucher with 18% GST (CGST & SGST)](#sales-1-create-sales-voucher-with-18-gst)
-   - [Sales 2: Create Sales Voucher for 0% Tax / Exempt Item (e.g. Decaf Coffee)](#sales-2-create-sales-voucher-for-0-tax--exempt-item)
-   - [Sales 3: Create Sales Voucher with Multiple Items, Batches & Godowns](#sales-3-create-sales-voucher-with-multiple-items-batches--godowns)
-   - [Sales 4: Alter a Sales Voucher (Change Date to 01-Sep-2025 by GUID/VCHKEY)](#sales-4-alter-a-sales-voucher)
-   - [Sales 5: Delete a Sales Voucher](#sales-5-delete-a-sales-voucher)
-   - [Sales 6: Pull All Sales Vouchers / Pull for Period](#sales-6-pull-all-sales-vouchers--pull-for-period)
 5. [Part II: Purchase Voucher Operations](#5-part-ii-purchase-voucher-operations)
-   - [Purchase 1: Create Standard Item Purchase (e.g. Computer US from International Party)](#purchase-1-create-standard-item-purchase)
-   - [Purchase 2: Create Purchase Voucher with Custom Date (01-Feb-2026, Qty 10 nos, Bill 'Bill28Pur1')](#purchase-2-create-purchase-voucher-with-custom-date)
-   - [Purchase 3: Create Domestic Purchase with GST (100 nos @ ₹15 = ₹1,500 + 4% GST)](#purchase-3-create-domestic-purchase-with-gst)
-   - [Purchase 4: Create Domestic Purchase with GST on 01-Aug-2025 (200 nos @ ₹15 = ₹3,000 + 4% GST, Bill 'Bill28PurGST1')](#purchase-4-create-domestic-purchase-with-gst-on-01-aug-2025)
-   - [Purchase 5: Alter a Purchase Voucher (Date change, Supplier Bill Reference, Quantity/Rate Alteration)](#purchase-5-alter-a-purchase-voucher)
-   - [Purchase 6: Delete a Purchase Voucher](#purchase-6-delete-a-purchase-voucher)
-   - [Purchase 7: Pull All Purchase Vouchers (Official TDL Collection)](#purchase-7-pull-all-purchase-vouchers-official-tdl-collection)
-   - [Purchase 8: Pull Purchase Vouchers for a Specific Period](#purchase-8-pull-purchase-vouchers-for-a-specific-period)
-   - [Purchase 9: Pull Purchase Vouchers for a Single Date](#purchase-9-pull-purchase-vouchers-for-a-single-date)
 6. [Part III: Payment Voucher Operations](#6-part-iii-payment-voucher-operations)
-   - **Bank Payments (Cheque / NEFT / RTGS)**
-     - [Payment 1: Create High-Value Cheque Payment (Import Data Protocol)](#payment-1-create-high-value-cheque-payment-import-data-protocol)
-     - [Payment 2: Create Payment with Inter Bank Transfer / NEFT (Rs. 200 on 31-Aug-2025)](#payment-2-create-payment-with-inter-bank-transfer--neft)
-     - [Payment 3: Create Payment with Custom Amount (Rs. 900 on 01-Aug-2025 with NEFT)](#payment-3-create-payment-with-custom-amount)
-     - [Payment 4: Create Payment with Cheque Banking Allocations (Rs. 200 on 02-Aug-2025)](#payment-4-create-payment-with-cheque-banking-allocations)
-   - **Cash Payments & Cost Centre Allocations**
-     - [Payment 5: Create Cash Payment for Expenses with Cost Category & Cost Centre (Rs. 100 on 31-Aug-2025)](#payment-5-create-cash-payment-for-expenses-with-cost-category--cost-centre)
-     - [Payment 6: Create Cash Payment for Expenses on 01-Aug-2025 (Rs. 500 with Cost Centre)](#payment-6-create-cash-payment-for-expenses-on-01-aug-2025)
-     - [Payment 7: Create Cash Payment to Party with Bill Allocations (Rs. 500 on 02-Aug-2025)](#payment-7-create-cash-payment-to-party-with-bill-allocations)
-   - **Lifecycle Operations**
-     - [Payment 8: Alter a Payment Voucher (Date, Narration, Amount & Bill Allocations)](#payment-8-alter-a-payment-voucher)
-     - [Payment 9: Delete a Payment Voucher](#payment-9-delete-a-payment-voucher)
-     - [Payment 10: Pull All Payment Vouchers (Official TDL Collection)](#payment-10-pull-all-payment-vouchers-official-tdl-collection)
-     - [Payment 11: Pull Payment Vouchers for a Specific Period](#payment-11-pull-payment-vouchers-for-a-specific-period)
-     - [Payment 12: Pull Payment Vouchers for a Single Date](#payment-12-pull-payment-vouchers-for-a-single-date)
 7. [Part IV: Receipt Voucher Operations](#7-part-iv-receipt-voucher-operations)
-   - **Bank Receipts (Cheque / DD / UPI / NEFT)**
-     - [Receipt 1: Create Receipt with Cheque / DD (Rs. 2,500 on 31-Aug-2025 from ABC Party)](#receipt-1-create-receipt-with-cheque--dd)
-     - [Receipt 2: Create Receipt on 01-Aug-2025 (Rs. 2,500 Cheque/DD)](#receipt-2-create-receipt-on-01-aug-2025)
-     - [Receipt 3: Create Receipt with UPI Banking Allocations (Rs. 2,500 on 02-Aug-2025 with VPA)](#receipt-3-create-receipt-with-upi-banking-allocations)
-     - [Receipt 4: Create High-Value Cheque Receipt (Import Data Protocol - Rs. 10,00,000 on 20-Mar-2026)](#receipt-4-create-high-value-cheque-receipt-import-data-protocol)
-     - [Receipt 5: Create Customer Receipt via Bank Transfer / NEFT (Amar Enterprises)](#receipt-5-create-customer-receipt-via-bank-transfer--neft)
-   - **Cash Receipts & Cost Centre Allocations**
-     - [Receipt 6: Create Cash Receipt for Income with Cost Category & Cost Centre (Rs. 100 on 31-Aug-2025)](#receipt-6-create-cash-receipt-for-income-with-cost-category--cost-centre)
-     - [Receipt 7: Create Cash Receipt for Income on 01-Aug-2025 (Rs. 500 with Cost Centre)](#receipt-7-create-cash-receipt-for-income-on-01-aug-2025)
-     - [Receipt 8: Create Cash Receipt from Party with Bill Allocations (ABC Party - Rs. 100 on 02-Aug-2025)](#receipt-8-create-cash-receipt-from-party-with-bill-allocations)
-     - [Receipt 9: Create Cash Receipt from Amar Enterprises (Rs. 500 on 02-Aug-2025)](#receipt-9-create-cash-receipt-from-amar-enterprises)
-   - **Lifecycle Operations**
-     - [Receipt 10: Alter a Receipt Voucher (Date, Narration, Amount & Cost Allocations)](#receipt-10-alter-a-receipt-voucher)
-     - [Receipt 11: Delete a Receipt Voucher](#receipt-11-delete-a-receipt-voucher)
-     - [Receipt 12: Pull All Receipt Vouchers (Official TDL Collection)](#receipt-12-pull-all-receipt-vouchers-official-tdl-collection)
-     - [Receipt 13: Pull Receipt Vouchers for a Specific Period](#receipt-13-pull-receipt-vouchers-for-a-specific-period)
-     - [Receipt 14: Pull Receipt Vouchers for a Single Date](#receipt-14-pull-receipt-vouchers-for-a-single-date)
-8. [Troubleshooting & Common Pitfalls](#8-troubleshooting--common-pitfalls)
+8. [Part V: Contra Voucher Operations (Cash Deposits, Cash Withdrawals & Bank Transfers)](#8-part-v-contra-voucher-operations)
+   - [Contra 1: Cash Deposit into Bank with Cash Denomination & Bank Allocations](#contra-1-cash-deposit-into-bank)
+   - [Contra 2: Cash Withdrawal from Bank with Cheque Banking Allocations](#contra-2-cash-withdrawal-from-bank)
+   - [Contra 3: Bank-to-Bank Fund Transfer (NEFT / RTGS)](#contra-3-bank-to-bank-fund-transfer)
+   - [Contra 4: Alter a Contra Voucher](#contra-4-alter-a-contra-voucher)
+   - [Contra 5: Delete a Contra Voucher](#contra-5-delete-a-contra-voucher)
+   - [Contra 6: Pull All Contra Vouchers / Pull for Specific Period](#contra-6-pull-all-contra-vouchers)
+9. [Part VI: TallyPrime F12 Voucher Configuration Specifications & Field Matrix](#9-part-vi-tallyprime-f12-voucher-configuration-specifications)
+   - [A. Comparative F12 Configuration Matrix across Voucher Types](#a-comparative-f12-configuration-matrix-across-voucher-types)
+   - [B. Detailed Technical Specifications for Each Configuration Parameter](#b-detailed-technical-specifications-for-each-configuration-parameter)
+   - [C. XML Data Flow & ERP Synchronization Mechanism](#c-xml-data-flow--erp-synchronization-mechanism)
+10. [Troubleshooting & Common Pitfalls](#10-troubleshooting--common-pitfalls)
 
 ---
 
@@ -13195,7 +13159,516 @@ curl --location 'http://192.168.71.128:9000/' \
 </ENVELOPE>
 ```---
 
-## 8. Troubleshooting & Common Pitfalls
+---
+
+## 8. Part V: Contra Voucher Operations
+
+Contra vouchers (`VCHTYPE="Contra"`) are used exclusively for **internal fund movements** between Bank Accounts and Cash Accounts:
+1. **Cash Deposit**: Cash is Credited (`+ve`), Destination Bank is Debited (`-ve`).
+2. **Cash Withdrawal**: Source Bank is Credited (`+ve`), Cash is Debited (`-ve`).
+3. **Bank-to-Bank Transfer**: Transferor Bank is Credited (`+ve`), Transferee Bank is Debited (`-ve`).
+
+---
+
+### Contra 1: Cash Deposit into Bank with Cash Denomination & Bank Allocations
+
+#### Business Scenario
+Deposit ₹10,000 cash from the business cash register into `HDFC Bank A/c` on `31-Aug-2025`. The cash deposit consists of **10 notes of ₹500** and **25 notes of ₹200**.
+
+#### XML Request Payload
+```xml
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Vouchers</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+        <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <VOUCHER VCHTYPE="Contra" ACTION="Create" OBJVIEW="Accounting Voucher View">
+          <DATE>20250831</DATE>
+          <EFFECTIVEDATE>20250831</EFFECTIVEDATE>
+          <VCHSTATUSDATE>20250831</VCHSTATUSDATE>
+          <VOUCHERTYPENAME>Contra</VOUCHERTYPENAME>
+          <NARRATION>Cash deposit of Rs. 10,000 into HDFC Bank</NARRATION>
+          
+          <!-- Source Account: Cash Credited (+ve) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Cash</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <ISPARTYLEDGER>No</ISPARTYLEDGER>
+            <AMOUNT>10000.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+
+          <!-- Destination Account: Bank Debited (-ve) with Banking Allocation & Denomination -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>HDFC Bank</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
+            <AMOUNT>-10000.00</AMOUNT>
+            <BANKALLOCATIONS.LIST>
+              <TRANSACTIONTYPE>Cash</TRANSACTIONTYPE>
+              <DATE>20250831</DATE>
+              <INSTRUMENTDATE>20250831</INSTRUMENTDATE>
+              <AMOUNT>-10000.00</AMOUNT>
+              <DENOMINATION.LIST>
+                <DENOMINATIONTYPE>500</DENOMINATIONTYPE>
+                <DENOMINATIONCOUNT>10</DENOMINATIONCOUNT>
+              </DENOMINATION.LIST>
+              <DENOMINATION.LIST>
+                <DENOMINATIONTYPE>200</DENOMINATIONTYPE>
+                <DENOMINATIONCOUNT>25</DENOMINATIONCOUNT>
+              </DENOMINATION.LIST>
+            </BANKALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+        </VOUCHER>
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>
+```
+
+#### cURL Execution Command
+```bash
+curl -X POST "http://192.168.71.128:9000/"      -H "Content-Type: text/xml;charset=utf-8"      -d @contra_deposit.xml
+```
+
+##### Live TallyPrime Response:
+```xml
+<RESPONSE>
+  <STATUS>1</STATUS>
+  <CREATED>1</CREATED>
+  <ALTERED>0</ALTERED>
+  <DELETED>0</DELETED>
+  <ERRORS>0</ERRORS>
+  <EXCEPTIONS>0</EXCEPTIONS>
+  <DATA>
+    <VOUCHER ACTION="Create" TYPE="Contra">
+      <VOUCHERNUMBER>1</VOUCHERNUMBER>
+    </VOUCHER>
+  </DATA>
+</RESPONSE>
+```
+
+---
+
+### Contra 2: Cash Withdrawal from Bank with Cheque Banking Allocations
+
+#### Business Scenario
+Withdraw ₹5,000 cash from `HDFC Bank` via self Cheque No. `000105` on `31-Aug-2025` for office petty cash.
+
+#### XML Request Payload
+```xml
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Vouchers</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+        <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <VOUCHER VCHTYPE="Contra" ACTION="Create" OBJVIEW="Accounting Voucher View">
+          <DATE>20250831</DATE>
+          <EFFECTIVEDATE>20250831</EFFECTIVEDATE>
+          <VCHSTATUSDATE>20250831</VCHSTATUSDATE>
+          <VOUCHERTYPENAME>Contra</VOUCHERTYPENAME>
+          <NARRATION>Cash withdrawal for petty cash via Cheque No. 000105</NARRATION>
+          
+          <!-- Source Account: Bank Credited (+ve) with Cheque Allocations -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>HDFC Bank</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
+            <AMOUNT>5000.00</AMOUNT>
+            <BANKALLOCATIONS.LIST>
+              <TRANSACTIONTYPE>Cheque</TRANSACTIONTYPE>
+              <INSTRUMENTNUMBER>000105</INSTRUMENTNUMBER>
+              <INSTRUMENTDATE>20250831</INSTRUMENTDATE>
+              <PAYMENTFAVOURING>Self</PAYMENTFAVOURING>
+              <AMOUNT>5000.00</AMOUNT>
+            </BANKALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+
+          <!-- Destination Account: Cash Debited (-ve) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Cash</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <ISPARTYLEDGER>No</ISPARTYLEDGER>
+            <AMOUNT>-5000.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+        </VOUCHER>
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>
+```
+
+##### Live TallyPrime Response:
+```xml
+<RESPONSE>
+  <STATUS>1</STATUS>
+  <CREATED>1</CREATED>
+  <ALTERED>0</ALTERED>
+  <DELETED>0</ERRORS>
+  <ERRORS>0</ERRORS>
+  <EXCEPTIONS>0</EXCEPTIONS>
+</RESPONSE>
+```
+
+---
+
+### Contra 3: Bank-to-Bank Fund Transfer (NEFT / RTGS)
+
+#### Business Scenario
+Transfer ₹25,000 from `ICICI Bank` to `HDFC Bank` via NEFT (UTR `ICICR52025083101`) on `31-Aug-2025`.
+
+#### XML Request Payload
+```xml
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Vouchers</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+        <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <VOUCHER VCHTYPE="Contra" ACTION="Create" OBJVIEW="Accounting Voucher View">
+          <DATE>20250831</DATE>
+          <EFFECTIVEDATE>20250831</EFFECTIVEDATE>
+          <VCHSTATUSDATE>20250831</VCHSTATUSDATE>
+          <VOUCHERTYPENAME>Contra</VOUCHERTYPENAME>
+          <NARRATION>Inter-bank fund transfer ICICI to HDFC via NEFT</NARRATION>
+          
+          <!-- Transferor: ICICI Bank Credited (+ve) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>ICICI Bank</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
+            <AMOUNT>25000.00</AMOUNT>
+            <BANKALLOCATIONS.LIST>
+              <TRANSACTIONTYPE>Inter Bank Transfer</TRANSACTIONTYPE>
+              <INSTRUMENTNUMBER>ICICR52025083101</INSTRUMENTNUMBER>
+              <INSTRUMENTDATE>20250831</INSTRUMENTDATE>
+              <TRANSFERMODE>NEFT</TRANSFERMODE>
+              <AMOUNT>25000.00</AMOUNT>
+            </BANKALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+
+          <!-- Transferee: HDFC Bank Debited (-ve) -->
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>HDFC Bank</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
+            <AMOUNT>-25000.00</AMOUNT>
+            <BANKALLOCATIONS.LIST>
+              <TRANSACTIONTYPE>Inter Bank Transfer</TRANSACTIONTYPE>
+              <INSTRUMENTNUMBER>ICICR52025083101</INSTRUMENTNUMBER>
+              <INSTRUMENTDATE>20250831</INSTRUMENTDATE>
+              <TRANSFERMODE>NEFT</TRANSFERMODE>
+              <AMOUNT>-25000.00</AMOUNT>
+            </BANKALLOCATIONS.LIST>
+          </ALLLEDGERENTRIES.LIST>
+        </VOUCHER>
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>
+```
+
+##### Live TallyPrime Response:
+```xml
+<RESPONSE>
+  <STATUS>1</STATUS>
+  <CREATED>1</CREATED>
+  <ERRORS>0</ERRORS>
+  <EXCEPTIONS>0</EXCEPTIONS>
+</RESPONSE>
+```
+
+---
+
+### Contra 4: Alter a Contra Voucher
+
+#### XML Request Payload
+```xml
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Vouchers</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+        <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <VOUCHER VCHTYPE="Contra" ACTION="Alter" OBJVIEW="Accounting Voucher View">
+          <DATE>20250831</DATE>
+          <EFFECTIVEDATE>20250831</EFFECTIVEDATE>
+          <VCHSTATUSDATE>20250831</VCHSTATUSDATE>
+          <VOUCHERTYPENAME>Contra</VOUCHERTYPENAME>
+          <VOUCHERNUMBER>1</VOUCHERNUMBER>
+          <NARRATION>Updated: Cash deposit of Rs. 15,000 into HDFC Bank</NARRATION>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>Cash</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+            <AMOUNT>15000.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+          <ALLLEDGERENTRIES.LIST>
+            <LEDGERNAME>HDFC Bank</LEDGERNAME>
+            <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+            <AMOUNT>-15000.00</AMOUNT>
+          </ALLLEDGERENTRIES.LIST>
+        </VOUCHER>
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>
+```
+
+##### Live TallyPrime Response:
+```xml
+<RESPONSE>
+  <STATUS>1</STATUS>
+  <ALTERED>1</ALTERED>
+  <ERRORS>0</ERRORS>
+  <EXCEPTIONS>0</EXCEPTIONS>
+</RESPONSE>
+```
+
+---
+
+### Contra 5: Delete a Contra Voucher
+
+#### XML Request Payload
+```xml
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Vouchers</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+        <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <VOUCHER VCHTYPE="Contra" ACTION="Delete">
+          <DATE>20250831</DATE>
+          <VOUCHERTYPENAME>Contra</VOUCHERTYPENAME>
+          <VOUCHERNUMBER>1</VOUCHERNUMBER>
+        </VOUCHER>
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>
+```
+
+##### Live TallyPrime Response:
+```xml
+<RESPONSE>
+  <STATUS>1</STATUS>
+  <DELETED>1</DELETED>
+  <ERRORS>0</ERRORS>
+  <EXCEPTIONS>0</EXCEPTIONS>
+</RESPONSE>
+```
+
+---
+
+### Contra 6: Pull All Contra Vouchers
+
+#### XML Request Payload
+```xml
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>TSPLContraVouchers</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>XML</SVEXPORTFORMAT>
+        <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+        <SVFROMDATE>20250401</SVFROMDATE>
+        <SVTODATE>20260331</SVTODATE>
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="TSPLContraVouchers">
+            <TYPE>Voucher</TYPE>
+            <FILTER>IsContraVch</FILTER>
+            <FETCH>Date, VoucherTypeName, VoucherNumber, Narration, Amount, AllLedgerEntries.List.*</FETCH>
+          </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="IsContraVch">$$IsContra:$VoucherTypeName</SYSTEM>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>
+```
+
+##### Live TallyPrime Response:
+```xml
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <STATUS>1</STATUS>
+  </HEADER>
+  <BODY>
+    <DATA>
+      <COLLECTION>
+        <VOUCHER VCHTYPE="Contra" OBJVIEW="Accounting Voucher View">
+          <DATE>20250831</DATE>
+          <VOUCHERTYPENAME>Contra</VOUCHERTYPENAME>
+          <VOUCHERNUMBER>1</VOUCHERNUMBER>
+          <NARRATION>Cash deposit of Rs. 10,000 into HDFC Bank</NARRATION>
+          <AMOUNT>10000.00</AMOUNT>
+        </VOUCHER>
+      </COLLECTION>
+    </DATA>
+  </BODY>
+</ENVELOPE>
+```
+
+---
+
+## 9. Part VI: TallyPrime F12 Voucher Configuration Specifications
+
+In TallyPrime, pressing **F12: Configure** on any voucher entry screen opens the Voucher Configuration modal. These settings govern UI prompts, validation rules, sub-form popups, and automated tag injection into the XML envelope.
+
+### A. Comparative F12 Configuration Matrix across Voucher Types
+
+| Configuration Option | Payment Voucher | Receipt Voucher | Contra Voucher | Sales Invoice | Purchase Voucher |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Use Cr/Dr instead of To/By** | ✅ Yes | ✅ Yes | ✅ Yes | ✅ (Accounting Mode) | ✅ (Accounting Mode) |
+| **Provide Buyer / Supplier details** | Optional | Optional | ❌ No | ✅ **Provide Buyer Details** | ✅ **Provide Supplier Details** |
+| **Provide Order & Logistics details** | ❌ No | ❌ No | ❌ No | ✅ **Dispatch, Order & Export** | ✅ **Receipt Note, Order & Import** |
+| **Select common Ledger for Item Allocation** | ❌ No | ❌ No | ❌ No | ✅ **Yes** | ✅ **Yes** |
+| **Bill Reference / Invoice Reference** | ❌ No | ❌ No | ❌ No | ✅ **Auto 'New Ref' (Vch No)** | ✅ **Supplier Inv No & Date** |
+| **Warn on negative Stock Balance** | ❌ No | ❌ No | ❌ No | ✅ **Core Warning** | ✅ **Core Warning** |
+| **Provide Cash / Trade Discount %** | ❌ No | ❌ No | ❌ No | ✅ **Line Item %** | ✅ **Line Item %** |
+| **Rate Inclusive of Tax for Stock Items** | ❌ No | ❌ No | ❌ No | ✅ **MRP/Tax Mode** | ❌ **Not Applicable (Basic Rate)** |
+| **Send e-Way Bill details after saving** | ❌ No | ❌ No | ❌ No | ✅ **Core Feature** | ❌ **Inbound Supplier Generated** |
+| **Show Turnover from selected Party** | ❌ No | ❌ No | ❌ No | ✅ **Customer Sales Total** | ✅ **Supplier Purchase Total** |
+| **Warn on negative Cash Balance** | ✅ Yes | ✅ Yes | ✅ Yes | ❌ No | ❌ No |
+| **Preallocate bills for Vouchers** | ✅ Yes | ✅ Yes | ❌ No | ❌ No | ❌ No |
+| **Show list of Bills for selection** | ✅ Yes | ✅ Yes | ❌ No | ❌ No | ❌ No |
+| **Show Inventory details** | Optional | Optional | ❌ No | ✅ **Mandatory** | ✅ **Mandatory** |
+| **Show Current Balance of Ledgers** | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
+| **Use default Bank Allocations** | ✅ Yes | ✅ Yes | ✅ Yes | Optional | ✅ **Direct Bank Purchase** |
+| **Auto Cheque Numbering & Cheque Range** | ✅ **Yes (Company Cheques)** | ❌ **No (Customer Inbound)** | ✅ **Yes (Withdrawals)** | ❌ No | ✅ **Yes (Bank Purchase)** |
+| **Print Cheque after saving Voucher** | ✅ **Yes** | ❌ **No** | ✅ **Yes** | ❌ No | ✅ **Yes (Bank Purchase)** |
+| **Provide Cash Denomination details** | Optional | Optional | ✅ **Core Feature** | ❌ No | ❌ No |
+| **Provide Party details for GST** | Optional | Optional | ❌ No | ✅ **Yes** | ✅ **Yes** |
+| **Modify GST & HSN/SAC details** | Optional | Optional | ❌ No | ✅ **Yes** | ✅ **Yes** |
+
+---
+
+### B. Detailed Technical Specifications for Each Configuration Parameter
+
+#### 1. Invoicing & Logistics Details (Sales vs Purchase)
+- **`Provide Buyer details` (Sales) / `Provide Supplier details` (Purchase)**:
+  - *UI Effect*: Prompts for Consignee / Buyer / Supplier Name, Address, GSTIN, and State in the header subform.
+  - *XML Impact*: Populates `<BASICBUYERNAME>`, `<BASICBUYERADDRESS.LIST>`, `<PLACEOFSUPPLY>`, `<BUYERPINCODE>`, `<BUYERSTATE>`, `<CONSIGNEESTATENAME>`, `<CONSIGNEEGSTIN>`.
+- **`Provide Dispatch, Order, and Export details` (Sales) vs `Provide Receipt Note, Order, and Import details` (Purchase)**:
+  - *UI Effect*: In Sales, prompts for Dispatch Doc No, Despatched through, Destination, Buyer PO Ref & Date. In Purchase, prompts for Inward Receipt Note No, Supplier Order Ref & Date, and Port/Import details.
+  - *XML Impact*: Injects `<BASICORDERREF>`, `<BASICORDERDATE>`, `<BASICSHIPPEDBY>`, `<BASICFINALDESTINATION>`, `<BASICSHIPDOCUMENTNO>`.
+- **`Use Voucher No. as Bill Reference` (Sales) vs `Provide Supplier Invoice details` (Purchase)**:
+  - *Sales*: Automatically assigns the sales invoice number as `New Ref` in `<BILLALLOCATIONS.LIST>`.
+  - *Purchase*: Prompts for the vendor's actual invoice number and invoice date at the top of voucher entry, serializing `<REFERENCE>` and `<REFERENCEDATE>`.
+- **`Select common Ledger Account for Item Allocation`**:
+  - *UI Effect*: When `Yes`, prompts for a single global Sales/Purchase Ledger (e.g. `Purchase - GST 18%`) in the header. When `No`, prompts for individual accounting ledger allocations per item line.
+- **`Warn on negative Stock Balance`**:
+  - *UI Effect*: Triggers immediate modal warning if item quantity exceeds available godown stock.
+  - *XML Impact*: Client-side stock check validation rule.
+- **`Provide Cash/Trade Discount`**:
+  - *UI Effect*: Displays a dedicated `Disc %` column next to item rates in the item grid.
+  - *XML Impact*: Injects `<DISCOUNT>{discount_pct}</DISCOUNT>` inside `<ALLINVENTORYENTRIES.LIST>`.
+- **`Show Turnover from selected Party A/c`**:
+  - *UI Effect*: Displays the customer's sales turnover or supplier's total purchases for the financial year below the party ledger selector.
+
+#### 2. Pricing & Bank Allocations on Direct Purchase
+- **`Provide Rate Inclusive of Tax for Stock Items` (Sales Only)**:
+  - *UI Effect*: Enables entering MRP / Tax-inclusive selling rate directly. Tally automatically calculates and posts the basic taxable rate and GST breakdown. (Disabled for Purchase as B2B invoices quote basic rates).
+  - *XML Impact*: Injects `<INCLUSIVETAXRATE>` in inventory allocations.
+- **`Print Cheque after saving Voucher` & `Auto Cheque Numbering` (Purchase & Payment)**:
+  - *UI Effect*: When purchasing goods with direct Bank settlement (Bank ledger in party field), triggers company chequebook instrument numbering and instant PDF printing on save.
+  - *XML Impact*: Injects `<PARTYMAILINGDETAILS.LIST>` and `<PLACEOFSUPPLY>`.
+- **`Modify GST & HSN/SAC related details`**:
+  - *UI Effect*: Overrides tax rates or HSN/SAC codes at transaction runtime.
+  - *XML Impact*: Injects `<RATEDETAILS.LIST>` overrides.
+
+#### 4. Bank Details
+- **`Use default Bank Allocations` & `Set Ledger-wise Bank Allocations`**:
+  - *UI Effect*: Opens the Banking Details sub-form whenever a Bank ledger is selected.
+  - *XML Impact*: Generates `<BANKALLOCATIONS.LIST>` with `<TRANSACTIONTYPE>`, `<INSTRUMENTNUMBER>`, `<INSTRUMENTDATE>`, `<PAYMENTFAVOURING>`.
+- **`Provide Cash Denomination details` (Contra & Cash Vouchers)**:
+  - *UI Effect*: Prompts for currency count breakdown (₹2000, ₹500, ₹200, ₹100, ₹50, ₹20, ₹10, ₹5, ₹2, ₹1).
+  - *XML Impact*: Injects `<DENOMINATION.LIST>` entries under `<BANKALLOCATIONS.LIST>`:
+    ```xml
+    <DENOMINATION.LIST>
+      <DENOMINATIONTYPE>500</DENOMINATIONTYPE>
+      <DENOMINATIONCOUNT>10</DENOMINATIONCOUNT>
+    </DENOMINATION.LIST>
+    ```
+
+---
+
+### C. XML Data Flow & ERP Synchronization Mechanism
+
+```
+[MyTally Web UI / F12 Configuration Button]
+        │
+        ├── Reads Configuration from database (use_cr_dr, provide_supplier_ref, bank_allocations)
+        ├── Dynamic Form Prompts (Bill Settlement Drawer, Banking Allocations, Cash Denominations)
+        ▼
+[FastAPI Backend Serializer]
+        │
+        ├── Builds <VOUCHER> XML with explicit <BILLALLOCATIONS.LIST>, <BANKALLOCATIONS.LIST>, <DENOMINATION.LIST>
+        ▼
+[TallyPrime XML Server (Port 9000)]
+        │
+        └── Directly imports & posts without requiring interactive operator prompts!
+```
+
+## 10. Troubleshooting & Common Pitfalls
 
 | Error Message / Symptom | Root Cause | Solution |
 | :--- | :--- | :--- |

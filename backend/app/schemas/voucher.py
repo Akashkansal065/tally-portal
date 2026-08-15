@@ -279,3 +279,59 @@ class ApprovalRequestResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class VoucherConfigurationBase(BaseModel):
+    # General Details
+    use_cr_dr: bool = True
+    provide_supplier_ref: bool = False
+    warn_negative_cash: bool = True
+    preallocate_bills: bool = False
+    show_bill_wise_details: bool = True
+    show_bill_wise_multiple_lines: bool = True
+    show_list_of_bills: bool = True
+    show_final_bill_balances: bool = True
+    skip_date_field: bool = False
+    show_inventory_details: bool = False
+    show_ledger_current_balance: bool = True
+    warn_voucher_number_length: bool = True
+    enable_stripe_view: bool = False
+
+    # Sales / Invoice Specific Details
+    provide_buyer_details: bool = True
+    provide_dispatch_order_export: bool = True
+    provide_order_details: bool = True
+    select_common_sales_ledger: bool = True
+    use_vch_no_as_bill_ref: bool = True
+    warn_negative_stock: bool = True
+    provide_trade_discount: bool = False
+    rate_inclusive_of_tax: bool = False
+    show_party_turnover: bool = False
+
+    # Bank Details
+    use_default_bank_allocations: bool = False
+    auto_cheque_numbering: bool = True
+    select_cheque_range: bool = True
+    set_ledger_bank_allocations: bool = False
+    print_cheque_after_saving: bool = False
+    show_cheque_details_before_printing: bool = True
+    provide_cash_denominations: bool = False
+
+    # Payment Gateway Details
+    use_default_pg_allocations: bool = False
+    set_ledger_pg_allocations: bool = False
+
+    # GST & E-Way Bill Details
+    provide_party_gst_details: bool = False
+    modify_gst_hsn_details: bool = False
+    send_eway_bill_details: bool = True
+
+class VoucherConfigurationUpdate(VoucherConfigurationBase):
+    pass
+
+class VoucherConfigurationResponse(VoucherConfigurationBase):
+    config_id: Optional[int] = None
+    company_id: Optional[int] = None
+    voucher_type_id: int
+
+    class Config:
+        from_attributes = True

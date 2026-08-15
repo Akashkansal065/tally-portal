@@ -1,11 +1,12 @@
 'use client'
 
 import React, { useState, useEffect, useMemo } from 'react'
-import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap, Landmark, CreditCard, QrCode, Percent, ShieldCheck, Info } from 'lucide-react'
+import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap, Landmark, CreditCard, QrCode, Percent, ShieldCheck, Info, Settings2 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { toast } from 'sonner'
+import VoucherConfigurationModal, { VoucherConfiguration } from './VoucherConfigurationModal'
 
 export type VoucherFormModalProps = {
   isOpen: boolean
@@ -39,6 +40,44 @@ export default function VoucherFormModal({
   const [status, setStatus] = useState('confirmed')
   const [validationError, setValidationError] = useState<string | null>(null)
   const [showRefInfo, setShowRefInfo] = useState(false)
+  
+  // Voucher F12 Configuration States
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false)
+  const [voucherConfig, setVoucherConfig] = useState<VoucherConfiguration | null>(null)
+
+  // Fetch F12 Configuration when voucher type is selected
+  useEffect(() => {
+    if (selectedType?.voucher_type_id && token) {
+      fetch(`${API_BASE}/voucher-type/${selectedType.voucher_type_id}/configuration`, {
+        headers: authHeaders(token),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data && !data.detail) {
+            setVoucherConfig(data)
+          }
+        })
+        .catch(console.error)
+    }
+  }, [selectedType?.voucher_type_id, token])
+
+  const handleSaveConfig = async (updated: VoucherConfiguration) => {
+    if (!selectedType?.voucher_type_id || !token) return
+    const res = await fetch(`${API_BASE}/voucher-type/${selectedType.voucher_type_id}/configuration`, {
+      method: 'PUT',
+      headers: {
+        ...authHeaders(token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(updated),
+    })
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.detail || 'Failed to save configuration')
+    }
+    const saved = await res.json()
+    setVoucherConfig(saved)
+  }
   
   // 2. Ledgers State & Sync
   const [localLedgers, setLocalLedgers] = useState<any[]>(ledgers || [])
@@ -927,7 +966,18 @@ export default function VoucherFormModal({
               </label>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"><X className="w-5 h-5" /></button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsConfigModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border border-emerald-200 dark:border-emerald-500/30 rounded-lg transition-all shadow-sm cursor-pointer"
+              title="Configure Voucher Settings"
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              <span>Configuration</span>
+            </button>
+            <button onClick={onClose} className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"><X className="w-5 h-5" /></button>
+          </div>
         </div>
 
         {/* Content */}
@@ -1106,7 +1156,7 @@ export default function VoucherFormModal({
               
               {/* Column Headers */}
               <div className="flex gap-3 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
-                <div className="w-24">Type (Dr/Cr)</div>
+                <div className="w-24">Type ({voucherConfig?.use_cr_dr === false ? 'By/To' : 'Dr/Cr'})</div>
                 <div className="flex-1">Particulars / Ledger Account</div>
                 <div className="w-44 text-right pr-4">Amount (₹)</div>
                 <div className="w-8"></div>
@@ -1123,8 +1173,8 @@ export default function VoucherFormModal({
                         setEntries(entries.map(x => x.id === e.id ? { ...x, type: evt.target.value } : x))
                       }}
                     >
-                      <option value="Debit">Dr</option>
-                      <option value="Credit">Cr</option>
+                      <option value="Debit">{voucherConfig?.use_cr_dr === false ? 'By' : 'Dr'}</option>
+                      <option value="Credit">{voucherConfig?.use_cr_dr === false ? 'To' : 'Cr'}</option>
                     </select>
                     
                     <div className="flex-1 flex gap-2">
@@ -2252,6 +2302,15 @@ export default function VoucherFormModal({
             </div>
           </div>
         )}
+
+        {/* 11. Voucher F12 Configuration Modal */}
+        <VoucherConfigurationModal
+          isOpen={isConfigModalOpen}
+          onClose={() => setIsConfigModalOpen(false)}
+          voucherType={selectedType}
+          initialConfig={voucherConfig}
+          onSaveConfig={handleSaveConfig}
+        />
 
       </div>
     </div>

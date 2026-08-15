@@ -444,6 +444,7 @@ class MstVoucherType(Base):
     suffixes = relationship("MstVoucherTypeSuffix", back_populates="voucher_type", cascade="all, delete-orphan")
     restarts = relationship("MstVoucherTypeRestart", back_populates="voucher_type", cascade="all, delete-orphan")
     classes = relationship("MstVoucherTypeClass", back_populates="voucher_type", cascade="all, delete-orphan")
+    configuration = relationship("MstVoucherConfiguration", back_populates="voucher_type", uselist=False, cascade="all, delete-orphan")
 
 class MstVoucherTypePrefix(Base):
     __tablename__ = "voucher_type_prefixes"
@@ -497,6 +498,61 @@ class MstVoucherTypeClassGroup(Base):
     is_included = Column(Boolean, nullable=False, default=True) # True = Include, False = Exclude
     
     voucher_class = relationship("MstVoucherTypeClass", back_populates="groups")
+
+class MstVoucherConfiguration(Base):
+    __tablename__ = "voucher_configurations"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+
+    config_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    voucher_type_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_types.voucher_type_id", ondelete="CASCADE"), nullable=False, unique=True)
+
+    # General Details
+    use_cr_dr = Column(Boolean, default=True)
+    provide_supplier_ref = Column(Boolean, default=False)
+    warn_negative_cash = Column(Boolean, default=True)
+    preallocate_bills = Column(Boolean, default=False)
+    show_bill_wise_details = Column(Boolean, default=True)
+    show_bill_wise_multiple_lines = Column(Boolean, default=True)
+    show_list_of_bills = Column(Boolean, default=True)
+    show_final_bill_balances = Column(Boolean, default=True)
+    skip_date_field = Column(Boolean, default=False)
+    show_inventory_details = Column(Boolean, default=False)
+    show_ledger_current_balance = Column(Boolean, default=True)
+    warn_voucher_number_length = Column(Boolean, default=True)
+    enable_stripe_view = Column(Boolean, default=False)
+
+    # Sales / Invoice Specific Details
+    provide_buyer_details = Column(Boolean, default=True)
+    provide_dispatch_order_export = Column(Boolean, default=True)
+    provide_order_details = Column(Boolean, default=True)
+    select_common_sales_ledger = Column(Boolean, default=True)
+    use_vch_no_as_bill_ref = Column(Boolean, default=True)
+    warn_negative_stock = Column(Boolean, default=True)
+    provide_trade_discount = Column(Boolean, default=False)
+    rate_inclusive_of_tax = Column(Boolean, default=False)
+    show_party_turnover = Column(Boolean, default=False)
+
+    # Bank Details
+    use_default_bank_allocations = Column(Boolean, default=False)
+    auto_cheque_numbering = Column(Boolean, default=True)
+    select_cheque_range = Column(Boolean, default=True)
+    set_ledger_bank_allocations = Column(Boolean, default=False)
+    print_cheque_after_saving = Column(Boolean, default=False)
+    show_cheque_details_before_printing = Column(Boolean, default=True)
+    provide_cash_denominations = Column(Boolean, default=False)
+
+    # Payment Gateway Details
+    use_default_pg_allocations = Column(Boolean, default=False)
+    set_ledger_pg_allocations = Column(Boolean, default=False)
+
+    # GST & E-Way Bill Details
+    provide_party_gst_details = Column(Boolean, default=False)
+    modify_gst_hsn_details = Column(Boolean, default=False)
+    send_eway_bill_details = Column(Boolean, default=True)
+
+    voucher_type = relationship("MstVoucherType", back_populates="configuration")
+    company = relationship("Company")
 
 
 class TrnVoucher(Base):

@@ -1197,61 +1197,60 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
             prevent_duplicates = "Yes" if getattr(vt, 'prevent_duplicates', False) else "No"
 
             xml_envelope = f"""<ENVELOPE>
-<HEADER>
-<TALLYREQUEST>Import Data</TALLYREQUEST>
-</HEADER>
-<BODY>
-<IMPORTDATA>
-<REQUESTDESC>
-<REPORTNAME>All Masters</REPORTNAME>
-<STATICVARIABLES>
-<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-</STATICVARIABLES>
-</REQUESTDESC>
-<REQUESTDATA>
-<TALLYMESSAGE xmlns:UDF="TallyUDF">
-<VOUCHERTYPE NAME="{vt_name}" ACTION="{action}">
-<ORIGINALNAME>{original_name}</ORIGINALNAME>
-<LANGUAGENAME.LIST>
- <NAME.LIST TYPE="String">
-  <NAME>{vt_name}</NAME>
- </NAME.LIST>
-</LANGUAGENAME.LIST>
-<PARENT>{parent}</PARENT>
-<NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
-<PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
-<EFFECTIVEDATE>{"Yes" if getattr(vt, 'use_effective_dates', False) else "No"}</EFFECTIVEDATE>
-<USEZEROENTRIES>{"Yes" if getattr(vt, 'allow_zero_valued_transactions', False) else "No"}</USEZEROENTRIES>
-<ISOPTIONAL>{"Yes" if getattr(vt, 'is_optional_by_default', False) else "No"}</ISOPTIONAL>
-<COMMONNARRATION>{"Yes" if getattr(vt, 'allow_narration_in_voucher', True) else "No"}</COMMONNARRATION>
-<MULTINARRATION>{"Yes" if getattr(vt, 'provide_narrations_for_each_ledger', False) else "No"}</MULTINARRATION>
-<PRINTAFTERSAVE>{"Yes" if getattr(vt, 'print_voucher_after_saving', False) else "No"}</PRINTAFTERSAVE>
-<WHATSAPPAFTERSAVE>{"Yes" if getattr(vt, 'whatsapp_voucher_after_saving', False) else "No"}</WHATSAPPAFTERSAVE>
-<ISDEFAULTALLOCENABLED>{"Yes" if getattr(vt, 'enable_default_accounting_allocations', False) else "No"}</ISDEFAULTALLOCENABLED>
-<TRACKADDLCOST>{"Yes" if getattr(vt, 'track_additional_costs_for_purchases', False) else "No"}</TRACKADDLCOST>
-{f'<VCHPRINTJURISDICTION>{vt.default_jurisdiction}</VCHPRINTJURISDICTION>' if getattr(vt, 'default_jurisdiction', None) else ''}
-{f'<VCHPRINTTITLE>{vt.default_title_to_print}</VCHPRINTTITLE>' if getattr(vt, 'default_title_to_print', None) else ''}
-<VOUCHERNUMBERSERIES.LIST>
- <NAME>Default</NAME>
- <NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
- <NUMBERINGSUBMETHOD>{vt.numbering_behavior or ""}</NUMBERINGSUBMETHOD>
- <PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
- <PREFILLZERO>{"Yes" if getattr(vt, 'prefill_with_zero', False) else "No"}</PREFILLZERO>
- <USEDELETEDVCHNUM>{"Yes" if getattr(vt, 'show_unused_vch_nos', False) else "No"}</USEDELETEDVCHNUM>
- <WIDTHOFNUMBER>{getattr(vt, 'width_of_numerical_part', 0)}</WIDTHOFNUMBER>
- {''.join(f"<PREFIXLIST.LIST><DATE>{p.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{p.particulars}</PARTICULARS></PREFIXLIST.LIST>" for p in vt.prefixes)}
- {''.join(f"<SUFFIXLIST.LIST><DATE>{s.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{s.particulars}</PARTICULARS></SUFFIXLIST.LIST>" for s in vt.suffixes)}
- {''.join(f"<RESTARTFROMLIST.LIST><DATE>{r.applicable_from.strftime('%Y%m%d')}</DATE><PERIODBEGINNIGNUM>{r.starting_number}</PERIODBEGINNIGNUM><RESTARTFROM>{r.periodicity}</RESTARTFROM></RESTARTFROMLIST.LIST>" for r in vt.restarts)}
-</VOUCHERNUMBERSERIES.LIST>
-{''.join(f'''<VOUCHERCLASSLIST.LIST>
- <CLASSNAME>{c.class_name}</CLASSNAME>
- {f"<BANKALLOCFOR>{c.bank_alloc_for}</BANKALLOCFOR>" if c.bank_alloc_for else ""}
-</VOUCHERCLASSLIST.LIST>''' for c in vt.classes)}
-</VOUCHERTYPE>
-</TALLYMESSAGE>
-</REQUESTDATA>
-</IMPORTDATA>
-</BODY>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <VOUCHERTYPE NAME="{vt_name}" ACTION="{action}">
+          <ORIGINALNAME>{original_name}</ORIGINALNAME>
+          <LANGUAGENAME.LIST>
+            <NAME.LIST TYPE="String">
+              <NAME>{vt_name}</NAME>
+            </NAME.LIST>
+          </LANGUAGENAME.LIST>
+          <PARENT>{parent}</PARENT>
+          <NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
+          <PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
+          <EFFECTIVEDATE>{"Yes" if getattr(vt, 'use_effective_dates', False) else "No"}</EFFECTIVEDATE>
+          <USEZEROENTRIES>{"Yes" if getattr(vt, 'allow_zero_valued_transactions', False) else "No"}</USEZEROENTRIES>
+          <ISOPTIONAL>{"Yes" if getattr(vt, 'is_optional_by_default', False) else "No"}</ISOPTIONAL>
+          <COMMONNARRATION>{"Yes" if getattr(vt, 'allow_narration_in_voucher', True) else "No"}</COMMONNARRATION>
+          <MULTINARRATION>{"Yes" if getattr(vt, 'provide_narrations_for_each_ledger', False) else "No"}</MULTINARRATION>
+          <PRINTAFTERSAVE>{"Yes" if getattr(vt, 'print_voucher_after_saving', False) else "No"}</PRINTAFTERSAVE>
+          <WHATSAPPAFTERSAVE>{"Yes" if getattr(vt, 'whatsapp_voucher_after_saving', False) else "No"}</WHATSAPPAFTERSAVE>
+          <ISDEFAULTALLOCENABLED>{"Yes" if getattr(vt, 'enable_default_accounting_allocations', False) else "No"}</ISDEFAULTALLOCENABLED>
+          <TRACKADDLCOST>{"Yes" if getattr(vt, 'track_additional_costs_for_purchases', False) else "No"}</TRACKADDLCOST>
+          {f'<VCHPRINTJURISDICTION>{vt.default_jurisdiction}</VCHPRINTJURISDICTION>' if getattr(vt, 'default_jurisdiction', None) else ''}
+          {f'<VCHPRINTTITLE>{vt.default_title_to_print}</VCHPRINTTITLE>' if getattr(vt, 'default_title_to_print', None) else ''}
+          <VOUCHERNUMBERSERIES.LIST>
+            <NAME>Default</NAME>
+            <NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
+            <NUMBERINGSUBMETHOD>{vt.numbering_behavior or ""}</NUMBERINGSUBMETHOD>
+            <PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
+            <PREFILLZERO>{"Yes" if getattr(vt, 'prefill_with_zero', False) else "No"}</PREFILLZERO>
+            <USEDELETEDVCHNUM>{"Yes" if getattr(vt, 'show_unused_vch_nos', False) else "No"}</USEDELETEDVCHNUM>
+            <WIDTHOFNUMBER>{getattr(vt, 'width_of_numerical_part', 0)}</WIDTHOFNUMBER>
+            {''.join(f"<PREFIXLIST.LIST><DATE>{p.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{p.particulars}</PARTICULARS></PREFIXLIST.LIST>" for p in vt.prefixes)}
+            {''.join(f"<SUFFIXLIST.LIST><DATE>{s.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{s.particulars}</PARTICULARS></SUFFIXLIST.LIST>" for s in vt.suffixes)}
+            {''.join(f"<RESTARTFROMLIST.LIST><DATE>{r.applicable_from.strftime('%Y%m%d')}</DATE><PERIODBEGINNIGNUM>{r.starting_number}</PERIODBEGINNIGNUM><RESTARTFROM>{r.periodicity}</RESTARTFROM></RESTARTFROMLIST.LIST>" for r in vt.restarts)}
+          </VOUCHERNUMBERSERIES.LIST>
+          {''.join(f'''<VOUCHERCLASSLIST.LIST>
+            <CLASSNAME>{c.class_name}</CLASSNAME>
+            {f"<BANKALLOCFOR>{c.bank_alloc_for}</BANKALLOCFOR>" if c.bank_alloc_for else ""}
+          </VOUCHERCLASSLIST.LIST>''' for c in vt.classes)}
+        </VOUCHERTYPE>
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
 </ENVELOPE>"""
 
         response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
