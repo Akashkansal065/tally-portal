@@ -17,7 +17,53 @@ class SyncQueue(Base):
     is_processed = Column(Boolean, default=False)
     attempts = Column(Integer, default=0)
     error_message = Column(String(500), nullable=True)
+    status = Column(String(50), default="PENDING") # PENDING, PROCESSING, SUCCESS, FAILED, EXCEPTION
+    last_payload = Column(Text, nullable=True)
+    last_response = Column(Text, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+
+class SyncTrafficLog(Base):
+    __tablename__ = "sync_traffic_logs"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    log_id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    sync_id = Column(BigInteger, nullable=True, index=True)
+    entity_type = Column(String(50), nullable=False, index=True) # Voucher, Ledger, StockItem, Group, VoucherType
+    entity_id = Column(BigInteger, nullable=True, index=True)
+    entity_name = Column(String(255), nullable=True) # e.g. "Purchase #27", "Amar Enterprises"
+    action = Column(String(50), nullable=False) # Create, Alter, Delete, Cancel, Query
+    status = Column(String(50), nullable=False, index=True) # SUCCESS, FAILED, EXCEPTION, TIMEOUT, CONFLICT
+    http_status = Column(Integer, default=200)
+    outbound_format = Column(String(20), default="XML") # XML, JSONEX, JSON
+    outbound_payload = Column(Text, nullable=True)
+    curl_command = Column(Text, nullable=True) # Copy-paste ready for Postman / Terminal
+    inbound_response = Column(Text, nullable=True)
+    error_summary = Column(String(500), nullable=True)
+    parsed_created = Column(Integer, default=0)
+    parsed_altered = Column(Integer, default=0)
+    parsed_deleted = Column(Integer, default=0)
+    parsed_errors = Column(Integer, default=0)
+    parsed_exceptions = Column(Integer, default=0)
+    tally_vchnumber = Column(String(50), nullable=True)
+    duration_ms = Column(Integer, default=0)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+
+class DeletedRecordAudit(Base):
+    __tablename__ = "deleted_records_audit"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    audit_id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    entity_type = Column(String(50), nullable=False, index=True) # Voucher, Ledger, StockItem, Group, VoucherType
+    record_id = Column(BigInteger, nullable=False, index=True)
+    tally_guid = Column(String(150), nullable=True, index=True)
+    entity_identifier = Column(String(255), nullable=True) # e.g. "Purchase #27", "Amar Enterprises"
+    deleted_by_user_id = Column(Integer, nullable=True)
+    tally_sync_status = Column(String(50), default="PENDING") # PENDING, SYNCED_TO_TALLY, ALREADY_DELETED_IN_TALLY, SYNC_FAILED
+    snapshot_data = Column(JSON, nullable=True) # Full JSON snapshot before deletion for audit / rollback
+    deleted_at = Column(DateTime, server_default=func.now(), index=True)
 
 class SalaryComponent(Base):
     __tablename__ = "salary_components"

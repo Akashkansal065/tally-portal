@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
-import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info, Edit3, Trash2 } from 'lucide-react'
+import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info, Edit3, Trash2, RefreshCw, AlertTriangle, CheckCircle2, GitCompare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherFormModal from '@/components/VoucherFormModal'
@@ -102,6 +102,12 @@ export default function VouchersPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [ledgers, setLedgers] = useState<any[]>([])
   const [voucherTypes, setVoucherTypes] = useState<any[]>([])
+
+  // Live Sync & Conflict comparison states
+  const [syncingVoucherId, setSyncingVoucherId] = useState<number | null>(null)
+  const [comparingVoucher, setComparingVoucher] = useState<any | null>(null)
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [resolveLoading, setResolveLoading] = useState(false)
 
   const { fyLabel, fyStartYear, fyEndYear, months: fyMonths } = useMemo(() => getFinancialYearMonths(), [])
 
@@ -300,6 +306,70 @@ export default function VouchersPage() {
     setTimeout(() => {
       window.print()
     }, 500)
+  }
+
+  // 1-Click Real-time push to Tally handler
+  const handleSyncPushVoucher = async (e: React.MouseEvent, voucherId: number) => {
+    e.stopPropagation()
+    if (!token) return
+    setSyncingVoucherId(voucherId)
+    try {
+      const res = await fetch(`${API_BASE}/sync/vouchers/${voucherId}/retry-push`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const data = await res.json()
+      if (data.last_sync_status === 'SUCCESS') {
+        toast.success(`Voucher #${voucherId} successfully pushed to Tally Prime!`)
+      } else if (data.last_sync_status === 'EXCEPTION') {
+        toast.warning(`Tally Exception: ${data.error_summary || 'Check diagnostics'}`)
+      } else {
+        toast.error(`Push failed: ${data.error_summary || 'Check connection'}`)
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to push voucher to Tally')
+    } finally {
+      setSyncingVoucherId(null)
+    }
+  }
+
+  // Conflict Comparison Handler
+  const handleOpenCompare = async (e: React.MouseEvent, voucherId: number) => {
+    e.stopPropagation()
+    if (!token) return
+    setCompareLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/sync/vouchers/${voucherId}/compare-tally`, {
+        headers: authHeaders(token)
+      })
+      if (!res.ok) throw new Error('Failed to load comparison data from Tally')
+      const data = await res.json()
+      setComparingVoucher(data)
+    } catch (err: any) {
+      toast.error(err.message || 'Error comparing voucher with Tally')
+    } finally {
+      setCompareLoading(false)
+    }
+  }
+
+  const handleResolveConflict = async (voucherId: number, strategy: string) => {
+    if (!token) return
+    setResolveLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/sync/vouchers/${voucherId}/resolve-conflict?resolution=${strategy}`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const data = await res.json()
+      toast.success(data.message || 'Conflict resolved successfully')
+      setComparingVoucher(null)
+      // Refresh list
+      window.location.reload()
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to resolve conflict')
+    } finally {
+      setResolveLoading(false)
+    }
   }
 
   const handleOpenEdit = async (e: React.MouseEvent, v: Voucher) => {
@@ -680,8 +750,30 @@ export default function VouchersPage() {
                         })}
                       </span>
 
-                      {/* Social/Export/Edit actions row */}
+                      {/* Social/Export/Edit/Sync actions row */}
                       <div className="flex items-center gap-1.5">
+                        {/* 1-Click Sync Push to Tally */}
+                        <button
+                          onClick={(e) => handleSyncPushVoucher(e, voucher.voucher_id)}
+                          disabled={syncingVoucherId === voucher.voucher_id}
+                          className={cn(
+                            "h-7 w-7 flex items-center justify-center rounded-full border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer transition-colors shadow-2xs",
+                            syncingVoucherId === voucher.voucher_id && "opacity-50"
+                          )}
+                          title="Push / Sync to Tally Prime Real-time"
+                        >
+                          <RefreshCw className={cn("h-3.5 w-3.5", syncingVoucherId === voucher.voucher_id && "animate-spin")} />
+                        </button>
+
+                        {/* Compare with Tally */}
+                        <button
+                          onClick={(e) => handleOpenCompare(e, voucher.voucher_id)}
+                          className="h-7 w-7 flex items-center justify-center rounded-full border border-purple-500/30 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/40 cursor-pointer transition-colors shadow-2xs"
+                          title="Compare live with Tally Prime (Detect Conflicts)"
+                        >
+                          <GitCompare className="h-3.5 w-3.5" />
+                        </button>
+
                         {/* Edit / Alter Voucher */}
                         <button
                           onClick={(e) => handleOpenEdit(e, voucher)}
@@ -991,7 +1083,7 @@ export default function VouchersPage() {
               <div className="border border-amber-500/20 bg-amber-500/5 rounded-xl p-3.5 space-y-2 flex flex-col justify-between">
                 <div>
                   <div className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-bold text-xs">
-                    <AlertCircle className="w-4 h-4" /> Cancel Voucher
+                    <AlertTriangle className="w-4 h-4" /> Cancel Voucher
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
                     Zeroes out financial balances, reverses inventory, and marks as Cancelled in Tally while preserving the sequence number.
@@ -1038,6 +1130,135 @@ export default function VouchersPage() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Side-by-Side Conflict Comparison & Resolution Modal */}
+      {comparingVoucher && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-card border border-border rounded-3xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-muted/20">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center">
+                  <GitCompare className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                    <span>Tally Live State Comparison</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-muted text-muted-foreground">
+                      #{comparingVoucher.mytally?.vch_number}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Compare MyTally database record against live TallyPrime socket state
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setComparingVoucher(null)}
+                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
+              {/* Conflict Status Alert */}
+              {comparingVoucher.has_conflict ? (
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 space-y-1">
+                  <div className="font-extrabold flex items-center gap-1.5 text-xs">
+                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                    Conflict / Version Difference Detected
+                  </div>
+                  <ul className="list-disc pl-5 text-[11px] space-y-0.5 font-medium">
+                    {comparingVoucher.conflict_reasons?.map((r: string, idx: number) => (
+                      <li key={idx}>{r}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 flex items-center gap-2 font-bold text-xs">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span>MyTally database and TallyPrime are in 100% perfect sync! No conflicts detected.</span>
+                </div>
+              )}
+
+              {/* Side-by-side comparison table */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* MyTally DB State */}
+                <div className="p-4 rounded-2xl bg-muted/20 border border-border space-y-2.5">
+                  <div className="font-black text-xs text-foreground flex items-center justify-between border-b border-border/60 pb-2">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                      MyTally Database
+                    </span>
+                    <span className="text-[10px] text-muted-foreground font-mono">AlterID: {comparingVoucher.mytally?.tally_alter_id || '0'}</span>
+                  </div>
+
+                  <div className="space-y-1.5 font-mono text-[11px]">
+                    <div className="flex justify-between"><span className="text-muted-foreground font-sans">Voucher Number:</span><span className="font-bold">{comparingVoucher.mytally?.vch_number}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground font-sans">Voucher Type:</span><span>{comparingVoucher.mytally?.vch_type}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground font-sans">Date:</span><span>{comparingVoucher.mytally?.date}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground font-sans">Amount:</span><span className="font-bold text-emerald-600">₹{comparingVoucher.mytally?.amount?.toFixed(2)}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground font-sans">Status:</span><span>{comparingVoucher.mytally?.is_cancelled ? "Cancelled" : "Active"}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground font-sans">Tally GUID:</span><span className="text-[10px] truncate max-w-[140px]" title={comparingVoucher.mytally?.tally_guid}>{comparingVoucher.mytally?.tally_guid || "None"}</span></div>
+                  </div>
+                </div>
+
+                {/* Live Tally Prime State */}
+                <div className="p-4 rounded-2xl bg-muted/20 border border-border space-y-2.5">
+                  <div className="font-black text-xs text-foreground flex items-center justify-between border-b border-border/60 pb-2">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-purple-500" />
+                      Live Tally Prime Instance
+                    </span>
+                    <span className="text-[10px] text-muted-foreground font-mono">AlterID: {comparingVoucher.tally?.alter_id || '0'}</span>
+                  </div>
+
+                  {comparingVoucher.tally ? (
+                    <div className="space-y-1.5 font-mono text-[11px]">
+                      <div className="flex justify-between"><span className="text-muted-foreground font-sans">Voucher Number:</span><span className="font-bold">{comparingVoucher.tally.vch_number}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground font-sans">Voucher Type:</span><span>{comparingVoucher.tally.vch_type}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground font-sans">Date:</span><span>{comparingVoucher.tally.date}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground font-sans">Amount:</span><span className="font-bold text-purple-600">₹{Math.abs(comparingVoucher.tally.amount || 0).toFixed(2)}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground font-sans">Status:</span><span>{comparingVoucher.tally.is_cancelled ? "Cancelled" : "Active"}</span></div>
+                      <div className="flex justify-between"><span className="text-muted-foreground font-sans">Tally GUID:</span><span className="text-[10px] truncate max-w-[140px]" title={comparingVoucher.tally.guid}>{comparingVoucher.tally.guid}</span></div>
+                    </div>
+                  ) : (
+                    <div className="py-8 text-center text-muted-foreground">
+                      <p className="font-bold">Record not found in Tally Prime</p>
+                      <p className="text-[10px] mt-1">This voucher exists only in MyTally DB.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Resolution Strategy Footer */}
+            <div className="p-4 border-t border-border bg-muted/20 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setComparingVoucher(null)}
+                className="px-4 py-2.5 bg-muted hover:bg-muted/80 text-foreground font-bold rounded-xl text-xs transition-all"
+              >
+                Cancel
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleResolveConflict(comparingVoucher.mytally?.voucher_id, "OVERWRITE_TALLY")}
+                  disabled={resolveLoading}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition-all flex items-center gap-1.5 shadow-sm"
+                  title="Overwrite Tally Prime with MyTally DB version"
+                >
+                  {resolveLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Push to Tally (Overwrite)</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

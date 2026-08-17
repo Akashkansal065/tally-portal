@@ -18,6 +18,8 @@ import {
   MapPin,
   Plus,
   Upload,
+  UploadCloud,
+  FileCode,
   CheckCircle2,
   Landmark,
   Loader2,
@@ -25,6 +27,14 @@ import {
   X,
   Zap,
   Database,
+  Copy,
+  Check,
+  Code,
+  AlertTriangle,
+  Terminal,
+  Search,
+  Activity,
+  ArrowUpRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
@@ -79,6 +89,31 @@ type VisitLog = {
   photoUrl?: string | null
 }
 
+export type SyncTrafficLogItem = {
+  log_id: number
+  sync_id: number | null
+  entity_type: string
+  entity_id: number | null
+  entity_name: string | null
+  action: string
+  status: string
+  http_status: number
+  outbound_format: string
+  outbound_payload: string | null
+  curl_command: string | null
+  inbound_response: string | null
+  error_summary: string | null
+  parsed_created: number
+  parsed_altered: number
+  parsed_deleted: number
+  parsed_errors: number
+  parsed_exceptions: number
+  tally_vchnumber: string | null
+  duration_ms: number
+  created_at: string
+}
+
+
 const SYNC_STEPS = [
   "Reading Tally XML file...",
   "Validating ERP Session Token...",
@@ -132,6 +167,97 @@ export default function AdminPage() {
   const [runOnceLoading, setRunOnceLoading] = useState(false)
   const [runOnceResult, setRunOnceResult] = useState<any>(null)
   const [runOnceError, setRunOnceError] = useState('')
+
+  // Sync Health & Traffic Audit Log states
+  const [syncHealth, setSyncHealth] = useState<{
+    status: string
+    pending_queue_count: number
+    synced_queue_count: number
+    total_success_traffic: number
+    total_failed_traffic: number
+    total_exception_traffic: number
+  } | null>(null)
+  const [syncLogs, setSyncLogs] = useState<SyncTrafficLogItem[]>([])
+  const [syncLogsLoading, setSyncLogsLoading] = useState(false)
+  const [syncStatusFilter, setSyncStatusFilter] = useState('ALL')
+  const [syncEntityFilter, setSyncEntityFilter] = useState('ALL')
+  const [syncSearchTerm, setSyncSearchTerm] = useState('')
+  const [inspectLog, setInspectLog] = useState<SyncTrafficLogItem | null>(null)
+  const [copiedLogId, setCopiedLogId] = useState<number | null>(null)
+  const [retryingLogId, setRetryingLogId] = useState<number | null>(null)
+
+  const fetchSyncHealth = useCallback(async () => {
+    if (!token) return
+    try {
+      const res = await fetch(`${API_BASE}/sync/health`, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setSyncHealth(data)
+      }
+    } catch (e) {
+      console.error(e)
+    }
+  }, [token])
+
+  const fetchSyncLogs = useCallback(async () => {
+    if (!token) return
+    setSyncLogsLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (syncStatusFilter !== 'ALL') params.append('status', syncStatusFilter)
+      if (syncEntityFilter !== 'ALL') params.append('entity_type', syncEntityFilter)
+      if (syncSearchTerm.trim()) params.append('search', syncSearchTerm.trim())
+      params.append('limit', '50')
+
+      const res = await fetch(`${API_BASE}/sync/logs?${params.toString()}`, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setSyncLogs(data.logs || [])
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSyncLogsLoading(false)
+    }
+  }, [token, syncStatusFilter, syncEntityFilter, syncSearchTerm])
+
+  useEffect(() => {
+    if (tab === 'sync') {
+      fetchSyncHealth()
+      fetchSyncLogs()
+    }
+  }, [tab, fetchSyncHealth, fetchSyncLogs])
+
+  const handleCopyCurl = (logId: number, curlCommand: string | null) => {
+    if (!curlCommand) return
+    navigator.clipboard.writeText(curlCommand)
+    setCopiedLogId(logId)
+    setTimeout(() => setCopiedLogId(null), 2500)
+  }
+
+  const handleRetrySyncItem = async (log: SyncTrafficLogItem) => {
+    if (!token) return
+    setRetryingLogId(log.log_id)
+    try {
+      if (log.sync_id) {
+        await fetch(`${API_BASE}/sync/queue/${log.sync_id}/retry`, {
+          method: 'POST',
+          headers: authHeaders(token)
+        })
+      } else if (log.entity_type === 'Voucher' && log.entity_id) {
+        await fetch(`${API_BASE}/sync/vouchers/${log.entity_id}/retry-push`, {
+          method: 'POST',
+          headers: authHeaders(token)
+        })
+      }
+      await fetchSyncHealth()
+      await fetchSyncLogs()
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setRetryingLogId(null)
+    }
+  }
 
   // Visit View Filter states (Default to current date)
   const [visitDate, setVisitDate] = useState(() => {
@@ -727,326 +853,605 @@ const handleSavePermissions = async () => {
   } : null
 
   return (
-    <div className="flex flex-col h-full bg-background">
-      <div className="flex-1 overflow-y-auto px-4 pt-5 pb-6 max-w-xl mx-auto w-full space-y-5">
-        {/* Title */}
-        <div>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
-              <Users className="h-5 w-5" />
+    <div className="flex flex-col h-full bg-background min-h-screen">
+      <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12 max-w-7xl mx-auto w-full space-y-6">
+        {/* Modern Desktop Header & Actions */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-card/60 backdrop-blur-md p-5 rounded-2xl border border-border/80 shadow-xs">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center shadow-xs border border-emerald-500/20">
+              <Users className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-xl font-black tracking-tight text-foreground">Admin Portal</h1>
-              <p className="text-xs text-muted-foreground">Manage user roles and main menu visibility settings</p>
+              <div className="flex items-center gap-2">
+                <h1 className="text-2xl font-black tracking-tight text-foreground">Admin Portal</h1>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                  Enterprise
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">Manage user permissions, master data sync, and real-time audit logs</p>
             </div>
           </div>
-        </div>
 
-        {/* Create User & Register Company buttons (only shown when in users directory tab) */}
-        {tab === 'users' && (
-          <div className="flex gap-2">
-            <button 
-              onClick={() => setShowRegisterCompany(true)}
-              className="flex items-center gap-1.5 px-4 py-2.5 bg-sky-500 hover:bg-sky-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-sky-500/10 cursor-pointer"
-            >
-              <Landmark className="h-4 w-4" /> Register Company
-            </button>
-            <button 
-              onClick={() => setShowCreateUser(true)}
-              className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-emerald-500/10 cursor-pointer"
-            >
-              <Plus className="h-4 w-4" /> Create User
-            </button>
-          </div>
-        )}
-
-        {/* Admin Alerts Switch Block */}
-        <div className="bg-card border border-border rounded-2xl p-4 flex items-center justify-between gap-3 shadow-sm">
-          <div className="flex items-start gap-3">
-            <div className="w-9 h-9 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
-              <Bell className="h-4.5 w-4.5 text-emerald-600 animate-pulse" />
-            </div>
-            <div className="min-w-0">
-              <p className="font-bold text-xs flex items-center gap-1.5 text-foreground">
-                Admin Alerts
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              </p>
-              <p className="text-[10px] text-muted-foreground leading-normal mt-0.5">
-                Active! You will receive push notifications when users access ledgers, stocks, orders, or check-ins.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setAlertsEnabled(v => !v)}
-            className={cn(
-              'w-9 h-5 rounded-full p-0.5 transition-colors relative shrink-0',
-              alertsEnabled ? 'bg-emerald-500' : 'bg-muted border border-border'
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Create User & Register Company buttons (shown when in users directory tab) */}
+            {tab === 'users' && (
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setShowRegisterCompany(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-sky-500 hover:bg-sky-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer"
+                >
+                  <Landmark className="h-4 w-4" /> Register Company
+                </button>
+                <button 
+                  onClick={() => setShowCreateUser(true)}
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer"
+                >
+                  <Plus className="h-4 w-4" /> Create User
+                </button>
+              </div>
             )}
-          >
-            <div
-              className={cn(
-                'w-4 h-4 rounded-full bg-white shadow-sm transition-transform',
-                alertsEnabled ? 'translate-x-4' : 'translate-x-0'
-              )}
-            />
-          </button>
+
+            {/* Admin Alerts Compact Desktop Switch */}
+            <div className="flex items-center gap-3 px-3.5 py-2 rounded-xl bg-muted/40 border border-border/80">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-bold text-foreground">Admin Alerts</span>
+              </div>
+              <button
+                onClick={() => setAlertsEnabled(v => !v)}
+                className={cn(
+                  'w-8 h-4.5 rounded-full p-0.5 transition-colors relative shrink-0',
+                  alertsEnabled ? 'bg-emerald-500' : 'bg-muted border border-border'
+                )}
+                title="Toggle real-time push alerts"
+              >
+                <div
+                  className={cn(
+                    'w-3.5 h-3.5 rounded-full bg-white shadow-xs transition-transform',
+                    alertsEnabled ? 'translate-x-3.5' : 'translate-x-0'
+                  )}
+                />
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Dynamic Pills Tabs */}
-        <div className="flex gap-1.5 border-b border-border pb-1 overflow-x-auto scrollbar-none">
+        {/* Dynamic Pills Tabs Navigation */}
+        <div className="flex gap-2 border-b border-border pb-2 overflow-x-auto scrollbar-none">
           <button
             onClick={() => setTab('users')}
             className={cn(
-              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
-              tab === 'users' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'users' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
             )}
           >
-            <UserIcon className="h-3.5 w-3.5" /> User Directory
+            <UserIcon className="h-4 w-4" /> User Directory
           </button>
           <button
             onClick={() => setTab('sync')}
             className={cn(
-              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
-              tab === 'sync' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'sync' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
             )}
           >
-            <RefreshCw className="h-3.5 w-3.5" /> Tally Sync
+            <RefreshCw className="h-4 w-4" /> Tally Sync
           </button>
           <button
             onClick={() => setTab('logs')}
             className={cn(
-              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
-              tab === 'logs' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'logs' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
             )}
           >
-            <FileText className="h-3.5 w-3.5" /> Audit Logs
+            <FileText className="h-4 w-4" /> Audit Logs
           </button>
           <button
             onClick={() => setTab('visits')}
             className={cn(
-              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
-              tab === 'visits' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'visits' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
             )}
           >
-            <MapPin className="h-3.5 w-3.5" /> Visit Logs
+            <MapPin className="h-4 w-4" /> Visit Logs
           </button>
           <button
             onClick={() => setTab('einvoice')}
             className={cn(
-              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
-              tab === 'einvoice' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'einvoice' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
             )}
           >
-            <Shield className="h-3.5 w-3.5" /> E-Invoices
+            <Shield className="h-4 w-4" /> E-Invoices
           </button>
           <button
             onClick={() => setTab('cache')}
             className={cn(
-              'flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-all shrink-0',
-              tab === 'cache' ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'cache' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
             )}
           >
-            <Zap className="h-3.5 w-3.5" /> Cache Control
+            <Zap className="h-4 w-4" /> Cache Control
           </button>
         </div>
 
         {/* Directory/Logs Render Grid */}
-        <div className="space-y-3">
+        <div className="space-y-4">
           {loading ? (
-            <div className="flex justify-center py-10">
-              <div className="w-6 h-6 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+            <div className="flex justify-center py-16">
+              <div className="w-8 h-8 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : tab === 'users' ? (
-            <div className="space-y-3">
-              {users.length === 0 && <p className="text-xs text-muted-foreground text-center py-4">No users found.</p>}
-              {users.map(u => (
-                <div
-                  key={u.user_id}
-                  className={cn(
-                    'bg-card border border-border rounded-2xl p-4 space-y-4 shadow-sm transition-opacity',
-                    !u.is_active && 'opacity-65'
-                  )}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground shrink-0">
-                        <UserIcon className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="font-semibold text-xs text-foreground truncate">{u.username || u.email.split('@')[0]}</p>
-                        <div className="flex gap-1.5 mt-1 items-center">
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 bg-muted text-muted-foreground rounded uppercase tracking-wider">
-                            {u.role_name}
-                          </span>
+            <div>
+              {users.length === 0 && <p className="text-xs text-muted-foreground text-center py-8">No users found.</p>}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {users.map(u => (
+                  <div
+                    key={u.user_id}
+                    className={cn(
+                      'bg-card border border-border/80 hover:border-border rounded-2xl p-5 space-y-4 shadow-xs transition-all hover:shadow-md flex flex-col justify-between',
+                      !u.is_active && 'opacity-65'
+                    )}
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold text-sm shrink-0 border border-emerald-500/20">
+                            {(u.username || u.email).charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-extrabold text-sm text-foreground truncate">{u.username || u.email.split('@')[0]}</p>
+                            <p className="text-[11px] text-muted-foreground truncate">{u.email}</p>
+                          </div>
                         </div>
+
+                        {/* Status Badge */}
+                        <button
+                          onClick={() => toggleUser(u)}
+                          className={cn(
+                            'text-[10px] font-extrabold px-2.5 py-1 rounded-full border transition-all active:scale-95 shrink-0 cursor-pointer',
+                            u.is_active
+                              ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 hover:bg-emerald-500/20'
+                              : 'bg-destructive/10 text-destructive border-destructive/20 hover:bg-destructive/20'
+                          )}
+                        >
+                          {u.is_active ? '✓ Active' : '✕ Disabled'}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold px-2 py-0.5 bg-muted text-muted-foreground rounded-lg uppercase tracking-wider">
+                          Role: {u.role_name}
+                        </span>
                       </div>
                     </div>
 
-                    {/* Status Badge */}
-                    <button
-                      onClick={() => toggleUser(u)}
-                      className={cn(
-                        'text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all active:scale-95 shrink-0',
-                        u.is_active
-                          ? 'bg-green-500/10 text-green-600 border-green-500/20'
-                          : 'bg-destructive/10 text-destructive border-destructive/20'
-                      )}
-                    >
-                      {u.is_active ? '✓ Active' : '✕ Disabled'}
-                    </button>
-                  </div>
+                    <div className="flex flex-col gap-3 pt-3 border-t border-border/80">
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground font-medium">
+                        <span>Created Date</span>
+                        <span>{formatDate(u.created_at || '2026-06-02')}</span>
+                      </div>
 
-                  <div className="flex flex-col gap-2 pt-3 border-t border-border">
-                    <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                      <span>Registered</span>
-                      <span>{formatDate(u.created_at || '2026-06-02')}</span>
-                    </div>
-
-                    <div className="flex items-center justify-end gap-2 pt-1">
-                      <button 
-                        onClick={() => setPermissionsModalUser(u)}
-                        className="h-8 px-3 text-[11px] font-bold border border-border hover:bg-muted text-foreground rounded-lg transition-colors flex items-center gap-1"
-                      >
-                        <Shield className="w-3.5 h-3.5" /> Permissions
-                      </button>
-                      <button 
-                        onClick={async () => {
-                          setShowRoleEdit(u)
-                          setPermissionsTab('companies')
-                          const cRes = await fetch(`${API_BASE}/admin/users/${u.user_id}/companies`, { headers: authHeaders(token) })
-                          const cData = await cRes.json()
-                          setEditUserCompanies(Array.isArray(cData) ? cData : [])
-                        }}
-                        className="h-8 px-3 text-[11px] font-bold border border-border hover:bg-muted text-foreground rounded-lg transition-colors flex items-center gap-1"
-                      >
-                        <Users className="w-3.5 h-3.5" /> Companies
-                      </button>
-                      <button
-                        onClick={() => deleteUserItem(u)}
-                        className="h-8 w-8 text-destructive/70 hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors flex items-center justify-center"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button 
+                          onClick={() => setPermissionsModalUser(u)}
+                          className="h-8 px-3 text-xs font-bold border border-border/80 hover:bg-muted text-foreground rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Shield className="w-3.5 h-3.5" /> Permissions
+                        </button>
+                        <button 
+                          onClick={async () => {
+                            setShowRoleEdit(u)
+                            setPermissionsTab('companies')
+                            const cRes = await fetch(`${API_BASE}/admin/users/${u.user_id}/companies`, { headers: authHeaders(token) })
+                            const cData = await cRes.json()
+                            setEditUserCompanies(Array.isArray(cData) ? cData : [])
+                          }}
+                          className="h-8 px-3 text-xs font-bold border border-border/80 hover:bg-muted text-foreground rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Users className="w-3.5 h-3.5" /> Companies
+                        </button>
+                        <button
+                          onClick={() => deleteUserItem(u)}
+                          className="h-8 w-8 text-destructive/70 hover:text-destructive hover:bg-destructive/10 rounded-xl transition-all flex items-center justify-center cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           ) : tab === 'sync' ? (
-            <div className="space-y-4">
-              {/* Admin Only: Live Tally Server Sync Service Trigger Card */}
-              <div className="bg-card border border-border rounded-2xl p-5 space-y-3 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="font-extrabold text-sm text-foreground flex items-center gap-2">
-                      <RefreshCw className="h-4 w-4 text-emerald-500" />
-                      Live Tally Server Sync Service
-                    </h3>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Trigger a single background synchronization cycle directly with your connected Tally instance.
-                    </p>
+            <div className="space-y-6">
+              {/* Top Sync Health Metrics Cards */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-card border border-emerald-500/20 hover:border-emerald-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-emerald-500/5 via-card to-card">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Synced Records</span>
+                    <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center border border-emerald-500/20">
+                      <CheckCircle2 className="w-5 h-5" />
+                    </div>
                   </div>
-                  <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                    Admin Only
-                  </span>
+                  <div className="mt-4 flex items-baseline gap-2">
+                    <span className="text-3xl font-black text-foreground">{syncHealth?.synced_queue_count ?? 0}</span>
+                    <span className="text-xs text-emerald-600 font-bold">Processed</span>
+                  </div>
                 </div>
 
-                {runOnceError && (
-                  <div className="p-3 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
-                    ⚠️ {runOnceError}
+                <div className="bg-card border border-amber-500/20 hover:border-amber-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-amber-500/5 via-card to-card">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Pending Queue</span>
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center border border-amber-500/20">
+                      <RefreshCw className="w-5 h-5" />
+                    </div>
                   </div>
-                )}
-
-                {runOnceResult && (
-                  <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span>{runOnceResult.message}</span>
+                  <div className="mt-4 flex items-baseline gap-2">
+                    <span className="text-3xl font-black text-foreground">{syncHealth?.pending_queue_count ?? 0}</span>
+                    <span className="text-xs text-amber-600 font-bold">Waiting push</span>
                   </div>
-                )}
+                </div>
 
-                <button
-                  onClick={handleRunOnceSync}
-                  disabled={runOnceLoading}
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] disabled:opacity-50 text-white font-bold rounded-xl text-xs transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <RefreshCw className={cn("h-4 w-4", runOnceLoading && "animate-spin")} />
-                  <span>{runOnceLoading ? "Triggering Sync Service..." : "Run Tally Sync Service Now"}</span>
-                </button>
+                <div className="bg-card border border-rose-500/20 hover:border-rose-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-rose-500/5 via-card to-card">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Failed Traffic</span>
+                    <div className="w-9 h-9 rounded-xl bg-rose-500/10 text-rose-600 flex items-center justify-center border border-rose-500/20">
+                      <XCircle className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="mt-4 flex items-baseline gap-2">
+                    <span className="text-3xl font-black text-foreground">{syncHealth?.total_failed_traffic ?? 0}</span>
+                    <span className="text-xs text-rose-600 font-bold">Errors</span>
+                  </div>
+                </div>
+
+                <div className="bg-card border border-purple-500/20 hover:border-purple-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-purple-500/5 via-card to-card">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Exceptions</span>
+                    <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center border border-purple-500/20">
+                      <AlertTriangle className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="mt-4 flex items-baseline gap-2">
+                    <span className="text-3xl font-black text-foreground">{syncHealth?.total_exception_traffic ?? 0}</span>
+                    <span className="text-xs text-purple-600 font-bold">Diagnosed</span>
+                  </div>
+                </div>
               </div>
 
-              {/* Tally XML Manual Import Card */}
-              <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
-                <h2 className="font-bold text-sm text-foreground">Tally XML Collection Import</h2>
-                <p className="text-xs text-muted-foreground">Select and upload standard Tally Master/Voucher collections (.xml) to sync data with MyTally.</p>
-              
-              {syncError && (
-                <div className="p-3 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
-                  ⚠️ {syncError}
-                </div>
-              )}
-
-              {syncStats && (
-                <div className="p-3.5 rounded-xl bg-green-500/10 text-green-600 border border-green-500/20 text-xs font-semibold space-y-1">
-                  <div className="flex items-center gap-1.5 text-sm mb-1.5"><CheckCircle2 className="h-4.5 w-4.5" /> Import completed successfully!</div>
-                  <p>• Groups: {syncStats.imported_groups ?? syncStats.groups_processed ?? 0}</p>
-                  <p>• Ledgers: {syncStats.imported_ledgers ?? syncStats.ledgers_processed ?? 0}</p>
-                  <p>• Vouchers: {syncStats.imported_vouchers ?? syncStats.vouchers_processed ?? 0}</p>
-                  <p>• Bills: {syncStats.imported_bills ?? syncStats.bills_processed ?? 0}</p>
-                </div>
-              )}
-
-              {!syncRunning && !syncStats && (
-                <div className="border-2 border-dashed border-border hover:border-emerald-500/50 rounded-xl p-6 text-center cursor-pointer transition-colors bg-muted/20 relative">
-                  <input type="file" accept=".xml" onChange={handleFileChange} id="tally-file" className="hidden" />
-                  <label htmlFor="tally-file" className="cursor-pointer block space-y-2">
-                    <Upload className="h-8 w-8 mx-auto text-muted-foreground" />
-                    <p className="text-xs font-bold text-foreground">{xmlFile ? xmlFile.name : 'Select Tally Export XML'}</p>
-                    <p className="text-[10px] text-muted-foreground">Click to browse your device files</p>
-                  </label>
-                </div>
-              )}
-
-              {syncRunning && (
-                <div className="border border-border rounded-xl p-4 bg-muted/10 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin shrink-0" />
-                    <p className="text-xs font-bold text-foreground">Import process running...</p>
+              {/* Action Cards: Live Trigger & Manual Import */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Admin Only: Live Tally Server Sync Service Trigger Card */}
+                <div className="bg-card border border-border/80 rounded-2xl p-6 space-y-4 shadow-xs flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                        <RefreshCw className="h-4.5 w-4.5 text-emerald-500" />
+                        Live Tally Server Sync Trigger
+                      </h3>
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                        Real-time Socket
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Executes an immediate bi-directional synchronization pass with your connected Tally Prime instance. Queries pending changes and flushes outbound queues.
+                    </p>
                   </div>
-                  <div className="space-y-1.5 pl-6 border-l border-border">
-                    {SYNC_STEPS.map((step, idx) => (
-                      <p
-                        key={idx}
+
+                  {runOnceError && (
+                    <div className="p-3.5 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
+                      ⚠️ {runOnceError}
+                    </div>
+                  )}
+
+                  {runOnceResult && (
+                    <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                      <span>{runOnceResult.message}</span>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={async () => {
+                      await handleRunOnceSync()
+                      await fetchSyncHealth()
+                      await fetchSyncLogs()
+                    }}
+                    disabled={runOnceLoading}
+                    className="w-full py-3 px-4 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.99] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+                  >
+                    {runOnceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    {runOnceLoading ? "Executing Tally Sync..." : "Run Live Tally Sync Pass"}
+                  </button>
+                </div>
+
+                {/* Manual Tally XML Collection Upload Card */}
+                <div className="bg-card border border-border/80 rounded-2xl p-6 space-y-4 shadow-xs flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                        <UploadCloud className="h-4.5 w-4.5 text-blue-500" />
+                        Manual Tally XML Collection Upload
+                      </h3>
+                      <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                        Batch Import
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Upload exported XML backup collections to import vouchers, ledgers, and stock masters into MyTally database directly.
+                    </p>
+                  </div>
+
+                  {/* File Drop / Select Area */}
+                  <div className="relative border-2 border-dashed border-border hover:border-blue-500/50 rounded-2xl p-5 text-center transition-colors bg-muted/20">
+                    <input
+                      type="file"
+                      accept=".xml"
+                      onChange={handleFileChange}
+                      disabled={syncRunning}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                    />
+                    <div className="flex flex-col items-center gap-1.5 pointer-events-none">
+                      <FileCode className="h-7 w-7 text-muted-foreground" />
+                      <p className="font-bold text-xs text-foreground">
+                        {xmlFile ? xmlFile.name : "Select .XML Export File"}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {xmlFile ? `${(xmlFile.size / 1024).toFixed(1)} KB` : "Click to choose file"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {syncError && (
+                    <div className="p-3.5 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
+                      ⚠️ {syncError}
+                    </div>
+                  )}
+
+                  {syncStats && (
+                    <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold space-y-1">
+                      <p className="font-bold flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Import Summary</p>
+                      <p className="text-[11px] font-normal text-muted-foreground">
+                        Vouchers: {syncStats.imported_vouchers || 0} · Ledgers: {syncStats.imported_ledgers || 0} · Items: {syncStats.imported_stock_items || 0}
+                      </p>
+                    </div>
+                  )}
+
+                  {!syncStats ? (
+                    <button
+                      onClick={startImport}
+                      disabled={syncRunning || !xmlFile}
+                      className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+                    >
+                      {syncRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                      {syncRunning ? `Importing... Step ${syncStep + 1} of ${SYNC_STEPS.length}` : "Start XML Import"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { setXmlFile(null); setSyncStats(null); }}
+                      className="w-full py-3 px-4 bg-muted hover:bg-muted/80 text-foreground font-extrabold text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+                    >
+                      Upload Another File
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Comprehensive Sync Traffic Audit & Postman Logs Table (Full Desktop Width) */}
+              <div className="bg-card border border-border/80 rounded-2xl shadow-xs overflow-hidden">
+                <div className="p-5 border-b border-border/80 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-muted/20">
+                  <div>
+                    <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                      <Terminal className="h-4.5 w-4.5 text-emerald-500" />
+                      Sync Traffic Audit Logs & Postman cURL
+                    </h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Live audit log of all outbound requests to Tally Prime. Copy ready-to-run Postman cURL commands for instant debugging.
+                    </p>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 self-start md:self-auto">
+                    <button
+                      onClick={() => { fetchSyncHealth(); fetchSyncLogs() }}
+                      className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                      title="Refresh Logs"
+                    >
+                      <RefreshCw className={cn("w-3.5 h-3.5", syncLogsLoading && "animate-spin")} />
+                      <span>Refresh</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filters & Search Toolbar */}
+                <div className="p-4 border-b border-border/60 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-card">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {['ALL', 'SUCCESS', 'FAILED', 'EXCEPTION', 'TIMEOUT'].map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => setSyncStatusFilter(st)}
                         className={cn(
-                          'text-[10px] transition-all',
-                          syncStep > idx ? 'text-green-600 font-bold' : syncStep === idx ? 'text-emerald-500 font-black animate-pulse' : 'text-muted-foreground'
+                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer",
+                          syncStatusFilter === st
+                            ? "bg-foreground text-background shadow-xs"
+                            : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
                         )}
                       >
-                        {syncStep > idx ? '✓ ' : syncStep === idx ? '▸ ' : '• '}{step}
-                      </p>
+                        {st === 'ALL' ? 'All Logs' : st}
+                      </button>
                     ))}
                   </div>
+
+                  <div className="flex items-center gap-3">
+                    <select
+                      value={syncEntityFilter}
+                      onChange={(e) => setSyncEntityFilter(e.target.value)}
+                      className="px-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/20 cursor-pointer"
+                    >
+                      <option value="ALL">All Entities</option>
+                      <option value="Voucher">Vouchers</option>
+                      <option value="Ledger">Ledgers</option>
+                      <option value="StockItem">Stock Items</option>
+                      <option value="Group">Groups</option>
+                    </select>
+
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        type="text"
+                        placeholder="Search logs..."
+                        value={syncSearchTerm}
+                        onChange={(e) => setSyncSearchTerm(e.target.value)}
+                        className="pl-9 pr-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 w-52 text-foreground"
+                      />
+                    </div>
+                  </div>
                 </div>
-              )}
 
-              {!syncRunning && !syncStats && (
-                <button
-                  onClick={startImport}
-                  className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-md"
-                >
-                  Start Import Process
-                </button>
-              )}
+                {/* Table Content */}
+                <div className="overflow-x-auto">
+                  {syncLogsLoading && syncLogs.length === 0 ? (
+                    <div className="flex justify-center items-center py-16">
+                      <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+                    </div>
+                  ) : syncLogs.length === 0 ? (
+                    <div className="text-center py-16 space-y-2">
+                      <Terminal className="w-10 h-10 text-muted-foreground/40 mx-auto" />
+                      <p className="text-sm font-bold text-foreground">No sync traffic logs found</p>
+                      <p className="text-xs text-muted-foreground">Perform an action or click 'Run Live Tally Sync Pass' to generate traffic logs.</p>
+                    </div>
+                  ) : (
+                    <table className="w-full text-left text-xs border-collapse min-w-[950px]">
+                      <thead>
+                        <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-extrabold text-[11px] uppercase tracking-wider">
+                          <th className="py-3 px-5 w-40">Time & Latency</th>
+                          <th className="py-3 px-4 w-52">Entity & Action</th>
+                          <th className="py-3 px-4 w-36">Sync Status</th>
+                          <th className="py-3 px-4">Details / Response Summary</th>
+                          <th className="py-3 px-5 text-right w-64">Instant Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {syncLogs.map((log) => {
+                          const isCopied = copiedLogId === log.log_id
+                          const isRetrying = retryingLogId === log.log_id
+                          return (
+                            <tr key={log.log_id} className="hover:bg-muted/30 transition-colors">
+                              <td className="py-3.5 px-5 font-mono text-xs">
+                                <div className="font-bold text-foreground">
+                                  {log.created_at ? new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}
+                                </div>
+                                <div className="text-[11px] text-muted-foreground font-medium mt-0.5">
+                                  {log.duration_ms}ms · <span className="uppercase">{log.outbound_format}</span>
+                                </div>
+                              </td>
 
-              {syncStats && (
-                <button
-                  onClick={() => { setSyncStats(null); setXmlFile(null) }}
-                  className="w-full py-3 bg-muted hover:bg-muted/80 text-foreground font-bold rounded-xl text-xs transition-all"
-                >
-                  Upload Another File
-                </button>
-              )}
+                              <td className="py-3.5 px-4">
+                                <div className="font-extrabold text-xs text-foreground flex items-center gap-1.5">
+                                  <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-muted text-muted-foreground">
+                                    {log.entity_type}
+                                  </span>
+                                  <span className="truncate max-w-[160px]">{log.entity_name || `#${log.entity_id}`}</span>
+                                </div>
+                                <div className="text-[11px] text-muted-foreground font-medium mt-1">
+                                  Action: <span className="font-bold text-foreground">{log.action}</span>
+                                </div>
+                              </td>
+
+                              <td className="py-3.5 px-4">
+                                {log.status === 'SUCCESS' ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                    SUCCESS
+                                  </span>
+                                ) : log.status === 'EXCEPTION' ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-purple-500/10 text-purple-600 border border-purple-500/20">
+                                    <AlertTriangle className="w-3 h-3 text-purple-500" />
+                                    EXCEPTION
+                                  </span>
+                                ) : log.status === 'TIMEOUT' ? (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                    TIMEOUT
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
+                                    FAILED
+                                  </span>
+                                )}
+                              </td>
+
+                              <td className="py-3.5 px-4">
+                                {log.error_summary ? (
+                                  <span className="text-rose-600 font-semibold text-xs leading-relaxed" title={log.error_summary}>
+                                    ⚠️ {log.error_summary}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground text-xs leading-relaxed font-medium">
+                                    {log.parsed_created > 0 && `Created: ${log.parsed_created} `}
+                                    {log.parsed_altered > 0 && `Altered: ${log.parsed_altered} `}
+                                    {log.parsed_deleted > 0 && `Deleted: ${log.parsed_deleted} `}
+                                    {log.parsed_created === 0 && log.parsed_altered === 0 && log.parsed_deleted === 0 && 'Payload Processed'}
+                                  </span>
+                                )}
+                              </td>
+
+                              <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                                <div className="flex items-center justify-end gap-2">
+                                  {/* Copy cURL / Postman Button */}
+                                  <button
+                                    onClick={() => handleCopyCurl(log.log_id, log.curl_command)}
+                                    disabled={!log.curl_command}
+                                    className={cn(
+                                      "h-8 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border shadow-2xs cursor-pointer active:scale-95",
+                                      isCopied
+                                        ? "bg-emerald-500 text-white border-emerald-500"
+                                        : "bg-muted/60 hover:bg-muted text-foreground border-border/80 hover:border-border"
+                                    )}
+                                    title="Copy full cURL command ready to paste into Postman or Terminal"
+                                  >
+                                    {isCopied ? (
+                                      <>
+                                        <Check className="w-3.5 h-3.5" />
+                                        <span>Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                                        <span>cURL</span>
+                                      </>
+                                    )}
+                                  </button>
+
+                                  {/* Inspect Modal Button */}
+                                  <button
+                                    onClick={() => setInspectLog(log)}
+                                    className="h-8 px-3 rounded-xl text-xs font-bold bg-muted/60 hover:bg-muted text-foreground border border-border/80 hover:border-border transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                                    title="Inspect Outbound Payload and Live Inbound Tally Response"
+                                  >
+                                    <Code className="w-3.5 h-3.5 text-muted-foreground" />
+                                    <span>Inspect</span>
+                                  </button>
+
+                                  {/* 1-Click On-Demand Real-time Retry Button */}
+                                  <button
+                                    onClick={() => handleRetrySyncItem(log)}
+                                    disabled={isRetrying}
+                                    className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer active:scale-95"
+                                    title="Retry real-time push to Tally now"
+                                  >
+                                    <RefreshCw className={cn("w-3.5 h-3.5", isRetrying && "animate-spin")} />
+                                    <span>{isRetrying ? "Retrying..." : "Retry"}</span>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
           ) : tab === 'logs' ? (
             <div className="space-y-2">
               {logs.map(l => (
@@ -1636,6 +2041,138 @@ const handleSavePermissions = async () => {
                 className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-sm transition-all shadow-md"
               >
                 Save Access
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Inspect Sync Traffic Log Modal */}
+      {inspectLog && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border w-full max-w-4xl rounded-3xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-muted/20 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
+                  <Terminal className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                    <span>{inspectLog.entity_type} {inspectLog.action}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full font-bold bg-muted text-muted-foreground">
+                      {inspectLog.entity_name || `#${inspectLog.entity_id}`}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Logged at {new Date(inspectLog.created_at).toLocaleString()} · Latency: {inspectLog.duration_ms}ms · Format: {inspectLog.outbound_format}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleCopyCurl(inspectLog.log_id, inspectLog.curl_command)}
+                  className="px-3 py-1.5 bg-foreground text-background text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm transition-all active:scale-95"
+                >
+                  {copiedLogId === inspectLog.log_id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedLogId === inspectLog.log_id ? "Copied cURL!" : "Copy Postman cURL"}</span>
+                </button>
+                <button
+                  onClick={() => setInspectLog(null)}
+                  className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body: Side-by-side or stacked request & response inspector */}
+            <div className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
+              {/* Postman Command Box */}
+              {inspectLog.curl_command && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-muted-foreground font-bold text-[11px]">
+                    <span className="flex items-center gap-1.5">
+                      <Terminal className="w-3.5 h-3.5 text-emerald-500" />
+                      Postman / Terminal cURL Command
+                    </span>
+                  </div>
+                  <pre className="p-3 bg-zinc-950 text-emerald-400 font-mono text-[11px] rounded-xl overflow-x-auto border border-zinc-800 leading-relaxed select-all">
+                    {inspectLog.curl_command}
+                  </pre>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Outbound Request Payload */}
+                <div className="space-y-1.5 flex flex-col">
+                  <div className="flex items-center justify-between text-muted-foreground font-bold text-[11px]">
+                    <span className="flex items-center gap-1.5">
+                      <Code className="w-3.5 h-3.5 text-blue-500" />
+                      Outbound {inspectLog.outbound_format} Payload
+                    </span>
+                    <button
+                      onClick={() => {
+                        if (inspectLog.outbound_payload) {
+                          navigator.clipboard.writeText(inspectLog.outbound_payload)
+                        }
+                      }}
+                      className="text-[10px] text-muted-foreground hover:text-foreground font-semibold flex items-center gap-1"
+                    >
+                      <Copy className="w-3 h-3" /> Copy Payload
+                    </button>
+                  </div>
+                  <pre className="p-3.5 bg-muted/40 font-mono text-[11px] rounded-xl overflow-auto border border-border max-h-80 flex-1 leading-relaxed text-foreground select-all whitespace-pre-wrap">
+                    {inspectLog.outbound_payload || "No outbound payload recorded"}
+                  </pre>
+                </div>
+
+                {/* Inbound Tally Prime Response */}
+                <div className="space-y-1.5 flex flex-col">
+                  <div className="flex items-center justify-between text-muted-foreground font-bold text-[11px]">
+                    <span className="flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5 text-purple-500" />
+                      Inbound Tally Response
+                    </span>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded-md text-[10px] font-extrabold",
+                      inspectLog.status === 'SUCCESS' ? "bg-emerald-500/10 text-emerald-600" : "bg-rose-500/10 text-rose-600"
+                    )}>
+                      Status: {inspectLog.status}
+                    </span>
+                  </div>
+                  <pre className="p-3.5 bg-muted/40 font-mono text-[11px] rounded-xl overflow-auto border border-border max-h-80 flex-1 leading-relaxed text-foreground select-all whitespace-pre-wrap">
+                    {inspectLog.inbound_response || "No response received (Timeout / Unreachable)"}
+                  </pre>
+                </div>
+              </div>
+
+              {/* Parsed Diagnostic Stats */}
+              <div className="p-3.5 bg-muted/20 border border-border rounded-xl flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <div className="flex items-center gap-3">
+                  <span className="font-bold text-muted-foreground">Tally Alter Metrics:</span>
+                  <span className="font-semibold text-emerald-600">Created: {inspectLog.parsed_created}</span>
+                  <span className="font-semibold text-blue-600">Altered: {inspectLog.parsed_altered}</span>
+                  <span className="font-semibold text-purple-600">Deleted: {inspectLog.parsed_deleted}</span>
+                  <span className="font-semibold text-rose-600">Errors: {inspectLog.parsed_errors}</span>
+                  <span className="font-semibold text-amber-600">Exceptions: {inspectLog.parsed_exceptions}</span>
+                </div>
+                {inspectLog.error_summary && (
+                  <div className="font-bold text-rose-600">
+                    Error Summary: {inspectLog.error_summary}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-border bg-muted/20 flex justify-end shrink-0">
+              <button
+                onClick={() => setInspectLog(null)}
+                className="px-5 py-2 bg-muted hover:bg-muted/80 text-foreground font-bold rounded-xl text-xs transition-all"
+              >
+                Close Inspector
               </button>
             </div>
           </div>

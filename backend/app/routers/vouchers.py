@@ -11,7 +11,7 @@ import json
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
-from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata
+from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
 from app.models.tally_core import MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, BillAllocation, MstLedger, MstGroup, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration
 
 from app.schemas.voucher import (
@@ -493,6 +493,33 @@ async def delete_voucher(
                 else:
                     item.closing_qty = float(item.closing_qty or 0) + qty
                     
+    # Record in DeletedRecordAudit for audit trail & to block zombie resurrection during inbound sync
+    snapshot = {
+        "voucher_id": voucher.voucher_id,
+        "company_id": voucher.company_id,
+        "voucher_type_id": voucher.voucher_type_id,
+        "voucher_number": str(voucher.voucher_number),
+        "voucher_date": voucher.voucher_date.isoformat() if voucher.voucher_date else None,
+        "reference_number": voucher.reference_number,
+        "narration": voucher.narration,
+        "total_amount": float(voucher.total_amount or 0),
+        "status": voucher.status,
+        "tally_guid": voucher.tally_guid,
+        "tally_alter_id": voucher.tally_alter_id
+    }
+    
+    del_audit = DeletedRecordAudit(
+        company_id=user.company_id,
+        entity_type="Voucher",
+        record_id=voucher_id,
+        tally_guid=voucher.tally_guid or f"MYTALLY-VCH-{voucher_id}",
+        entity_identifier=f"Voucher #{voucher.voucher_number}",
+        deleted_by_user_id=user.user_id,
+        tally_sync_status="PENDING",
+        snapshot_data=snapshot
+    )
+    db.add(del_audit)
+    
     sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action="Delete")
     db.add(sync_item)
     await db.flush()

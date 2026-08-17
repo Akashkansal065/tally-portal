@@ -21,7 +21,7 @@ from app.models.tally_core import (
     TrnVoucher, TrnAccounting, TrnInventory, TrnBill, TrnBankAllocation,
     BillAllocation
 )
-from app.models.portal_core import Company, User, Role, UserCompanyAccess, Currency
+from app.models.portal_core import Company, User, Role, UserCompanyAccess, Currency, DeletedRecordAudit
 from app.core.security import get_password_hash
 
 _checked_tally_users = set()
@@ -1463,6 +1463,18 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 db.add(vtype)
                 await db.flush()
                 
+            # Zombie-Resurrection Guard: Skip re-importing vouchers that were explicitly deleted in MyTally
+            del_check = await db.execute(
+                select(DeletedRecordAudit).where(
+                    DeletedRecordAudit.company_id == company_id,
+                    DeletedRecordAudit.entity_type == "Voucher",
+                    DeletedRecordAudit.tally_guid == guid
+                )
+            )
+            if del_check.scalars().first():
+                logger.info(f"🛡️ [ZOMBIE GUARD] Skipping inbound import of deleted voucher (GUID: {guid}, #{v_num})")
+                continue
+
             # Check if voucher already exists by GUID (idempotency/update)
             stmt = select(TrnVoucher).where(TrnVoucher.company_id == company_id, TrnVoucher.tally_guid == guid)
             res = await db.execute(stmt)

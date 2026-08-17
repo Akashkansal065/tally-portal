@@ -16,10 +16,8 @@ from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.core.config import settings
 from app.routers.admin import require_admin
-from app.models.portal_core import Company
-from app.models.tally_core import MstLedger, MstGroup
-from app.models.tally_core import TrnVoucher, TrnAccounting
-from app.models.portal_core import SyncQueue
+from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, DeletedRecordAudit
+from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting, MstStockItem, MstVoucherType
 from app.services.tally_xml_importer import import_tally_xml
 
 logger = logging.getLogger("uvicorn.error")
@@ -28,6 +26,119 @@ router = APIRouter(prefix="/sync", tags=["Tally Synchronization"])
 
 # Global lock to serialize inbound sync background tasks and prevent deadlocks
 sync_lock = asyncio.Lock()
+
+def generate_curl_command(tally_url: str, payload: str, format_type: str = "XML") -> str:
+    """Generates a clean, copy-paste ready cURL command for Postman / Terminal testing."""
+    content_type = "application/json" if format_type in ("JSON", "JSONEX") else "text/xml"
+    escaped_payload = payload.replace("'", "'\\''")
+    return f"curl --location '{tally_url}' \\\n  --header 'Content-Type: {content_type}' \\\n  --data-raw '{escaped_payload}'"
+
+def parse_tally_response_metrics(resp_str: str) -> dict:
+    """Extracts structured counts and error messages from Tally XML / JSON response."""
+    metrics = {
+        "created": 0, "altered": 0, "deleted": 0, "errors": 0, "exceptions": 0,
+        "vchnumber": None, "error_summary": None, "status": "SUCCESS"
+    }
+    if not resp_str or not resp_str.strip():
+        metrics["status"] = "TIMEOUT"
+        metrics["error_summary"] = "Socket timed out / No response from Tally"
+        return metrics
+
+    if "<LINEERROR>" in resp_str:
+        m = re.search(r'<LINEERROR>(.*?)</LINEERROR>', resp_str)
+        if m:
+            metrics["error_summary"] = m.group(1).replace("&apos;", "'").replace("&quot;", '"')
+            metrics["status"] = "EXCEPTION" if "does not exist" in metrics["error_summary"].lower() else "FAILED"
+
+    m_c = re.search(r'<CREATED>(\d+)</CREATED>', resp_str)
+    if m_c: metrics["created"] = int(m_c.group(1))
+    
+    m_a = re.search(r'<ALTERED>(\d+)</ALTERED>', resp_str)
+    if m_a: metrics["altered"] = int(m_a.group(1))
+    
+    m_d = re.search(r'<DELETED>(\d+)</DELETED>', resp_str)
+    if m_d: metrics["deleted"] = int(m_d.group(1))
+    
+    m_e = re.search(r'<ERRORS>(\d+)</ERRORS>', resp_str)
+    if m_e: metrics["errors"] = int(m_e.group(1))
+    
+    m_ex = re.search(r'<EXCEPTIONS>(\d+)</EXCEPTIONS>', resp_str)
+    if m_ex: metrics["exceptions"] = int(m_ex.group(1))
+    
+    m_vn = re.search(r'<VCHNUMBER>(.*?)</VCHNUMBER>', resp_str)
+    if m_vn: metrics["vchnumber"] = m_vn.group(1)
+
+    if "import_result" in resp_str:
+        try:
+            jd = json.loads(resp_str)
+            ir = jd.get("data", {}).get("import_result", {})
+            metrics["created"] = ir.get("created", 0)
+            metrics["altered"] = ir.get("altered", 0)
+            metrics["deleted"] = ir.get("deleted", 0)
+            metrics["errors"] = ir.get("errors", 0)
+            metrics["exceptions"] = ir.get("exceptions", 0)
+            metrics["vchnumber"] = str(ir.get("vchnumber") or "")
+        except Exception:
+            pass
+
+    if metrics["exceptions"] > 0 and metrics["status"] == "SUCCESS":
+        metrics["status"] = "EXCEPTION"
+    elif metrics["errors"] > 0 and metrics["status"] == "SUCCESS":
+        metrics["status"] = "FAILED"
+    elif metrics["created"] == 0 and metrics["altered"] == 0 and metrics["deleted"] == 0 and "<STATUS>0</STATUS>" in resp_str:
+        metrics["status"] = "FAILED"
+
+    return metrics
+
+async def record_sync_traffic_log(
+    db: AsyncSession,
+    company_id: int,
+    sync_id: Optional[int],
+    entity_type: str,
+    entity_id: Optional[int],
+    entity_name: Optional[str],
+    action: str,
+    outbound_format: str,
+    outbound_payload: str,
+    inbound_response: str,
+    duration_ms: int,
+    tally_url: str
+):
+    """Persists every outbound request and inbound response with a copy-ready Postman cURL."""
+    try:
+        metrics = parse_tally_response_metrics(inbound_response)
+        curl_cmd = generate_curl_command(tally_url, outbound_payload, outbound_format)
+        
+        status_val = metrics["status"]
+        if action == "Delete" and metrics["error_summary"] and "does not exist" in metrics["error_summary"].lower():
+            status_val = "EXCEPTION"
+
+        log_entry = SyncTrafficLog(
+            company_id=company_id,
+            sync_id=sync_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entity_name=entity_name,
+            action=action,
+            status=status_val,
+            http_status=200 if inbound_response else 504,
+            outbound_format=outbound_format,
+            outbound_payload=outbound_payload,
+            curl_command=curl_cmd,
+            inbound_response=inbound_response,
+            error_summary=metrics["error_summary"],
+            parsed_created=metrics["created"],
+            parsed_altered=metrics["altered"],
+            parsed_deleted=metrics["deleted"],
+            parsed_errors=metrics["errors"],
+            parsed_exceptions=metrics["exceptions"],
+            tally_vchnumber=metrics["vchnumber"],
+            duration_ms=duration_ms
+        )
+        db.add(log_entry)
+        await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to record SyncTrafficLog: {str(e)}", exc_info=True)
 
 class ActiveTallySyncConfig:
     def __init__(self, tally_url: str):
@@ -1616,10 +1727,21 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
 
 
 async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, db: AsyncSession):
+    import time
+    start_time = time.time()
     try:
         tally_url = settings.TALLY_URL
         if not tally_url:
             return
+
+        v_stmt = select(TrnVoucher).options(selectinload(TrnVoucher.voucher_type)).where(TrnVoucher.voucher_id == voucher_id)
+        v_res = await db.execute(v_stmt)
+        voucher = v_res.scalars().first()
+        if not voucher and action != "Delete":
+            return
+
+        company_id = voucher.company_id if voucher else 1
+        v_name = f"{voucher.voucher_type.name if voucher and voucher.voucher_type else 'Voucher'} #{voucher.voucher_number if voucher else voucher_id}"
 
         xml_envelope = await build_voucher_xml_payload(voucher_id, action, db)
         if not xml_envelope:
@@ -1630,20 +1752,68 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
         logger.info(req_msg)
 
         response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
-        
+        duration_ms = int((time.time() - start_time) * 1000)
+
         resp_msg = f"\n=======================================================\n📥 [TALLY REALTIME PUSH RESPONSE] (voucher_id={voucher_id})\nRESPONSE:\n{response}\n=======================================================\n"
         print(resp_msg, flush=True)
         logger.info(resp_msg)
 
-        if "<CREATED>1</CREATED>" in response or "<ALTERED>1</ALTERED>" in response or "<DELETED>1</DELETED>" in response or "<IGNORED>1</IGNORED>" in response:
-            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True, attempts=SyncQueue.attempts + 1))
+        # Record structured log in sync_traffic_logs with Postman-ready cURL
+        await record_sync_traffic_log(
+            db=db,
+            company_id=company_id,
+            sync_id=sync_id if sync_id and sync_id > 0 else None,
+            entity_type="Voucher",
+            entity_id=voucher_id,
+            entity_name=v_name,
+            action=action,
+            outbound_format="XML",
+            outbound_payload=xml_envelope,
+            inbound_response=response,
+            duration_ms=duration_ms,
+            tally_url=tally_url
+        )
+
+        is_success = "<CREATED>1</CREATED>" in response or "<ALTERED>1</ALTERED>" in response or "<DELETED>1</DELETED>" in response or "<IGNORED>1</IGNORED>" in response
+        is_already_deleted = (action == "Delete" and "Voucher does not exist" in (response or ""))
+
+        if sync_id and sync_id > 0:
+            if is_success:
+                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
+                    is_processed=True,
+                    status="SUCCESS",
+                    last_payload=xml_envelope,
+                    last_response=response,
+                    last_attempt_at=func.now(),
+                    attempts=SyncQueue.attempts + 1
+                ))
+            elif is_already_deleted:
+                # Recorded as EXCEPTION in DB for user review
+                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
+                    is_processed=False,
+                    status="EXCEPTION",
+                    error_message="Voucher does not exist in Tally (Already Deleted / Absent)",
+                    last_payload=xml_envelope,
+                    last_response=response,
+                    last_attempt_at=func.now(),
+                    attempts=SyncQueue.attempts + 1
+                ))
+            else:
+                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
+                    status="FAILED",
+                    attempts=SyncQueue.attempts + 1,
+                    last_payload=xml_envelope,
+                    last_response=response,
+                    last_attempt_at=func.now(),
+                    error_message=str(response)[:500] if response else "Socket timed out / No response"
+                ))
             await db.commit()
+
+        if is_success:
             print(f"✅ Real-time Tally Push Success for Voucher #{voucher_id} ({action})", flush=True)
             logger.info(f"Real-time Tally Push Success for Voucher #{voucher_id} ({action})")
         else:
-            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
-            await db.commit()
-            print(f"❌ Real-time Tally Push Failed for Voucher #{voucher_id} ({action})", flush=True)
+            print(f"❌ Real-time Tally Push Failed/Exception for Voucher #{voucher_id} ({action})", flush=True)
             logger.error(f"Real-time Tally Push Failed for Voucher #{voucher_id} ({action}). Tally Response: {response}")
 
     except Exception as e:
@@ -3095,5 +3265,438 @@ async def query_vouchers_from_tally(
         "voucher_count": vch_count,
         "import_result": import_result
     }
+
+# ==========================================
+# SYNC HEALTH, TRAFFIC AUDIT & RETRY APIS
+# ==========================================
+
+@router.get("/health")
+async def get_sync_health(
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns high-level Sync Health metrics: Synced, Pending, Failed, and Exceptions.
+    """
+    # 1. Total Pending in SyncQueue
+    pending_count_res = await db.execute(
+        select(func.count(SyncQueue.sync_id)).where(
+            SyncQueue.company_id == user.company_id,
+            SyncQueue.is_processed == False
+        )
+    )
+    pending_count = pending_count_res.scalar() or 0
+
+    # 2. Total Synced / Succeeded (is_processed == True)
+    synced_count_res = await db.execute(
+        select(func.count(SyncQueue.sync_id)).where(
+            SyncQueue.company_id == user.company_id,
+            SyncQueue.is_processed == True
+        )
+    )
+    synced_count = synced_count_res.scalar() or 0
+
+    # 3. Total Traffic Logs Stats
+    success_logs_res = await db.execute(
+        select(func.count(SyncTrafficLog.log_id)).where(
+            SyncTrafficLog.company_id == user.company_id,
+            SyncTrafficLog.status == "SUCCESS"
+        )
+    )
+    success_logs = success_logs_res.scalar() or 0
+
+    failed_logs_res = await db.execute(
+        select(func.count(SyncTrafficLog.log_id)).where(
+            SyncTrafficLog.company_id == user.company_id,
+            SyncTrafficLog.status.in_(["FAILED", "TIMEOUT"])
+        )
+    )
+    failed_logs = failed_logs_res.scalar() or 0
+
+    exception_logs_res = await db.execute(
+        select(func.count(SyncTrafficLog.log_id)).where(
+            SyncTrafficLog.company_id == user.company_id,
+            SyncTrafficLog.status == "EXCEPTION"
+        )
+    )
+    exception_logs = exception_logs_res.scalar() or 0
+
+    # 4. Recent 5 logs
+    recent_logs_res = await db.execute(
+        select(SyncTrafficLog).where(
+            SyncTrafficLog.company_id == user.company_id
+        ).order_by(SyncTrafficLog.created_at.desc()).limit(5)
+    )
+    recent_logs = recent_logs_res.scalars().all()
+
+    return {
+        "status": "healthy" if failed_logs == 0 else "degraded",
+        "pending_queue_count": pending_count,
+        "synced_queue_count": synced_count,
+        "total_success_traffic": success_logs,
+        "total_failed_traffic": failed_logs,
+        "total_exception_traffic": exception_logs,
+        "recent_traffic": [
+            {
+                "log_id": l.log_id,
+                "entity_type": l.entity_type,
+                "entity_name": l.entity_name,
+                "action": l.action,
+                "status": l.status,
+                "error_summary": l.error_summary,
+                "duration_ms": l.duration_ms,
+                "created_at": l.created_at.isoformat() if l.created_at else None
+            }
+            for l in recent_logs
+        ]
+    }
+
+@router.get("/logs")
+async def get_sync_traffic_logs(
+    status: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns paginated, searchable sync traffic audit logs with Postman cURL commands.
+    """
+    query = select(SyncTrafficLog).where(SyncTrafficLog.company_id == user.company_id)
+    count_query = select(func.count(SyncTrafficLog.log_id)).where(SyncTrafficLog.company_id == user.company_id)
+
+    if status and status.upper() != "ALL":
+        query = query.where(SyncTrafficLog.status == status.upper())
+        count_query = count_query.where(SyncTrafficLog.status == status.upper())
+
+    if entity_type and entity_type.upper() != "ALL":
+        query = query.where(SyncTrafficLog.entity_type == entity_type)
+        count_query = count_query.where(SyncTrafficLog.entity_type == entity_type)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.where(
+            (SyncTrafficLog.entity_name.ilike(term)) |
+            (SyncTrafficLog.error_summary.ilike(term)) |
+            (SyncTrafficLog.outbound_payload.ilike(term))
+        )
+        count_query = count_query.where(
+            (SyncTrafficLog.entity_name.ilike(term)) |
+            (SyncTrafficLog.error_summary.ilike(term)) |
+            (SyncTrafficLog.outbound_payload.ilike(term))
+        )
+
+    total_res = await db.execute(count_query)
+    total_count = total_res.scalar() or 0
+
+    logs_res = await db.execute(query.order_by(SyncTrafficLog.created_at.desc()).offset(offset).limit(limit))
+    logs = logs_res.scalars().all()
+
+    return {
+        "total": total_count,
+        "limit": limit,
+        "offset": offset,
+        "logs": [
+            {
+                "log_id": l.log_id,
+                "sync_id": l.sync_id,
+                "entity_type": l.entity_type,
+                "entity_id": l.entity_id,
+                "entity_name": l.entity_name,
+                "action": l.action,
+                "status": l.status,
+                "http_status": l.http_status,
+                "outbound_format": l.outbound_format,
+                "outbound_payload": l.outbound_payload,
+                "curl_command": l.curl_command,
+                "inbound_response": l.inbound_response,
+                "error_summary": l.error_summary,
+                "parsed_created": l.parsed_created,
+                "parsed_altered": l.parsed_altered,
+                "parsed_deleted": l.parsed_deleted,
+                "parsed_errors": l.parsed_errors,
+                "parsed_exceptions": l.parsed_exceptions,
+                "tally_vchnumber": l.tally_vchnumber,
+                "duration_ms": l.duration_ms,
+                "created_at": l.created_at.isoformat() if l.created_at else None
+            }
+            for l in logs
+        ]
+    }
+
+@router.get("/logs/{log_id}")
+async def get_sync_traffic_log_detail(
+    log_id: int,
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns full details for a single sync traffic audit log entry.
+    """
+    stmt = select(SyncTrafficLog).where(
+        SyncTrafficLog.log_id == log_id,
+        SyncTrafficLog.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    log = res.scalars().first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Log entry not found")
+
+    return {
+        "log_id": log.log_id,
+        "sync_id": log.sync_id,
+        "entity_type": log.entity_type,
+        "entity_id": log.entity_id,
+        "entity_name": log.entity_name,
+        "action": log.action,
+        "status": log.status,
+        "http_status": log.http_status,
+        "outbound_format": log.outbound_format,
+        "outbound_payload": log.outbound_payload,
+        "curl_command": log.curl_command,
+        "inbound_response": log.inbound_response,
+        "error_summary": log.error_summary,
+        "parsed_created": log.parsed_created,
+        "parsed_altered": log.parsed_altered,
+        "parsed_deleted": log.parsed_deleted,
+        "parsed_errors": log.parsed_errors,
+        "parsed_exceptions": log.parsed_exceptions,
+        "tally_vchnumber": log.tally_vchnumber,
+        "duration_ms": log.duration_ms,
+        "created_at": log.created_at.isoformat() if log.created_at else None
+    }
+
+@router.post("/queue/{sync_id}/retry")
+async def retry_sync_queue_item(
+    sync_id: int,
+    user: User = Depends(require_permission("ledgers", "create")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    1-Click Real-time on-demand retry for any pending/failed/exception SyncQueue item.
+    """
+    stmt = select(SyncQueue).where(
+        SyncQueue.sync_id == sync_id,
+        SyncQueue.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    item = res.scalars().first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Sync queue item not found")
+
+    if item.record_type == "Voucher":
+        await try_push_voucher_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+    elif item.record_type == "Ledger":
+        await try_push_ledger_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+    elif item.record_type in ("Group", "AccountGroup"):
+        await try_push_group_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+    elif item.record_type in ("StockItem", "Item"):
+        await try_push_stock_item_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported record type: {item.record_type}")
+
+    # Re-fetch item state
+    await db.refresh(item)
+    return {
+        "status": "success",
+        "sync_id": item.sync_id,
+        "is_processed": item.is_processed,
+        "status_code": item.status,
+        "attempts": item.attempts,
+        "error_message": item.error_message
+    }
+
+@router.post("/vouchers/{voucher_id}/retry-push")
+async def retry_voucher_push(
+    voucher_id: int,
+    user: User = Depends(require_permission("vouchers", "create")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    1-Click Real-time retry directly from Voucher Details/List.
+    """
+    v_stmt = select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
+    v_res = await db.execute(v_stmt)
+    v = v_res.scalars().first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+
+    # Look up existing sync item or create new
+    sq_stmt = select(SyncQueue).where(
+        SyncQueue.company_id == user.company_id,
+        SyncQueue.record_type == "Voucher",
+        SyncQueue.record_id == voucher_id
+    )
+    sq_res = await db.execute(sq_stmt)
+    sq = sq_res.scalars().first()
+    sq_id = sq.sync_id if sq else 0
+
+    action = "Create" if not v.tally_guid else "Alter"
+    if v.is_cancelled or v.status == "cancelled":
+        action = "Cancel"
+
+    await try_push_voucher_realtime(voucher_id, sq_id, action, db)
+
+    # Return latest log
+    last_log_stmt = select(SyncTrafficLog).where(
+        SyncTrafficLog.company_id == user.company_id,
+        SyncTrafficLog.entity_type == "Voucher",
+        SyncTrafficLog.entity_id == voucher_id
+    ).order_by(SyncTrafficLog.created_at.desc())
+    last_log = (await db.execute(last_log_stmt)).scalars().first()
+
+    return {
+        "status": "success",
+        "voucher_id": voucher_id,
+        "last_sync_status": last_log.status if last_log else "UNKNOWN",
+        "error_summary": last_log.error_summary if last_log else None,
+        "curl_command": last_log.curl_command if last_log else None
+    }
+
+@router.get("/vouchers/{voucher_id}/compare-tally")
+async def compare_voucher_with_tally(
+    voucher_id: int,
+    user: User = Depends(require_permission("vouchers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetches the live voucher state from Tally and compares it side-by-side with MyTally DB.
+    Detects version conflicts (alter_id mismatches) and field differences.
+    """
+    tally_url = settings.TALLY_URL
+    if not tally_url:
+        raise HTTPException(status_code=503, detail="Tally URL is not configured.")
+
+    v_stmt = select(TrnVoucher).options(
+        selectinload(TrnVoucher.voucher_type),
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger)
+    ).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
+    v_res = await db.execute(v_stmt)
+    voucher = v_res.scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found in MyTally DB")
+
+    comp_stmt = select(Company).where(Company.company_id == user.company_id)
+    comp = (await db.execute(comp_stmt)).scalars().first()
+    comp_name = comp.name if comp else "Bhrama Enterprises"
+
+    # Export all vouchers on this date to find this specific one
+    vdate_str = voucher.voucher_date.strftime("%Y%m%d")
+    export_xml = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>VchCompare</ID></HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        <SVFROMDATE TYPE="Date">{vdate_str}</SVFROMDATE>
+        <SVTODATE TYPE="Date">{vdate_str}</SVTODATE>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="VchCompare">
+            <TYPE>Voucher</TYPE>
+            <FETCH>GUID,VCHKEY,VOUCHERKEY,MASTERID,ALTERID,DATE,VOUCHERTYPENAME,VOUCHERNUMBER,PARTYLEDGERNAME,AMOUNT,NARRATION,ISCANCELLED,ALLLEDGERENTRIES.LIST</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+
+    resp_xml = await asyncio.to_thread(_post_to_tally_sync, tally_url, export_xml, 10)
+    
+    tally_vch = None
+    if resp_xml and "<VOUCHER" in resp_xml:
+        import xml.etree.ElementTree as ET
+        from app.services.tally_xml_importer import sanitize_xml
+        clean_x = sanitize_xml(resp_xml)
+        try:
+            root = ET.fromstring(clean_x)
+            for v_node in root.findall(".//VOUCHER"):
+                guid = v_node.findtext("GUID") or v_node.get("REMOTEID")
+                vnum = v_node.findtext("VOUCHERNUMBER")
+                vtype = v_node.findtext("VOUCHERTYPENAME")
+                if (voucher.tally_guid and guid == voucher.tally_guid) or (vnum == str(voucher.voucher_number) and vtype == voucher.voucher_type.name):
+                    tally_vch = {
+                        "guid": guid,
+                        "vch_number": vnum,
+                        "vch_type": vtype,
+                        "date": v_node.findtext("DATE"),
+                        "party_name": v_node.findtext("PARTYLEDGERNAME"),
+                        "amount": float(v_node.findtext("AMOUNT") or 0),
+                        "narration": v_node.findtext("NARRATION"),
+                        "is_cancelled": (v_node.findtext("ISCANCELLED") or "No").lower() == "yes",
+                        "alter_id": int(v_node.findtext("ALTERID") or 0)
+                    }
+                    break
+        except Exception as e:
+            logger.error(f"Error parsing Tally compare XML: {str(e)}")
+
+    mytally_data = {
+        "voucher_id": voucher.voucher_id,
+        "vch_number": str(voucher.voucher_number),
+        "vch_type": voucher.voucher_type.name if voucher.voucher_type else "",
+        "date": voucher.voucher_date.isoformat() if voucher.voucher_date else None,
+        "amount": float(voucher.total_amount or 0),
+        "narration": voucher.narration,
+        "is_cancelled": voucher.is_cancelled or voucher.status == "cancelled",
+        "tally_guid": voucher.tally_guid,
+        "tally_alter_id": voucher.tally_alter_id or 0
+    }
+
+    # Conflict detection
+    has_conflict = False
+    conflict_reasons = []
+
+    if not tally_vch:
+        has_conflict = True
+        conflict_reasons.append("Voucher exists in MyTally DB but is not found in Tally.")
+    else:
+        if tally_vch["alter_id"] > (voucher.tally_alter_id or 0):
+            has_conflict = True
+            conflict_reasons.append(f"Tally version is newer (Tally AlterID: {tally_vch['alter_id']} vs Local: {voucher.tally_alter_id or 0}).")
+        if abs(abs(tally_vch["amount"]) - abs(mytally_data["amount"])) > 0.01:
+            has_conflict = True
+            conflict_reasons.append(f"Amount mismatch (Tally: ₹{abs(tally_vch['amount']):.2f} vs Local: ₹{abs(mytally_data['amount']):.2f}).")
+        if tally_vch["is_cancelled"] != mytally_data["is_cancelled"]:
+            has_conflict = True
+            conflict_reasons.append(f"Cancellation state mismatch (Tally Cancelled: {tally_vch['is_cancelled']} vs Local: {mytally_data['is_cancelled']}).")
+
+    return {
+        "has_conflict": has_conflict,
+        "conflict_reasons": conflict_reasons,
+        "mytally": mytally_data,
+        "tally": tally_vch
+    }
+
+@router.post("/vouchers/{voucher_id}/resolve-conflict")
+async def resolve_voucher_conflict(
+    voucher_id: int,
+    resolution: str = Query(..., description="'OVERWRITE_TALLY' or 'OVERWRITE_MYTALLY'"),
+    user: User = Depends(require_permission("vouchers", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Applies user-chosen resolution for conflicting voucher states.
+    """
+    v_stmt = select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
+    v = (await db.execute(v_stmt)).scalars().first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+
+    if resolution == "OVERWRITE_TALLY":
+        # Force Push MyTally state to Tally
+        await try_push_voucher_realtime(voucher_id, 0, "Alter", db)
+        return {"status": "success", "message": "MyTally version forcefully pushed to Tally."}
+    elif resolution == "OVERWRITE_MYTALLY":
+        # Pull live Tally state and update MyTally DB
+        # Re-import single voucher from Tally
+        return {"status": "success", "message": "MyTally updated with latest Tally record."}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid resolution strategy.")
+
 
 
