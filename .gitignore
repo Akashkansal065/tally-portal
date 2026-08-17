@@ -44,3 +44,5 @@ backend/ca.pem
 /backend/storage/gstr2b
 .vercel
 /graphify-out
+desktop-sync-agent/agent_config.json
+desktop-sync-agent/agent_config.json

@@ -443,7 +443,16 @@ async def update_voucher(
     await handle_inventory_posting(db, user, voucher, vtype, req, is_update=True)
     
     await log_audit(db, user.company_id, user.user_id, "UPDATE", "Voucher", voucher.voucher_id)
-    await db.commit()
+    
+    if voucher.status == 'confirmed':
+        sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher.voucher_id, action="Alter")
+        db.add(sync_item)
+        await db.commit()
+        await db.refresh(sync_item)
+        from app.routers.sync import try_push_voucher_realtime
+        await try_push_voucher_realtime(voucher.voucher_id, sync_item.sync_id, "Alter", db)
+    else:
+        await db.commit()
     
     clear_company_cache(user.company_id)
     final_query = await db.execute(
@@ -484,11 +493,65 @@ async def delete_voucher(
                 else:
                     item.closing_qty = float(item.closing_qty or 0) + qty
                     
+    sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action="Delete")
+    db.add(sync_item)
+    await db.flush()
+
+    from app.routers.sync import try_push_voucher_realtime
+    await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Delete", db)
+
     await db.delete(voucher)
     await log_audit(db, user.company_id, user.user_id, "DELETE", "Voucher", voucher_id)
     await db.commit()
     clear_company_cache(user.company_id)
     return {"detail": "Voucher deleted successfully"}
+
+@router.post("/{voucher_id}/cancel")
+async def cancel_voucher(
+    voucher_id: int,
+    user: User = Depends(require_permission("vouchers", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Cancels a voucher in MyTally and pushes <ISCANCELLED>Yes</ISCANCELLED> to TallyPrime.
+    Reverses all inventory stock movements and zeros out financial impact while retaining sequence integrity.
+    """
+    v_query = await db.execute(select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id))
+    voucher = v_query.scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    old_status = voucher.status
+    if old_status == 'cancelled':
+        return {"detail": "Voucher is already cancelled"}
+        
+    # Reverse stock if confirmed
+    if old_status == 'confirmed':
+        inv_stmt = select(TrnInventory).where(TrnInventory.voucher_id == voucher.voucher_id)
+        inv_res = await db.execute(inv_stmt)
+        for inv in inv_res.scalars().all():
+            item_res = await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == inv.stock_item_id))
+            item = item_res.scalars().first()
+            if item:
+                qty = float(inv.quantity)
+                if inv.is_inward:
+                    item.closing_qty = float(item.closing_qty or 0) - qty
+                else:
+                    item.closing_qty = float(item.closing_qty or 0) + qty
+                    
+    voucher.status = 'cancelled'
+    voucher.is_cancelled = True
+    
+    sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action="Cancel")
+    db.add(sync_item)
+    await log_audit(db, user.company_id, user.user_id, "CANCEL", "Voucher", voucher_id)
+    await db.commit()
+    await db.refresh(sync_item)
+    
+    from app.routers.sync import try_push_voucher_realtime
+    await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Cancel", db)
+    clear_company_cache(user.company_id)
+    return {"detail": "Voucher cancelled successfully and pushed to Tally"}
 
 @router.patch("/{voucher_id}/status")
 async def update_voucher_status(
@@ -528,7 +591,17 @@ async def update_voucher_status(
                     else: item.closing_qty = float(item.closing_qty or 0) + qty
                     
     voucher.status = status_val
+    voucher.is_cancelled = (status_val == 'cancelled')
+    
+    action_type = "Cancel" if status_val == 'cancelled' else "Alter"
+    sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action=action_type)
+    db.add(sync_item)
+    await log_audit(db, user.company_id, user.user_id, "STATUS_UPDATE", "Voucher", voucher_id)
     await db.commit()
+    await db.refresh(sync_item)
+    
+    from app.routers.sync import try_push_voucher_realtime
+    await try_push_voucher_realtime(voucher_id, sync_item.sync_id, action_type, db)
     clear_company_cache(user.company_id)
     return {"detail": f"Status updated to {status_val}"}
 

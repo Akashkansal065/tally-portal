@@ -6,6 +6,12 @@ This guide is the complete technical reference for all **Sales, Purchase, Paymen
 
 ## Table of Contents
 1. [Core Architecture & Protocol Rules](#1-core-architecture--protocol-rules)
+   - [A. Envelope Selection: Import vs Import Data](#a-envelope-selection-import-vs-import-data)
+   - [B. Mandatory Date Fields & Partition Keys](#b-mandatory-date-fields)
+   - [C. In-Place Voucher Alteration Mechanics (VCHKEY & REMOTEID Binding)](#c-in-place-voucher-alteration-mechanics-vchkey--remoteid-binding)
+   - [D. Voucher Cancellation (<ISCANCELLED>Yes</ISCANCELLED>) vs Hard Deletion (ACTION="Delete")](#d-voucher-cancellation-iscancelledyesiscancelled-vs-hard-deletion-actiondelete)
+   - [E. JSONEX / JSON Protocol Specification & API Gateway Routing (Port 3000 vs Port 9000)](#e-jsonex--json-protocol-specification--api-gateway-routing-port-3000-vs-port-9000)
+   - [F. Shell Variable Escaping Gotcha ($VOUCHERNUMBER in PowerShell / Bash)](#f-shell-variable-escaping-gotcha-vouchernumber-in-powershell--bash)
 2. [Comparative Accounting Matrix (Sales vs Purchase vs Payment vs Receipt vs Contra)](#2-comparative-accounting-matrix-sales-vs-purchase-vs-payment-vs-receipt-vs-contra)
 3. [Master Field Specifications & Banking / Cost Allocations Hierarchy](#3-master-field-specifications--banking--cost-allocations-hierarchy)
 4. [Part I: Sales Voucher Operations](#4-part-i-sales-voucher-operations)
@@ -23,7 +29,13 @@ This guide is the complete technical reference for all **Sales, Purchase, Paymen
    - [A. Comparative F12 Configuration Matrix across Voucher Types](#a-comparative-f12-configuration-matrix-across-voucher-types)
    - [B. Detailed Technical Specifications for Each Configuration Parameter](#b-detailed-technical-specifications-for-each-configuration-parameter)
    - [C. XML Data Flow & ERP Synchronization Mechanism](#c-xml-data-flow--erp-synchronization-mechanism)
-10. [Troubleshooting & Common Pitfalls](#10-troubleshooting--common-pitfalls)
+10. [Part VII: TallyPrime Official JSON / JSONEX API Specification](#10-part-vii-tallyprime-official-json--jsonex-api-specification)
+    - [JSON 1: Export / Pull All Sales Vouchers](#json-1-export--pull-all-sales-vouchers)
+    - [JSON 2: Create Sales Item Invoice Voucher](#json-2-create-sales-item-invoice-voucher)
+    - [JSON 3: Alter Sales Voucher In-Place (Using VCHKEY)](#json-3-alter-sales-voucher-in-place-using-vchkey)
+    - [JSON 4: Cancel Voucher In-Place ("iscancelled": true)](#json-4-cancel-voucher-in-place-iscancelled-true)
+    - [JSON 5: Hard Delete Voucher ("Action": "Delete")](#json-5-hard-delete-voucher-action-delete)
+11. [Troubleshooting & Common Pitfalls](#11-troubleshooting--common-pitfalls)
 
 ---
 
@@ -50,6 +62,126 @@ Every voucher record pushed to Tally **strictly requires** three synchronised da
 - `<VCHSTATUSDATE>`: Voucher status lifecycle timestamp.
 
 > ⚠️ **Financial Year Restriction**: The voucher date **must fall within the active financial year** of the company in Tally (e.g. `20250401` to `20260331` for FY 2025–2026). If running in Educational Mode, only dates on the **1st, 2nd, or 31st** of a month are permitted by Tally.
+
+---
+
+### C. In-Place Voucher Alteration Mechanics (`VCHKEY` & `REMOTEID` Binding)
+In TallyPrime, vouchers configured with **Automatic Numbering** (`Numbering Method: Automatic` or `Auto Retain`) generate a **new sequence number** if the imported XML/JSON does not provide Tally's internal binary pointer.
+
+To achieve true **in-place voucher alteration** without incrementing the voucher counter:
+1. **`REMOTEID="{guid}"`**: The exact Tally GUID assigned during creation.
+2. **`VCHKEY="{company_guid}-{date_hex}:{master_id_hex}"`**: Tally's internal binary voucher key (e.g. `f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b401:00000080`), obtained from collection export.
+3. **`ACTION="Alter"`** / `"Action": "Alter"`.
+4. **`<GUID>{guid}</GUID>`**: Matching GUID inside the `<VOUCHER>` body.
+
+```xml
+<VOUCHER REMOTEID="f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000c3" 
+         VCHKEY="f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b401:00000080" 
+         VCHTYPE="Purchase" 
+         ACTION="Alter" 
+         OBJVIEW="Invoice Voucher View">
+    <DATE>20260301</DATE>
+    <EFFECTIVEDATE>20260301</EFFECTIVEDATE>
+    <VCHSTATUSDATE>20260301</VCHSTATUSDATE>
+    <VOUCHERTYPENAME>Purchase</VOUCHERTYPENAME>
+    <VOUCHERNUMBER>18</VOUCHERNUMBER>
+    <GUID>f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000c3</GUID>
+    ...
+</VOUCHER>
+```
+
+---
+
+### D. Voucher Cancellation (`<ISCANCELLED>Yes</ISCANCELLED>`) vs Hard Deletion (`ACTION="Delete"`)
+
+| Feature | 🚫 **Cancellation (`<ISCANCELLED>Yes</ISCANCELLED>`)** | 🗑️ **Hard Deletion (`ACTION="Delete"`)** |
+| :--- | :--- | :--- |
+| **Operation Type** | `ACTION="Alter"` with `<ISCANCELLED>Yes</ISCANCELLED>` | `ACTION="Delete"` / `"Action": "Delete"` |
+| **Audit Sequence** | **Preserved intact** (no missing voucher numbers) | **Leaves gaps** in auto-numbered sequences |
+| **Financial Balances** | **Zeroes out debits & credits** | Record removed |
+| **Inventory / Stock** | **Reverses all stock movements immediately** | **Reverses all stock movements immediately** |
+| **Dependency Locks** | Works without triggering dependency exceptions | Rejects if open in UI or has locked references |
+| **Day Book UI** | Displayed as **`(Cancelled)`** with ₹0.00 | Removed from list |
+
+#### 1. Official Cancellation XML Payload:
+```xml
+<ENVELOPE>
+    <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>Vouchers</ID></HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+                <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+                <VOUCHER REMOTEID="f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8" 
+                         VCHKEY="f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b34b:000001c0" 
+                         VCHTYPE="Sales" 
+                         ACTION="Alter" 
+                         OBJVIEW="Invoice Voucher View">
+                    <DATE>20250831</DATE>
+                    <EFFECTIVEDATE>20250831</EFFECTIVEDATE>
+                    <VCHSTATUSDATE>20250831</VCHSTATUSDATE>
+                    <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+                    <VOUCHERNUMBER>54</VOUCHERNUMBER>
+                    <ISCANCELLED>Yes</ISCANCELLED>
+                    <GUID>f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8</GUID>
+                </VOUCHER>
+            </TALLYMESSAGE>
+        </DESC>
+    </BODY>
+</ENVELOPE>
+```
+
+#### 2. Official Hard Delete XML Payload:
+```xml
+<ENVELOPE>
+    <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>Vouchers</ID></HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+                <SVCURRENTCOMPANY>Bhrama Enterprises</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+                <VOUCHER REMOTEID="f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8" 
+                         VCHKEY="f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b34b:000001c0" 
+                         VCHTYPE="Sales" 
+                         ACTION="Delete" 
+                         OBJVIEW="Invoice Voucher View">
+                    <DATE>20250831</DATE>
+                    <GUID>f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8</GUID>
+                </VOUCHER>
+            </TALLYMESSAGE>
+        </DESC>
+    </BODY>
+</ENVELOPE>
+```
+
+---
+
+### E. JSONEX / JSON Protocol Specification & API Gateway Routing (Port 3000 vs Port 9000)
+
+1. **Port 3000 (`http://127.0.0.1:3000/`)**:
+   - **Tally API Gateway / Explorer Router**: Provided by Tally Developer Tools.
+   - Reads HTTP headers (`id: Vouchers`, `tallyrequest: import`, `type: data`, `x-tally-port: 9000`) and translates JSON to internal TDL binary.
+2. **Port 9000 (`http://127.0.0.1:9000/`)**:
+   - **Raw Native Tally Engine**: Expects standard XML `<ENVELOPE>` or native JSONEX.
+3. **Case-Sensitivity in JSONEX**:
+   - In JSONEX format, the metadata attribute MUST be capitalized: **`"Action": "Delete"`** or **`"Action": "Alter"`** (capital **`A`**).
+   - Mandatory date partition fields (`date`, `effectivedate`, `vchstatusdate`, `vouchernumber`, `vouchertypename`) must be included in the body.
+
+---
+
+### F. Shell Variable Escaping Gotcha (`$VOUCHERNUMBER` in PowerShell / Bash)
+When sending TDL Collection requests containing formulas from PowerShell or Bash:
+* **PowerShell Gotcha**: PowerShell automatically evaluates `$VOUCHERNUMBER` as a shell variable. Because it is unset, `$VOUCHERNUMBER = "54"` is converted to `= "54"`, causing Tally to show the GUI error dialog: `Bad formula! '= "54"'`.
+* **Fix in PowerShell**: Escape the dollar sign with a backtick:
+  ```powershell
+  `$VOUCHERNUMBER = "54"
+  ``$$IsSales:`$VOUCHERTYPENAME
+  ```
+* **Fix in cURL / Postman**: Use single quotes in bash (`--data-raw '...'`) or execute via Postman where variable interpolation does not occur.
 
 ---
 
@@ -13668,7 +13800,476 @@ In TallyPrime, pressing **F12: Configure** on any voucher entry screen opens the
         └── Directly imports & posts without requiring interactive operator prompts!
 ```
 
-## 10. Troubleshooting & Common Pitfalls
+---
+
+## 10. Part VII: TallyPrime Official JSON / JSONEX API Specification
+
+TallyPrime supports full JSON-based integration via the **`jsonex`** schema. Below are complete, verified request payloads and live responses for all voucher operations.
+
+---
+
+### JSON 1: Export / Pull All Sales Vouchers
+
+#### cURL Request
+```bash
+curl --location 'http://192.168.71.128:9000/' \
+--header 'Content-Type: application/json' \
+--header 'id: TSPLAllSalesVouchers' \
+--header 'tallyrequest: export' \
+--header 'type: collection' \
+--data '{
+  "static_variables": [
+    {
+      "name": "svExportFormat",
+      "value": "jsonex"
+    },
+    {
+      "name": "svCurrentCompany",
+      "value": "Bhrama Enterprises"
+    }
+  ],
+  "tdlmessage": [
+    {
+      "definitions": [
+        {
+          "metadata": {
+            "name": "TSPLAllSalesVouchers",
+            "type": "Collection"
+          },
+          "attributes": [
+            {
+              "Type": "Vouchers:VoucherType"
+            },
+            {
+              "Child Of": "$$VchTypeSales"
+            },
+            {
+              "Fetch": "GUID, VCHKEY, VOUCHERKEY, MASTERID, ALTERID, DATE, EFFECTIVEDATE, VOUCHERTYPENAME, VOUCHERNUMBER, PARTYNAME, PARTYLEDGERNAME, PERSISTEDVIEW, ISINVOICE, AMOUNT, NARRATION, ALLLEDGERENTRIES.LIST.*, ALLINVENTORYENTRIES.LIST.*, BILLALLOCATIONS.LIST.*"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}'
+```
+
+#### Live JSON Response (Success)
+```json
+{
+  "status": "1",
+  "data": {
+    "collection": {
+      "voucher": [
+        {
+          "metadata": {
+            "type": "Voucher",
+            "remoteid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8",
+            "vchkey": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b34b:000001c0",
+            "vchtype": "Sales",
+            "objview": "Invoice Voucher View"
+          },
+          "guid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8",
+          "date": "20250831",
+          "effectivedate": "20250831",
+          "vchstatusdate": "20250831",
+          "vouchertypename": "Sales",
+          "vouchernumber": "54",
+          "partyname": "Amar Enterprises",
+          "partyledgername": "Amar Enterprises",
+          "persistedview": "Invoice Voucher View",
+          "isinvoice": true,
+          "amount": "1180.00",
+          "masterid": " 232",
+          "alterid": " 431",
+          "voucherkey": "197134703919552",
+          "allinventoryentries": [
+            {
+              "stockitemname": "Computer US",
+              "rate": "1000.00/nos",
+              "actualqty": " 1.000 nos",
+              "billedqty": " 1.000 nos",
+              "amount": "1000.00"
+            }
+          ],
+          "allledgerentries": [
+            {
+              "ledgername": "Amar Enterprises",
+              "isdeemedpositive": true,
+              "ispartyledger": true,
+              "amount": "-1180.00"
+            },
+            {
+              "ledgername": "GST Sales",
+              "isdeemedpositive": false,
+              "amount": "1000.00"
+            },
+            {
+              "ledgername": "CGST",
+              "isdeemedpositive": false,
+              "amount": "90.00"
+            },
+            {
+              "ledgername": "SGST",
+              "isdeemedpositive": false,
+              "amount": "90.00"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+### JSON 2: Create Sales Item Invoice Voucher
+
+#### cURL Request
+```bash
+curl --location 'http://192.168.71.128:9000/' \
+--header 'Content-Type: application/json' \
+--header 'id: Vouchers' \
+--header 'tallyrequest: import' \
+--header 'type: data' \
+--data '{
+    "static_variables": [
+        {
+            "name": "svVchImportFormat",
+            "value": "jsonex"
+        },
+        {
+            "name": "svCurrentCompany",
+            "value": "Bhrama Enterprises"
+        }
+    ],
+    "tallymessage": [
+        {
+            "metadata": {
+                "type": "Voucher",
+                "vchtype": "Sales",
+                "Action": "Create",
+                "objview": "Invoice Voucher View"
+            },
+            "date": "20250831",
+            "effectivedate": "20250831",
+            "vchstatusdate": "20250831",
+            "vouchertypename": "Sales",
+            "vouchernumber": "55",
+            "partyname": "Amar Enterprises",
+            "partyledgername": "Amar Enterprises",
+            "persistedview": "Invoice Voucher View",
+            "isinvoice": true,
+            "narration": "Sales Item Invoice via JSON API",
+            "allinventoryentries": [
+                {
+                    "stockitemname": "Computer US",
+                    "rate": "1000.00/nos",
+                    "actualqty": " 1.000 nos",
+                    "billedqty": " 1.000 nos",
+                    "amount": "1000.00",
+                    "isdeemedpositive": false,
+                    "batchallocations": [
+                        {
+                            "godownname": "Main Location",
+                            "batchname": "Primary Batch",
+                            "amount": "1000.00",
+                            "actualqty": " 1.000 nos",
+                            "billedqty": " 1.000 nos"
+                        }
+                    ],
+                    "accountingallocations": [
+                        {
+                            "ledgername": "GST Sales",
+                            "isdeemedpositive": false,
+                            "amount": "1000.00"
+                        }
+                    ]
+                }
+            ],
+            "ledgerentries": [
+                {
+                    "ledgername": "Amar Enterprises",
+                    "isdeemedpositive": true,
+                    "ispartyledger": true,
+                    "amount": "-1180.00",
+                    "billallocations": [
+                        {
+                            "name": "55",
+                            "billtype": "New Ref",
+                            "amount": "-1180.00"
+                        }
+                    ]
+                },
+                {
+                    "ledgername": "CGST",
+                    "isdeemedpositive": false,
+                    "amount": "90.00"
+                },
+                {
+                    "ledgername": "SGST",
+                    "isdeemedpositive": false,
+                    "amount": "90.00"
+                }
+            ]
+        }
+    ]
+}'
+```
+
+#### Live JSON Response (Success)
+```json
+{
+    "status": "1", 
+    "data": {
+        "import_result": {
+            "created": 1, 
+            "altered": 0, 
+            "deleted": 0, 
+            "lastvchid": 365, 
+            "lastmid": 0, 
+            "combined": 0, 
+            "ignored": 0, 
+            "errors": 0, 
+            "cancelled": 0, 
+            "exceptions": 0, 
+            "vchnumber": 55
+        }
+    }
+}
+```
+
+---
+
+### JSON 3: Alter Sales Voucher In-Place (Using `VCHKEY`)
+
+#### cURL Request
+```bash
+curl --location 'http://192.168.71.128:9000/' \
+--header 'Content-Type: application/json' \
+--header 'id: Vouchers' \
+--header 'tallyrequest: import' \
+--header 'type: data' \
+--data '{
+    "static_variables": [
+        {
+            "name": "svVchImportFormat",
+            "value": "jsonex"
+        },
+        {
+            "name": "svCurrentCompany",
+            "value": "Bhrama Enterprises"
+        }
+    ],
+    "tallymessage": [
+        {
+            "metadata": {
+                "type": "Voucher",
+                "vchtype": "Sales",
+                "remoteid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8",
+                "vchkey": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b34b:000001c0",
+                "Action": "Alter",
+                "objview": "Invoice Voucher View"
+            },
+            "date": "20250831",
+            "effectivedate": "20250831",
+            "vchstatusdate": "20250831",
+            "vouchertypename": "Sales",
+            "vouchernumber": "54",
+            "partyname": "Amar Enterprises",
+            "partyledgername": "Amar Enterprises",
+            "persistedview": "Invoice Voucher View",
+            "isinvoice": true,
+            "guid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8",
+            "allinventoryentries": [
+                {
+                    "stockitemname": "Computer US",
+                    "rate": "1200.00/nos",
+                    "actualqty": " 2.000 nos",
+                    "billedqty": " 2.000 nos",
+                    "amount": "2400.00",
+                    "isdeemedpositive": false
+                }
+            ],
+            "ledgerentries": [
+                {
+                    "ledgername": "Amar Enterprises",
+                    "isdeemedpositive": true,
+                    "ispartyledger": true,
+                    "amount": "-2832.00"
+                },
+                {
+                    "ledgername": "CGST",
+                    "isdeemedpositive": false,
+                    "amount": "216.00"
+                },
+                {
+                    "ledgername": "SGST",
+                    "isdeemedpositive": false,
+                    "amount": "216.00"
+                }
+            ]
+        }
+    ]
+}'
+```
+
+#### Live JSON Response (Success)
+```json
+{
+    "status": "1", 
+    "data": {
+        "import_result": {
+            "created": 0, 
+            "altered": 1, 
+            "deleted": 0, 
+            "lastvchid": 365, 
+            "lastmid": 0, 
+            "combined": 0, 
+            "ignored": 0, 
+            "errors": 0, 
+            "cancelled": 0, 
+            "exceptions": 0, 
+            "vchnumber": 54
+        }
+    }
+}
+```
+
+---
+
+### JSON 4: Cancel Voucher In-Place (`"iscancelled": true`)
+
+#### cURL Request
+```bash
+curl --location 'http://192.168.71.128:9000/' \
+--header 'Content-Type: application/json' \
+--header 'id: Vouchers' \
+--header 'tallyrequest: import' \
+--header 'type: data' \
+--data '{
+    "static_variables": [
+        {
+            "name": "svVchImportFormat",
+            "value": "jsonex"
+        },
+        {
+            "name": "svCurrentCompany",
+            "value": "Bhrama Enterprises"
+        }
+    ],
+    "tallymessage": [
+        {
+            "metadata": {
+                "type": "Voucher",
+                "vchtype": "Sales",
+                "remoteid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8",
+                "vchkey": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b34b:000001c0",
+                "Action": "Alter",
+                "objview": "Invoice Voucher View"
+            },
+            "date": "20250831",
+            "effectivedate": "20250831",
+            "vchstatusdate": "20250831",
+            "vouchertypename": "Sales",
+            "vouchernumber": "54",
+            "iscancelled": true,
+            "guid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8"
+        }
+    ]
+}'
+```
+
+#### Live JSON Response (Success)
+```json
+{
+    "status": "1", 
+    "data": {
+        "import_result": {
+            "created": 0, 
+            "altered": 1, 
+            "deleted": 0, 
+            "lastvchid": 364, 
+            "lastmid": 0, 
+            "combined": 0, 
+            "ignored": 0, 
+            "errors": 0, 
+            "cancelled": 0, 
+            "exceptions": 0, 
+            "vchnumber": 54
+        }
+    }
+}
+```
+
+---
+
+### JSON 5: Hard Delete Voucher (`"Action": "Delete"`)
+
+#### cURL Request
+```bash
+curl --location 'http://192.168.71.128:9000/' \
+--header 'Content-Type: application/json' \
+--header 'id: Vouchers' \
+--header 'tallyrequest: import' \
+--header 'type: data' \
+--data '{
+    "static_variables": [
+        {
+            "name": "svVchImportFormat",
+            "value": "jsonex"
+        },
+        {
+            "name": "svCurrentCompany",
+            "value": "Bhrama Enterprises"
+        }
+    ],
+    "tallymessage": [
+        {
+            "metadata": {
+                "type": "Voucher",
+                "vchtype": "Sales",
+                "remoteid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8",
+                "vchkey": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-0000b34b:000001c0",
+                "Action": "Delete",
+                "objview": "Invoice Voucher View"
+            },
+            "date": "20250831",
+            "effectivedate": "20250831",
+            "vouchertypename": "Sales",
+            "vouchernumber": "54",
+            "guid": "f0347998-2c19-4a5e-a4ed-01f589cb92a5-000000e8"
+        }
+    ]
+}'
+```
+
+#### Live JSON Response (Success)
+```json
+{
+    "status": "1", 
+    "data": {
+        "import_result": {
+            "created": 0, 
+            "altered": 0, 
+            "deleted": 1, 
+            "lastvchid": 0, 
+            "lastmid": 0, 
+            "combined": 0, 
+            "ignored": 0, 
+            "errors": 0, 
+            "cancelled": 0, 
+            "exceptions": 0, 
+            "vchnumber": 54
+        }
+    }
+}
+```
+
+---
+
+## 11. Troubleshooting & Common Pitfalls
 
 | Error Message / Symptom | Root Cause | Solution |
 | :--- | :--- | :--- |
@@ -13678,5 +14279,7 @@ In TallyPrime, pressing **F12: Configure** on any voucher entry screen opens the
 | Inverted Debits & Credits on Payment | Payee/Supplier credited instead of debited, or Bank debited instead of credited. | In Payment, set Party `ISDEEMEDPOSITIVE="Yes"` with **negative** amount (e.g. `-200.00`), and Bank ledger `ISDEEMEDPOSITIVE="No"` with **positive** amount (`200.00`). |
 | Inverted Debits & Credits on Purchase | Supplier credited as debit, or purchase expense treated as credit. | In Purchase, set Supplier Party `ISDEEMEDPOSITIVE="No"` with **positive** amount (`3120.00`), Purchase expense `ISDEEMEDPOSITIVE="Yes"` with **negative** amount (`-3000.00`), and Input GST `ISDEEMEDPOSITIVE="Yes"` with **negative** amount (`-60.00`). |
 | `<EXCEPTIONS>1</EXCEPTIONS>` (with `<ERRORS>0</ERRORS>`) | 1. Voucher date outside active financial year.<br>2. Total debits do not balance total credits.<br>3. Bank allocations total does not match Bank ledger line amount. | 1. Verify date falls within active company FY.<br>2. Ensure sum of `-ve` debit lines equals `+ve` credit lines.<br>3. Ensure `<AMOUNT>` in `<BANKALLOCATIONS.LIST>` equals bank ledger line amount. |
+| `Bad formula! '= "54"'` GUI Modal Popup | `$VOUCHERNUMBER = "54"` was passed from PowerShell/Bash, which stripped `$VOUCHERNUMBER` as an unset variable. | Escape with backtick in PowerShell (`` `$VOUCHERNUMBER ``) or use single quotes in bash (`--data-raw '...'`). |
 | Educational Mode Rejection | Voucher date is on an unsupported day (e.g. 15th of the month). | In Tally Educational mode, dates are restricted to **1st, 2nd, or 31st** of any month. |
+
 
