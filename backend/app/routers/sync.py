@@ -44,11 +44,20 @@ def parse_tally_response_metrics(resp_str: str) -> dict:
         metrics["error_summary"] = "Socket timed out / No response from Tally"
         return metrics
 
-    if "<LINEERROR>" in resp_str:
-        m = re.search(r'<LINEERROR>(.*?)</LINEERROR>', resp_str)
-        if m:
-            metrics["error_summary"] = m.group(1).replace("&apos;", "'").replace("&quot;", '"')
-            metrics["status"] = "EXCEPTION" if "does not exist" in metrics["error_summary"].lower() else "FAILED"
+    # Extract all LINEERROR tags if present
+    line_errors = re.findall(r'<LINEERROR>(.*?)</LINEERROR>', resp_str)
+    if line_errors:
+        cleaned_errors = [le.replace("&apos;", "'").replace("&quot;", '"').strip() for le in line_errors if le.strip()]
+        if cleaned_errors:
+            metrics["error_summary"] = " | ".join(cleaned_errors)
+            metrics["status"] = "EXCEPTION" if any("does not exist" in err.lower() for err in cleaned_errors) else "FAILED"
+
+    # Extract general ERROR tag if present
+    if not metrics["error_summary"] and "<ERROR>" in resp_str:
+        m_err = re.search(r'<ERROR>(.*?)</ERROR>', resp_str)
+        if m_err:
+            metrics["error_summary"] = m_err.group(1).replace("&apos;", "'").replace("&quot;", '"').strip()
+            metrics["status"] = "FAILED"
 
     m_c = re.search(r'<CREATED>(\d+)</CREATED>', resp_str)
     if m_c: metrics["created"] = int(m_c.group(1))
@@ -78,6 +87,8 @@ def parse_tally_response_metrics(resp_str: str) -> dict:
             metrics["errors"] = ir.get("errors", 0)
             metrics["exceptions"] = ir.get("exceptions", 0)
             metrics["vchnumber"] = str(ir.get("vchnumber") or "")
+            if ir.get("line_error"):
+                metrics["error_summary"] = str(ir.get("line_error"))
         except Exception:
             pass
 
@@ -87,6 +98,9 @@ def parse_tally_response_metrics(resp_str: str) -> dict:
         metrics["status"] = "FAILED"
     elif metrics["created"] == 0 and metrics["altered"] == 0 and metrics["deleted"] == 0 and "<STATUS>0</STATUS>" in resp_str:
         metrics["status"] = "FAILED"
+
+    if not metrics["error_summary"] and metrics["status"] in ["FAILED", "EXCEPTION"]:
+        metrics["error_summary"] = f"Tally rejected import (Errors: {metrics['errors']}, Exceptions: {metrics['exceptions']})"
 
     return metrics
 
@@ -262,6 +276,8 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                 <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
                 <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
             </STATICVARIABLES>
+        </DESC>
+        <DATA>
             <TALLYMESSAGE xmlns:UDF="TallyUDF">
              <VOUCHER REMOTEID="{remote_id_attr}" VCHTYPE="{vtype_name}" ACTION="Alter" OBJVIEW="{obj_view}">
               <DATE>{vdate_str}</DATE>
@@ -273,7 +289,7 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
               <GUID>{guid_attr}</GUID>
              </VOUCHER>
             </TALLYMESSAGE>
-        </DESC>
+        </DATA>
     </BODY>
 </ENVELOPE>'''
 
@@ -293,13 +309,15 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                 <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
                 <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
             </STATICVARIABLES>
+        </DESC>
+        <DATA>
             <TALLYMESSAGE xmlns:UDF="TallyUDF">
              <VOUCHER REMOTEID="{remote_id_attr}" VCHTYPE="{vtype_name}" ACTION="Delete" OBJVIEW="{obj_view}">
               <DATE>{vdate_str}</DATE>
               <GUID>{guid_attr}</GUID>
              </VOUCHER>
             </TALLYMESSAGE>
-        </DESC>
+        </DATA>
     </BODY>
 </ENVELOPE>'''
 
@@ -1667,6 +1685,8 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
         <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
+    </DESC>
+    <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
         <VOUCHERTYPE NAME="{vt_name}" ACTION="{action}">
           <ORIGINALNAME>{original_name}</ORIGINALNAME>
@@ -1707,7 +1727,7 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
           </VOUCHERCLASSLIST.LIST>''' for c in vt.classes)}
         </VOUCHERTYPE>
       </TALLYMESSAGE>
-    </DESC>
+    </DATA>
   </BODY>
 </ENVELOPE>"""
 
@@ -1732,20 +1752,20 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
     try:
         tally_url = settings.TALLY_URL
         if not tally_url:
-            return
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
         v_stmt = select(TrnVoucher).options(selectinload(TrnVoucher.voucher_type)).where(TrnVoucher.voucher_id == voucher_id)
         v_res = await db.execute(v_stmt)
         voucher = v_res.scalars().first()
         if not voucher and action != "Delete":
-            return
+            return (False, "FAILED", f"Voucher #{voucher_id} not found")
 
         company_id = voucher.company_id if voucher else 1
         v_name = f"{voucher.voucher_type.name if voucher and voucher.voucher_type else 'Voucher'} #{voucher.voucher_number if voucher else voucher_id}"
 
         xml_envelope = await build_voucher_xml_payload(voucher_id, action, db)
         if not xml_envelope:
-            return
+            return (False, "FAILED", "Failed to build XML envelope")
 
         req_msg = f"\n=======================================================\n📤 [OUTBOUND REALTIME TALLY XML PUSH] (voucher_id={voucher_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n"
         print(req_msg, flush=True)
@@ -1774,7 +1794,8 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
             tally_url=tally_url
         )
 
-        is_success = "<CREATED>1</CREATED>" in response or "<ALTERED>1</ALTERED>" in response or "<DELETED>1</DELETED>" in response or "<IGNORED>1</IGNORED>" in response
+        metrics = parse_tally_response_metrics(response)
+        is_success = check_tally_success(response) or "<CREATED>1</CREATED>" in (response or "") or "<ALTERED>1</ALTERED>" in (response or "") or "<DELETED>1</DELETED>" in (response or "") or "<IGNORED>1</IGNORED>" in (response or "")
         is_already_deleted = (action == "Delete" and "Voucher does not exist" in (response or ""))
 
         if sync_id and sync_id > 0:
@@ -1805,26 +1826,44 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                     last_payload=xml_envelope,
                     last_response=response,
                     last_attempt_at=func.now(),
-                    error_message=str(response)[:500] if response else "Socket timed out / No response"
+                    error_message=metrics["error_summary"] or (str(response)[:500] if response else "Socket timed out / No response")
                 ))
+            await db.commit()
+
+        if action == "Delete":
+            await db.execute(
+                update(DeletedRecordAudit)
+                .where(
+                    DeletedRecordAudit.company_id == company_id,
+                    DeletedRecordAudit.entity_type == "Voucher",
+                    DeletedRecordAudit.record_id == voucher_id
+                )
+                .values(
+                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if is_success else (metrics["error_summary"] or "Cannot be deleted in Tally Prime")
+                )
+            )
             await db.commit()
 
         if is_success:
             print(f"✅ Real-time Tally Push Success for Voucher #{voucher_id} ({action})", flush=True)
             logger.info(f"Real-time Tally Push Success for Voucher #{voucher_id} ({action})")
+            return (True, "SUCCESS", None)
         else:
             print(f"❌ Real-time Tally Push Failed/Exception for Voucher #{voucher_id} ({action})", flush=True)
             logger.error(f"Real-time Tally Push Failed for Voucher #{voucher_id} ({action}). Tally Response: {response}")
+            return (False, metrics["status"], metrics["error_summary"])
 
     except Exception as e:
         logger.error(f"Error in try_push_voucher_realtime: {str(e)}", exc_info=True)
+        return (False, "EXCEPTION", str(e))
 
 
 async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: AsyncSession):
     try:
         tally_url = settings.TALLY_URL
         if not tally_url:
-            return False
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
         g_stmt = select(MstGroup).options(
             selectinload(MstGroup.parent),
@@ -1833,7 +1872,7 @@ async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: 
         g_res = await db.execute(g_stmt)
         group = g_res.scalars().first()
         if not group:
-            return False
+            return (False, "FAILED", f"Group #{group_id} not found")
 
         parent_name = group.parent.name if group.parent else ""
         
@@ -1852,204 +1891,55 @@ async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: 
             sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True)
             await db.execute(sq_stmt)
             await db.commit()
-            return True
+            return (True, "SUCCESS", None)
             
     except Exception as e:
         logger.warning(f"Real-time Tally JSON push exception for group_id={group_id}: {str(e)}", exc_info=True)
-    return False
+        return (False, "EXCEPTION", str(e))
+    return (False, "FAILED", "Group sync failed")
 
 async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: str, db: AsyncSession):
     """
-    Attempts real-time push to Tally Prime on the fly using JSON API (Tally_Ledger_apis.md schema).
-    If Tally is reachable and succeeds, marks SyncQueue item as processed (is_processed=True).
-    If Tally is unreachable/times out, leaves SyncQueue item as is_processed=False to sync later.
+    Attempts real-time push to Tally Prime on the fly using standard XML envelope.
+    Records structured traffic logs and updates DeletedRecordAudit when deleting.
     """
+    import time
+    start_time = time.time()
     try:
         tally_url = settings.TALLY_URL
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return False
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
         l_stmt = select(MstLedger).options(selectinload(MstLedger.group), selectinload(MstLedger.bank_details)).where(MstLedger.ledger_id == ledger_id)
         l_res = await db.execute(l_stmt)
         ledger = l_res.scalars().first()
-        if not ledger:
+        if not ledger and action != "Delete":
             logger.warning(f"Real-time Tally push skipped: ledger_id={ledger_id} not found.")
-            return False
+            return (False, "FAILED", f"Ledger #{ledger_id} not found")
 
-        group_name = ledger.group.name if ledger.group else "Sundry Debtors"
+        company_id = ledger.company_id if ledger else 1
+        ledger_name = ledger.name if ledger else f"Ledger #{ledger_id}"
+        group_name = ledger.group.name if (ledger and ledger.group) else "Sundry Debtors"
         
-        c_stmt = select(Company).where(Company.company_id == ledger.company_id)
+        c_stmt = select(Company).where(Company.company_id == company_id)
         c_res = await db.execute(c_stmt)
         comp_obj = c_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
-        json_payload = build_ledger_json_payload(ledger, group_name, comp_name, action)
-
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY JSON PUSH (ledger_id={ledger_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{json.dumps(json_payload, indent=2)}\n=======================================================\n")
-
-        resp_str = await asyncio.to_thread(_post_json_to_tally_sync, tally_url, json_payload, 5)
-        
-        logger.info(f"\n=======================================================\nTALLY JSON PUSH RESPONSE (ledger_id={ledger_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
-
-        if check_tally_json_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
-            await db.execute(sq_stmt)
-            await db.commit()
-            logger.info(f"Real-time Tally JSON push successful for ledger_id={ledger_id}, action={action}")
-            return True
-        else:
-            logger.error(f"Real-time Tally JSON push failed for ledger_id={ledger_id}: {resp_str}")
-    except Exception as e:
-        logger.warning(f"Real-time Tally JSON push exception for ledger_id={ledger_id}: {str(e)}", exc_info=True)
-    return False
-
-
-async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, action: str, db: AsyncSession):
-    """
-    Attempts real-time push of a Stock Item to Tally Prime XML Server on the fly
-    using official TallyPrime API Explorer standard envelope.
-    """
-    try:
-        from app.models.tally_core import MstStockItem, StockItemOpeningBalance
-        from app.models.portal_core import SyncQueue, Company
-
-        tally_url = settings.TALLY_URL
-        if not tally_url:
-            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return False
-
-        item_stmt = select(MstStockItem).options(
-            selectinload(MstStockItem.unit),
-            selectinload(MstStockItem.group),
-            selectinload(MstStockItem.category),
-            selectinload(MstStockItem.opening_balances).selectinload(StockItemOpeningBalance.godown)
-        ).where(MstStockItem.stock_item_id == stock_item_id)
-        item_res = await db.execute(item_stmt)
-        item = item_res.scalars().first()
-        if not item:
-            logger.warning(f"Real-time Tally push skipped: stock_item_id={stock_item_id} not found.")
-            return False
-
-        c_stmt = select(Company).where(Company.company_id == item.company_id)
-        c_res = await db.execute(c_stmt)
-        comp_obj = c_res.scalars().first()
-        comp_name = comp_obj.name if comp_obj else ""
-
-        # Handle Delete action
         if action == "Delete":
-            delete_xml = f"""<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import</TALLYREQUEST>
-    <TYPE>Data</TYPE>
-    <ID>All Masters</ID>
-  </HEADER>
-  <BODY>
-    <DESC>
-      <STATICVARIABLES>
-        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-      </STATICVARIABLES>
-      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{item.name}" Action="Delete">
-          <NAME>{item.name}</NAME>
-        </STOCKITEM>
-      </TALLYMESSAGE>
-    </DESC>
-  </BODY>
-</ENVELOPE>"""
-            logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM DELETE (stock_item_id={stock_item_id})\nURL: {tally_url}\nPAYLOAD:\n{delete_xml}\n=======================================================\n")
-            resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, delete_xml, 5)
-            if check_tally_success(resp_str):
-                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
-                await db.execute(sq_stmt)
-                await db.commit()
-                return True
-            else:
-                logger.error(f"Real-time Tally delete failed for stock_item_id={stock_item_id}: {resp_str}")
-                return False
-
-        uom_symbol = item.unit.symbol if item.unit else "nos"
-        raw_group_name = item.group.name.strip() if item.group and item.group.name else ""
-        if not raw_group_name or raw_group_name.lower() in ("primary", " primary", "not applicable"):
-            parent_tag = "<PARENT>&#4; Primary</PARENT>"
+            ledger_inner_xml = f"""<LEDGER NAME="{ledger_name}" Action="Delete">
+          <NAME>{ledger_name}</NAME>
+        </LEDGER>"""
         else:
-            parent_tag = f"<PARENT>{raw_group_name}</PARENT>"
-
-        category_name = item.category.name if item.category else ""
-        category_tag = f"\n          <CATEGORY>{category_name}</CATEGORY>" if category_name else ""
-        desc_tag = f"\n          <DESCRIPTION>{item.description}</DESCRIPTION>" if item.description else ""
-        
-        is_batchwise = "Yes" if getattr(item, 'tracking_type', None) in ("Batches", "Serial", "Batch") else "No"
-        supply_type = "Services" if (item.unit and item.unit.name and item.unit.name.lower() in ['hrs', 'srv', 'serv', 'service']) else "Goods"
-
-        # GST Details List
-        gst_rate = float(item.gst_rate_percent) if item.gst_rate_percent else 0.0
-        hsn_str = item.hsn_code or ""
-        cgst_rate = gst_rate / 2.0
-        sgst_rate = gst_rate / 2.0
-        igst_rate = gst_rate
-
-        gst_block = f"""
-          <GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>
-          <GSTTYPEOFSUPPLY>{supply_type}</GSTTYPEOFSUPPLY>"""
-        if gst_rate > 0 or hsn_str:
-            gst_block += f"""
-          <GSTDETAILS.LIST>
-            <APPLICABLEFROM>20170701</APPLICABLEFROM>
-            <HSNCODE>{hsn_str}</HSNCODE>
-            <TAXABILITY>Taxable</TAXABILITY>
-            <STATEWISEDETAILS.LIST>
-              <RATEDETAILS.LIST>
-                <GSTRATE>{gst_rate:g}</GSTRATE>
-                <CGSTRATE>{cgst_rate:g}</CGSTRATE>
-                <SGSTRATE>{sgst_rate:g}</SGSTRATE>
-                <IGSTRATE>{igst_rate:g}</IGSTRATE>
-              </RATEDETAILS.LIST>
-            </STATEWISEDETAILS.LIST>
-          </GSTDETAILS.LIST>"""
-
-        # Opening Balance and Batch Allocations (valuation is negative in Tally)
-        ob_block = ""
-        if getattr(item, 'opening_balances', None) and len(item.opening_balances) > 0:
-            tot_qty = sum(float(ob.quantity) for ob in item.opening_balances)
-            tot_val = sum(float(ob.amount) for ob in item.opening_balances)
-            avg_rate = tot_val / tot_qty if tot_qty > 0 else 0.0
-            batches_xml = ""
-            for ob in item.opening_balances:
-                gname = ob.godown.name if getattr(ob, 'godown', None) and ob.godown else "Main Location"
-                bname = ob.batch_name or "Primary Batch"
-                q_val = float(ob.quantity)
-                r_val = float(ob.rate)
-                a_val = float(ob.amount)
-                batches_xml += f"""
-            <BATCHALLOCATIONS.LIST>
-              <GODOWNNAME>{gname}</GODOWNNAME>
-              <BATCHNAME>{bname}</BATCHNAME>
-              <OPENINGBALANCE>{q_val:g} {uom_symbol}</OPENINGBALANCE>
-              <OPENINGRATE>{r_val:.2f}/{uom_symbol}</OPENINGRATE>
-              <OPENINGVALUE>-{a_val:.2f}</OPENINGVALUE>
-            </BATCHALLOCATIONS.LIST>"""
-            ob_block = f"""
-          <OPENINGBALANCE>{tot_qty:g} {uom_symbol}</OPENINGBALANCE>
-          <OPENINGRATE>{avg_rate:.2f}/{uom_symbol}</OPENINGRATE>
-          <OPENINGVALUE>-{tot_val:.2f}</OPENINGVALUE>{batches_xml}"""
-        elif item.opening_qty and float(item.opening_qty) > 0:
-            op_qty = float(item.opening_qty)
-            op_rate = float(item.opening_rate) if item.opening_rate else 0.0
-            op_val = op_qty * op_rate
-            ob_block = f"""
-          <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
-          <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
-          <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
-          <BATCHALLOCATIONS.LIST>
-            <GODOWNNAME>Main Location</GODOWNNAME>
-            <BATCHNAME>Primary Batch</BATCHNAME>
-            <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
-            <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
-            <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
-          </BATCHALLOCATIONS.LIST>"""
+            is_billwise = "Yes" if getattr(ledger, 'is_billwise_on', False) else "No"
+            op_balance = f"{ledger.opening_balance:.2f}" if ledger.opening_balance is not None else "0.00"
+            ledger_inner_xml = f"""<LEDGER NAME="{ledger_name}" Action="{action}">
+          <NAME>{ledger_name}</NAME>
+          <PARENT>{group_name}</PARENT>
+          <OPENINGBALANCE>{op_balance}</OPENINGBALANCE>
+          <ISBILLWISEON>{is_billwise}</ISBILLWISEON>
+        </LEDGER>"""
 
         xml_envelope = f"""<ENVELOPE>
   <HEADER>
@@ -2064,34 +1954,297 @@ async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, ac
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
         <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
+    </DESC>
+    <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{item.name}" Action="{action}">
-          <NAME>{item.name}</NAME>
+        {ledger_inner_xml}
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>"""
+
+        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY LEDGER PUSH (ledger_id={ledger_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        duration_ms = int((time.time() - start_time) * 1000)
+        logger.info(f"\n=======================================================\nTALLY LEDGER PUSH RESPONSE (ledger_id={ledger_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+
+        # Record structured log in sync_traffic_logs with Postman-ready cURL
+        await record_sync_traffic_log(
+            db=db,
+            company_id=company_id,
+            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
+            entity_type="Ledger",
+            entity_id=ledger_id,
+            entity_name=ledger_name,
+            action=action,
+            outbound_format="XML",
+            outbound_payload=xml_envelope,
+            inbound_response=resp_str,
+            duration_ms=duration_ms,
+            tally_url=tally_url
+        )
+
+        metrics = parse_tally_response_metrics(resp_str)
+        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+
+        if sync_item_id and sync_item_id > 0:
+            if is_success:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
+            else:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
+            await db.execute(sq_stmt)
+            await db.commit()
+
+        if action == "Delete":
+            await db.execute(
+                update(DeletedRecordAudit)
+                .where(
+                    DeletedRecordAudit.company_id == company_id,
+                    DeletedRecordAudit.entity_type == "Ledger",
+                    DeletedRecordAudit.record_id == ledger_id
+                )
+                .values(
+                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if is_success else (metrics["error_summary"] or "Cannot be deleted in Tally Prime (referenced in transactions)")
+                )
+            )
+            await db.commit()
+
+        if is_success:
+            logger.info(f"Real-time Tally push successful for ledger_id={ledger_id}, action={action}")
+            return (True, "SUCCESS", None)
+        else:
+            logger.error(f"Real-time Tally push failed for ledger_id={ledger_id}: {resp_str}")
+            return (False, metrics["status"], metrics["error_summary"])
+    except Exception as e:
+        logger.warning(f"Real-time Tally push exception for ledger_id={ledger_id}: {str(e)}", exc_info=True)
+        return (False, "EXCEPTION", str(e))
+
+
+async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, action: str, db: AsyncSession):
+    """
+    Attempts real-time push of a Stock Item to Tally Prime XML Server on the fly
+    using official TallyPrime API Explorer standard envelope.
+    """
+    import time
+    start_time = time.time()
+    try:
+        from app.models.tally_core import MstStockItem, StockItemOpeningBalance
+        from app.models.portal_core import SyncQueue, Company
+
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
+
+        item_stmt = select(MstStockItem).options(
+            selectinload(MstStockItem.unit),
+            selectinload(MstStockItem.group),
+            selectinload(MstStockItem.category),
+            selectinload(MstStockItem.opening_balances).selectinload(StockItemOpeningBalance.godown)
+        ).where(MstStockItem.stock_item_id == stock_item_id)
+        item_res = await db.execute(item_stmt)
+        item = item_res.scalars().first()
+        if not item and action != "Delete":
+            logger.warning(f"Real-time Tally push skipped: stock_item_id={stock_item_id} not found.")
+            return (False, "FAILED", f"Stock Item #{stock_item_id} not found")
+
+        company_id = item.company_id if item else 1
+        item_name = item.name if item else f"Item #{stock_item_id}"
+
+        c_stmt = select(Company).where(Company.company_id == company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        # Handle Delete action
+        if action == "Delete":
+            xml_envelope = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <STOCKITEM NAME="{item_name}" Action="Delete">
+          <NAME>{item_name}</NAME>
+        </STOCKITEM>
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>"""
+        else:
+            uom_symbol = item.unit.symbol if item.unit else "nos"
+            raw_group_name = item.group.name.strip() if item.group and item.group.name else ""
+            if not raw_group_name or raw_group_name.lower() in ("primary", " primary", "not applicable"):
+                parent_tag = "<PARENT>&#4; Primary</PARENT>"
+            else:
+                parent_tag = f"<PARENT>{raw_group_name}</PARENT>"
+
+            category_name = item.category.name if item.category else ""
+            category_tag = f"\n          <CATEGORY>{category_name}</CATEGORY>" if category_name else ""
+            desc_tag = f"\n          <DESCRIPTION>{item.description}</DESCRIPTION>" if item.description else ""
+            
+            is_batchwise = "Yes" if getattr(item, 'tracking_type', None) in ("Batches", "Serial", "Batch") else "No"
+            supply_type = "Services" if (item.unit and item.unit.name and item.unit.name.lower() in ['hrs', 'srv', 'serv', 'service']) else "Goods"
+
+            gst_rate = float(item.gst_rate_percent) if item.gst_rate_percent else 0.0
+            hsn_str = item.hsn_code or ""
+            cgst_rate = gst_rate / 2.0
+            sgst_rate = gst_rate / 2.0
+            igst_rate = gst_rate
+
+            gst_block = f"""
+          <GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>
+          <GSTTYPEOFSUPPLY>{supply_type}</GSTTYPEOFSUPPLY>"""
+            if gst_rate > 0 or hsn_str:
+                gst_block += f"""
+          <GSTDETAILS.LIST>
+            <APPLICABLEFROM>20170701</APPLICABLEFROM>
+            <HSNCODE>{hsn_str}</HSNCODE>
+            <TAXABILITY>Taxable</TAXABILITY>
+            <STATEWISEDETAILS.LIST>
+              <RATEDETAILS.LIST>
+                <GSTRATE>{gst_rate:g}</GSTRATE>
+                <CGSTRATE>{cgst_rate:g}</CGSTRATE>
+                <SGSTRATE>{sgst_rate:g}</SGSTRATE>
+                <IGSTRATE>{igst_rate:g}</IGSTRATE>
+              </RATEDETAILS.LIST>
+            </STATEWISEDETAILS.LIST>
+          </GSTDETAILS.LIST>"""
+
+            ob_block = ""
+            if getattr(item, 'opening_balances', None) and len(item.opening_balances) > 0:
+                tot_qty = sum(float(ob.quantity) for ob in item.opening_balances)
+                tot_val = sum(float(ob.amount) for ob in item.opening_balances)
+                avg_rate = tot_val / tot_qty if tot_qty > 0 else 0.0
+                batches_xml = ""
+                for ob in item.opening_balances:
+                    gname = ob.godown.name if getattr(ob, 'godown', None) and ob.godown else "Main Location"
+                    bname = ob.batch_name or "Primary Batch"
+                    q_val = float(ob.quantity)
+                    r_val = float(ob.rate)
+                    a_val = float(ob.amount)
+                    batches_xml += f"""
+            <BATCHALLOCATIONS.LIST>
+              <GODOWNNAME>{gname}</GODOWNNAME>
+              <BATCHNAME>{bname}</BATCHNAME>
+              <OPENINGBALANCE>{q_val:g} {uom_symbol}</OPENINGBALANCE>
+              <OPENINGRATE>{r_val:.2f}/{uom_symbol}</OPENINGRATE>
+              <OPENINGVALUE>-{a_val:.2f}</OPENINGVALUE>
+            </BATCHALLOCATIONS.LIST>"""
+                ob_block = f"""
+          <OPENINGBALANCE>{tot_qty:g} {uom_symbol}</OPENINGBALANCE>
+          <OPENINGRATE>{avg_rate:.2f}/{uom_symbol}</OPENINGRATE>
+          <OPENINGVALUE>-{tot_val:.2f}</OPENINGVALUE>{batches_xml}"""
+            elif item.opening_qty and float(item.opening_qty) > 0:
+                op_qty = float(item.opening_qty)
+                op_rate = float(item.opening_rate) if item.opening_rate else 0.0
+                op_val = op_qty * op_rate
+                ob_block = f"""
+          <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
+          <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
+          <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
+          <BATCHALLOCATIONS.LIST>
+            <GODOWNNAME>Main Location</GODOWNNAME>
+            <BATCHNAME>Primary Batch</BATCHNAME>
+            <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
+            <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
+            <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
+          </BATCHALLOCATIONS.LIST>"""
+
+            xml_envelope = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <STOCKITEM NAME="{item_name}" Action="{action}">
+          <NAME>{item_name}</NAME>
           {parent_tag}{category_tag}
           <BASEUNITS>{uom_symbol}</BASEUNITS>{desc_tag}
           <ISCOSTCENTRESON>No</ISCOSTCENTRESON>
           <ISBATCHWISEON>{is_batchwise}</ISBATCHWISEON>{gst_block}{ob_block}
         </STOCKITEM>
       </TALLYMESSAGE>
-    </DESC>
+    </DATA>
   </BODY>
 </ENVELOPE>"""
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM PUSH (stock_item_id={stock_item_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        duration_ms = int((time.time() - start_time) * 1000)
         logger.info(f"\n=======================================================\nTALLY STOCKITEM PUSH RESPONSE (stock_item_id={stock_item_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
-        if check_tally_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+        await record_sync_traffic_log(
+            db=db,
+            company_id=company_id,
+            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
+            entity_type="StockItem",
+            entity_id=stock_item_id,
+            entity_name=item_name,
+            action=action,
+            outbound_format="XML",
+            outbound_payload=xml_envelope,
+            inbound_response=resp_str,
+            duration_ms=duration_ms,
+            tally_url=tally_url
+        )
+
+        metrics = parse_tally_response_metrics(resp_str)
+        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+
+        if sync_item_id and sync_item_id > 0:
+            if is_success:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
+            else:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
             await db.execute(sq_stmt)
             await db.commit()
+
+        if action == "Delete":
+            await db.execute(
+                update(DeletedRecordAudit)
+                .where(
+                    DeletedRecordAudit.company_id == company_id,
+                    DeletedRecordAudit.entity_type == "StockItem",
+                    DeletedRecordAudit.record_id == stock_item_id
+                )
+                .values(
+                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if is_success else (metrics["error_summary"] or "Cannot be deleted in Tally Prime")
+                )
+            )
+            await db.commit()
+
+        if is_success:
             logger.info(f"Real-time Tally push successful for stock_item_id={stock_item_id}, action={action}")
-            return True
+            return (True, "SUCCESS", None)
         else:
             logger.error(f"Real-time Tally push failed for stock_item_id={stock_item_id}: {resp_str}")
+            return (False, metrics["status"], metrics["error_summary"])
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for stock_item_id={stock_item_id}: {str(e)}", exc_info=True)
-    return False
+        return (False, "EXCEPTION", str(e))
 
 
 async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db: AsyncSession):
@@ -2099,6 +2252,8 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
     Attempts real-time push of a Unit of Measure (UOM) to Tally Prime XML Server on the fly
     using official TallyPrime API Explorer standard envelope.
     """
+    import time
+    start_time = time.time()
     try:
         from app.models.tally_core import MstUom
         from app.models.portal_core import SyncQueue, Company
@@ -2106,29 +2261,30 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
         tally_url = settings.TALLY_URL
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return False
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
         u_stmt = select(MstUom).where(MstUom.unit_id == unit_id)
         u_res = await db.execute(u_stmt)
         uom = u_res.scalars().first()
-        if not uom:
+        if not uom and action != "Delete":
             logger.warning(f"Real-time Tally push skipped: unit_id={unit_id} not found.")
-            return False
+            return (False, "FAILED", f"Unit #{unit_id} not found")
 
-        c_stmt = select(Company).where(Company.company_id == uom.company_id)
+        company_id = uom.company_id if uom else 1
+        c_stmt = select(Company).where(Company.company_id == company_id)
         c_res = await db.execute(c_stmt)
         comp_obj = c_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
-        symbol = uom.symbol or uom.name or ""
-        formal_name = uom.original_name or uom.name or ""
-        dec_places = uom.decimal_places if uom.decimal_places is not None else 0
+        symbol = (uom.symbol or uom.name or f"UOM #{unit_id}") if uom else f"UOM #{unit_id}"
+        formal_name = (uom.original_name or uom.name or "") if uom else ""
+        dec_places = uom.decimal_places if (uom and uom.decimal_places is not None) else 0
 
         if action == "Delete":
             unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="Delete">
           <NAME>{symbol}</NAME>
         </UNIT>"""
-        elif uom.is_simple_unit:
+        elif uom and uom.is_simple_unit:
             unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="{action}">
           <NAME>{symbol}</NAME>
           <ORIGINALNAME>{formal_name}</ORIGINALNAME>
@@ -2138,18 +2294,18 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
         else:
             base_unit_sym = ""
             add_unit_sym = ""
-            if uom.base_unit_id:
+            if uom and uom.base_unit_id:
                 b_res = await db.execute(select(MstUom).where(MstUom.unit_id == uom.base_unit_id))
                 b_obj = b_res.scalars().first()
                 if b_obj:
                     base_unit_sym = b_obj.symbol or b_obj.name or ""
-            if uom.additional_unit_id:
+            if uom and uom.additional_unit_id:
                 a_res = await db.execute(select(MstUom).where(MstUom.unit_id == uom.additional_unit_id))
                 a_obj = a_res.scalars().first()
                 if a_obj:
                     add_unit_sym = a_obj.symbol or a_obj.name or ""
             
-            conv_val = uom.conversion_factor or 1
+            conv_val = (uom.conversion_factor or 1) if uom else 1
             conv_str = str(int(conv_val)) if conv_val % 1 == 0 else str(conv_val)
 
             unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="{action}">
@@ -2174,34 +2330,63 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
         <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
+    </DESC>
+    <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
         {unit_inner_xml}
       </TALLYMESSAGE>
-    </DESC>
+    </DATA>
   </BODY>
 </ENVELOPE>"""
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY UOM PUSH (unit_id={unit_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        duration_ms = int((time.time() - start_time) * 1000)
         logger.info(f"\n=======================================================\nTALLY UOM PUSH RESPONSE (unit_id={unit_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
-        if check_tally_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+        await record_sync_traffic_log(
+            db=db,
+            company_id=company_id,
+            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
+            entity_type="UOM",
+            entity_id=unit_id,
+            entity_name=symbol,
+            action=action,
+            outbound_format="XML",
+            outbound_payload=xml_envelope,
+            inbound_response=resp_str,
+            duration_ms=duration_ms,
+            tally_url=tally_url
+        )
+
+        metrics = parse_tally_response_metrics(resp_str)
+        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+
+        if sync_item_id and sync_item_id > 0:
+            if is_success:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
+            else:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
             await db.execute(sq_stmt)
             await db.commit()
+
+        if is_success:
             logger.info(f"Real-time Tally push successful for unit_id={unit_id}, action={action}")
-            return True
+            return (True, "SUCCESS", None)
         else:
             logger.error(f"Real-time Tally push failed for unit_id={unit_id}: {resp_str}")
+            return (False, metrics["status"], metrics["error_summary"])
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for unit_id={unit_id}: {str(e)}", exc_info=True)
-    return False
+        return (False, "EXCEPTION", str(e))
 
 
 async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action: str, db: AsyncSession):
     """
     Attempts real-time push of a Stock Group to Tally Prime XML Server on the fly.
     """
+    import time
+    start_time = time.time()
     try:
         from app.models.tally_core import MstStockGroup
         from app.models.portal_core import SyncQueue, Company
@@ -2209,23 +2394,26 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
         tally_url = settings.TALLY_URL
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return False
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
         g_stmt = select(MstStockGroup).options(selectinload(MstStockGroup.parent)).where(MstStockGroup.stock_group_id == group_id)
         g_res = await db.execute(g_stmt)
         group = g_res.scalars().first()
-        if not group:
+        if not group and action != "Delete":
             logger.warning(f"Real-time Tally push skipped: stock_group_id={group_id} not found.")
-            return False
+            return (False, "FAILED", f"Stock Group #{group_id} not found")
 
-        c_stmt = select(Company).where(Company.company_id == group.company_id)
+        company_id = group.company_id if group else 1
+        group_name = group.name if group else f"StockGroup #{group_id}"
+
+        c_stmt = select(Company).where(Company.company_id == company_id)
         c_res = await db.execute(c_stmt)
         comp_obj = c_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
         if action == "Delete":
-            group_inner_xml = f"""<STOCKGROUP NAME="{group.name}" Action="Delete">
-          <NAME>{group.name}</NAME>
+            group_inner_xml = f"""<STOCKGROUP NAME="{group_name}" Action="Delete">
+          <NAME>{group_name}</NAME>
         </STOCKGROUP>"""
         else:
             parent_name = group.parent.name if (group.parent and group.parent.name) else ""
@@ -2234,8 +2422,8 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
             else:
                 parent_tag = f"<PARENT>{parent_name}</PARENT>"
 
-            group_inner_xml = f"""<STOCKGROUP NAME="{group.name}" Action="{action}">
-          <NAME>{group.name}</NAME>
+            group_inner_xml = f"""<STOCKGROUP NAME="{group_name}" Action="{action}">
+          <NAME>{group_name}</NAME>
           {parent_tag}
           <ISADDABLE>Yes</ISADDABLE>
         </STOCKGROUP>"""
@@ -2253,34 +2441,63 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
         <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
+    </DESC>
+    <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
         {group_inner_xml}
       </TALLYMESSAGE>
-    </DESC>
+    </DATA>
   </BODY>
 </ENVELOPE>"""
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKGROUP PUSH (stock_group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        duration_ms = int((time.time() - start_time) * 1000)
         logger.info(f"\n=======================================================\nTALLY STOCKGROUP PUSH RESPONSE (stock_group_id={group_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
-        if check_tally_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+        await record_sync_traffic_log(
+            db=db,
+            company_id=company_id,
+            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
+            entity_type="StockGroup",
+            entity_id=group_id,
+            entity_name=group_name,
+            action=action,
+            outbound_format="XML",
+            outbound_payload=xml_envelope,
+            inbound_response=resp_str,
+            duration_ms=duration_ms,
+            tally_url=tally_url
+        )
+
+        metrics = parse_tally_response_metrics(resp_str)
+        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+
+        if sync_item_id and sync_item_id > 0:
+            if is_success:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
+            else:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
             await db.execute(sq_stmt)
             await db.commit()
+
+        if is_success:
             logger.info(f"Real-time Tally push successful for stock_group_id={group_id}, action={action}")
-            return True
+            return (True, "SUCCESS", None)
         else:
             logger.error(f"Real-time Tally push failed for stock_group_id={group_id}: {resp_str}")
+            return (False, metrics["status"], metrics["error_summary"])
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for stock_group_id={group_id}: {str(e)}", exc_info=True)
-    return False
+        return (False, "EXCEPTION", str(e))
 
 
 async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, action: str, db: AsyncSession):
     """
     Attempts real-time push of a Stock Category to Tally Prime XML Server on the fly.
     """
+    import time
+    start_time = time.time()
     try:
         from app.models.tally_core import MstStockCategory
         from app.models.portal_core import SyncQueue, Company
@@ -2288,23 +2505,26 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
         tally_url = settings.TALLY_URL
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return False
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
         c_query = select(MstStockCategory).options(selectinload(MstStockCategory.parent)).where(MstStockCategory.stock_category_id == category_id)
         c_res = await db.execute(c_query)
         cat = c_res.scalars().first()
-        if not cat:
+        if not cat and action != "Delete":
             logger.warning(f"Real-time Tally push skipped: stock_category_id={category_id} not found.")
-            return False
+            return (False, "FAILED", f"Stock Category #{category_id} not found")
 
-        comp_stmt = select(Company).where(Company.company_id == cat.company_id)
+        company_id = cat.company_id if cat else 1
+        cat_name = cat.name if cat else f"Category #{category_id}"
+
+        comp_stmt = select(Company).where(Company.company_id == company_id)
         comp_res = await db.execute(comp_stmt)
         comp_obj = comp_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
         if action == "Delete":
-            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat.name}" Action="Delete">
-          <NAME>{cat.name}</NAME>
+            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat_name}" Action="Delete">
+          <NAME>{cat_name}</NAME>
         </STOCKCATEGORY>"""
         else:
             parent_name = cat.parent.name if (cat.parent and cat.parent.name) else ""
@@ -2313,8 +2533,8 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
             else:
                 parent_tag = f"<PARENT>{parent_name}</PARENT>"
 
-            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat.name}" Action="{action}">
-          <NAME>{cat.name}</NAME>
+            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat_name}" Action="{action}">
+          <NAME>{cat_name}</NAME>
           {parent_tag}
         </STOCKCATEGORY>"""
 
@@ -2331,34 +2551,63 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
         <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
+    </DESC>
+    <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
         {cat_inner_xml}
       </TALLYMESSAGE>
-    </DESC>
+    </DATA>
   </BODY>
 </ENVELOPE>"""
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKCATEGORY PUSH (stock_category_id={category_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        duration_ms = int((time.time() - start_time) * 1000)
         logger.info(f"\n=======================================================\nTALLY STOCKCATEGORY PUSH RESPONSE (stock_category_id={category_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
-        if check_tally_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+        await record_sync_traffic_log(
+            db=db,
+            company_id=company_id,
+            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
+            entity_type="StockCategory",
+            entity_id=category_id,
+            entity_name=cat_name,
+            action=action,
+            outbound_format="XML",
+            outbound_payload=xml_envelope,
+            inbound_response=resp_str,
+            duration_ms=duration_ms,
+            tally_url=tally_url
+        )
+
+        metrics = parse_tally_response_metrics(resp_str)
+        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+
+        if sync_item_id and sync_item_id > 0:
+            if is_success:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
+            else:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
             await db.execute(sq_stmt)
             await db.commit()
+
+        if is_success:
             logger.info(f"Real-time Tally push successful for stock_category_id={category_id}, action={action}")
-            return True
+            return (True, "SUCCESS", None)
         else:
             logger.error(f"Real-time Tally push failed for stock_category_id={category_id}: {resp_str}")
+            return (False, metrics["status"], metrics["error_summary"])
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for stock_category_id={category_id}: {str(e)}", exc_info=True)
-    return False
+        return (False, "EXCEPTION", str(e))
 
 
 async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: str, db: AsyncSession):
     """
     Attempts real-time push of a Godown/Location to Tally Prime XML Server on the fly.
     """
+    import time
+    start_time = time.time()
     try:
         from app.models.tally_core import MstGodown
         from app.models.portal_core import SyncQueue, Company
@@ -2366,23 +2615,26 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
         tally_url = settings.TALLY_URL
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return False
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
         g_query = select(MstGodown).options(selectinload(MstGodown.parent)).where(MstGodown.godown_id == godown_id)
         g_res = await db.execute(g_query)
         godown = g_res.scalars().first()
-        if not godown:
+        if not godown and action != "Delete":
             logger.warning(f"Real-time Tally push skipped: godown_id={godown_id} not found.")
-            return False
+            return (False, "FAILED", f"Godown #{godown_id} not found")
 
-        comp_stmt = select(Company).where(Company.company_id == godown.company_id)
+        company_id = godown.company_id if godown else 1
+        godown_name = godown.name if godown else f"Godown #{godown_id}"
+
+        comp_stmt = select(Company).where(Company.company_id == company_id)
         comp_res = await db.execute(comp_stmt)
         comp_obj = comp_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
         if action == "Delete":
-            godown_inner_xml = f"""<GODOWN NAME="{godown.name}" Action="Delete">
-          <NAME>{godown.name}</NAME>
+            godown_inner_xml = f"""<GODOWN NAME="{godown_name}" Action="Delete">
+          <NAME>{godown_name}</NAME>
         </GODOWN>"""
         else:
             parent_name = godown.parent.name if (godown.parent and godown.parent.name) else ""
@@ -2393,8 +2645,8 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
 
             addr_tag = f"\n          <ADDRESS>{godown.address}</ADDRESS>" if godown.address else ""
 
-            godown_inner_xml = f"""<GODOWN NAME="{godown.name}" Action="{action}">
-          <NAME>{godown.name}</NAME>
+            godown_inner_xml = f"""<GODOWN NAME="{godown_name}" Action="{action}">
+          <NAME>{godown_name}</NAME>
           {parent_tag}{addr_tag}
         </GODOWN>"""
 
@@ -2411,28 +2663,70 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
         <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
+    </DESC>
+    <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
         {godown_inner_xml}
       </TALLYMESSAGE>
-    </DESC>
+    </DATA>
   </BODY>
 </ENVELOPE>"""
 
         logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY GODOWN PUSH (godown_id={godown_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        duration_ms = int((time.time() - start_time) * 1000)
         logger.info(f"\n=======================================================\nTALLY GODOWN PUSH RESPONSE (godown_id={godown_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
-        if check_tally_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True)
+        await record_sync_traffic_log(
+            db=db,
+            company_id=company_id,
+            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
+            entity_type="Godown",
+            entity_id=godown_id,
+            entity_name=godown_name,
+            action=action,
+            outbound_format="XML",
+            outbound_payload=xml_envelope,
+            inbound_response=resp_str,
+            duration_ms=duration_ms,
+            tally_url=tally_url
+        )
+
+        metrics = parse_tally_response_metrics(resp_str)
+        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+
+        if sync_item_id and sync_item_id > 0:
+            if is_success:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
+            else:
+                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
             await db.execute(sq_stmt)
             await db.commit()
+
+        if action == "Delete":
+            await db.execute(
+                update(DeletedRecordAudit)
+                .where(
+                    DeletedRecordAudit.company_id == company_id,
+                    DeletedRecordAudit.entity_type == "Godown",
+                    DeletedRecordAudit.record_id == godown_id
+                )
+                .values(
+                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if is_success else (metrics["error_summary"] or "Cannot be deleted in Tally Prime")
+                )
+            )
+            await db.commit()
+
+        if is_success:
             logger.info(f"Real-time Tally push successful for godown_id={godown_id}, action={action}")
-            return True
+            return (True, "SUCCESS", None)
         else:
             logger.error(f"Real-time Tally push failed for godown_id={godown_id}: {resp_str}")
+            return (False, metrics["status"], metrics["error_summary"])
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for godown_id={godown_id}: {str(e)}", exc_info=True)
-    return False
+        return (False, "EXCEPTION", str(e))
 
 
 async def run_once_sync_background(user_id: int):
@@ -3205,6 +3499,9 @@ async def query_vouchers_from_tally(
         type_tag = "Voucher"
         childof_tag = ""
 
+    from_date_tally = query_req.from_date.strftime("%Y%m%d")
+    to_date_tally = query_req.to_date.strftime("%Y%m%d")
+
     tdl_payload = f"""<ENVELOPE>
     <HEADER>
         <VERSION>1</VERSION>
@@ -3215,8 +3512,10 @@ async def query_vouchers_from_tally(
     <BODY>
         <DESC>
             <STATICVARIABLES>
-                <SVEXPORTFORMAT>XML</SVEXPORTFORMAT>
+                <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
                 <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+                <SVFROMDATE TYPE="Date">{from_date_tally}</SVFROMDATE>
+                <SVTODATE TYPE="Date">{to_date_tally}</SVTODATE>
             </STATICVARIABLES>
             <TDL>
               <TDLMESSAGE>
@@ -3227,11 +3526,7 @@ async def query_vouchers_from_tally(
                  <NATIVEMETHOD>AllLedgerEntries.BankAllocations.*</NATIVEMETHOD>
                  <NATIVEMETHOD>AllLedgerEntries.BillAllocations.*</NATIVEMETHOD>
                  <NATIVEMETHOD>AllInventoryEntries.*</NATIVEMETHOD>
-                 <FILTERS>PeriodFilter</FILTERS>
                 </COLLECTION>
-                <SYSTEM TYPE="Formulae" NAME="PeriodFilter" ISMODIFY="Yes" ISFIXED="No" ISINTERNAL="No">
-                  $Date &gt;= ($$Date:"{from_str}") AND $Date &lt;= ($$Date:"{to_str}")
-                </SYSTEM>
               </TDLMESSAGE>
             </TDL>
         </DESC>
@@ -3276,7 +3571,7 @@ async def get_sync_health(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns high-level Sync Health metrics: Synced, Pending, Failed, and Exceptions.
+    Returns high-level Sync Health metrics: Synced, Pending, Failed, Exceptions, and Discrepancies.
     """
     # 1. Total Pending in SyncQueue
     pending_count_res = await db.execute(
@@ -3321,7 +3616,17 @@ async def get_sync_health(
     )
     exception_logs = exception_logs_res.scalar() or 0
 
-    # 4. Recent 5 logs
+    # 4. Total deleted records out of sync (not deleted in Tally)
+    unreconciled_del_res = await db.execute(
+        select(func.count(DeletedRecordAudit.audit_id)).where(
+            DeletedRecordAudit.company_id == user.company_id,
+            DeletedRecordAudit.tally_sync_status.in_(["NOT_DELETED_IN_TALLY", "SYNC_FAILED", "PENDING"])
+        )
+    )
+    unreconciled_deleted_count = unreconciled_del_res.scalar() or 0
+    total_sync_issues = failed_logs + exception_logs + unreconciled_deleted_count
+
+    # 5. Recent 5 logs
     recent_logs_res = await db.execute(
         select(SyncTrafficLog).where(
             SyncTrafficLog.company_id == user.company_id
@@ -3330,12 +3635,14 @@ async def get_sync_health(
     recent_logs = recent_logs_res.scalars().all()
 
     return {
-        "status": "healthy" if failed_logs == 0 else "degraded",
+        "status": "healthy" if total_sync_issues == 0 else "degraded",
         "pending_queue_count": pending_count,
         "synced_queue_count": synced_count,
         "total_success_traffic": success_logs,
         "total_failed_traffic": failed_logs,
         "total_exception_traffic": exception_logs,
+        "unreconciled_deleted_count": unreconciled_deleted_count,
+        "total_sync_issues": total_sync_issues,
         "recent_traffic": [
             {
                 "log_id": l.log_id,
@@ -3697,6 +4004,287 @@ async def resolve_voucher_conflict(
         return {"status": "success", "message": "MyTally updated with latest Tally record."}
     else:
         raise HTTPException(status_code=400, detail="Invalid resolution strategy.")
+
+
+# ==========================================
+# DELETED RECORDS AUDIT & DISCREPANCY APIS
+# ==========================================
+
+@router.get("/deleted-audits")
+async def get_deleted_records_audits(
+    status: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns audit records for all items deleted locally in MyTally with their Tally sync status.
+    """
+    query = (
+        select(DeletedRecordAudit, User.username.label("deleted_by_name"))
+        .outerjoin(User, DeletedRecordAudit.deleted_by_user_id == User.user_id)
+        .where(DeletedRecordAudit.company_id == user.company_id)
+    )
+    count_query = select(func.count(DeletedRecordAudit.audit_id)).where(DeletedRecordAudit.company_id == user.company_id)
+
+    if status and status.upper() != "ALL":
+        query = query.where(DeletedRecordAudit.tally_sync_status == status.upper())
+        count_query = count_query.where(DeletedRecordAudit.tally_sync_status == status.upper())
+
+    if entity_type and entity_type.upper() != "ALL":
+        query = query.where(DeletedRecordAudit.entity_type == entity_type)
+        count_query = count_query.where(DeletedRecordAudit.entity_type == entity_type)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.where(
+            (DeletedRecordAudit.entity_identifier.ilike(term)) |
+            (DeletedRecordAudit.tally_error_message.ilike(term)) |
+            (DeletedRecordAudit.tally_guid.ilike(term))
+        )
+        count_query = count_query.where(
+            (DeletedRecordAudit.entity_identifier.ilike(term)) |
+            (DeletedRecordAudit.tally_error_message.ilike(term)) |
+            (DeletedRecordAudit.tally_guid.ilike(term))
+        )
+
+    total_res = await db.execute(count_query)
+    total_count = total_res.scalar() or 0
+
+    rows_res = await db.execute(query.order_by(DeletedRecordAudit.deleted_at.desc()).offset(offset).limit(limit))
+    rows = rows_res.all()
+
+    return {
+        "total": total_count,
+        "limit": limit,
+        "offset": offset,
+        "audits": [
+            {
+                "audit_id": row.DeletedRecordAudit.audit_id,
+                "company_id": row.DeletedRecordAudit.company_id,
+                "entity_type": row.DeletedRecordAudit.entity_type,
+                "record_id": row.DeletedRecordAudit.record_id,
+                "tally_guid": row.DeletedRecordAudit.tally_guid,
+                "entity_identifier": row.DeletedRecordAudit.entity_identifier,
+                "deleted_by_user_id": row.DeletedRecordAudit.deleted_by_user_id,
+                "deleted_by_name": row.deleted_by_name or "System Admin",
+                "tally_sync_status": row.DeletedRecordAudit.tally_sync_status,
+                "tally_error_message": row.DeletedRecordAudit.tally_error_message,
+                "snapshot_data": row.DeletedRecordAudit.snapshot_data,
+                "deleted_at": row.DeletedRecordAudit.deleted_at.isoformat() if row.DeletedRecordAudit.deleted_at else None
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/deleted-audits/{audit_id}/retry")
+async def retry_deleted_audit_sync(
+    audit_id: int,
+    user: User = Depends(require_permission("ledgers", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retries pushing the XML Delete action to Tally Prime for an audited deleted record.
+    """
+    stmt = select(DeletedRecordAudit).where(
+        DeletedRecordAudit.audit_id == audit_id,
+        DeletedRecordAudit.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    audit = res.scalars().first()
+    if not audit:
+        raise HTTPException(status_code=404, detail="Deleted record audit not found")
+
+    c_res = await db.execute(select(Company).where(Company.company_id == audit.company_id))
+    comp = c_res.scalars().first()
+    comp_name = comp.name if comp else ""
+    tally_url = settings.TALLY_URL
+
+    if not tally_url:
+        raise HTTPException(status_code=400, detail="Tally URL is not configured")
+
+    entity_name = audit.entity_identifier or (audit.snapshot_data or {}).get("name") or (audit.snapshot_data or {}).get("voucher_number") or ""
+    
+    if audit.entity_type == "Ledger":
+        inner_xml = f'<LEDGER NAME="{entity_name}" Action="Delete"><NAME>{entity_name}</NAME></LEDGER>'
+        master_id = "All Masters"
+    elif audit.entity_type == "StockItem":
+        inner_xml = f'<STOCKITEM NAME="{entity_name}" Action="Delete"><NAME>{entity_name}</NAME></STOCKITEM>'
+        master_id = "All Masters"
+    elif audit.entity_type == "Voucher":
+        guid_tag = f"<GUID>{audit.tally_guid}</GUID>" if audit.tally_guid else f"<VOUCHERNUMBER>{entity_name.replace('Voucher #', '')}</VOUCHERNUMBER>"
+        inner_xml = f'<VOUCHER Action="Delete">{guid_tag}</VOUCHER>'
+        master_id = "Vouchers"
+    else:
+        inner_xml = f'<{audit.entity_type.upper()} NAME="{entity_name}" Action="Delete"><NAME>{entity_name}</NAME></{audit.entity_type.upper()}>'
+        master_id = "All Masters"
+
+    xml_envelope = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>{master_id}</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        {inner_xml}
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>"""
+
+    import time
+    start_t = time.time()
+    resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+    duration_ms = int((time.time() - start_t) * 1000)
+
+    metrics = parse_tally_response_metrics(resp_str)
+    is_success = check_tally_success(resp_str) or metrics["deleted"] > 0
+
+    await record_sync_traffic_log(
+        db=db,
+        company_id=audit.company_id,
+        sync_id=None,
+        entity_type=audit.entity_type,
+        entity_id=audit.record_id,
+        entity_name=f"[Deleted] {audit.entity_identifier}",
+        action="Delete",
+        outbound_format="XML",
+        outbound_payload=xml_envelope,
+        inbound_response=resp_str,
+        duration_ms=duration_ms,
+        tally_url=tally_url
+    )
+
+    if is_success:
+        audit.tally_sync_status = "SYNCED_TO_TALLY"
+        audit.tally_error_message = None
+    else:
+        audit.tally_sync_status = "NOT_DELETED_IN_TALLY"
+        audit.tally_error_message = metrics["error_summary"] or "Cannot be deleted in Tally (referenced in transactions)"
+
+    await db.commit()
+    await db.refresh(audit)
+    return {
+        "audit_id": audit.audit_id,
+        "tally_sync_status": audit.tally_sync_status,
+        "tally_error_message": audit.tally_error_message,
+        "tally_response": resp_str
+    }
+
+
+@router.post("/deleted-audits/{audit_id}/deactivate-in-tally")
+async def deactivate_deleted_master_in_tally(
+    audit_id: int,
+    user: User = Depends(require_permission("ledgers", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Pushes an Alter XML payload to Tally Prime deactivating the master (e.g. setting ISBILLWISEON=No or disabling active usage)
+    when hard deletion is prohibited by Tally's audit integrity kernel.
+    """
+    stmt = select(DeletedRecordAudit).where(
+        DeletedRecordAudit.audit_id == audit_id,
+        DeletedRecordAudit.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    audit = res.scalars().first()
+    if not audit:
+        raise HTTPException(status_code=404, detail="Deleted record audit not found")
+
+    c_res = await db.execute(select(Company).where(Company.company_id == audit.company_id))
+    comp = c_res.scalars().first()
+    comp_name = comp.name if comp else ""
+    tally_url = settings.TALLY_URL
+
+    if not tally_url:
+        raise HTTPException(status_code=400, detail="Tally URL is not configured")
+
+    entity_name = audit.entity_identifier or (audit.snapshot_data or {}).get("name") or ""
+    
+    if audit.entity_type == "Ledger":
+        inner_xml = f'''<LEDGER NAME="{entity_name}" Action="Alter">
+          <NAME>{entity_name}</NAME>
+          <ISBILLWISEON>No</ISBILLWISEON>
+        </LEDGER>'''
+    elif audit.entity_type == "StockItem":
+        inner_xml = f'''<STOCKITEM NAME="{entity_name}" Action="Alter">
+          <NAME>{entity_name}</NAME>
+        </STOCKITEM>'''
+    else:
+        inner_xml = f'<{audit.entity_type.upper()} NAME="{entity_name}" Action="Alter"><NAME>{entity_name}</NAME></{audit.entity_type.upper()}>'
+
+    xml_envelope = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        {inner_xml}
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>"""
+
+    import time
+    start_t = time.time()
+    resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+    duration_ms = int((time.time() - start_t) * 1000)
+
+    metrics = parse_tally_response_metrics(resp_str)
+    is_success = check_tally_success(resp_str) or metrics["altered"] > 0
+
+    await record_sync_traffic_log(
+        db=db,
+        company_id=audit.company_id,
+        sync_id=None,
+        entity_type=audit.entity_type,
+        entity_id=audit.record_id,
+        entity_name=f"[Deactivated] {audit.entity_identifier}",
+        action="Alter",
+        outbound_format="XML",
+        outbound_payload=xml_envelope,
+        inbound_response=resp_str,
+        duration_ms=duration_ms,
+        tally_url=tally_url
+    )
+
+    if is_success:
+        audit.tally_sync_status = "DEACTIVATED_IN_TALLY"
+        audit.tally_error_message = "Deactivated in Tally Prime (retained for statutory audit trail)"
+    else:
+        audit.tally_error_message = metrics["error_summary"] or "Failed to alter/deactivate master in Tally"
+
+    await db.commit()
+    await db.refresh(audit)
+    return {
+        "audit_id": audit.audit_id,
+        "tally_sync_status": audit.tally_sync_status,
+        "tally_error_message": audit.tally_error_message,
+        "tally_response": resp_str
+    }
 
 
 

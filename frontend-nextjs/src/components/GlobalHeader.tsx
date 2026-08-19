@@ -38,12 +38,14 @@ import {
   ChevronRight,
   FolderTree,
   type LucideIcon,
+  RefreshCw,
+  AlertTriangle,
 } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { useState } from 'react'
+import { cn, API_BASE, authHeaders } from '@/lib/utils'
+import { useState, useEffect } from 'react'
 
 export function GlobalHeader() {
-  const { user, logout, permissions, switchCompany } = useAuth()
+  const { user, token, logout, permissions, switchCompany } = useAuth()
   const { dark, toggle } = useTheme()
   const pathname = usePathname()
   const router = useRouter()
@@ -53,6 +55,34 @@ export function GlobalHeader() {
   const [savingCompany, setSavingCompany] = useState(false)
   const [editError, setEditError] = useState('')
   const [editSuccess, setEditSuccess] = useState('')
+  const [syncHealth, setSyncHealth] = useState<{
+    status: string
+    total_sync_issues: number
+    unreconciled_deleted_count: number
+    total_failed_traffic: number
+    pending_queue_count: number
+  } | null>(null)
+
+  useEffect(() => {
+    if (!token) return
+    const fetchSyncHealth = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/sync/health`, {
+          headers: authHeaders(token)
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setSyncHealth(data)
+        }
+      } catch (e) {
+        // silent fail
+      }
+    }
+    fetchSyncHealth()
+    const interval = setInterval(fetchSyncHealth, 15000)
+    return () => clearInterval(interval)
+  }, [token])
+
   const [formData, setFormData] = useState({
     name: '',
     address_line1: '',
@@ -224,7 +254,34 @@ export function GlobalHeader() {
           </div>
 
           {/* Right: theme + menu */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
+            {syncHealth && (
+              <Link
+                href="/admin?tab=sync"
+                className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg transition-all border cursor-pointer shrink-0 shadow-sm mr-1",
+                  syncHealth.total_sync_issues > 0
+                    ? "bg-rose-600 hover:bg-rose-700 text-white border-rose-400 animate-pulse"
+                    : "bg-white/20 hover:bg-white/30 text-white border-white/20"
+                )}
+                title={
+                  syncHealth.total_sync_issues > 0
+                    ? `${syncHealth.total_sync_issues} Tally sync discrepancies detected across Create, Alter, or Delete actions. Click to view Sync Console.`
+                    : "Tally Prime Live & Synced"
+                }
+              >
+                <span className={cn("w-2 h-2 rounded-full", syncHealth.total_sync_issues > 0 ? "bg-white" : "bg-emerald-300")}></span>
+                <span className="hidden sm:inline">
+                  {syncHealth.total_sync_issues > 0
+                    ? `${syncHealth.total_sync_issues} Sync Issues`
+                    : "Tally Synced"}
+                </span>
+                <span className="sm:hidden">
+                  {syncHealth.total_sync_issues > 0 ? `${syncHealth.total_sync_issues} Issues` : "Synced"}
+                </span>
+              </Link>
+            )}
+
             {activeCompany && (
               <button
                 onClick={() => setShowCompanyModal(true)}

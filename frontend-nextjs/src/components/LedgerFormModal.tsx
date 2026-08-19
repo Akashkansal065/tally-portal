@@ -5,6 +5,7 @@ import { X, Sparkles, Building2, MapPin, CreditCard, UserCheck, AlertCircle } fr
 import { INDIAN_STATES, COUNTRY_LIST, parseGSTIN } from '@/lib/location-data'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { GST_REGISTRATION_TYPES } from '@/constants/gst'
+import { toast } from 'sonner'
 
 export type AccountGroup = {
   group_id: number
@@ -356,9 +357,15 @@ export default function LedgerFormModal({
         body: JSON.stringify(payload)
       })
 
+      const resData = await res.json()
       if (!res.ok) {
-        const errData = await res.json()
-        throw new Error(errData.detail || 'Failed to save ledger')
+        throw new Error(resData.detail || 'Failed to save ledger')
+      }
+
+      if (resData.tally_synced === false) {
+        toast.warning(`⚠️ Saved in MyTally, but Tally Prime sync failed: ${resData.tally_message || 'Check Admin Sync Hub'}`)
+      } else {
+        toast.success(initialData ? 'Ledger altered & synced to Tally Prime ✅' : 'Ledger created & synced to Tally Prime ✅')
       }
 
       onSuccess()

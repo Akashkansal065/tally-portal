@@ -131,7 +131,7 @@ class VoucherCreate(BaseModel):
     is_invoice: bool = False
     original_voucher_id: Optional[int] = None
     gst_registration_id: Optional[int] = None
-    entries: List[VoucherEntryCreate]
+    entries: Optional[List[VoucherEntryCreate]] = []
     inventory_entries: Optional[List[InventoryEntryCreate]] = []
 
 class VoucherResponse(BaseModel):

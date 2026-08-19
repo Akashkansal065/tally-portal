@@ -728,6 +728,26 @@ async def delete_ledger(
             detail=f"You do not have permission to delete in module {module_code}."
         )
 
+    snapshot = {
+        "ledger_id": ledger.ledger_id,
+        "company_id": ledger.company_id,
+        "name": ledger.name,
+        "group_id": ledger.group_id,
+        "opening_balance": float(ledger.opening_balance or 0),
+        "guid": getattr(ledger, 'guid', None)
+    }
+    del_audit = DeletedRecordAudit(
+        company_id=user.company_id,
+        entity_type="Ledger",
+        record_id=ledger_id,
+        tally_guid=getattr(ledger, 'guid', None) or f"MYTALLY-LEDGER-{ledger_id}",
+        entity_identifier=ledger.name,
+        deleted_by_user_id=user.user_id,
+        tally_sync_status="PENDING",
+        snapshot_data=snapshot
+    )
+    db.add(del_audit)
+
     sync_item = SyncQueue(
         company_id=user.company_id,
         record_type="Ledger",
@@ -739,13 +759,18 @@ async def delete_ledger(
 
     # Trigger real-time on-the-run push to Tally Prime
     from app.routers.sync import try_push_ledger_realtime
-    await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Delete", db)
+    tally_ok, tally_status, tally_err = await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Delete", db)
         
     await db.delete(ledger)
     await db.commit()
     from app.core.cache import clear_company_cache
     clear_company_cache(user.company_id)
-    return {"detail": "Ledger deleted successfully."}
+    return {
+        "detail": "Ledger deleted successfully in MyTally.",
+        "tally_synced": tally_ok,
+        "tally_status": tally_status,
+        "tally_message": tally_err
+    }
 
 @router.get("/{ledger_id}")
 async def get_ledger_by_id(

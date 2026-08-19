@@ -593,7 +593,7 @@ class TrnAccounting(Base):
     entry_id = Column(BigInteger, primary_key=True, index=True)
     voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="CASCADE"), nullable=False)
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=False)
-    cost_center_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centers.cost_center_id", ondelete="SET NULL"), nullable=True)
+    cost_center_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centres.cost_centre_id", ondelete="SET NULL"), nullable=True)
     debit_amount = Column(Numeric(18, 2), default=0.00)
     credit_amount = Column(Numeric(18, 2), default=0.00)
     entry_narration = Column(String(300), nullable=True)

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { AlertTriangle, Trash2, X } from 'lucide-react'
 import { API_BASE, authHeaders } from '@/lib/utils'
+import { toast } from 'sonner'
 
 type Props = {
   isOpen: boolean
@@ -35,9 +36,15 @@ export default function DeleteLedgerModal({
         headers: authHeaders(token || '')
       })
 
+      const resData = await res.json()
       if (!res.ok) {
-        const errData = await res.json()
-        throw new Error(errData.detail || 'Failed to delete ledger')
+        throw new Error(resData.detail || 'Failed to delete ledger')
+      }
+
+      if (resData.tally_synced === false) {
+        toast.warning(`⚠️ Deleted locally, but Tally Prime sync failed: ${resData.tally_message || 'Cannot be deleted in Tally Prime'}`)
+      } else {
+        toast.success('Ledger deleted and removed from Tally Prime ✅')
       }
 
       onSuccess()

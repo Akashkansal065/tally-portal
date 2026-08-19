@@ -7,7 +7,7 @@ from datetime import datetime, date
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user
-from app.models.portal_core import User
+from app.models.portal_core import User, DeletedRecordAudit, SyncQueue
 from app.models.tally_core import MstUom, MstStockGroup, StockGroupAlias, MstStockCategory, MstGodown, MstStockItem, Batch, MstPriceLevel
 from app.models.portal_core import BillOfMaterials, BomItem, SerialNumber
 from app.schemas.inventory import (
@@ -716,6 +716,9 @@ async def create_stock_item(
         gst_rate_percent=req.gst_rate_percent,
         opening_qty=req.opening_qty,
         opening_rate=req.opening_rate,
+        closing_qty=req.opening_qty or 0,
+        closing_rate=req.opening_rate or 0,
+        closing_value=(req.opening_qty or 0) * (req.opening_rate or 0),
         reorder_level=req.reorder_level,
         minimum_order_qty=req.minimum_order_qty,
         tracking_type=req.tracking_type,
@@ -1069,7 +1072,26 @@ async def delete_stock_item(
     if not item:
         raise HTTPException(status_code=404, detail="Stock item not found.")
 
-    from app.models.portal_core import SyncQueue
+    snapshot = {
+        "stock_item_id": item.stock_item_id,
+        "company_id": item.company_id,
+        "name": item.name,
+        "group_id": item.group_id,
+        "unit_id": item.unit_id,
+        "closing_qty": float(item.closing_qty or 0)
+    }
+    del_audit = DeletedRecordAudit(
+        company_id=user.company_id,
+        entity_type="StockItem",
+        record_id=item_id,
+        tally_guid=getattr(item, 'guid', None) or f"MYTALLY-ITEM-{item_id}",
+        entity_identifier=item.name,
+        deleted_by_user_id=user.user_id,
+        tally_sync_status="PENDING",
+        snapshot_data=snapshot
+    )
+    db.add(del_audit)
+
     sync_item = SyncQueue(
         company_id=user.company_id,
         record_type="StockItem",
@@ -1080,11 +1102,16 @@ async def delete_stock_item(
     await db.flush()
 
     from app.routers.sync import try_push_stock_item_realtime
-    await try_push_stock_item_realtime(item_id, sync_item.sync_id, "Delete", db)
+    tally_ok, tally_status, tally_err = await try_push_stock_item_realtime(item_id, sync_item.sync_id, "Delete", db)
 
     await db.delete(item)
     await db.commit()
-    return {"message": "Stock item deleted successfully."}
+    return {
+        "message": "Stock item deleted successfully in MyTally.",
+        "tally_synced": tally_ok,
+        "tally_status": tally_status,
+        "tally_message": tally_err
+    }
 
 @router.get("/items", response_model=List[StockItemResponse])
 async def get_stock_items(

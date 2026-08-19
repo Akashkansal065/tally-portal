@@ -400,11 +400,17 @@ export default function VouchersPage() {
         },
         body: JSON.stringify(data)
       })
+      const resData = await res.json()
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || (isEdit ? 'Failed to update voucher' : 'Failed to create voucher'))
+        throw new Error(resData.detail || (isEdit ? 'Failed to update voucher' : 'Failed to create voucher'))
       }
-      toast.success(isEdit ? 'Voucher altered & synced to Tally!' : 'Voucher created successfully!')
+
+      if (resData.tally_synced === false) {
+        toast.warning(`⚠️ Saved in MyTally, but Tally Prime sync failed: ${resData.tally_message || 'Check Admin Sync Hub'}`)
+      } else {
+        toast.success(isEdit ? 'Voucher altered & synced to Tally Prime ✅' : 'Voucher created & synced to Tally Prime ✅')
+      }
+
       setCreateModalOpen(false)
       setEditingVoucher(null)
       
@@ -429,11 +435,17 @@ export default function VouchersPage() {
         method: 'POST',
         headers: authHeaders(token)
       })
+      const resData = await res.json()
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to cancel voucher')
+        throw new Error(resData.detail || 'Failed to cancel voucher')
       }
-      toast.success('Voucher marked as Cancelled (<ISCANCELLED>Yes</ISCANCELLED>) and synced to Tally!')
+
+      if (resData.tally_synced === false) {
+        toast.warning(`⚠️ Cancelled locally, but Tally sync failed: ${resData.tally_message || 'Tally rejected request'}`)
+      } else {
+        toast.success('Voucher marked as Cancelled (<ISCANCELLED>Yes</ISCANCELLED>) & synced to Tally ✅')
+      }
+
       setAllVouchers(prev => prev.map(v => v.voucher_id === deletingVoucher.voucher_id ? { ...v, status: 'cancelled', is_cancelled: true } : v))
       setDeletingVoucher(null)
     } catch (err: any) {
@@ -451,11 +463,17 @@ export default function VouchersPage() {
         method: 'DELETE',
         headers: authHeaders(token)
       })
+      const resData = await res.json()
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to delete voucher')
+        throw new Error(resData.detail || 'Failed to delete voucher')
       }
-      toast.success('Voucher permanently deleted and pushed to Tally!')
+
+      if (resData.tally_synced === false) {
+        toast.warning(`⚠️ Deleted locally, but Tally Prime delete failed: ${resData.tally_message || 'Check Admin Sync Hub'}`)
+      } else {
+        toast.success('Voucher permanently deleted & removed from Tally Prime ✅')
+      }
+
       setAllVouchers(prev => prev.filter(v => v.voucher_id !== deletingVoucher.voucher_id))
       setDeletingVoucher(null)
     } catch (err: any) {

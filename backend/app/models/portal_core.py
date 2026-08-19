@@ -61,7 +61,8 @@ class DeletedRecordAudit(Base):
     tally_guid = Column(String(150), nullable=True, index=True)
     entity_identifier = Column(String(255), nullable=True) # e.g. "Purchase #27", "Amar Enterprises"
     deleted_by_user_id = Column(Integer, nullable=True)
-    tally_sync_status = Column(String(50), default="PENDING") # PENDING, SYNCED_TO_TALLY, ALREADY_DELETED_IN_TALLY, SYNC_FAILED
+    tally_sync_status = Column(String(50), default="PENDING") # PENDING, SYNCED_TO_TALLY, ALREADY_DELETED_IN_TALLY, SYNC_FAILED, NOT_DELETED_IN_TALLY
+    tally_error_message = Column(String(500), nullable=True)
     snapshot_data = Column(JSON, nullable=True) # Full JSON snapshot before deletion for audit / rollback
     deleted_at = Column(DateTime, server_default=func.now(), index=True)
 

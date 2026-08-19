@@ -37,18 +37,23 @@ export default function LoginPage() {
   }, [user, isLoading, router])
 
   useEffect(() => {
+    let isMounted = true
     const checkBootstrap = async () => {
       try {
         const res = await fetch(`${API_BASE}/auth/bootstrap-status`)
-        if (res.ok) {
+        if (res.ok && isMounted) {
           const data = await res.json()
-          setNeedBootstrap(data.need_bootstrap)
+          setNeedBootstrap(Boolean(data.need_bootstrap))
         }
-      } catch (e) {
-        console.error('Error fetching bootstrap status:', e)
+      } catch {
+        // Silently fallback to standard login if backend is momentarily reloading
+        if (isMounted) setNeedBootstrap(false)
       }
     }
     checkBootstrap()
+    return () => {
+      isMounted = false
+    }
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {

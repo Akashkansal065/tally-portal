@@ -113,6 +113,21 @@ export type SyncTrafficLogItem = {
   created_at: string
 }
 
+export type DeletedRecordAuditItem = {
+  audit_id: number
+  company_id: number
+  entity_type: string
+  record_id: number | null
+  tally_guid: string | null
+  entity_identifier: string | null
+  deleted_by_user_id: number | null
+  deleted_by_name: string
+  tally_sync_status: string
+  tally_error_message: string | null
+  snapshot_data: any
+  deleted_at: string
+}
+
 
 const SYNC_STEPS = [
   "Reading Tally XML file...",
@@ -168,7 +183,8 @@ export default function AdminPage() {
   const [runOnceResult, setRunOnceResult] = useState<any>(null)
   const [runOnceError, setRunOnceError] = useState('')
 
-  // Sync Health & Traffic Audit Log states
+  // Sync Hub & Discrepancies states
+  const [syncSubTab, setSyncSubTab] = useState<'traffic' | 'deleted_audits' | 'inbound'>('traffic')
   const [syncHealth, setSyncHealth] = useState<{
     status: string
     pending_queue_count: number
@@ -176,15 +192,27 @@ export default function AdminPage() {
     total_success_traffic: number
     total_failed_traffic: number
     total_exception_traffic: number
+    unreconciled_deleted_count?: number
+    total_sync_issues?: number
   } | null>(null)
+
+  // Traffic Logs
   const [syncLogs, setSyncLogs] = useState<SyncTrafficLogItem[]>([])
   const [syncLogsLoading, setSyncLogsLoading] = useState(false)
   const [syncStatusFilter, setSyncStatusFilter] = useState('ALL')
   const [syncEntityFilter, setSyncEntityFilter] = useState('ALL')
+  const [syncActionFilter, setSyncActionFilter] = useState('ALL')
   const [syncSearchTerm, setSyncSearchTerm] = useState('')
   const [inspectLog, setInspectLog] = useState<SyncTrafficLogItem | null>(null)
   const [copiedLogId, setCopiedLogId] = useState<number | null>(null)
   const [retryingLogId, setRetryingLogId] = useState<number | null>(null)
+
+  // Deleted Audits Discrepancies
+  const [deletedAudits, setDeletedAudits] = useState<DeletedRecordAuditItem[]>([])
+  const [deletedAuditsLoading, setDeletedAuditsLoading] = useState(false)
+  const [deletedStatusFilter, setDeletedStatusFilter] = useState('ALL')
+  const [retryingAuditId, setRetryingAuditId] = useState<number | null>(null)
+  const [deactivatingAuditId, setDeactivatingAuditId] = useState<number | null>(null)
 
   const fetchSyncHealth = useCallback(async () => {
     if (!token) return
@@ -194,8 +222,8 @@ export default function AdminPage() {
         const data = await res.json()
         setSyncHealth(data)
       }
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Gracefully ignore transient network drops
     }
   }, [token])
 
@@ -212,21 +240,47 @@ export default function AdminPage() {
       const res = await fetch(`${API_BASE}/sync/logs?${params.toString()}`, { headers: authHeaders(token) })
       if (res.ok) {
         const data = await res.json()
-        setSyncLogs(data.logs || [])
+        let logsList: SyncTrafficLogItem[] = data.logs || []
+        if (syncActionFilter !== 'ALL') {
+          logsList = logsList.filter(l => l.action.toLowerCase() === syncActionFilter.toLowerCase())
+        }
+        setSyncLogs(logsList)
       }
-    } catch (e) {
-      console.error(e)
+    } catch {
+      // Gracefully ignore transient network drops
     } finally {
       setSyncLogsLoading(false)
     }
-  }, [token, syncStatusFilter, syncEntityFilter, syncSearchTerm])
+  }, [token, syncStatusFilter, syncEntityFilter, syncActionFilter, syncSearchTerm])
+
+  const fetchDeletedAudits = useCallback(async () => {
+    if (!token) return
+    setDeletedAuditsLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (deletedStatusFilter !== 'ALL') params.append('status', deletedStatusFilter)
+      if (syncSearchTerm.trim()) params.append('search', syncSearchTerm.trim())
+      params.append('limit', '50')
+
+      const res = await fetch(`${API_BASE}/sync/deleted-audits?${params.toString()}`, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setDeletedAudits(data.audits || [])
+      }
+    } catch {
+      // Gracefully ignore transient network drops
+    } finally {
+      setDeletedAuditsLoading(false)
+    }
+  }, [token, deletedStatusFilter, syncSearchTerm])
 
   useEffect(() => {
     if (tab === 'sync') {
       fetchSyncHealth()
-      fetchSyncLogs()
+      if (syncSubTab === 'traffic') fetchSyncLogs()
+      if (syncSubTab === 'deleted_audits') fetchDeletedAudits()
     }
-  }, [tab, fetchSyncHealth, fetchSyncLogs])
+  }, [tab, syncSubTab, fetchSyncHealth, fetchSyncLogs, fetchDeletedAudits])
 
   const handleCopyCurl = (logId: number, curlCommand: string | null) => {
     if (!curlCommand) return
@@ -250,12 +304,55 @@ export default function AdminPage() {
           headers: authHeaders(token)
         })
       }
-      await fetchSyncHealth()
-      await fetchSyncLogs()
-    } catch (e) {
-      console.error(e)
+      await Promise.allSettled([fetchSyncHealth(), fetchSyncLogs()])
+    } catch {
+      // Graceful error handling
     } finally {
       setRetryingLogId(null)
+    }
+  }
+
+  const handleRetryDeletedAudit = async (auditId: number) => {
+    if (!token) return
+    setRetryingAuditId(auditId)
+    try {
+      const res = await fetch(`${API_BASE}/sync/deleted-audits/${auditId}/retry`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const data = await res.json()
+      if (data.tally_sync_status === 'SYNCED_TO_TALLY') {
+        alert('Successfully deleted from Tally Prime ✅')
+      } else {
+        alert(`Tally rejection: ${data.tally_error_message || 'Cannot delete master in Tally Prime'}`)
+      }
+      await Promise.allSettled([fetchSyncHealth(), fetchDeletedAudits(), fetchSyncLogs()])
+    } catch (e: any) {
+      alert(e.message || 'Failed to retry Tally deletion')
+    } finally {
+      setRetryingAuditId(null)
+    }
+  }
+
+  const handleDeactivateInTally = async (auditId: number) => {
+    if (!token) return
+    setDeactivatingAuditId(auditId)
+    try {
+      const res = await fetch(`${API_BASE}/sync/deleted-audits/${auditId}/deactivate-in-tally`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const data = await res.json()
+      if (data.tally_sync_status === 'DEACTIVATED_IN_TALLY') {
+        alert('Master deactivated in Tally Prime (<ISBILLWISEON>No</ISBILLWISEON>) ✅')
+      } else {
+        alert(`Deactivation failed: ${data.tally_error_message || 'Tally rejected alter'}`)
+      }
+      await Promise.allSettled([fetchSyncHealth(), fetchDeletedAudits(), fetchSyncLogs()])
+    } catch (e: any) {
+      alert(e.message || 'Failed to deactivate master in Tally')
+    } finally {
+      setDeactivatingAuditId(null)
     }
   }
 
@@ -1068,389 +1165,665 @@ const handleSavePermissions = async () => {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-card border border-emerald-500/20 hover:border-emerald-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-emerald-500/5 via-card to-card">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Synced Records</span>
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Processed & Synced</span>
                     <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center border border-emerald-500/20">
                       <CheckCircle2 className="w-5 h-5" />
                     </div>
                   </div>
                   <div className="mt-4 flex items-baseline gap-2">
                     <span className="text-3xl font-black text-foreground">{syncHealth?.synced_queue_count ?? 0}</span>
-                    <span className="text-xs text-emerald-600 font-bold">Processed</span>
+                    <span className="text-xs text-emerald-600 font-bold">Synced to Tally</span>
                   </div>
                 </div>
 
-                <div className="bg-card border border-amber-500/20 hover:border-amber-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-amber-500/5 via-card to-card">
+                <div className={cn(
+                  "bg-card border rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br",
+                  (syncHealth?.total_sync_issues || 0) > 0
+                    ? "border-rose-500/40 from-rose-500/10 via-card to-card ring-1 ring-rose-500/20"
+                    : "border-border/80 from-muted/20 via-card to-card"
+                )}>
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Pending Queue</span>
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Total Sync Issues</span>
+                    <div className={cn(
+                      "w-9 h-9 rounded-xl flex items-center justify-center border",
+                      (syncHealth?.total_sync_issues || 0) > 0
+                        ? "bg-rose-500/10 text-rose-600 border-rose-500/20"
+                        : "bg-muted text-muted-foreground border-border"
+                    )}>
+                      <AlertTriangle className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="mt-4 flex items-baseline gap-2">
+                    <span className={cn(
+                      "text-3xl font-black",
+                      (syncHealth?.total_sync_issues || 0) > 0 ? "text-rose-600" : "text-foreground"
+                    )}>
+                      {syncHealth?.total_sync_issues ?? ((syncHealth?.total_failed_traffic || 0) + (syncHealth?.unreconciled_deleted_count || 0))}
+                    </span>
+                    <span className="text-xs text-muted-foreground font-bold">
+                      {(syncHealth?.total_sync_issues || 0) > 0 ? "Requires Attention" : "All Clean"}
+                    </span>
+                  </div>
+                </div>
+
+                <div 
+                  onClick={() => setSyncSubTab('deleted_audits')}
+                  className={cn(
+                    "bg-card border rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br cursor-pointer",
+                    (syncHealth?.unreconciled_deleted_count || 0) > 0
+                      ? "border-amber-500/40 from-amber-500/10 via-card to-card hover:border-amber-500"
+                      : "border-border/80 from-muted/20 via-card to-card hover:border-border"
+                  )}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Undeleted in Tally</span>
                     <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center border border-amber-500/20">
+                      <Trash2 className="w-5 h-5" />
+                    </div>
+                  </div>
+                  <div className="mt-4 flex items-baseline gap-2">
+                    <span className="text-3xl font-black text-foreground">{syncHealth?.unreconciled_deleted_count ?? 0}</span>
+                    <span className="text-xs text-amber-600 font-bold">Deleted Locally</span>
+                  </div>
+                </div>
+
+                <div className="bg-card border border-blue-500/20 hover:border-blue-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-blue-500/5 via-card to-card">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Pending Outbound</span>
+                    <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-600 flex items-center justify-center border border-blue-500/20">
                       <RefreshCw className="w-5 h-5" />
                     </div>
                   </div>
                   <div className="mt-4 flex items-baseline gap-2">
                     <span className="text-3xl font-black text-foreground">{syncHealth?.pending_queue_count ?? 0}</span>
-                    <span className="text-xs text-amber-600 font-bold">Waiting push</span>
-                  </div>
-                </div>
-
-                <div className="bg-card border border-rose-500/20 hover:border-rose-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-rose-500/5 via-card to-card">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Failed Traffic</span>
-                    <div className="w-9 h-9 rounded-xl bg-rose-500/10 text-rose-600 flex items-center justify-center border border-rose-500/20">
-                      <XCircle className="w-5 h-5" />
-                    </div>
-                  </div>
-                  <div className="mt-4 flex items-baseline gap-2">
-                    <span className="text-3xl font-black text-foreground">{syncHealth?.total_failed_traffic ?? 0}</span>
-                    <span className="text-xs text-rose-600 font-bold">Errors</span>
-                  </div>
-                </div>
-
-                <div className="bg-card border border-purple-500/20 hover:border-purple-500/40 rounded-2xl p-5 shadow-xs transition-all flex flex-col justify-between bg-gradient-to-br from-purple-500/5 via-card to-card">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Exceptions</span>
-                    <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center border border-purple-500/20">
-                      <AlertTriangle className="w-5 h-5" />
-                    </div>
-                  </div>
-                  <div className="mt-4 flex items-baseline gap-2">
-                    <span className="text-3xl font-black text-foreground">{syncHealth?.total_exception_traffic ?? 0}</span>
-                    <span className="text-xs text-purple-600 font-bold">Diagnosed</span>
+                    <span className="text-xs text-blue-600 font-bold">In Outbox</span>
                   </div>
                 </div>
               </div>
 
-              {/* Action Cards: Live Trigger & Manual Import */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Admin Only: Live Tally Server Sync Service Trigger Card */}
-                <div className="bg-card border border-border/80 rounded-2xl p-6 space-y-4 shadow-xs flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="font-black text-base text-foreground flex items-center gap-2">
-                        <RefreshCw className="h-4.5 w-4.5 text-emerald-500" />
-                        Live Tally Server Sync Trigger
-                      </h3>
-                      <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                        Real-time Socket
-                      </span>
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Executes an immediate bi-directional synchronization pass with your connected Tally Prime instance. Queries pending changes and flushes outbound queues.
-                    </p>
-                  </div>
-
-                  {runOnceError && (
-                    <div className="p-3.5 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
-                      ⚠️ {runOnceError}
-                    </div>
+              {/* Sync Center Sub-Navigation Tabs */}
+              <div className="flex items-center gap-2 border-b border-border/80 pb-2">
+                <button
+                  onClick={() => setSyncSubTab('traffic')}
+                  className={cn(
+                    "px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer",
+                    syncSubTab === 'traffic'
+                      ? "bg-foreground text-background shadow-xs"
+                      : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>Outbound Traffic & Telemetry</span>
+                  <span className="px-1.5 py-0.2 text-[10px] rounded-md bg-muted text-muted-foreground">
+                    {syncLogs.length}
+                  </span>
+                </button>
 
-                  {runOnceResult && (
-                    <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                      <span>{runOnceResult.message}</span>
-                    </div>
+                <button
+                  onClick={() => setSyncSubTab('deleted_audits')}
+                  className={cn(
+                    "px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer",
+                    syncSubTab === 'deleted_audits'
+                      ? "bg-foreground text-background shadow-xs"
+                      : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
-
-                  <button
-                    onClick={async () => {
-                      await handleRunOnceSync()
-                      await fetchSyncHealth()
-                      await fetchSyncLogs()
-                    }}
-                    disabled={runOnceLoading}
-                    className="w-full py-3 px-4 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.99] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
-                  >
-                    {runOnceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                    {runOnceLoading ? "Executing Tally Sync..." : "Run Live Tally Sync Pass"}
-                  </button>
-                </div>
-
-                {/* Manual Tally XML Collection Upload Card */}
-                <div className="bg-card border border-border/80 rounded-2xl p-6 space-y-4 shadow-xs flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="font-black text-base text-foreground flex items-center gap-2">
-                        <UploadCloud className="h-4.5 w-4.5 text-blue-500" />
-                        Manual Tally XML Collection Upload
-                      </h3>
-                      <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-blue-500/10 text-blue-600 border border-blue-500/20">
-                        Batch Import
-                      </span>
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Upload exported XML backup collections to import vouchers, ledgers, and stock masters into MyTally database directly.
-                    </p>
-                  </div>
-
-                  {/* File Drop / Select Area */}
-                  <div className="relative border-2 border-dashed border-border hover:border-blue-500/50 rounded-2xl p-5 text-center transition-colors bg-muted/20">
-                    <input
-                      type="file"
-                      accept=".xml"
-                      onChange={handleFileChange}
-                      disabled={syncRunning}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
-                    />
-                    <div className="flex flex-col items-center gap-1.5 pointer-events-none">
-                      <FileCode className="h-7 w-7 text-muted-foreground" />
-                      <p className="font-bold text-xs text-foreground">
-                        {xmlFile ? xmlFile.name : "Select .XML Export File"}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground">
-                        {xmlFile ? `${(xmlFile.size / 1024).toFixed(1)} KB` : "Click to choose file"}
-                      </p>
-                    </div>
-                  </div>
-
-                  {syncError && (
-                    <div className="p-3.5 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
-                      ⚠️ {syncError}
-                    </div>
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Deleted Records Discrepancies</span>
+                  {(syncHealth?.unreconciled_deleted_count || 0) > 0 && (
+                    <span className="px-1.5 py-0.2 text-[10px] font-black rounded-md bg-rose-600 text-white animate-pulse">
+                      {syncHealth?.unreconciled_deleted_count}
+                    </span>
                   )}
+                </button>
 
-                  {syncStats && (
-                    <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold space-y-1">
-                      <p className="font-bold flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Import Summary</p>
-                      <p className="text-[11px] font-normal text-muted-foreground">
-                        Vouchers: {syncStats.imported_vouchers || 0} · Ledgers: {syncStats.imported_ledgers || 0} · Items: {syncStats.imported_stock_items || 0}
-                      </p>
-                    </div>
+                <button
+                  onClick={() => setSyncSubTab('inbound')}
+                  className={cn(
+                    "px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer",
+                    syncSubTab === 'inbound'
+                      ? "bg-foreground text-background shadow-xs"
+                      : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
-
-                  {!syncStats ? (
-                    <button
-                      onClick={startImport}
-                      disabled={syncRunning || !xmlFile}
-                      className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
-                    >
-                      {syncRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                      {syncRunning ? `Importing... Step ${syncStep + 1} of ${SYNC_STEPS.length}` : "Start XML Import"}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => { setXmlFile(null); setSyncStats(null); }}
-                      className="w-full py-3 px-4 bg-muted hover:bg-muted/80 text-foreground font-extrabold text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
-                    >
-                      Upload Another File
-                    </button>
-                  )}
-                </div>
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  <span>Live Trigger & XML Import</span>
+                </button>
               </div>
 
-              {/* Comprehensive Sync Traffic Audit & Postman Logs Table (Full Desktop Width) */}
-              <div className="bg-card border border-border/80 rounded-2xl shadow-xs overflow-hidden">
-                <div className="p-5 border-b border-border/80 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-muted/20">
-                  <div>
-                    <h3 className="font-black text-base text-foreground flex items-center gap-2">
-                      <Terminal className="h-4.5 w-4.5 text-emerald-500" />
-                      Sync Traffic Audit Logs & Postman cURL
-                    </h3>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Live audit log of all outbound requests to Tally Prime. Copy ready-to-run Postman cURL commands for instant debugging.
-                    </p>
-                  </div>
-                  
-                  <div className="flex items-center gap-2 self-start md:self-auto">
-                    <button
-                      onClick={() => { fetchSyncHealth(); fetchSyncLogs() }}
-                      className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                      title="Refresh Logs"
-                    >
-                      <RefreshCw className={cn("w-3.5 h-3.5", syncLogsLoading && "animate-spin")} />
-                      <span>Refresh</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Filters & Search Toolbar */}
-                <div className="p-4 border-b border-border/60 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-card">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {['ALL', 'SUCCESS', 'FAILED', 'EXCEPTION', 'TIMEOUT'].map((st) => (
+              {/* Subtab 1: Outbound Traffic Logs */}
+              {syncSubTab === 'traffic' && (
+                <div className="bg-card border border-border/80 rounded-2xl shadow-xs overflow-hidden">
+                  <div className="p-5 border-b border-border/80 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-muted/20">
+                    <div>
+                      <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                        <Terminal className="h-4.5 w-4.5 text-emerald-500" />
+                        Outbound Sync Traffic Logs & Postman cURL
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Audit trail for all realtime Create, Alter, Delete, and Cancel requests sent to Tally Prime with exact XML payloads and line errors.
+                      </p>
+                    </div>
+                    
+                    <div className="flex items-center gap-2 self-start md:self-auto">
                       <button
-                        key={st}
-                        onClick={() => setSyncStatusFilter(st)}
-                        className={cn(
-                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer",
-                          syncStatusFilter === st
-                            ? "bg-foreground text-background shadow-xs"
-                            : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
-                        )}
+                        onClick={() => { fetchSyncHealth(); fetchSyncLogs() }}
+                        className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                        title="Refresh Logs"
                       >
-                        {st === 'ALL' ? 'All Logs' : st}
+                        <RefreshCw className={cn("w-3.5 h-3.5", syncLogsLoading && "animate-spin")} />
+                        <span>Refresh</span>
                       </button>
-                    ))}
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
-                    <select
-                      value={syncEntityFilter}
-                      onChange={(e) => setSyncEntityFilter(e.target.value)}
-                      className="px-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/20 cursor-pointer"
-                    >
-                      <option value="ALL">All Entities</option>
-                      <option value="Voucher">Vouchers</option>
-                      <option value="Ledger">Ledgers</option>
-                      <option value="StockItem">Stock Items</option>
-                      <option value="Group">Groups</option>
-                    </select>
+                  {/* Filters & Search Toolbar */}
+                  <div className="p-4 border-b border-border/60 flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-card">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {['ALL', 'SUCCESS', 'FAILED', 'EXCEPTION', 'TIMEOUT'].map((st) => (
+                        <button
+                          key={st}
+                          onClick={() => setSyncStatusFilter(st)}
+                          className={cn(
+                            "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer",
+                            syncStatusFilter === st
+                              ? "bg-foreground text-background shadow-xs"
+                              : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          )}
+                        >
+                          {st === 'ALL' ? 'All Status' : st}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      {/* Action Filter */}
+                      <select
+                        value={syncActionFilter}
+                        onChange={(e) => setSyncActionFilter(e.target.value)}
+                        className="px-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/20 cursor-pointer"
+                      >
+                        <option value="ALL">All Actions</option>
+                        <option value="Create">Create</option>
+                        <option value="Alter">Alter / Update</option>
+                        <option value="Delete">Delete</option>
+                        <option value="Cancel">Cancel</option>
+                      </select>
+
+                      <select
+                        value={syncEntityFilter}
+                        onChange={(e) => setSyncEntityFilter(e.target.value)}
+                        className="px-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/20 cursor-pointer"
+                      >
+                        <option value="ALL">All Entities</option>
+                        <option value="Voucher">Vouchers</option>
+                        <option value="Ledger">Ledgers</option>
+                        <option value="StockItem">Stock Items</option>
+                        <option value="Group">Groups</option>
+                      </select>
+
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                          type="text"
+                          placeholder="Search logs..."
+                          value={syncSearchTerm}
+                          onChange={(e) => setSyncSearchTerm(e.target.value)}
+                          className="pl-9 pr-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 w-48 text-foreground"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Table Content */}
+                  <div className="overflow-x-auto">
+                    {syncLogsLoading && syncLogs.length === 0 ? (
+                      <div className="flex justify-center items-center py-16">
+                        <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+                      </div>
+                    ) : syncLogs.length === 0 ? (
+                      <div className="text-center py-16 space-y-2">
+                        <Terminal className="w-10 h-10 text-muted-foreground/40 mx-auto" />
+                        <p className="text-sm font-bold text-foreground">No sync traffic logs found</p>
+                        <p className="text-xs text-muted-foreground">Perform an action or click 'Run Live Tally Sync Pass' to generate traffic logs.</p>
+                      </div>
+                    ) : (
+                      <table className="w-full text-left text-xs border-collapse min-w-[950px]">
+                        <thead>
+                          <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-extrabold text-[11px] uppercase tracking-wider">
+                            <th className="py-3 px-5 w-40">Time & Latency</th>
+                            <th className="py-3 px-4 w-52">Entity & Action</th>
+                            <th className="py-3 px-4 w-36">Sync Status</th>
+                            <th className="py-3 px-4">Details / Response Summary</th>
+                            <th className="py-3 px-5 text-right w-64">Instant Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/60">
+                          {syncLogs.map((log) => {
+                            const isCopied = copiedLogId === log.log_id
+                            const isRetrying = retryingLogId === log.log_id
+                            return (
+                              <tr key={log.log_id} className="hover:bg-muted/30 transition-colors">
+                                <td className="py-3.5 px-5 font-mono text-xs">
+                                  <div className="font-bold text-foreground">
+                                    {log.created_at ? new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground font-medium mt-0.5">
+                                    {log.duration_ms}ms · <span className="uppercase">{log.outbound_format}</span>
+                                  </div>
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  <div className="font-extrabold text-xs text-foreground flex items-center gap-1.5">
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-muted text-muted-foreground">
+                                      {log.entity_type}
+                                    </span>
+                                    <span className="truncate max-w-[160px]">{log.entity_name || `#${log.entity_id}`}</span>
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground font-medium mt-1">
+                                    Action: <span className="font-bold text-foreground">{log.action}</span>
+                                  </div>
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  {log.status === 'SUCCESS' ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                      SUCCESS
+                                    </span>
+                                  ) : log.status === 'EXCEPTION' ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-purple-500/10 text-purple-600 border border-purple-500/20">
+                                      <AlertTriangle className="w-3 h-3 text-purple-500" />
+                                      EXCEPTION
+                                    </span>
+                                  ) : log.status === 'TIMEOUT' ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                      TIMEOUT
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
+                                      FAILED
+                                    </span>
+                                  )}
+                                </td>
+
+                                <td className="py-3.5 px-4">
+                                  {log.error_summary ? (
+                                    <span className="text-rose-600 font-semibold text-xs leading-relaxed" title={log.error_summary}>
+                                      ⚠️ {log.error_summary}
+                                    </span>
+                                  ) : (
+                                    <span className="text-muted-foreground text-xs leading-relaxed font-medium">
+                                      {log.parsed_created > 0 && `Created: ${log.parsed_created} `}
+                                      {log.parsed_altered > 0 && `Altered: ${log.parsed_altered} `}
+                                      {log.parsed_deleted > 0 && `Deleted: ${log.parsed_deleted} `}
+                                      {log.parsed_created === 0 && log.parsed_altered === 0 && log.parsed_deleted === 0 && 'Payload Processed'}
+                                    </span>
+                                  )}
+                                </td>
+
+                                <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button
+                                      onClick={() => handleCopyCurl(log.log_id, log.curl_command)}
+                                      disabled={!log.curl_command}
+                                      className={cn(
+                                        "h-8 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border shadow-2xs cursor-pointer active:scale-95",
+                                        isCopied
+                                          ? "bg-emerald-500 text-white border-emerald-500"
+                                          : "bg-muted/60 hover:bg-muted text-foreground border-border/80 hover:border-border"
+                                      )}
+                                      title="Copy full cURL command ready to paste into Postman or Terminal"
+                                    >
+                                      {isCopied ? (
+                                        <>
+                                          <Check className="w-3.5 h-3.5" />
+                                          <span>Copied!</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                                          <span>cURL</span>
+                                        </>
+                                      )}
+                                    </button>
+
+                                    <button
+                                      onClick={() => setInspectLog(log)}
+                                      className="h-8 px-3 rounded-xl text-xs font-bold bg-muted/60 hover:bg-muted text-foreground border border-border/80 hover:border-border transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                                      title="Inspect Outbound Payload and Live Inbound Tally Response"
+                                    >
+                                      <Code className="w-3.5 h-3.5 text-muted-foreground" />
+                                      <span>Inspect</span>
+                                    </button>
+
+                                    <button
+                                      onClick={() => handleRetrySyncItem(log)}
+                                      disabled={isRetrying}
+                                      className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer active:scale-95"
+                                      title="Retry real-time push to Tally now"
+                                    >
+                                      <RefreshCw className={cn("w-3.5 h-3.5", isRetrying && "animate-spin")} />
+                                      <span>{isRetrying ? "Retrying..." : "Retry"}</span>
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Subtab 2: Deleted Records Discrepancies Table */}
+              {syncSubTab === 'deleted_audits' && (
+                <div className="bg-card border border-border/80 rounded-2xl shadow-xs overflow-hidden space-y-0">
+                  <div className="p-5 border-b border-border/80 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-muted/20">
+                    <div>
+                      <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                        <Trash2 className="h-4.5 w-4.5 text-rose-500" />
+                        Deleted Records Audit & Tally Discrepancies Hub
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Track items deleted locally in MyTally. If Tally Prime blocks deletion due to historical audit constraints, retry the push or soft-deactivate the master directly in Tally.
+                      </p>
+                    </div>
+                    
+                    <div className="flex items-center gap-2 self-start md:self-auto">
+                      <button
+                        onClick={() => { fetchSyncHealth(); fetchDeletedAudits() }}
+                        className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                        title="Refresh Audits"
+                      >
+                        <RefreshCw className={cn("w-3.5 h-3.5", deletedAuditsLoading && "animate-spin")} />
+                        <span>Refresh</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Filter bar */}
+                  <div className="p-4 border-b border-border/60 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-card">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {[
+                        { id: 'ALL', label: 'All Audits' },
+                        { id: 'NOT_DELETED_IN_TALLY', label: '🔴 Not Deleted in Tally' },
+                        { id: 'SYNCED_TO_TALLY', label: '🟢 Synced to Tally' },
+                        { id: 'DEACTIVATED_IN_TALLY', label: '🟣 Deactivated' }
+                      ].map((st) => (
+                        <button
+                          key={st.id}
+                          onClick={() => setDeletedStatusFilter(st.id)}
+                          className={cn(
+                            "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer",
+                            deletedStatusFilter === st.id
+                              ? "bg-foreground text-background shadow-xs"
+                              : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          )}
+                        >
+                          {st.label}
+                        </button>
+                      ))}
+                    </div>
 
                     <div className="relative">
                       <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
                       <input
                         type="text"
-                        placeholder="Search logs..."
+                        placeholder="Search deleted records..."
                         value={syncSearchTerm}
                         onChange={(e) => setSyncSearchTerm(e.target.value)}
-                        className="pl-9 pr-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20 w-52 text-foreground"
+                        className="pl-9 pr-3 py-1.5 bg-muted/50 border border-border rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-rose-500/20 w-56 text-foreground"
                       />
                     </div>
                   </div>
-                </div>
 
-                {/* Table Content */}
-                <div className="overflow-x-auto">
-                  {syncLogsLoading && syncLogs.length === 0 ? (
-                    <div className="flex justify-center items-center py-16">
-                      <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
-                    </div>
-                  ) : syncLogs.length === 0 ? (
-                    <div className="text-center py-16 space-y-2">
-                      <Terminal className="w-10 h-10 text-muted-foreground/40 mx-auto" />
-                      <p className="text-sm font-bold text-foreground">No sync traffic logs found</p>
-                      <p className="text-xs text-muted-foreground">Perform an action or click 'Run Live Tally Sync Pass' to generate traffic logs.</p>
-                    </div>
-                  ) : (
-                    <table className="w-full text-left text-xs border-collapse min-w-[950px]">
-                      <thead>
-                        <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-extrabold text-[11px] uppercase tracking-wider">
-                          <th className="py-3 px-5 w-40">Time & Latency</th>
-                          <th className="py-3 px-4 w-52">Entity & Action</th>
-                          <th className="py-3 px-4 w-36">Sync Status</th>
-                          <th className="py-3 px-4">Details / Response Summary</th>
-                          <th className="py-3 px-5 text-right w-64">Instant Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border/60">
-                        {syncLogs.map((log) => {
-                          const isCopied = copiedLogId === log.log_id
-                          const isRetrying = retryingLogId === log.log_id
-                          return (
-                            <tr key={log.log_id} className="hover:bg-muted/30 transition-colors">
-                              <td className="py-3.5 px-5 font-mono text-xs">
-                                <div className="font-bold text-foreground">
-                                  {log.created_at ? new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}
-                                </div>
-                                <div className="text-[11px] text-muted-foreground font-medium mt-0.5">
-                                  {log.duration_ms}ms · <span className="uppercase">{log.outbound_format}</span>
-                                </div>
-                              </td>
+                  {/* Table */}
+                  <div className="overflow-x-auto">
+                    {deletedAuditsLoading && deletedAudits.length === 0 ? (
+                      <div className="flex justify-center items-center py-16">
+                        <Loader2 className="w-8 h-8 animate-spin text-rose-500" />
+                      </div>
+                    ) : deletedAudits.length === 0 ? (
+                      <div className="text-center py-16 space-y-2">
+                        <CheckCircle2 className="w-10 h-10 text-emerald-500/60 mx-auto" />
+                        <p className="text-sm font-bold text-foreground">No Discrepancies Found</p>
+                        <p className="text-xs text-muted-foreground">All locally deleted records are fully reconciled with Tally Prime.</p>
+                      </div>
+                    ) : (
+                      <table className="w-full text-left text-xs border-collapse min-w-[950px]">
+                        <thead>
+                          <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-extrabold text-[11px] uppercase tracking-wider">
+                            <th className="py-3 px-5 w-44">Deleted Time & User</th>
+                            <th className="py-3 px-4 w-60">Record Details</th>
+                            <th className="py-3 px-4 w-44">Tally State</th>
+                            <th className="py-3 px-4">Tally Prime Response / Diagnostic</th>
+                            <th className="py-3 px-5 text-right w-72">Resolution Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/60">
+                          {deletedAudits.map((audit) => {
+                            const isRetrying = retryingAuditId === audit.audit_id
+                            const isDeactivating = deactivatingAuditId === audit.audit_id
+                            return (
+                              <tr key={audit.audit_id} className="hover:bg-muted/30 transition-colors">
+                                <td className="py-3.5 px-5 font-mono text-xs">
+                                  <div className="font-bold text-foreground">
+                                    {audit.deleted_at ? new Date(audit.deleted_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground font-medium mt-0.5">
+                                    By: {audit.deleted_by_name || 'System User'}
+                                  </div>
+                                </td>
 
-                              <td className="py-3.5 px-4">
-                                <div className="font-extrabold text-xs text-foreground flex items-center gap-1.5">
-                                  <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-muted text-muted-foreground">
-                                    {log.entity_type}
-                                  </span>
-                                  <span className="truncate max-w-[160px]">{log.entity_name || `#${log.entity_id}`}</span>
-                                </div>
-                                <div className="text-[11px] text-muted-foreground font-medium mt-1">
-                                  Action: <span className="font-bold text-foreground">{log.action}</span>
-                                </div>
-                              </td>
+                                <td className="py-3.5 px-4">
+                                  <div className="font-extrabold text-xs text-foreground flex items-center gap-1.5">
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-muted text-muted-foreground">
+                                      {audit.entity_type}
+                                    </span>
+                                    <span className="truncate max-w-[180px]">{audit.entity_identifier || `#${audit.record_id}`}</span>
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground font-mono mt-1 truncate max-w-[200px]" title={audit.tally_guid || ''}>
+                                    GUID: {audit.tally_guid || 'N/A'}
+                                  </div>
+                                </td>
 
-                              <td className="py-3.5 px-4">
-                                {log.status === 'SUCCESS' ? (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                    SUCCESS
-                                  </span>
-                                ) : log.status === 'EXCEPTION' ? (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-purple-500/10 text-purple-600 border border-purple-500/20">
-                                    <AlertTriangle className="w-3 h-3 text-purple-500" />
-                                    EXCEPTION
-                                  </span>
-                                ) : log.status === 'TIMEOUT' ? (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                                    TIMEOUT
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
-                                    FAILED
-                                  </span>
-                                )}
-                              </td>
+                                <td className="py-3.5 px-4">
+                                  {audit.tally_sync_status === 'SYNCED_TO_TALLY' ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                      SYNCED
+                                    </span>
+                                  ) : audit.tally_sync_status === 'DEACTIVATED_IN_TALLY' ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-purple-500/10 text-purple-600 border border-purple-500/20">
+                                      DEACTIVATED
+                                    </span>
+                                  ) : audit.tally_sync_status === 'PENDING' ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                      PENDING
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
+                                      NOT DELETED IN TALLY
+                                    </span>
+                                  )}
+                                </td>
 
-                              <td className="py-3.5 px-4">
-                                {log.error_summary ? (
-                                  <span className="text-rose-600 font-semibold text-xs leading-relaxed" title={log.error_summary}>
-                                    ⚠️ {log.error_summary}
-                                  </span>
-                                ) : (
-                                  <span className="text-muted-foreground text-xs leading-relaxed font-medium">
-                                    {log.parsed_created > 0 && `Created: ${log.parsed_created} `}
-                                    {log.parsed_altered > 0 && `Altered: ${log.parsed_altered} `}
-                                    {log.parsed_deleted > 0 && `Deleted: ${log.parsed_deleted} `}
-                                    {log.parsed_created === 0 && log.parsed_altered === 0 && log.parsed_deleted === 0 && 'Payload Processed'}
-                                  </span>
-                                )}
-                              </td>
+                                <td className="py-3.5 px-4">
+                                  {audit.tally_error_message ? (
+                                    <div className="text-rose-600 font-semibold text-xs leading-relaxed" title={audit.tally_error_message}>
+                                      ⚠️ {audit.tally_error_message}
+                                    </div>
+                                  ) : audit.tally_sync_status === 'SYNCED_TO_TALLY' ? (
+                                    <span className="text-emerald-600 text-xs font-semibold">
+                                      Deleted from Tally database successfully.
+                                    </span>
+                                  ) : audit.tally_sync_status === 'DEACTIVATED_IN_TALLY' ? (
+                                    <span className="text-purple-600 text-xs font-semibold">
+                                      Billwise deactivated in Tally (<ISBILLWISEON>No</ISBILLWISEON>).
+                                    </span>
+                                  ) : (
+                                    <span className="text-muted-foreground text-xs font-medium">
+                                      Queued for Tally deletion pass.
+                                    </span>
+                                  )}
+                                </td>
 
-                              <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                                <div className="flex items-center justify-end gap-2">
-                                  {/* Copy cURL / Postman Button */}
-                                  <button
-                                    onClick={() => handleCopyCurl(log.log_id, log.curl_command)}
-                                    disabled={!log.curl_command}
-                                    className={cn(
-                                      "h-8 px-3 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border shadow-2xs cursor-pointer active:scale-95",
-                                      isCopied
-                                        ? "bg-emerald-500 text-white border-emerald-500"
-                                        : "bg-muted/60 hover:bg-muted text-foreground border-border/80 hover:border-border"
+                                <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button
+                                      onClick={() => handleRetryDeletedAudit(audit.audit_id)}
+                                      disabled={isRetrying || audit.tally_sync_status === 'SYNCED_TO_TALLY'}
+                                      className="h-8 px-3 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 border border-rose-500/20 transition-all flex items-center gap-1.5 disabled:opacity-40 cursor-pointer active:scale-95"
+                                      title="Retry sending XML Delete payload to Tally Prime"
+                                    >
+                                      <RefreshCw className={cn("w-3.5 h-3.5", isRetrying && "animate-spin")} />
+                                      <span>{isRetrying ? "Retrying..." : "Retry Delete"}</span>
+                                    </button>
+
+                                    {audit.entity_type === 'Ledger' && audit.tally_sync_status !== 'SYNCED_TO_TALLY' && (
+                                      <button
+                                        onClick={() => handleDeactivateInTally(audit.audit_id)}
+                                        disabled={isDeactivating}
+                                        className="h-8 px-3 rounded-xl text-xs font-bold bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 border border-purple-500/20 transition-all flex items-center gap-1.5 disabled:opacity-40 cursor-pointer active:scale-95"
+                                        title="Soft-deactivate master in Tally Prime if deletion is blocked by existing vouchers"
+                                      >
+                                        <Shield className="w-3.5 h-3.5" />
+                                        <span>{isDeactivating ? "Deactivating..." : "Soft Deactivate"}</span>
+                                      </button>
                                     )}
-                                    title="Copy full cURL command ready to paste into Postman or Terminal"
-                                  >
-                                    {isCopied ? (
-                                      <>
-                                        <Check className="w-3.5 h-3.5" />
-                                        <span>Copied!</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
-                                        <span>cURL</span>
-                                      </>
-                                    )}
-                                  </button>
-
-                                  {/* Inspect Modal Button */}
-                                  <button
-                                    onClick={() => setInspectLog(log)}
-                                    className="h-8 px-3 rounded-xl text-xs font-bold bg-muted/60 hover:bg-muted text-foreground border border-border/80 hover:border-border transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                                    title="Inspect Outbound Payload and Live Inbound Tally Response"
-                                  >
-                                    <Code className="w-3.5 h-3.5 text-muted-foreground" />
-                                    <span>Inspect</span>
-                                  </button>
-
-                                  {/* 1-Click On-Demand Real-time Retry Button */}
-                                  <button
-                                    onClick={() => handleRetrySyncItem(log)}
-                                    disabled={isRetrying}
-                                    className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer active:scale-95"
-                                    title="Retry real-time push to Tally now"
-                                  >
-                                    <RefreshCw className={cn("w-3.5 h-3.5", isRetrying && "animate-spin")} />
-                                    <span>{isRetrying ? "Retrying..." : "Retry"}</span>
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* Subtab 3: Live Inbound Trigger & XML Import */}
+              {syncSubTab === 'inbound' && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Admin Only: Live Tally Server Sync Service Trigger Card */}
+                  <div className="bg-card border border-border/80 rounded-2xl p-6 space-y-4 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                          <RefreshCw className="h-4.5 w-4.5 text-emerald-500" />
+                          Live Tally Server Sync Trigger
+                        </h3>
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                          Real-time Socket
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Executes an immediate bi-directional synchronization pass with your connected Tally Prime instance. Queries pending changes and flushes outbound queues.
+                      </p>
+                    </div>
+
+                    {runOnceError && (
+                      <div className="p-3.5 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
+                        ⚠️ {runOnceError}
+                      </div>
+                    )}
+
+                    {runOnceResult && (
+                      <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                        <span>{runOnceResult.message}</span>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={async () => {
+                        await handleRunOnceSync()
+                        await Promise.allSettled([fetchSyncHealth(), fetchSyncLogs()])
+                      }}
+                      disabled={runOnceLoading}
+                      className="w-full py-3 px-4 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.99] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+                    >
+                      {runOnceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      {runOnceLoading ? "Executing Tally Sync..." : "Run Live Tally Sync Pass"}
+                    </button>
+                  </div>
+
+                  {/* Manual Tally XML Collection Upload Card */}
+                  <div className="bg-card border border-border/80 rounded-2xl p-6 space-y-4 shadow-xs flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="font-black text-base text-foreground flex items-center gap-2">
+                          <UploadCloud className="h-4.5 w-4.5 text-blue-500" />
+                          Manual Tally XML Collection Upload
+                        </h3>
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                          Batch Import
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Upload exported XML backup collections to import vouchers, ledgers, and stock masters into MyTally database directly.
+                      </p>
+                    </div>
+
+                    {/* File Drop / Select Area */}
+                    <div className="relative border-2 border-dashed border-border hover:border-blue-500/50 rounded-2xl p-5 text-center transition-colors bg-muted/20">
+                      <input
+                        type="file"
+                        accept=".xml"
+                        onChange={handleFileChange}
+                        disabled={syncRunning}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                      />
+                      <div className="flex flex-col items-center gap-1.5 pointer-events-none">
+                        <FileCode className="h-7 w-7 text-muted-foreground" />
+                        <p className="font-bold text-xs text-foreground">
+                          {xmlFile ? xmlFile.name : "Select .XML Export File"}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {xmlFile ? `${(xmlFile.size / 1024).toFixed(1)} KB` : "Click to choose file"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {syncError && (
+                      <div className="p-3.5 rounded-xl bg-destructive/10 text-destructive text-xs font-semibold">
+                        ⚠️ {syncError}
+                      </div>
+                    )}
+
+                    {syncStats && (
+                      <div className="p-3.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 text-xs font-semibold space-y-1">
+                        <p className="font-bold flex items-center gap-1.5"><CheckCircle2 className="h-4 w-4 text-emerald-500" /> Import Summary</p>
+                        <p className="text-[11px] font-normal text-muted-foreground">
+                          Vouchers: {syncStats.imported_vouchers || 0} · Ledgers: {syncStats.imported_ledgers || 0} · Items: {syncStats.imported_stock_items || 0}
+                        </p>
+                      </div>
+                    )}
+
+                    {!syncStats ? (
+                      <button
+                        onClick={startImport}
+                        disabled={syncRunning || !xmlFile}
+                        className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+                      >
+                        {syncRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                        {syncRunning ? `Importing... Step ${syncStep + 1} of ${SYNC_STEPS.length}` : "Start XML Import"}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => { setXmlFile(null); setSyncStats(null); }}
+                        className="w-full py-3 px-4 bg-muted hover:bg-muted/80 text-foreground font-extrabold text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+                      >
+                        Upload Another File
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           ) : tab === 'logs' ? (
             <div className="space-y-2">

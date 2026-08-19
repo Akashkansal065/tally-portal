@@ -315,12 +315,14 @@ async def create_voucher(
     if not req.entries and not req.inventory_entries:
         raise HTTPException(status_code=400, detail="Voucher must have at least one entry.")
         
-    total_debits = sum(e.debit_amount for e in req.entries)
-    total_credits = sum(e.credit_amount for e in req.entries)
+    total_debits = sum((e.debit_amount for e in req.entries), Decimal('0.00')) if req.entries else Decimal('0.00')
+    total_credits = sum((e.credit_amount for e in req.entries), Decimal('0.00')) if req.entries else Decimal('0.00')
     
     if req.entries and total_debits != total_credits:
         raise HTTPException(status_code=400, detail=f"Voucher is unbalanced. Debits: {total_debits}, Credits: {total_credits}")
         
+    v_total = total_debits if (req.entries and total_debits > 0) else sum((ie.amount for ie in req.inventory_entries or []), Decimal('0.00'))
+
     vtype_query = await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == req.voucher_type_id, MstVoucherType.company_id == user.company_id))
     vtype = vtype_query.scalars().first()
     if not vtype:
@@ -368,7 +370,7 @@ async def create_voucher(
         voucher_date=vdate,
         reference_number=req.reference_number,
         narration=req.narration,
-        total_amount=total_debits,
+        total_amount=v_total,
         status=final_status,
         party_ledger_id=req.party_ledger_id,
         is_invoice=req.is_invoice,
@@ -432,9 +434,8 @@ async def update_voucher(
     
     voucher.voucher_date = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
     voucher.reference_number = req.reference_number
-    voucher.narration = req.narration
-    voucher.total_amount = sum(e.debit_amount for e in req.entries)
-    voucher.status = req.status
+    total_debits = sum((e.debit_amount for e in req.entries), Decimal('0.00')) if req.entries else Decimal('0.00')
+    voucher.total_amount = total_debits if (req.entries and total_debits > 0) else sum((ie.amount for ie in req.inventory_entries or []), Decimal('0.00'))
     voucher.party_ledger_id = req.party_ledger_id
     voucher.is_invoice = req.is_invoice
     voucher.original_voucher_id = req.original_voucher_id
@@ -525,13 +526,18 @@ async def delete_voucher(
     await db.flush()
 
     from app.routers.sync import try_push_voucher_realtime
-    await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Delete", db)
+    tally_ok, tally_status, tally_err = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Delete", db)
 
     await db.delete(voucher)
     await log_audit(db, user.company_id, user.user_id, "DELETE", "Voucher", voucher_id)
     await db.commit()
     clear_company_cache(user.company_id)
-    return {"detail": "Voucher deleted successfully"}
+    return {
+        "detail": "Voucher deleted successfully in MyTally.",
+        "tally_synced": tally_ok,
+        "tally_status": tally_status,
+        "tally_message": tally_err
+    }
 
 @router.post("/{voucher_id}/cancel")
 async def cancel_voucher(
@@ -550,7 +556,7 @@ async def cancel_voucher(
         
     old_status = voucher.status
     if old_status == 'cancelled':
-        return {"detail": "Voucher is already cancelled"}
+        return {"detail": "Voucher is already cancelled", "tally_synced": True, "tally_status": "SUCCESS", "tally_message": None}
         
     # Reverse stock if confirmed
     if old_status == 'confirmed':
@@ -576,9 +582,14 @@ async def cancel_voucher(
     await db.refresh(sync_item)
     
     from app.routers.sync import try_push_voucher_realtime
-    await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Cancel", db)
+    tally_ok, tally_status, tally_err = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Cancel", db)
     clear_company_cache(user.company_id)
-    return {"detail": "Voucher cancelled successfully and pushed to Tally"}
+    return {
+        "detail": "Voucher cancelled successfully in MyTally.",
+        "tally_synced": tally_ok,
+        "tally_status": tally_status,
+        "tally_message": tally_err
+    }
 
 @router.patch("/{voucher_id}/status")
 async def update_voucher_status(
