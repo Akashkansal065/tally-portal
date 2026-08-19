@@ -46,6 +46,8 @@ export interface AuthUser {
   username: string
   role: string
   company_id: number
+  company_name?: string
+  company?: CompanyInfo
   allowedCompanies: CompanyInfo[]
   permissions: UserPermissions
 }

@@ -276,7 +276,7 @@ export default function StockGroupsPage() {
 
             <div>
               <label className="text-sm font-semibold mb-1.5 block">Under Group</label>
-              <select value={parentId} onChange={e => setParentId(e.target.value)} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
+              <select value={parentId} onChange={e => setParentId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
                 <option value="">Primary (Root)</option>
                 {groups.filter(g => g.stock_group_id !== groupId).map(g => (
                   <option key={g.stock_group_id} value={g.stock_group_id}>{g.name}</option>

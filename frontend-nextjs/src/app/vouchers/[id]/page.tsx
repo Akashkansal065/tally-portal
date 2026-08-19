@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
+import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, toTitleCase } from '@/lib/utils'
 import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2 } from 'lucide-react'
@@ -256,26 +257,41 @@ export default function VoucherDetailPage() {
     // 1. Try finding Party Ledger amount (the net invoice/bill amount)
     if (voucher.accounts && voucher.accounts.length > 0 && voucher.party_name) {
       const partyAcc = voucher.accounts.find(
-        (a: any) => (a.ledger || '').trim().toLowerCase() === (voucher.party_name || '').trim().toLowerCase()
+        (a: any) => (a.ledger_name || a.ledger || '').trim().toLowerCase() === (voucher.party_name || '').trim().toLowerCase()
       )
-      if (partyAcc && partyAcc.amount) {
-        const pAmt = Math.abs(parseFloat(partyAcc.amount))
+      if (partyAcc) {
+        const pAmt = Math.abs(parseFloat(partyAcc.amount ?? partyAcc.debit_amount ?? partyAcc.credit_amount ?? '0'))
         if (pAmt > 0) return pAmt
       }
     }
-    // 2. Fallback: Sum inventory items + non-party account ledger splits
+    // 2. Direct total_amount from DB / API
+    if (voucher.total_amount && Math.abs(Number(voucher.total_amount)) > 0) {
+      return Math.abs(Number(voucher.total_amount))
+    }
+    if (voucher.amount && Math.abs(Number(voucher.amount)) > 0) {
+      return Math.abs(Number(voucher.amount))
+    }
+    // 3. Fallback: Sum inventory items + non-party non-sales/purchase account ledger splits
     let total = 0
-    if (voucher.inventory && voucher.inventory.length > 0) {
+    const partyNameLower = (voucher.party_name || '').trim().toLowerCase()
+    const hasItems = voucher.inventory && voucher.inventory.length > 0
+    if (hasItems) {
       total += voucher.inventory.reduce((sum: number, i: any) => sum + Math.abs(parseFloat(i.amount || '0')), 0)
     }
     if (voucher.accounts && voucher.accounts.length > 0) {
       voucher.accounts.forEach((acc: any) => {
-        if ((acc.ledger || '').trim().toLowerCase() !== (voucher.party_name || '').trim().toLowerCase()) {
-          total += parseFloat(acc.amount || '0')
+        const lName = (acc.ledger_name || acc.ledger || '').trim().toLowerCase()
+        if (!lName || lName === partyNameLower) return
+        if (hasItems && (
+          ['sales', 'sales a/c', 'sales account', 'sales ac', 'purchase', 'purchase a/c', 'purchase account', 'purchase ac'].includes(lName) ||
+          lName.startsWith('sales ') || lName.startsWith('purchase ')
+        )) {
+          return
         }
+        total += parseFloat(acc.amount || '0')
       })
     }
-    return total > 0 ? Math.abs(total) : Math.abs(voucher.amount)
+    return total > 0 ? Math.abs(total) : Math.abs(voucher.amount || 0)
   })()
 
   return (
@@ -347,9 +363,23 @@ export default function VoucherDetailPage() {
         <div className="mb-4 space-y-1 text-sm sm:text-base">
           <p>
             <span className="text-muted-foreground">Party:</span>{' '}
-            <span className="font-bold underline decoration-dotted underline-offset-4">
-              {toTitleCase(voucher.party_name)}
-            </span>
+            {voucher.party_ledger_id ? (
+              <Link
+                href={`/ledgers/${voucher.party_ledger_id}`}
+                className="font-bold underline decoration-dotted underline-offset-4 hover:text-primary transition-colors inline-flex items-center gap-1"
+                title={`Open ${voucher.party_name} ledger statement`}
+              >
+                {toTitleCase(voucher.party_name)}
+              </Link>
+            ) : (
+              <Link
+                href={`/ledgers?search=${encodeURIComponent(voucher.party_name)}`}
+                className="font-bold underline decoration-dotted underline-offset-4 hover:text-primary transition-colors inline-flex items-center gap-1"
+                title={`Search ${voucher.party_name} in ledgers`}
+              >
+                {toTitleCase(voucher.party_name)}
+              </Link>
+            )}
             {partyGstin && (
               <span className="ml-2 px-2 py-0.5 bg-blue-500/10 text-blue-600 rounded text-xs font-bold font-sans">
                 GSTIN: {partyGstin}

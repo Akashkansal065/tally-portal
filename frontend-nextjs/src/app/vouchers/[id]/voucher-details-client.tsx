@@ -67,14 +67,36 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
     // 1. Filter out if "items-only" or "discounted-only" is selected
     if (filterType === 'items' || filterType === 'discounted') return []
 
-    // 2. Search query filter
+    // 2. If inventory items are present, filter out:
+    //    a) Party ledger (which represents the overall invoice net balance)
+    //    b) Base Sales/Purchase revenue/expense ledgers (which account for the inventory items above)
+    const partyNameLower = (header?.partyName || '').trim().toLowerCase()
+    const hasItems = isInventoryVoucher && Array.isArray(inventory) && inventory.length > 0
+
+    if (hasItems) {
+      result = result.filter(acc => {
+        const lName = ((acc.ledger_name || acc.ledger) || '').trim().toLowerCase()
+        if (!lName) return false
+        if (lName === partyNameLower) return false
+        if (
+          ['sales', 'sales a/c', 'sales account', 'sales ac', 'purchase', 'purchase a/c', 'purchase account', 'purchase ac'].includes(lName) ||
+          lName.startsWith('sales ') ||
+          lName.startsWith('purchase ')
+        ) {
+          return false
+        }
+        return true
+      })
+    }
+
+    // 3. Search query filter
     if (searchQuery.trim()) {
       const lower = searchQuery.toLowerCase()
       result = result.filter(acc => ((acc.ledger_name || acc.ledger) || '').toLowerCase().includes(lower))
     }
 
     return result
-  }, [accounts, searchQuery, filterType])
+  }, [accounts, inventory, isInventoryVoucher, header?.partyName, searchQuery, filterType])
 
   const formatNumber = (val: string | number) => {
     const parsed = typeof val === 'string' ? parseFloat(val) : val
@@ -246,7 +268,6 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                 const amt = parseFloat(acc.amount || '0')
                 const ledgerName = acc.ledger_name || acc.ledger || ''
                 const isDebit = acc.entry_type === 'Debit' || (acc.debit_amount && parseFloat(acc.debit_amount) > 0) || amt < 0
-                if (isInventoryVoucher && ledgerName === header.partyName) return null
 
                 return (
                   <div key={`mob-acc-${idx}`} className="p-3 flex justify-between items-center text-base">
@@ -341,9 +362,6 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
               const amt = parseFloat(acc.amount || '0')
               const ledgerName = acc.ledger_name || acc.ledger || ''
               const isDebit = acc.entry_type === 'Debit' || (acc.debit_amount && parseFloat(acc.debit_amount) > 0) || amt < 0
-
-              // Skip party ledger if items exist (to avoid double listing the total)
-              if (isInventoryVoucher && ledgerName === header.partyName) return null
 
               const isDiscount = ledgerName.toUpperCase().includes('DISCOUNT')
 

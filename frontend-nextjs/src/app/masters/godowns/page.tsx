@@ -256,7 +256,7 @@ export default function GodownsPage() {
 
             <div>
               <label className="text-sm font-semibold mb-1.5 block">Under Godown (Parent)</label>
-              <select value={parentId} onChange={e => setParentId(e.target.value)} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
+              <select value={parentId} onChange={e => setParentId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
                 <option value="">Primary</option>
                 {godowns.filter(g => g.godown_id !== godownId).map(g => (
                   <option key={g.godown_id} value={g.godown_id}>{g.name}</option>

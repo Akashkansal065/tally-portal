@@ -4,7 +4,21 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
-import { Search, X, Package, ArrowLeft } from 'lucide-react'
+import { Search, X, Package, ArrowLeft, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+
+type SortKey =
+  | 'name'
+  | 'inward_qty'
+  | 'inward_value'
+  | 'outward_qty'
+  | 'outward_value'
+  | 'cons_value'
+  | 'gp_value'
+  | 'gp_percent'
+  | 'closing_balance'
+  | 'closing_value'
+
+type SortDirection = 'asc' | 'desc'
 
 type StockItem = {
   item_id: number
@@ -53,7 +67,28 @@ export default function StocksPage() {
   const [stockStatus, setStockStatus] = useState('All Items')
   const [movement, setMovement] = useState('All Movement')
   const [profitFilter, setProfitFilter] = useState('All Profit')
-  const [sortBy, setSortBy] = useState('Qty (High to Low)')
+  const [sortField, setSortField] = useState<SortKey>('closing_balance')
+  const [sortDir, setSortDir] = useState<SortDirection>('desc')
+
+  const handleSort = (field: SortKey) => {
+    if (sortField === field) {
+      setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortField(field)
+      setSortDir(field === 'name' ? 'asc' : 'desc')
+    }
+  }
+
+  const getSortIcon = (field: SortKey) => {
+    if (sortField === field) {
+      return (
+        <span className="text-primary font-black text-[10px] inline-flex items-center ml-1">
+          {sortDir === 'asc' ? <ArrowUp className="h-3 w-3 stroke-[2.5]" /> : <ArrowDown className="h-3 w-3 stroke-[2.5]" />}
+        </span>
+      )
+    }
+    return <ArrowUpDown className="h-2.5 w-2.5 opacity-0 group-hover:opacity-40 transition-opacity text-muted-foreground ml-1" />
+  }
 
   useEffect(() => {
     if (!user) {
@@ -160,26 +195,19 @@ export default function StocksPage() {
 
     // Sorting
     result = [...result].sort((a, b) => {
-      if (sortBy === 'Qty (High to Low)') {
-        return (b.closing_balance || 0) - (a.closing_balance || 0)
+      let comparison = 0
+      if (sortField === 'name') {
+        comparison = a.name.localeCompare(b.name)
+      } else {
+        const valA = Number(a[sortField]) || 0
+        const valB = Number(b[sortField]) || 0
+        comparison = valA - valB
       }
-      if (sortBy === 'Qty (Low to High)') {
-        return (a.closing_balance || 0) - (b.closing_balance || 0)
-      }
-      if (sortBy === 'Value (High to Low)') {
-        return (b.closing_value || 0) - (a.closing_value || 0)
-      }
-      if (sortBy === 'Value (Low to High)') {
-        return (a.closing_value || 0) - (b.closing_value || 0)
-      }
-      if (sortBy === 'Name (A-Z)') {
-        return a.name.localeCompare(b.name)
-      }
-      return 0
+      return sortDir === 'asc' ? comparison : -comparison
     })
 
     return result
-  }, [items, selectedGroup, search, stockStatus, movement, profitFilter, sortBy])
+  }, [items, selectedGroup, search, stockStatus, movement, profitFilter, sortField, sortDir])
 
   // Filtered vouchers for 3rd level
   const filteredVouchers = itemVouchers.filter(v => {
@@ -377,15 +405,34 @@ export default function StocksPage() {
               <div className="flex items-center justify-between md:justify-start gap-1 md:gap-2">
                 <span>SORT BY:</span>
                 <select
-                  value={sortBy}
-                  onChange={e => setSortBy(e.target.value)}
-                  className="bg-card text-foreground border border-border rounded px-2 py-1 focus:outline-none"
+                  value={`${sortField}-${sortDir}`}
+                  onChange={e => {
+                    const [f, d] = e.target.value.split('-') as [SortKey, SortDirection]
+                    setSortField(f)
+                    setSortDir(d)
+                  }}
+                  className="bg-card text-foreground border border-border rounded px-2 py-1 focus:outline-none text-xs font-semibold"
                 >
-                  <option value="Qty (High to Low)">Qty (High to Low)</option>
-                  <option value="Qty (Low to High)">Qty (Low to High)</option>
-                  <option value="Value (High to Low)">Value (High to Low)</option>
-                  <option value="Value (Low to High)">Value (Low to High)</option>
-                  <option value="Name (A-Z)">Name (A-Z)</option>
+                  <option value="closing_balance-desc">Closing Qty (High to Low)</option>
+                  <option value="closing_balance-asc">Closing Qty (Low to High)</option>
+                  <option value="closing_value-desc">Closing Value (High to Low)</option>
+                  <option value="closing_value-asc">Closing Value (Low to High)</option>
+                  <option value="name-asc">Name (A to Z)</option>
+                  <option value="name-desc">Name (Z to A)</option>
+                  <option value="inward_qty-desc">Inward Qty (High to Low)</option>
+                  <option value="inward_qty-asc">Inward Qty (Low to High)</option>
+                  <option value="inward_value-desc">Inward Value (High to Low)</option>
+                  <option value="inward_value-asc">Inward Value (Low to High)</option>
+                  <option value="outward_qty-desc">Outward Qty (High to Low)</option>
+                  <option value="outward_qty-asc">Outward Qty (Low to High)</option>
+                  <option value="outward_value-desc">Outward Value (High to Low)</option>
+                  <option value="outward_value-asc">Outward Value (Low to High)</option>
+                  <option value="cons_value-desc">Cons. Value (High to Low)</option>
+                  <option value="cons_value-asc">Cons. Value (Low to High)</option>
+                  <option value="gp_value-desc">Gross Profit (High to Low)</option>
+                  <option value="gp_value-asc">Gross Profit (Low to High)</option>
+                  <option value="gp_percent-desc">Gross Profit % (High to Low)</option>
+                  <option value="gp_percent-asc">Gross Profit % (Low to High)</option>
                 </select>
               </div>
             </div>
@@ -515,26 +562,196 @@ export default function StocksPage() {
               <div className="border border-border rounded-lg overflow-x-auto bg-card shadow-sm flex flex-col min-h-0 flex-initial">
                 <table className="w-full border-collapse text-left text-xs min-w-[1000px]">
                   <thead>
-                    <tr className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-                      <th className="sticky top-0 z-10 bg-muted px-4 py-3 border-r border-b border-border">Product Particulars</th>
-                      <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border" colSpan={2}>Inward</th>
-                      <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border" colSpan={2}>Outward</th>
-                      <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border">Cons. Value</th>
-                      <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border" colSpan={2}>Gross Profit</th>
-                      <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border">Closing Qty</th>
-                      <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-b border-border">Closing Value</th>
+                    <tr className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider select-none">
+                      <th
+                        onClick={() => handleSort('name')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 border-r border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        title="Click to sort by Product Name"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span>Product Particulars</span>
+                          {sortField === 'name' && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('inward_value')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        colSpan={2}
+                        title="Click to sort by Inward Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Inward</span>
+                          {(sortField === 'inward_qty' || sortField === 'inward_value') && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('outward_value')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        colSpan={2}
+                        title="Click to sort by Outward Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Outward</span>
+                          {(sortField === 'outward_qty' || sortField === 'outward_value') && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('cons_value')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        title="Click to sort by Consumption Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Cons. Value</span>
+                          {sortField === 'cons_value' && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('gp_value')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        colSpan={2}
+                        title="Click to sort by Gross Profit Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Gross Profit</span>
+                          {(sortField === 'gp_value' || sortField === 'gp_percent') && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('closing_balance')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        title="Click to sort by Closing Quantity"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Closing Qty</span>
+                          {sortField === 'closing_balance' && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('closing_value')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        title="Click to sort by Closing Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Closing Value</span>
+                          {sortField === 'closing_value' && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
                     </tr>
-                    <tr className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 border-r border-border">Name / Brand / Subtitle</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border/50">Qty</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border">Value</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border/50">Qty</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border">Value</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right border-r border-border">-</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border/50">Value</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border">%</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right border-r border-border">Qty (UOM)</th>
-                      <th className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right">Value</th>
+                    <tr className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider select-none">
+                      <th
+                        onClick={() => handleSort('name')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 border-r border-border cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Name"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span>Name / Brand / Subtitle</span>
+                          {getSortIcon('name')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('inward_qty')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border/50 cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Inward Quantity"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Qty</span>
+                          {getSortIcon('inward_qty')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('inward_value')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Inward Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Value</span>
+                          {getSortIcon('inward_value')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('outward_qty')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border/50 cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Outward Quantity"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Qty</span>
+                          {getSortIcon('outward_qty')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('outward_value')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Outward Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Value</span>
+                          {getSortIcon('outward_value')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('cons_value')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right border-r border-border cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Consumption Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>-</span>
+                          {getSortIcon('cons_value')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('gp_value')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border/50 cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Gross Profit Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Value</span>
+                          {getSortIcon('gp_value')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('gp_percent')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-3 py-2 text-right border-r border-border cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Gross Profit %"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>%</span>
+                          {getSortIcon('gp_percent')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('closing_balance')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right border-r border-border cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Closing Quantity"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Qty (UOM)</span>
+                          {getSortIcon('closing_balance')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('closing_value')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Closing Value"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Value</span>
+                          {getSortIcon('closing_value')}
+                        </div>
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/50">
@@ -695,7 +912,10 @@ export default function StocksPage() {
                 return (
                   <div
                     key={v.stock_entry_id}
+                    onClick={() => router.push(`/vouchers/${v.voucher_id}`)}
+                    className="hover:bg-muted/40 transition-colors cursor-pointer"
                     style={{ background: '#fff', borderBottom: '1px solid #f3f4f6', padding: '12px 16px' }}
+                    title="Click to view voucher details"
                   >
                     {/* Row 1: date + type badge + voucher link */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>

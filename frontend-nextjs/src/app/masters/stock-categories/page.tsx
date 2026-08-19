@@ -233,7 +233,7 @@ export default function StockCategoriesPage() {
 
             <div>
               <label className="text-sm font-semibold mb-1.5 block">Under Category</label>
-              <select value={parentId} onChange={e => setParentId(e.target.value)} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
+              <select value={parentId} onChange={e => setParentId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
                 <option value="">Primary (Root)</option>
                 {categories.filter(c => c.stock_category_id !== categoryId).map(c => (
                   <option key={c.stock_category_id} value={c.stock_category_id}>{c.name}</option>

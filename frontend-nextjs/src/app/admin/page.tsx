@@ -1662,7 +1662,7 @@ const handleSavePermissions = async () => {
                                     </span>
                                   ) : audit.tally_sync_status === 'DEACTIVATED_IN_TALLY' ? (
                                     <span className="text-purple-600 text-xs font-semibold">
-                                      Billwise deactivated in Tally (<ISBILLWISEON>No</ISBILLWISEON>).
+                                      Billwise deactivated in Tally (&lt;ISBILLWISEON&gt;No&lt;/ISBILLWISEON&gt;).
                                     </span>
                                   ) : (
                                     <span className="text-muted-foreground text-xs font-medium">

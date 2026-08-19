@@ -50,6 +50,18 @@ export default function LedgersPage() {
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
     if (!permissions.showLedger) { router.replace('/'); return }
+    
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const q = params.get('search')
+      if (q) setSearchQuery(q)
+      const tab = params.get('tab')
+      if (tab === 'customers' || tab === 'suppliers') {
+        setActiveTab(tab)
+        return
+      }
+    }
+
     if (!permissions.showSalesLedgers && permissions.showPurchaseLedgers) {
       setActiveTab('suppliers')
     } else if (permissions.showSalesLedgers && !permissions.showPurchaseLedgers) {

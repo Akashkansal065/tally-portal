@@ -400,14 +400,14 @@ export default function StockItemsPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-sm font-semibold mb-1.5 block">Under Group</label>
-                      <select value={groupId} onChange={e => setGroupId(e.target.value)} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
+                      <select value={groupId} onChange={e => setGroupId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
                         <option value="">Primary</option>
                         {groups.filter(g => (g.name || '').trim().toLowerCase() !== 'primary').map(g => <option key={g.stock_group_id} value={g.stock_group_id}>{g.name.trim()}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="text-sm font-semibold mb-1.5 block">Category</label>
-                      <select value={categoryId} onChange={e => setCategoryId(e.target.value)} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
+                      <select value={categoryId} onChange={e => setCategoryId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
                         <option value="">Not Applicable</option>
                         {categories.map(c => <option key={c.stock_category_id} value={c.stock_category_id}>{c.name}</option>)}
                       </select>
@@ -417,14 +417,14 @@ export default function StockItemsPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-sm font-semibold mb-1.5 block">Base Unit <span className="text-destructive">*</span></label>
-                      <select value={unitId} onChange={e => setUnitId(e.target.value)} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none" required>
+                      <select value={unitId} onChange={e => setUnitId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none" required>
                         <option value="" disabled>Select Unit...</option>
                         {uoms.filter(u => (u.symbol || '').trim().toLowerCase() !== 'not applicable').map(u => <option key={u.unit_id} value={u.unit_id}>{u.symbol} {u.original_name ? `(${u.original_name})` : ''}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="text-sm font-semibold mb-1.5 block">Alternate Unit</label>
-                      <select value={altUnitId} onChange={e => setAltUnitId(e.target.value)} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
+                      <select value={altUnitId} onChange={e => setAltUnitId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
                         <option value="">Not Applicable</option>
                         {uoms.filter(u => (u.symbol || '').trim().toLowerCase() !== 'not applicable').map(u => <option key={u.unit_id} value={u.unit_id}>{u.symbol} {u.original_name ? `(${u.original_name})` : ''}</option>)}
                       </select>

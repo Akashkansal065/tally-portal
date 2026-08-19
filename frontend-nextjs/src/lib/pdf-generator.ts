@@ -10,18 +10,32 @@ export interface VoucherHeader {
 
 export interface AccountEntry {
   ledger?: string | null
-  amount?: string | null
+  ledger_name?: string | null
+  ledger_id?: number
+  amount?: string | number | null
+  debit_amount?: number | string | null
+  credit_amount?: number | string | null
+  entry_type?: 'Debit' | 'Credit' | string | null
+  cost_center_id?: number | null
+  bank_allocations?: any[]
 }
 
 export interface InventoryEntry {
   item?: string | null
-  quantity?: string | null
-  rate?: string | null
-  amount?: string | null
-  discountAmount?: string | null
-  gstRate?: string | null
+  stock_item_name?: string | null
+  quantity?: string | number | null
+  rate?: string | number | null
+  amount?: string | number | null
+  discountAmount?: string | number | null
+  discount_amount?: string | number | null
+  discount_percent?: string | number | null
+  gstRate?: string | number | null
+  gst_rate?: string | number | null
   gstHsnCode?: string | null
+  gst_hsn_code?: string | null
   uom?: string | null
+  godown_id?: number | null
+  batch_id?: number | null
 }
 
 export interface PartyLedger {

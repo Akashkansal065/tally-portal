@@ -401,7 +401,15 @@ export default function ReportsPage() {
               </Link>
             </td>
             <td className="py-2.5 px-3 text-muted-foreground">{formatDate(r.date)}</td>
-            <td className="py-2.5 px-3 font-semibold">{toTitleCase(r.party_name)}</td>
+            <td className="py-2.5 px-3 font-semibold">
+              <Link
+                href={`/ledgers?search=${encodeURIComponent(r.party_name)}`}
+                className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                title={`Search ${r.party_name} in ledgers`}
+              >
+                {toTitleCase(r.party_name)}
+              </Link>
+            </td>
             <td className="py-2.5 px-3 text-right font-bold text-emerald-600">{formatCurrency(r.amount)}</td>
           </tr>
         )
@@ -433,7 +441,15 @@ export default function ReportsPage() {
                   {r.type}
                 </span>
               </td>
-              <td className="py-2.5 px-3 font-semibold">{toTitleCase(r.party_name)}</td>
+              <td className="py-2.5 px-3 font-semibold">
+                <Link
+                  href={`/ledgers?search=${encodeURIComponent(r.party_name)}`}
+                  className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                  title={`Search ${r.party_name} in ledgers`}
+                >
+                  {toTitleCase(r.party_name)}
+                </Link>
+              </td>
               <td className={cn('py-2.5 px-3 text-right font-bold', typeStyle.amount)}>{formatCurrency(r.amount)}</td>
             </tr>
           )
@@ -466,7 +482,15 @@ export default function ReportsPage() {
                   {r.type}
                 </span>
               </td>
-              <td className="py-2.5 px-3 font-semibold">{toTitleCase(r.party_name)}</td>
+              <td className="py-2.5 px-3 font-semibold">
+                <Link
+                  href={`/ledgers?search=${encodeURIComponent(r.party_name)}&tab=suppliers`}
+                  className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                  title={`Search ${r.party_name} in suppliers`}
+                >
+                  {toTitleCase(r.party_name)}
+                </Link>
+              </td>
               <td className={cn('py-2.5 px-3 text-right font-bold', typeStyle.amount)}>{formatCurrency(r.amount)}</td>
             </tr>
           )
@@ -499,7 +523,15 @@ export default function ReportsPage() {
                   {r.type}
                 </span>
               </td>
-              <td className="py-2.5 px-3 font-semibold">{toTitleCase(r.party_name)}</td>
+              <td className="py-2.5 px-3 font-semibold">
+                <Link
+                  href={`/ledgers?search=${encodeURIComponent(r.party_name)}`}
+                  className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                  title={`Search ${r.party_name} in ledgers`}
+                >
+                  {toTitleCase(r.party_name)}
+                </Link>
+              </td>
               <td className={cn('py-2.5 px-3 text-right font-bold', typeStyle.amount)}>{formatCurrency(r.amount)}</td>
             </tr>
           )
@@ -517,7 +549,23 @@ export default function ReportsPage() {
           <tr key={idx} className="hover:bg-muted/30 transition-colors">
             <td className="py-2.5 px-3 font-semibold flex items-center gap-2">
               <Users className="h-4 w-4 text-amber-500 shrink-0" />
-              {toTitleCase(r.name)}
+              {r.ledger_id ? (
+                <Link
+                  href={`/ledgers/${r.ledger_id}`}
+                  className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                  title={`Open ${r.name} ledger statement`}
+                >
+                  {toTitleCase(r.name)}
+                </Link>
+              ) : (
+                <Link
+                  href={`/ledgers?search=${encodeURIComponent(r.name)}`}
+                  className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                  title={`Search ${r.name} in ledgers`}
+                >
+                  {toTitleCase(r.name)}
+                </Link>
+              )}
             </td>
             <td className="py-2.5 px-3 font-bold text-amber-600">{formatCurrency(r.total_sales)}</td>
             <td className="py-2.5 px-3">
@@ -555,7 +603,15 @@ export default function ReportsPage() {
                   {r.type || 'Purchase'}
                 </span>
               </td>
-              <td className="py-2.5 px-3 font-semibold">{toTitleCase(r.party_name)}</td>
+              <td className="py-2.5 px-3 font-semibold">
+                <Link
+                  href={`/ledgers?search=${encodeURIComponent(r.party_name)}&tab=suppliers`}
+                  className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                  title={`Search ${r.party_name} in suppliers`}
+                >
+                  {toTitleCase(r.party_name)}
+                </Link>
+              </td>
               <td className={cn('py-2.5 px-3 text-right font-bold', typeStyle.amount)}>{formatCurrency(r.amount)}</td>
             </tr>
           )
@@ -1354,7 +1410,15 @@ export default function ReportsPage() {
                           </Link>
                         </td>
                         <td className="py-2.5 px-2 text-muted-foreground">{formatDate(row.date)}</td>
-                        <td className="py-2.5 px-2 font-semibold">{toTitleCase(row.party_name)}</td>
+                        <td className="py-2.5 px-2 font-semibold">
+                          <Link
+                            href={`/ledgers?search=${encodeURIComponent(row.party_name)}`}
+                            className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                            title={`Search ${row.party_name} in ledgers`}
+                          >
+                            {toTitleCase(row.party_name)}
+                          </Link>
+                        </td>
                         <td className="py-2.5 px-2 text-right font-bold text-emerald-600">{formatCurrency(row.amount)}</td>
                       </tr>
                     ))}
@@ -1567,7 +1631,15 @@ export default function ReportsPage() {
                             {row.type}
                           </span>
                         </td>
-                        <td className="py-2.5 px-2 font-semibold">{toTitleCase(row.party_name)}</td>
+                        <td className="py-2.5 px-2 font-semibold">
+                          <Link
+                            href={`/ledgers?search=${encodeURIComponent(row.party_name)}`}
+                            className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                            title={`Search ${row.party_name} in ledgers`}
+                          >
+                            {toTitleCase(row.party_name)}
+                          </Link>
+                        </td>
                         <td className={cn('py-2.5 px-2 text-right font-bold', typeStyle.amount)}>{formatCurrency(row.amount)}</td>
                       </tr>
                     )
@@ -1933,7 +2005,23 @@ export default function ReportsPage() {
                       {filteredItems.map((item: any, idx: number) => (
                         <tr key={idx} className="hover:bg-muted/30 transition-colors">
                           <td className="py-2.5 px-2 font-semibold text-foreground">
-                            {item.party_name}
+                            {item.ledger_id ? (
+                              <Link
+                                href={`/ledgers/${item.ledger_id}`}
+                                className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                                title={`Open ${item.party_name} ledger statement`}
+                              >
+                                {item.party_name}
+                              </Link>
+                            ) : (
+                              <Link
+                                href={`/ledgers?search=${encodeURIComponent(item.party_name)}`}
+                                className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                                title={`Search ${item.party_name} in ledgers`}
+                              >
+                                {item.party_name}
+                              </Link>
+                            )}
                           </td>
                           <td className="py-2.5 px-2 font-medium">
                             {item.id > 0 ? (

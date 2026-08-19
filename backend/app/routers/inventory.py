@@ -6,6 +6,7 @@ from typing import List, Optional
 from datetime import datetime, date
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.permissions import require_permission, get_current_user
 from app.models.portal_core import User, DeletedRecordAudit, SyncQueue
 from app.models.tally_core import MstUom, MstStockGroup, StockGroupAlias, MstStockCategory, MstGodown, MstStockItem, Batch, MstPriceLevel
@@ -1217,7 +1218,7 @@ async def get_item_vouchers(
     """Return individual stock transaction vouchers for a specific stock item,
     including party name (Sundry Debtors / Sundry Creditors ledger on the voucher)."""
     from sqlalchemy import text as sa_text
-    sql = sa_text("""
+    sql = sa_text(f"""
         SELECT
             se.stock_entry_id,
             se.quantity,
@@ -1228,18 +1229,24 @@ async def get_item_vouchers(
             v.voucher_date,
             v.reference_number,
             vt.name AS voucher_type,
-            party_sub.party_name
-        FROM stock_entries se
-        JOIN vouchers v ON se.voucher_id = v.voucher_id
-        JOIN voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+            COALESCE(party_sub.party_name, party_sub2.party_name, 'Cash Account') AS party_name
+        FROM {settings.TALLY_DATABASE_NAME}.stock_entries se
+        JOIN {settings.TALLY_DATABASE_NAME}.vouchers v ON se.voucher_id = v.voucher_id
+        JOIN {settings.TALLY_DATABASE_NAME}.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
         LEFT JOIN (
             SELECT ve.voucher_id, MAX(le.name) AS party_name
-            FROM voucher_entries ve
-            JOIN ledgers le ON ve.ledger_id = le.ledger_id
-            JOIN account_groups ag ON le.group_id = ag.group_id
+            FROM {settings.TALLY_DATABASE_NAME}.voucher_entries ve
+            JOIN {settings.TALLY_DATABASE_NAME}.ledgers le ON ve.ledger_id = le.ledger_id
+            JOIN {settings.TALLY_DATABASE_NAME}.account_groups ag ON le.group_id = ag.group_id
             WHERE ag.name IN ('Sundry Debtors', 'Sundry Creditors')
             GROUP BY ve.voucher_id
         ) party_sub ON party_sub.voucher_id = v.voucher_id
+        LEFT JOIN (
+            SELECT ve.voucher_id, MAX(le.name) AS party_name
+            FROM {settings.TALLY_DATABASE_NAME}.voucher_entries ve
+            JOIN {settings.TALLY_DATABASE_NAME}.ledgers le ON ve.ledger_id = le.ledger_id
+            GROUP BY ve.voucher_id
+        ) party_sub2 ON party_sub2.voucher_id = v.voucher_id
         WHERE se.stock_item_id = :item_id
           AND v.company_id = :company_id
         ORDER BY v.voucher_date DESC, se.stock_entry_id DESC
