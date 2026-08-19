@@ -316,7 +316,7 @@ export default function DashboardPage() {
                 <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">CURRENT PERIOD</span>
               </div>
               <span className="text-base font-extrabold text-foreground tracking-tight flex items-center gap-1.5">
-                {dashboardData?.current_period || '1-Apr-25 to 31-Mar-26'}
+                {dashboardData?.current_period || (fromDate && toDate ? `${new Date(fromDate).toLocaleDateString('en-GB', {day: 'numeric', month:'short', year:'2-digit'})} to ${new Date(toDate).toLocaleDateString('en-GB', {day: 'numeric', month:'short', year:'2-digit'})}` : '1-Apr-26 to 31-Mar-27')}
                 <Edit3 className="w-3.5 h-3.5 text-sky-500 opacity-70 group-hover:opacity-100" />
               </span>
             </div>
@@ -333,7 +333,7 @@ export default function DashboardPage() {
           <div>
             <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider block">NAME OF COMPANY</span>
             <span className="text-lg font-black text-foreground tracking-tight">
-              {dashboardData?.company_name || user?.company_name || 'Bhrama Enterprises'}
+              {dashboardData?.company_name || user?.allowedCompanies?.find(c => c.company_id === user?.company_id)?.name || user?.company_name || 'Sneh Distributors'}
             </span>
           </div>
           <div className="text-right">

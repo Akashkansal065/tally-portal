@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc, func
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict, Any, Union
 from datetime import datetime, date
 from decimal import Decimal
 from sqlalchemy.orm import selectinload
@@ -411,9 +411,11 @@ async def get_dashboard_summary(
     comp_name = company.name if company else "Company"
 
     # Calculate default Indian Financial Year (April 1 to March 31)
-    fy_start = getattr(company, 'financial_year_start', None) or date(2025, 4, 1)
+    today = date.today()
+    curr_fy_year = today.year if today.month >= 4 else today.year - 1
+    fy_start = getattr(company, 'financial_year_start', None) or date(curr_fy_year, 4, 1)
     if isinstance(fy_start, date) and fy_start.month != 4:
-        fy_start = date(2025, 4, 1)
+        fy_start = date(curr_fy_year, 4, 1)
         
     fy_end = getattr(company, 'financial_year_end', None)
     if not fy_end or (isinstance(fy_end, date) and fy_end.month != 3):
