@@ -949,6 +949,8 @@ export default function VoucherFormModal({
     onSave(payload, editVoucher?.voucher_id || null)
   }
 
+  if (!isOpen) return null
+
   return (
     <div 
       className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150"
