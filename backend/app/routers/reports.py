@@ -868,6 +868,12 @@ async def get_inventory_analytics(
         "group_valuation": group_chart,
         "top_items": item_list
     }
+    set_cached_response(user.company_id, cache_key, output)
+    return output
+
+
+@router.get("/profit-loss")
+@router.get("/profit-and-loss")
 @router.get("/pnl")
 async def get_profit_and_loss(
     from_date: Optional[str] = None,

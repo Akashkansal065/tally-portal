@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
-import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info, Edit3, Trash2, RefreshCw, AlertTriangle, CheckCircle2, GitCompare } from 'lucide-react'
+import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info, Edit3, Trash2, RefreshCw, AlertTriangle, CheckCircle2, GitCompare, ShoppingCart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherFormModal from '@/components/VoucherFormModal'
@@ -102,6 +102,16 @@ export default function VouchersPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [ledgers, setLedgers] = useState<any[]>([])
   const [voucherTypes, setVoucherTypes] = useState<any[]>([])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('create') === 'true' || params.get('action') === 'new') {
+        setEditingVoucher(null)
+        setCreateModalOpen(true)
+      }
+    }
+  }, [])
 
   // Live Sync & Conflict comparison states
   const [syncingVoucherId, setSyncingVoucherId] = useState<number | null>(null)
@@ -572,11 +582,12 @@ export default function VouchersPage() {
                     <FileDown className="h-4.5 w-4.5" />
                   </button>
                   <button 
-                    onClick={() => setCreateModalOpen(true)}
-                    className="h-8 w-8 flex items-center justify-center bg-primary hover:bg-primary/90 text-primary-foreground rounded-full shrink-0"
+                    onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
+                    className="h-8 px-2 sm:px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-lg shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
                     title="Create Voucher"
                   >
-                    <Plus className="h-4.5 w-4.5" />
+                    <Plus className="h-4 w-4 stroke-[2.5]" />
+                    <span className="hidden sm:inline">Create Voucher</span>
                   </button>
                 </div>
               </>
@@ -839,22 +850,31 @@ export default function VouchersPage() {
         <div className="h-32" />
       </div>
 
-      {/* Sticky Floating CTA Buttons */}
-      <div className="fixed bottom-20 left-0 right-0 z-40 px-4 md:hidden">
-        <div className="max-w-lg mx-auto flex items-center gap-3">
+      {/* Sticky Floating CTA Buttons on Mobile */}
+      <div className="fixed bottom-20 left-0 right-0 z-40 px-3 md:hidden pointer-events-none">
+        <div className="max-w-lg mx-auto flex items-center gap-2 pointer-events-auto">
+          <button
+            onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
+            className="flex-1 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs shadow-xl rounded-xl h-12 border border-emerald-400/40 cursor-pointer flex items-center justify-center gap-2 transition-all active:scale-95 ring-2 ring-emerald-500/20"
+          >
+            <Plus className="h-5 w-5 stroke-[2.5]" />
+            <span>Create Voucher</span>
+          </button>
           <button
             onClick={() => router.push('/payments/new')}
-            className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold text-xs shadow-md rounded-xl h-11 border-none cursor-pointer flex items-center justify-center gap-1.5 transition-transform active:scale-95"
+            className="bg-card hover:bg-muted text-foreground font-bold text-xs shadow-md rounded-xl h-12 px-3 border border-border cursor-pointer flex items-center justify-center gap-1.5 transition-all active:scale-95 shrink-0"
+            title="Collect Payment"
           >
-            <BellRing className="h-4.5 w-4.5 animate-bounce" />
-            Collect Payment
+            <BellRing className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            <span>Payment</span>
           </button>
           <button
             onClick={() => router.push('/temporders/new')}
-            className="flex-1 bg-slate-900 dark:bg-slate-100 hover:bg-slate-800 dark:hover:bg-slate-200 text-white dark:text-slate-900 font-extrabold text-xs shadow-md rounded-xl h-11 border-none cursor-pointer flex items-center justify-center gap-1.5 transition-transform active:scale-95"
+            className="bg-card hover:bg-muted text-foreground font-bold text-xs shadow-md rounded-xl h-12 px-3 border border-border cursor-pointer flex items-center justify-center gap-1.5 transition-all active:scale-95 shrink-0"
+            title="Create Order"
           >
-            <Plus className="h-4.5 w-4.5" />
-            Create Entries
+            <ShoppingCart className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+            <span>Order</span>
           </button>
         </div>
       </div>
@@ -1070,6 +1090,9 @@ export default function VouchersPage() {
         onClose={() => {
           setCreateModalOpen(false)
           setEditingVoucher(null)
+          if (typeof window !== 'undefined' && (window.location.search.includes('create=true') || window.location.search.includes('action=new'))) {
+            window.history.replaceState(null, '', window.location.pathname)
+          }
         }}
         onSave={handleSaveVoucher}
         isSaving={isSaving}

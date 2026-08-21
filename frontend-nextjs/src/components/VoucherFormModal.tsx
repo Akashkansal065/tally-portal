@@ -282,6 +282,17 @@ export default function VoucherFormModal({
   }, [voucherTypes])
 
   useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        setValidationError(null)
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, onClose])
+
+  useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
       wasOpenRef.current = true
 
@@ -416,8 +427,8 @@ export default function VoucherFormModal({
   }, [isOpen, token, editVoucher])
 
   const parentType = selectedType?.parent_type || selectedType?.name || ''
-  const isInvoiceView = ['Sales', 'Purchase', 'Credit Note', 'Debit Note'].includes(parentType)
-  const isStockJournal = parentType === 'Stock Journal'
+  const isInvoiceView = ['Sales', 'Purchase', 'Credit Note', 'Debit Note', 'Delivery Note', 'Receipt Note', 'Sales Order', 'Purchase Order'].some(t => parentType.toLowerCase().includes(t.toLowerCase()))
+  const isStockJournal = parentType.toLowerCase().includes('stock journal')
   const isAccountingView = !isInvoiceView && !isStockJournal
 
   // Compute active non-empty accounting entries
@@ -938,50 +949,74 @@ export default function VoucherFormModal({
     onSave(payload, editVoucher?.voucher_id || null)
   }
 
-  if (!isOpen) return null
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 dark:border-slate-800 relative overflow-hidden">
+    <div 
+      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150"
+      onClick={() => {
+        setValidationError(null)
+        onClose()
+      }}
+    >
+      <div 
+        className="bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl w-full max-w-5xl h-[95vh] sm:h-auto sm:max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 dark:border-slate-800 relative overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
         
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-slate-100 dark:border-slate-800">
-          <div className="flex items-center gap-4">
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-              {editVoucher ? `Alter Voucher #${editVoucher.voucher_number || editVoucher.voucher_id}` : 'Create Voucher'}
-            </h2>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-slate-500">Status:</span>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  className="sr-only peer" 
-                  checked={status === 'optional'} 
-                  onChange={e => setStatus(e.target.checked ? 'optional' : 'confirmed')} 
-                />
-                <div className="w-11 h-6 bg-emerald-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
-                <span className="ml-3 text-sm font-bold text-slate-700 dark:text-slate-300">
-                  {status === 'optional' ? 'Optional (No Posting)' : 'Regular (Confirmed)'}
-                </span>
-              </label>
+        <div className="p-4 sm:p-6 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h2 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white truncate">
+                {editVoucher ? `Alter Voucher #${editVoucher.voucher_number || editVoucher.voucher_id}` : 'Create Voucher'}
+              </h2>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setIsConfigModalOpen(true)
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border border-emerald-200 dark:border-emerald-500/30 rounded-lg transition-all shadow-xs cursor-pointer"
+                title="Configure Voucher Settings"
+              >
+                <Settings2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Configuration</span>
+              </button>
+              <button 
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setValidationError(null)
+                  onClose()
+                }} 
+                className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer active:scale-95"
+                aria-label="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsConfigModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 border border-emerald-200 dark:border-emerald-500/30 rounded-lg transition-all shadow-sm cursor-pointer"
-              title="Configure Voucher Settings"
-            >
-              <Settings2 className="w-3.5 h-3.5" />
-              <span>Configuration</span>
-            </button>
-            <button onClick={onClose} className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"><X className="w-5 h-5" /></button>
+          
+          <div className="flex items-center gap-2 mt-2.5 sm:mt-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 dark:border-slate-800">
+            <span className="text-xs font-medium text-slate-500">Status:</span>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input 
+                type="checkbox" 
+                className="sr-only peer" 
+                checked={status === 'optional'} 
+                onChange={e => setStatus(e.target.checked ? 'optional' : 'confirmed')} 
+              />
+              <div className="w-9 sm:w-11 h-5 sm:h-6 bg-emerald-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 sm:after:h-5 after:w-4 sm:after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              <span className="ml-2 text-xs font-bold text-slate-700 dark:text-slate-300">
+                {status === 'optional' ? 'Optional (No Posting)' : 'Regular (Confirmed)'}
+              </span>
+            </label>
           </div>
         </div>
 
         {/* Content */}
-        <div className="p-6 flex-1 overflow-y-auto space-y-6">
+        <div className="p-4 sm:p-6 flex-1 overflow-y-auto space-y-4 sm:space-y-6">
           
           {/* Validation Alert Box */}
           {validationError && (
@@ -991,9 +1026,9 @@ export default function VoucherFormModal({
             </div>
           )}
 
-          <div className="grid grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-6">
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Voucher Type</label>
+              <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Voucher Type</label>
               <select 
                 className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium" 
                 value={selectedType?.voucher_type_id || ''} 
@@ -1006,12 +1041,12 @@ export default function VoucherFormModal({
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Date</label>
+              <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Date</label>
               <input type="date" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" value={voucherDate} onChange={e => setVoucherDate(e.target.value)} />
             </div>
             <div className="relative">
               <div className="flex items-center gap-1.5 mb-1">
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Reference No.</label>
+                <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300">Reference No.</label>
                 <div className="relative inline-block">
                   <button
                     type="button"
@@ -1033,7 +1068,7 @@ export default function VoucherFormModal({
                   {/* Popover / Dropdown below the icon */}
                   {showRefInfo && (
                     <div 
-                      className="absolute right-0 top-full mt-2 w-80 p-4 bg-slate-900 text-white rounded-xl shadow-2xl border border-slate-700 z-50 animate-in fade-in zoom-in-95 duration-150"
+                      className="absolute right-0 top-full mt-2 w-72 sm:w-80 p-4 bg-slate-900 text-white rounded-xl shadow-2xl border border-slate-700 z-50 animate-in fade-in zoom-in-95 duration-150"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
@@ -1043,7 +1078,7 @@ export default function VoucherFormModal({
                         <button
                           type="button"
                           onClick={() => setShowRefInfo(false)}
-                          className="text-slate-400 hover:text-white p-0.5"
+                          className="text-slate-400 hover:text-white p-0.5 cursor-pointer"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -1097,10 +1132,10 @@ export default function VoucherFormModal({
           </div>
 
           {isInvoiceView && (
-            <div className="grid grid-cols-2 gap-6 bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 dark:bg-slate-800/50 p-3.5 sm:p-4 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Party Ledger</label>
+                  <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300">Party Ledger</label>
                   <button 
                     type="button" 
                     onClick={() => openQuickLedgerModal('party')} 
@@ -1131,7 +1166,7 @@ export default function VoucherFormModal({
               </div>
               {['Credit Note', 'Debit Note'].includes(parentType) && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Against Original Invoice ID</label>
+                  <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Against Original Invoice ID</label>
                   <input type="text" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Voucher ID" value={originalVoucherId} onChange={e => setOriginalVoucherId(e.target.value)} />
                 </div>
               )}
@@ -1140,9 +1175,9 @@ export default function VoucherFormModal({
 
           {isAccountingView && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-bold text-slate-800 dark:text-slate-200">Accounting Entries</h3>
-                <div className="flex items-center gap-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h3 className="font-bold text-sm sm:text-base text-slate-800 dark:text-slate-200">Accounting Entries</h3>
+                <div className="flex items-center gap-3">
                   <button 
                     type="button" 
                     onClick={() => openQuickLedgerModal(entries[0]?.id || 1)} 
@@ -1150,12 +1185,12 @@ export default function VoucherFormModal({
                   >
                     <FolderPlus className="w-3.5 h-3.5" /> + Quick Create Ledger
                   </button>
-                  <span className="text-xs text-slate-400">Dr and Cr totals must balance</span>
+                  <span className="hidden sm:inline text-xs text-slate-400">Dr and Cr totals must balance</span>
                 </div>
               </div>
               
-              {/* Column Headers */}
-              <div className="flex gap-3 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+              {/* Column Headers (Desktop) */}
+              <div className="hidden sm:flex gap-3 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
                 <div className="w-24">Type ({voucherConfig?.use_cr_dr === false ? 'By/To' : 'Dr/Cr'})</div>
                 <div className="flex-1">Particulars / Ledger Account</div>
                 <div className="w-44 text-right pr-4">Amount (₹)</div>
@@ -1163,8 +1198,10 @@ export default function VoucherFormModal({
               </div>
 
               {entries.map((e, idx) => (
-                <div key={e.id} className="space-y-1">
-                  <div className="flex gap-3 items-center">
+                <div key={e.id} className="p-3 sm:p-0 bg-slate-50 sm:bg-transparent dark:bg-slate-800/40 sm:dark:bg-transparent rounded-xl border sm:border-0 border-slate-200 dark:border-slate-700 space-y-2 sm:space-y-1">
+                  
+                  {/* Desktop Flex Row */}
+                  <div className="hidden sm:flex gap-3 items-center">
                     <select 
                       className="w-24 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold bg-white dark:bg-slate-900" 
                       value={e.type} 
@@ -1219,28 +1256,88 @@ export default function VoucherFormModal({
                     <button 
                       onClick={() => removeEntry(e.id)} 
                       title="Remove Entry"
-                      className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors"
+                      className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors cursor-pointer"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
 
+                  {/* Mobile Card Layout */}
+                  <div className="sm:hidden space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <select 
+                        className="w-28 h-9 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold bg-white dark:bg-slate-900" 
+                        value={e.type} 
+                        onChange={evt => {
+                          setValidationError(null)
+                          setEntries(entries.map(x => x.id === e.id ? { ...x, type: evt.target.value } : x))
+                        }}
+                      >
+                        <option value="Debit">{voucherConfig?.use_cr_dr === false ? 'By (Debit)' : 'Dr (Debit)'}</option>
+                        <option value="Credit">{voucherConfig?.use_cr_dr === false ? 'To (Credit)' : 'Cr (Credit)'}</option>
+                      </select>
+                      <button 
+                        onClick={() => removeEntry(e.id)} 
+                        className="text-xs text-rose-500 hover:text-rose-600 font-semibold flex items-center gap-1 p-1 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Remove
+                      </button>
+                    </div>
+
+                    <div className="flex gap-1.5">
+                      <select 
+                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        value={e.ledger_id} 
+                        onChange={evt => {
+                          setValidationError(null)
+                          if (evt.target.value === '__create_new__') {
+                            openQuickLedgerModal(e.id)
+                          } else {
+                            setEntries(entries.map(x => x.id === e.id ? { ...x, ledger_id: evt.target.value } : x))
+                          }
+                        }}
+                      >
+                        <option value="">Select Ledger...</option>
+                        <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
+                        {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>)}
+                      </select>
+                      <button 
+                        type="button" 
+                        onClick={() => openQuickLedgerModal(e.id)} 
+                        className="px-2.5 h-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold shrink-0"
+                      >
+                        + New
+                      </button>
+                    </div>
+
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">₹ Amount</span>
+                      <input 
+                        type="number" 
+                        className="w-full h-10 pl-20 pr-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-semibold bg-white dark:bg-slate-900 text-right" 
+                        placeholder="0.00" 
+                        value={e.amount} 
+                        onChange={evt => handleAmountChange(e.id, evt.target.value)} 
+                      />
+                    </div>
+                  </div>
+
                   {/* Bank Allocation Trigger for Bank Ledgers */}
                   {isBankLedger(e.ledger_id) && (
-                    <div className="flex items-center gap-2 pl-28 pt-0.5">
+                    <div className="flex items-center gap-2 sm:pl-28 pt-0.5">
                       <button
                         type="button"
                         onClick={() => openBankingModal(e.id)}
                         className={cn(
-                          "text-xs px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1.5 transition-all border cursor-pointer",
+                          "text-xs px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-all border cursor-pointer w-full sm:w-auto",
                           e.bank_allocations && e.bank_allocations.length > 0
                             ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 shadow-xs"
                             : "bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-700 border-dashed hover:bg-blue-100 dark:hover:bg-blue-900/40"
                         )}
                       >
-                        <Landmark className="w-3.5 h-3.5" />
+                        <Landmark className="w-3.5 h-3.5 shrink-0" />
                         {e.bank_allocations && e.bank_allocations.length > 0 ? (
-                          <span>Banking: <strong>{e.bank_allocations[0].transaction_type}</strong> ({e.bank_allocations[0].virtual_payment_address || e.bank_allocations[0].instrument_number || e.bank_allocations[0].transfer_mode || 'Configured'}) - Click to Edit</span>
+                          <span className="truncate">Banking: <strong>{e.bank_allocations[0].transaction_type}</strong> ({e.bank_allocations[0].virtual_payment_address || e.bank_allocations[0].instrument_number || e.bank_allocations[0].transfer_mode || 'Configured'}) - Edit</span>
                         ) : (
                           <span>+ Add Banking Allocations (UPI / Cheque / NEFT)</span>
                         )}
@@ -1261,8 +1358,8 @@ export default function VoucherFormModal({
 
           {isInvoiceView && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-bold text-slate-800 dark:text-slate-200">Inventory Items</h3>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h3 className="font-bold text-sm sm:text-base text-slate-800 dark:text-slate-200">Inventory Items</h3>
                 <button 
                   type="button" 
                   onClick={() => openQuickItemModal('inventory', 'new')} 
@@ -1272,8 +1369,8 @@ export default function VoucherFormModal({
                 </button>
               </div>
 
-              {/* Column Headers */}
-              <div className="flex gap-3 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+              {/* Column Headers (Desktop) */}
+              <div className="hidden sm:flex gap-3 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
                 <div className="flex-1">Item Description / Stock Item</div>
                 <div className="w-20 text-center">Qty</div>
                 <div className="w-24 text-right pr-2">Rate (₹)</div>
@@ -1283,81 +1380,182 @@ export default function VoucherFormModal({
               </div>
 
               {inventoryEntries.map((e, idx) => (
-                <div key={e.id} className="flex gap-3 items-center">
-                  <div className="flex-1 flex gap-2">
-                    <select 
-                      className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
-                      value={e.stock_item_id} 
-                      onChange={evt => {
-                        if (evt.target.value === '__create_new__') {
-                          openQuickItemModal('inventory', e.id)
-                        } else {
-                          const chosenItem = stockItems.find(si => String(si.stock_item_id) === evt.target.value)
-                          const rateToFill = isInvoiceView && parentType.toLowerCase() === 'sales'
-                            ? (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate)
-                            : (chosenItem?.standard_cost_price ? String(chosenItem.standard_cost_price) : (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate))
-                          const qty = e.quantity || '1'
-                          const amount = calculateItemAmount(qty, rateToFill, e.discount_percent || '0')
-                          setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value, rate: rateToFill, quantity: qty, amount } : x))
-                        }
-                      }}
-                    >
-                      <option value="">Select Item...</option>
-                      <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Item (Syncs to Tally)...</option>
-                      {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
-                    </select>
+                <div key={e.id} className="p-3 sm:p-0 bg-slate-50 sm:bg-transparent dark:bg-slate-800/40 sm:dark:bg-transparent rounded-xl border sm:border-0 border-slate-200 dark:border-slate-700 space-y-2.5 sm:space-y-0">
+                  
+                  {/* Desktop Flex Row */}
+                  <div className="hidden sm:flex gap-3 items-center">
+                    <div className="flex-1 flex gap-2">
+                      <select 
+                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        value={e.stock_item_id} 
+                        onChange={evt => {
+                          if (evt.target.value === '__create_new__') {
+                            openQuickItemModal('inventory', e.id)
+                          } else {
+                            const chosenItem = stockItems.find(si => String(si.stock_item_id) === evt.target.value)
+                            const rateToFill = isInvoiceView && parentType.toLowerCase() === 'sales'
+                              ? (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate)
+                              : (chosenItem?.standard_cost_price ? String(chosenItem.standard_cost_price) : (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate))
+                            const qty = e.quantity || '1'
+                            const amount = calculateItemAmount(qty, rateToFill, e.discount_percent || '0')
+                            setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value, rate: rateToFill, quantity: qty, amount } : x))
+                          }
+                        }}
+                      >
+                        <option value="">Select Item...</option>
+                        <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Item (Syncs to Tally)...</option>
+                        {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
+                      </select>
 
-                    <button 
-                      type="button" 
-                      onClick={() => openQuickItemModal('inventory', e.id)} 
-                      title="Create New Stock Item"
-                      className="px-2.5 h-10 bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 hover:text-emerald-600 text-slate-500 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> New
-                    </button>
-                  </div>
+                      <button 
+                        type="button" 
+                        onClick={() => openQuickItemModal('inventory', e.id)} 
+                        title="Create New Stock Item"
+                        className="px-2.5 h-10 bg-slate-100 dark:bg-slate-800 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 hover:text-emerald-600 text-slate-500 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> New
+                      </button>
+                    </div>
 
-                  <input 
-                    type="number" 
-                    className="w-20 h-10 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" 
-                    placeholder="Qty" 
-                    value={e.quantity} 
-                    onChange={evt => {
-                      const qty = evt.target.value
-                      const amount = calculateItemAmount(qty, e.rate, e.discount_percent || '0')
-                      setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, quantity: qty, amount } : x))
-                    }} 
-                  />
-                  <input 
-                    type="number" 
-                    className="w-24 h-10 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" 
-                    placeholder="Rate" 
-                    value={e.rate} 
-                    onChange={evt => {
-                      const rate = evt.target.value
-                      const amount = calculateItemAmount(e.quantity, rate, e.discount_percent || '0')
-                      setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, rate, amount } : x))
-                    }} 
-                  />
-                  <div className="relative w-20">
                     <input 
                       type="number" 
-                      step="any"
-                      min="0"
-                      max="100"
-                      className="w-full h-10 pl-2.5 pr-6 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
-                      placeholder="Disc" 
-                      value={e.discount_percent || ''} 
+                      className="w-20 h-10 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      placeholder="Qty" 
+                      value={e.quantity} 
                       onChange={evt => {
-                        const disc = evt.target.value
-                        const amount = calculateItemAmount(e.quantity, e.rate, disc)
-                        setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, discount_percent: disc, amount } : x))
+                        const qty = evt.target.value
+                        const amount = calculateItemAmount(qty, e.rate, e.discount_percent || '0')
+                        setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, quantity: qty, amount } : x))
                       }} 
                     />
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">%</span>
+                    <input 
+                      type="number" 
+                      className="w-24 h-10 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      placeholder="Rate" 
+                      value={e.rate} 
+                      onChange={evt => {
+                        const rate = evt.target.value
+                        const amount = calculateItemAmount(e.quantity, rate, e.discount_percent || '0')
+                        setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, rate, amount } : x))
+                      }} 
+                    />
+                    <div className="relative w-20">
+                      <input 
+                        type="number" 
+                        step="any"
+                        min="0"
+                        max="100"
+                        className="w-full h-10 pl-2.5 pr-6 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        placeholder="Disc" 
+                        value={e.discount_percent || ''} 
+                        onChange={evt => {
+                          const disc = evt.target.value
+                          const amount = calculateItemAmount(e.quantity, e.rate, disc)
+                          setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, discount_percent: disc, amount } : x))
+                        }} 
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">%</span>
+                    </div>
+                    <input type="number" className="w-28 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-slate-50 dark:bg-slate-800 font-semibold" placeholder="Amount" value={e.amount} readOnly />
+                    <button onClick={() => removeInventoryEntry(e.id)} className="p-2 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer"><Trash2 className="w-4 h-4" /></button>
                   </div>
-                  <input type="number" className="w-28 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-slate-50 dark:bg-slate-800 font-semibold" placeholder="Amount" value={e.amount} readOnly />
-                  <button onClick={() => removeInventoryEntry(e.id)} className="p-2 text-slate-400 hover:text-rose-500 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+
+                  {/* Mobile Card Layout */}
+                  <div className="sm:hidden space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-slate-500 uppercase">Item #{idx + 1}</span>
+                      <button 
+                        onClick={() => removeInventoryEntry(e.id)} 
+                        className="text-xs text-rose-500 hover:text-rose-600 font-semibold flex items-center gap-1 p-1 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" /> Remove
+                      </button>
+                    </div>
+
+                    <div className="flex gap-1.5">
+                      <select 
+                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        value={e.stock_item_id} 
+                        onChange={evt => {
+                          if (evt.target.value === '__create_new__') {
+                            openQuickItemModal('inventory', e.id)
+                          } else {
+                            const chosenItem = stockItems.find(si => String(si.stock_item_id) === evt.target.value)
+                            const rateToFill = isInvoiceView && parentType.toLowerCase() === 'sales'
+                              ? (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate)
+                              : (chosenItem?.standard_cost_price ? String(chosenItem.standard_cost_price) : (chosenItem?.standard_selling_price ? String(chosenItem.standard_selling_price) : e.rate))
+                            const qty = e.quantity || '1'
+                            const amount = calculateItemAmount(qty, rateToFill, e.discount_percent || '0')
+                            setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value, rate: rateToFill, quantity: qty, amount } : x))
+                          }
+                        }}
+                      >
+                        <option value="">Select Item...</option>
+                        <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Item...</option>
+                        {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
+                      </select>
+                      <button 
+                        type="button" 
+                        onClick={() => openQuickItemModal('inventory', e.id)} 
+                        className="px-2.5 h-10 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold shrink-0"
+                      >
+                        + New
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Qty</label>
+                        <input 
+                          type="number" 
+                          className="w-full h-9 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                          placeholder="Qty" 
+                          value={e.quantity} 
+                          onChange={evt => {
+                            const qty = evt.target.value
+                            const amount = calculateItemAmount(qty, e.rate, e.discount_percent || '0')
+                            setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, quantity: qty, amount } : x))
+                          }} 
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Rate (₹)</label>
+                        <input 
+                          type="number" 
+                          className="w-full h-9 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                          placeholder="Rate" 
+                          value={e.rate} 
+                          onChange={evt => {
+                            const rate = evt.target.value
+                            const amount = calculateItemAmount(e.quantity, rate, e.discount_percent || '0')
+                            setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, rate, amount } : x))
+                          }} 
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Disc %</label>
+                        <input 
+                          type="number" 
+                          step="any"
+                          min="0"
+                          max="100"
+                          className="w-full h-9 px-2.5 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                          placeholder="0%" 
+                          value={e.discount_percent || ''} 
+                          onChange={evt => {
+                            const disc = evt.target.value
+                            const amount = calculateItemAmount(e.quantity, e.rate, disc)
+                            setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, discount_percent: disc, amount } : x))
+                          }} 
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-200 dark:border-slate-700">
+                      <span className="text-xs font-bold text-slate-500">Item Total:</span>
+                      <span className="text-sm font-black text-slate-900 dark:text-white">₹{parseFloat(e.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    </div>
+                  </div>
                 </div>
               ))}
               <button onClick={addInventoryEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Item</button>
@@ -1365,10 +1563,10 @@ export default function VoucherFormModal({
           )}
 
           {isStockJournal && (
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-slate-800 dark:text-slate-200">Source (Consumption)</h3>
+                  <h3 className="font-bold text-sm sm:text-base text-slate-800 dark:text-slate-200">Source (Consumption)</h3>
                   <button 
                     type="button" 
                     onClick={() => openQuickItemModal('source', 'new')} 
@@ -1406,7 +1604,7 @@ export default function VoucherFormModal({
               </div>
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-slate-800 dark:text-slate-200">Destination (Production)</h3>
+                  <h3 className="font-bold text-sm sm:text-base text-slate-800 dark:text-slate-200">Destination (Production)</h3>
                   <button 
                     type="button" 
                     onClick={() => openQuickItemModal('dest', 'new')} 
@@ -1446,33 +1644,53 @@ export default function VoucherFormModal({
           )}
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Narration</label>
+            <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Narration</label>
             <textarea className="w-full p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm min-h-[80px]" placeholder="Being..." value={narration} onChange={e => setNarration(e.target.value)} />
           </div>
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 rounded-b-2xl">
+        <div className="p-4 sm:p-6 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-50 dark:bg-slate-800/50 rounded-b-2xl shrink-0">
           {isAccountingView ? (
-             <div className="text-sm font-medium text-slate-600 dark:text-slate-300 flex items-center gap-4">
-               <span>Total Debits: <strong className="text-slate-900 dark:text-white">₹{totals.debits.toFixed(2)}</strong></span>
-               <span>Total Credits: <strong className={cn(totals.isBalanced ? "text-slate-900 dark:text-white" : "text-rose-500 font-bold")}>₹{totals.credits.toFixed(2)}</strong></span>
+             <div className="text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 flex items-center justify-between sm:justify-start gap-3 sm:gap-4 flex-wrap">
+               <span>Total Dr: <strong className="text-slate-900 dark:text-white">₹{totals.debits.toFixed(2)}</strong></span>
+               <span>Total Cr: <strong className={cn(totals.isBalanced ? "text-slate-900 dark:text-white" : "text-rose-500 font-bold")}>₹{totals.credits.toFixed(2)}</strong></span>
                {!totals.isBalanced && (
-                 <span className="text-xs bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 px-2 py-0.5 rounded font-bold">
-                   Unbalanced (Diff: ₹{Math.abs(totals.debits - totals.credits).toFixed(2)})
+                 <span className="text-[10px] sm:text-xs bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300 px-2 py-0.5 rounded font-bold">
+                   Diff: ₹{Math.abs(totals.debits - totals.credits).toFixed(2)}
                  </span>
                )}
              </div>
-          ) : <div></div>}
-          <div className="flex items-center gap-3">
-            <button onClick={onClose} className="px-5 py-2.5 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-colors">Cancel</button>
+          ) : (
+            isInvoiceView ? (
+              <div className="text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 flex items-center justify-between sm:justify-start gap-2">
+                <span>Invoice Total:</span>
+                <span className="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400">
+                  ₹{inventoryEntries.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            ) : <div></div>
+          )}
+          <div className="flex items-center gap-2 sm:gap-3">
             <button 
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setValidationError(null)
+                onClose()
+              }} 
+              className="flex-1 sm:flex-initial px-4 sm:px-5 py-2.5 text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-colors text-center cursor-pointer active:scale-95"
+            >
+              Cancel
+            </button>
+            <button 
+              type="button"
               onClick={handleSave} 
               disabled={isSaving} 
-              className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2 cursor-pointer"
+              className="flex-1 sm:flex-initial px-4 sm:px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
             >
               {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-              {editVoucher ? 'Save Changes (Sync to Tally)' : 'Save Voucher'}
+              {editVoucher ? 'Save Changes' : 'Save Voucher'}
             </button>
           </div>
         </div>
@@ -1637,7 +1855,7 @@ export default function VoucherFormModal({
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div className="min-w-0">
                     <div className="flex items-center justify-between mb-1.5 gap-1">
                       <label className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate">Base Unit (UOM) *</label>
@@ -1685,7 +1903,7 @@ export default function VoucherFormModal({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div className="min-w-0">
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">HSN / SAC Code</label>
                     <input 
@@ -1713,7 +1931,7 @@ export default function VoucherFormModal({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div className="min-w-0">
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">Selling Rate (₹)</label>
                     <input 
@@ -1737,7 +1955,7 @@ export default function VoucherFormModal({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 pt-1 border-t border-slate-100 dark:border-slate-800">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 pt-1 border-t border-slate-100 dark:border-slate-800">
                   <div className="min-w-0">
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 truncate">Opening Qty</label>
                     <input 
