@@ -40,6 +40,12 @@ import {
   type LucideIcon,
   RefreshCw,
   AlertTriangle,
+  Clock,
+  CreditCard,
+  Package,
+  Warehouse,
+  Scale,
+  Tag,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useState, useEffect } from 'react'
@@ -97,7 +103,8 @@ export function GlobalHeader() {
     gstin: '',
     pan: '',
     books_begin_date: '',
-    financial_year_start: ''
+    financial_year_start: '',
+    upi_id: ''
   })
 
   if (!user) return null
@@ -122,7 +129,8 @@ export function GlobalHeader() {
         gstin: activeCompany.gstin || '',
         pan: activeCompany.pan || '',
         books_begin_date: activeCompany.books_begin_date || '',
-        financial_year_start: activeCompany.financial_year_start || ''
+        financial_year_start: activeCompany.financial_year_start || '',
+        upi_id: (activeCompany as any).features?.upi_id || (activeCompany as any).features?.upi_vpa || ''
       })
     }
     setIsEditingCompany(false)
@@ -147,7 +155,8 @@ export function GlobalHeader() {
         gstin: activeCompany.gstin || '',
         pan: activeCompany.pan || '',
         books_begin_date: activeCompany.books_begin_date || '',
-        financial_year_start: activeCompany.financial_year_start || ''
+        financial_year_start: activeCompany.financial_year_start || '',
+        upi_id: (activeCompany as any).features?.upi_id || (activeCompany as any).features?.upi_vpa || ''
       })
     }
     setEditError('')
@@ -376,8 +385,13 @@ export function GlobalHeader() {
               )}
 
               {permissions.showStocks && (
-                <CollapsibleMenu label="Inventory Masters" icon={Layers} defaultOpen={true}>
-                  <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />
+                <CollapsibleMenu label="Inventory Masters" icon={Package} defaultOpen={true}>
+                  <DrawerLink href="/masters/stock-groups" icon={FolderTree} label="Stock Group" onClick={() => setDrawerOpen(false)} />
+                  <DrawerLink href="/masters/stock-categories" icon={Tag} label="Stock Category" onClick={() => setDrawerOpen(false)} />
+                  <DrawerLink href="/stocks" icon={Package} label="Stock Item" onClick={() => setDrawerOpen(false)} />
+                  <DrawerLink href="/masters/units" icon={Scale} label="Unit" onClick={() => setDrawerOpen(false)} />
+                  <DrawerLink href="/masters/godowns" icon={Warehouse} label="Godown" onClick={() => setDrawerOpen(false)} />
+                  <DrawerLink href="/masters/price-lists" icon={Layers} label="Price Lists" onClick={() => setDrawerOpen(false)} />
                   <DrawerLink href="/inventory/bom" icon={Layers} label="BOM & Manufacturing" onClick={() => setDrawerOpen(false)} />
                 </CollapsibleMenu>
               )}
@@ -392,6 +406,9 @@ export function GlobalHeader() {
                   )}
                   {permissions.showPayments && (
                     <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {permissions.showPayments && (
+                    <DrawerLink href="/outstanding" icon={Clock} label="Debtors Aging & Reminders" onClick={() => setDrawerOpen(false)} />
                   )}
                   {permissions.showExpenses && (
                     <DrawerLink href="/expenses" icon={Wallet} label="Expenses" onClick={() => setDrawerOpen(false)} />
@@ -616,6 +633,21 @@ export function GlobalHeader() {
                   </div>
                 </div>
 
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-muted-foreground flex items-center gap-1">
+                    <CreditCard className="w-3 h-3 text-emerald-600" />
+                    Direct Merchant UPI ID / VPA
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.upi_id}
+                    onChange={e => setFormData({ ...formData, upi_id: e.target.value })}
+                    className="w-full px-3 py-1.5 rounded-xl border border-input bg-background font-mono text-xs"
+                    placeholder="e.g. 8384854172@upi or business@okhdfcbank"
+                  />
+                  <span className="text-[10px] text-muted-foreground">Used for 1-click WhatsApp payment reminders and Instant QR codes.</span>
+                </div>
+
                 <div className="pt-3 flex items-center justify-end gap-2 border-t border-border">
                   <button
                     type="button"
@@ -713,6 +745,17 @@ export function GlobalHeader() {
                       <span className="text-muted-foreground text-[11px]">FY Start: </span>
                       <span className="font-medium text-foreground">{activeCompany.financial_year_start || 'N/A'}</span>
                     </div>
+                  </div>
+                </div>
+
+                {/* Merchant UPI ID / VPA */}
+                <div className="bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-xl flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs text-foreground font-medium">
+                    <CreditCard className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Direct Merchant UPI VPA:</span>
+                    <strong className="font-mono text-emerald-600 font-bold">
+                      {(activeCompany as any).features?.upi_id || (activeCompany as any).features?.upi_vpa || 'Not configured'}
+                    </strong>
                   </div>
                 </div>
               </div>

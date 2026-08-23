@@ -202,6 +202,8 @@ class CompanyUpdate(BaseModel):
     pan: Optional[str] = None
     financial_year_start: Optional[str] = None
     books_begin_date: Optional[str] = None
+    upi_id: Optional[str] = None
+    features: Optional[dict] = None
 
 @router.put("/{company_id}/features", response_model=CompanyResponse)
 async def update_company_features(
@@ -279,6 +281,15 @@ async def update_company(
     if req.website is not None: company.website = req.website
     if req.gstin is not None: company.gstin = req.gstin
     if req.pan is not None: company.pan = req.pan
+
+    # Handle UPI ID / Features
+    current_features = dict(company.features or {})
+    if req.upi_id is not None:
+        current_features["upi_id"] = req.upi_id
+        current_features["upi_vpa"] = req.upi_id
+    if req.features is not None:
+        current_features.update(req.features)
+    company.features = current_features
 
     if req.financial_year_start:
         try:

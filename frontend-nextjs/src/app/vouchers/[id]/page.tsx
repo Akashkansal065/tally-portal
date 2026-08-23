@@ -445,7 +445,7 @@ export default function VoucherDetailPage() {
                 Amount Payable: ₹{parseFloat(String(paylink?.amount || finalTotal)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </p>
               <p className="text-xs text-muted-foreground font-mono truncate max-w-sm">
-                UPI VPA: <span className="font-bold text-indigo-600 dark:text-indigo-400">8979921514@upi</span>
+                UPI VPA: <span className="font-bold text-indigo-600 dark:text-indigo-400">{paylink?.upi_vpa || (paylink?.upi_uri ? new URLSearchParams(paylink.upi_uri.split('?')[1]).get('pa') : '') || 'Configured UPI VPA'}</span>
               </p>
             </div>
           </div>
@@ -507,7 +507,7 @@ export default function VoucherDetailPage() {
             {/* QR Code Container with High-Contrast White Surface */}
             <div className="flex flex-col items-center justify-center p-5 bg-white rounded-2xl border-2 border-indigo-100 shadow-inner">
               <QRCodeSVG
-                value={paylink.upi_uri || `upi://pay?pa=8979921514@upi&pn=Bhrama+Enterprises&am=${paylink.amount || finalTotal}&cu=INR&tn=Invoice+${voucher?.voucher_number}`}
+                value={paylink.upi_uri || ''}
                 size={200}
                 level="H"
                 includeMargin={true}
@@ -524,11 +524,14 @@ export default function VoucherDetailPage() {
               <div className="flex justify-between items-center">
                 <span className="text-muted-foreground font-medium">Payee VPA:</span>
                 <div className="flex items-center gap-1.5 font-bold font-mono">
-                  <span>8979921514@upi</span>
+                  <span>{paylink?.upi_vpa || (paylink?.upi_uri ? new URLSearchParams(paylink.upi_uri.split('?')[1]).get('pa') : '') || 'Configured UPI VPA'}</span>
                   <button
                     onClick={() => {
-                      navigator.clipboard.writeText("8979921514@upi")
-                      toast.success("UPI ID copied!")
+                      const vpaStr = paylink?.upi_vpa || (paylink?.upi_uri ? new URLSearchParams(paylink.upi_uri.split('?')[1]).get('pa') : '') || ''
+                      if (vpaStr) {
+                        navigator.clipboard.writeText(vpaStr)
+                        toast.success("UPI ID copied!")
+                      }
                     }}
                     className="p-1 hover:bg-muted rounded text-muted-foreground hover:text-foreground cursor-pointer"
                     title="Copy UPI ID"
