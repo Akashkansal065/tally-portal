@@ -190,35 +190,12 @@ async def get_outstanding_payables(
     if cached is not None:
         return cached
 
-    from app.models.tally_core import TrnBill, MstGroup, MstLedger
-
-    # Resolve Sundry Creditors group hierarchy
-    all_groups_res = await db.execute(
-        select(MstGroup).where(MstGroup.company_id == user.company_id)
-    )
-    all_groups = all_groups_res.scalars().all()
-    creditor_group_ids = set()
-    for g in all_groups:
-        if g.name.strip().lower() == "sundry creditors":
-            creditor_group_ids.add(g.group_id)
-
-    changed = True
-    while changed:
-        changed = False
-        for g in all_groups:
-            if g.parent_group_id in creditor_group_ids and g.group_id not in creditor_group_ids:
-                creditor_group_ids.add(g.group_id)
-                changed = True
+    from app.models.tally_core import TrnBill
 
     stmt = (
         select(TrnBill)
-        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
         .options(selectinload(TrnBill.party))
-        .where(
-            TrnBill.company_id == user.company_id,
-            TrnBill.status != "Settled",
-            MstLedger.group_id.in_(creditor_group_ids) if creditor_group_ids else True
-        )
+        .where(TrnBill.company_id == user.company_id, TrnBill.status != "Settled")
     )
     res = await db.execute(stmt)
     bills = res.scalars().all()
@@ -646,21 +623,62 @@ async def get_executive_analytics(
     rec_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
     pay_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
 
-    debtors_res = await db.execute(text("""
-        SELECT l.ledger_id, l.name as party_name,
-               COALESCE(SUM(e.debit_amount), 0) - COALESCE(SUM(e.credit_amount), 0) as net_balance
+    from app.models.tally_core import MstGroup
+    from datetime import timedelta
+
+    # 1. Resolve Debtors & Creditors group hierarchies
+    all_groups_res = await db.execute(
+        select(MstGroup).where(MstGroup.company_id == user.company_id)
+    )
+    all_groups = all_groups_res.scalars().all()
+    debtor_group_ids = set()
+    creditor_group_ids = set()
+
+    for g in all_groups:
+        name_lower = g.name.strip().lower()
+        if name_lower == "sundry debtors":
+            debtor_group_ids.add(g.group_id)
+        elif name_lower == "sundry creditors":
+            creditor_group_ids.add(g.group_id)
+
+    changed = True
+    while changed:
+        changed = False
+        for g in all_groups:
+            if g.parent_group_id in debtor_group_ids and g.group_id not in debtor_group_ids:
+                debtor_group_ids.add(g.group_id)
+                changed = True
+            if g.parent_group_id in creditor_group_ids and g.group_id not in creditor_group_ids:
+                creditor_group_ids.add(g.group_id)
+                changed = True
+
+    deb_ids_str = ",".join(str(gid) for gid in (debtor_group_ids or {0}))
+    cred_ids_str = ",".join(str(gid) for gid in (creditor_group_ids or {0}))
+
+    # 2. Query all Debtors with Net Balance strictly from voucher entries (Debits - Credits)
+    debtors_res = await db.execute(text(f"""
+        SELECT 
+            l.ledger_id, 
+            l.name as party_name,
+            l.credit_period_days,
+            COALESCE(SUM(e.debit_amount), 0) as total_debit,
+            COALESCE(SUM(e.credit_amount), 0) as total_credit
         FROM tally_sync.ledgers l
-        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
         LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-        WHERE g.name = 'Sundry Debtors' AND l.company_id = :comp_id
-        GROUP BY l.ledger_id, l.name
-        HAVING net_balance > 0
+        WHERE l.company_id = :comp_id AND l.group_id IN ({deb_ids_str})
+        GROUP BY l.ledger_id, l.name, l.credit_period_days
     """), {"comp_id": user.company_id})
 
     rec_details = []
     for d in debtors_res.all():
-        rem_bal = float(d.net_balance)
+        net_bal = float(d.total_debit) - float(d.total_credit)
+        if net_bal <= 0.01:
+            continue
+
+        rem_bal = net_bal
+        credit_period = d.credit_period_days or 0
+
         invoices_res = await db.execute(text("""
             SELECT v.voucher_id, v.voucher_number, v.voucher_date, v.total_amount
             FROM tally_sync.vouchers v
@@ -671,26 +689,41 @@ async def get_executive_analytics(
         """), {"ledger_id": d.ledger_id})
 
         for inv in invoices_res.all():
-            if rem_bal <= 0:
+            if rem_bal <= 0.001:
                 break
-            inv_amt = float(inv.total_amount)
+            inv_amt = float(inv.total_amount or 0.0)
             allocated = min(rem_bal, inv_amt)
-            days = (today_dt - inv.voucher_date).days if inv.voucher_date else 0
-            bucket = "0-30 Days" if days <= 30 else ("31-60 Days" if days <= 60 else ("61-90 Days" if days <= 90 else "90+ Days"))
+            if allocated <= 0:
+                continue
+
+            inv_date = inv.voucher_date
+            effective_due_date = inv_date + timedelta(days=credit_period) if inv_date else None
+            days_overdue = (today_dt - effective_due_date).days if effective_due_date else 0
+            days_overdue = max(0, days_overdue)
+
+            if days_overdue <= 30:
+                bucket = "0-30 Days"
+            elif days_overdue <= 60:
+                bucket = "31-60 Days"
+            elif days_overdue <= 90:
+                bucket = "61-90 Days"
+            else:
+                bucket = "90+ Days"
+
             rec_aging[bucket] += allocated
             rec_details.append({
                 "id": inv.voucher_id,
                 "voucher_number": inv.voucher_number,
                 "party_name": d.party_name,
                 "ledger_id": d.ledger_id,
-                "date": inv.voucher_date.isoformat() if inv.voucher_date else None,
-                "days": days,
+                "date": inv_date.isoformat() if inv_date else None,
+                "days": days_overdue,
                 "bucket": bucket,
                 "amount": allocated
             })
             rem_bal -= allocated
 
-        if rem_bal > 0:
+        if rem_bal > 0.01:
             rec_aging["90+ Days"] += rem_bal
             rec_details.append({
                 "id": 0,
@@ -703,20 +736,29 @@ async def get_executive_analytics(
                 "amount": rem_bal
             })
 
-    creditors_res = await db.execute(text("""
-        SELECT l.ledger_id,
-               COALESCE(SUM(e.credit_amount), 0) - COALESCE(SUM(e.debit_amount), 0) as net_balance
+    # 3. Query all Creditors with Net Balance strictly from voucher entries (Credits - Debits)
+    creditors_res = await db.execute(text(f"""
+        SELECT 
+            l.ledger_id, 
+            l.name as party_name,
+            l.credit_period_days,
+            COALESCE(SUM(e.debit_amount), 0) as total_debit,
+            COALESCE(SUM(e.credit_amount), 0) as total_credit
         FROM tally_sync.ledgers l
-        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
         LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-        WHERE g.name = 'Sundry Creditors' AND l.company_id = :comp_id
-        GROUP BY l.ledger_id
-        HAVING net_balance > 0
+        WHERE l.company_id = :comp_id AND l.group_id IN ({cred_ids_str})
+        GROUP BY l.ledger_id, l.name, l.credit_period_days
     """), {"comp_id": user.company_id})
 
     for c in creditors_res.all():
-        rem_bal = float(c.net_balance)
+        net_bal = float(c.total_credit) - float(c.total_debit)
+        if net_bal <= 0.01:
+            continue
+
+        rem_bal = net_bal
+        credit_period = c.credit_period_days or 0
+
         invoices_res = await db.execute(text("""
             SELECT v.voucher_date, v.total_amount
             FROM tally_sync.vouchers v
@@ -727,16 +769,31 @@ async def get_executive_analytics(
         """), {"ledger_id": c.ledger_id})
 
         for inv in invoices_res.all():
-            if rem_bal <= 0:
+            if rem_bal <= 0.001:
                 break
-            inv_amt = float(inv.total_amount)
+            inv_amt = float(inv.total_amount or 0.0)
             allocated = min(rem_bal, inv_amt)
-            days = (today_dt - inv.voucher_date).days if inv.voucher_date else 0
-            bucket = "0-30 Days" if days <= 30 else ("31-60 Days" if days <= 60 else ("61-90 Days" if days <= 90 else "90+ Days"))
+            if allocated <= 0:
+                continue
+
+            inv_date = inv.voucher_date
+            effective_due_date = inv_date + timedelta(days=credit_period) if inv_date else None
+            days_overdue = (today_dt - effective_due_date).days if effective_due_date else 0
+            days_overdue = max(0, days_overdue)
+
+            if days_overdue <= 30:
+                bucket = "0-30 Days"
+            elif days_overdue <= 60:
+                bucket = "31-60 Days"
+            elif days_overdue <= 90:
+                bucket = "61-90 Days"
+            else:
+                bucket = "90+ Days"
+
             pay_aging[bucket] += allocated
             rem_bal -= allocated
 
-        if rem_bal > 0:
+        if rem_bal > 0.01:
             pay_aging["90+ Days"] += rem_bal
 
     exp_q = await db.execute(text(f"""

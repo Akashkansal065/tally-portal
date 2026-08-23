@@ -159,9 +159,10 @@ def _build_dunning_message(
     party_name: str,
     company_name: str,
     total_due: float,
-    bills: List[TrnBill],
+    bills: List[Any],
     vpa: str,
-    dunning_level: str
+    dunning_level: str,
+    bucket_name: Optional[str] = None
 ) -> tuple[str, str]:
     params = {
         "pa": vpa,
@@ -172,35 +173,38 @@ def _build_dunning_message(
     }
     upi_uri = f"upi://pay?{urllib.parse.urlencode(params)}"
 
-    header = "⚡ *PAYMENT REMINDER*"
+    header = "*PAYMENT REMINDER*"
     if dunning_level == "URGENT":
-        header = "🚨 *URGENT OVERDUE PAYMENT NOTICE*"
+        header = "*[URGENT] OVERDUE PAYMENT NOTICE*"
     elif dunning_level == "FORMAL":
-        header = "⚠️ *OUTSTANDING PAYMENT REMINDER*"
+        header = "*OUTSTANDING PAYMENT REMINDER*"
 
+    bucket_desc = f" ({bucket_name} overdue)" if bucket_name and bucket_name.upper() not in ["ALL", "OVERDUE"] else ""
     lines = [
         f"{header} — *{company_name}*",
         "",
         f"Dear *{party_name}*,",
         f"Hope you are doing well.",
         "",
-        f"This is a reminder that you have a total outstanding balance of *₹{total_due:,.2f}* across *{len(bills)} pending bill(s)*.",
+        f"This is a reminder that you have a pending balance of *₹{total_due:,.2f}*{bucket_desc} across *{len(bills)} bill(s)*.",
         "",
-        "📋 *Pending Invoices:*"
+        "*Itemized Invoices:*"
     ]
 
     for b in bills[:5]:
-        amt = float(b.bill_amount - b.settled_amount)
-        b_ref = b.bill_reference or f"#{b.bill_id}"
-        d_str = f"Due: {b.due_date}" if b.due_date else f"Dated: {b.bill_date}"
-        lines.append(f" • *{b_ref}* ({d_str}): ₹{amt:,.2f}")
+        amt = float(getattr(b, "outstanding_amount", None) or (getattr(b, "bill_amount", 0) - getattr(b, "settled_amount", 0)))
+        b_ref = getattr(b, "bill_reference", None) or f"#{getattr(b, 'bill_id', '')}"
+        due_val = getattr(b, "due_date", None)
+        bill_val = getattr(b, "bill_date", None)
+        d_str = f"Due: {due_val}" if due_val else (f"Dated: {bill_val}" if bill_val else "")
+        lines.append(f"• *{b_ref}* ({d_str}): ₹{amt:,.2f}")
 
     if len(bills) > 5:
-        lines.append(f" • ... and {len(bills) - 5} more invoice(s)")
+        lines.append(f"• ... and {len(bills) - 5} more invoice(s)")
 
     lines.extend([
         "",
-        "💳 *Instant Direct UPI Payment:*",
+        "*Instant Direct UPI Payment:*",
         f"UPI ID: *{vpa}*",
         f"Direct Link: {upi_uri}",
         "",
@@ -233,19 +237,19 @@ async def get_aging_dashboard(
     # 2. Resolve Sundry Debtors group IDs (including sub-groups)
     #    Only DEBTORS should appear in aging — never Sundry Creditors (suppliers/vendors)
     from app.models.tally_core import MstGroup
-    debtor_group_ids = set()
+    from datetime import timedelta
+    from sqlalchemy import text
+
     all_groups_res = await db.execute(
         select(MstGroup).where(MstGroup.company_id == user.company_id)
     )
     all_groups = all_groups_res.scalars().all()
-    group_lookup = {g.group_id: g for g in all_groups}
+    debtor_group_ids = set()
 
-    # Find root "Sundry Debtors" group(s)
     for g in all_groups:
         if g.name.strip().lower() == "sundry debtors":
             debtor_group_ids.add(g.group_id)
 
-    # Recursively include child sub-groups of Sundry Debtors
     changed = True
     while changed:
         changed = False
@@ -254,22 +258,29 @@ async def get_aging_dashboard(
                 debtor_group_ids.add(g.group_id)
                 changed = True
 
-    # 3. Fetch open bills ONLY for Sundry Debtor parties
-    bills_stmt = (
-        select(TrnBill)
-        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
-        .options(selectinload(TrnBill.party))
-        .where(
-            TrnBill.company_id == user.company_id,
-            TrnBill.status != "Settled",
-            MstLedger.group_id.in_(debtor_group_ids) if debtor_group_ids else True
-        )
-        .order_by(TrnBill.bill_date.asc())
-    )
-    bills_res = await db.execute(bills_stmt)
-    bills = bills_res.scalars().all()
+    if not debtor_group_ids:
+        debtor_group_ids = {0}
 
-    # 3. Group by customer party_ledger_id
+    # 3. Query all debtors with net balance strictly from voucher entries (Debits - Credits)
+    group_ids_str = ",".join(str(gid) for gid in debtor_group_ids)
+    debtors_q = await db.execute(text(f"""
+        SELECT 
+            l.ledger_id, 
+            l.name as party_name,
+            l.mobile,
+            l.phone,
+            l.email,
+            l.credit_period_days,
+            COALESCE(SUM(e.debit_amount), 0) as total_debit,
+            COALESCE(SUM(e.credit_amount), 0) as total_credit
+        FROM tally_sync.ledgers l
+        LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
+        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+        WHERE l.company_id = :comp_id AND l.group_id IN ({group_ids_str})
+        GROUP BY l.ledger_id, l.name, l.mobile, l.phone, l.email, l.credit_period_days
+    """), {"comp_id": user.company_id})
+    debtors = debtors_q.all()
+
     today = date.today()
     party_map: dict[int, dict] = {}
 
@@ -281,92 +292,120 @@ async def get_aging_dashboard(
     bucket_61_90 = 0.0
     bucket_90_plus = 0.0
 
-    for b in bills:
-        outstanding = float(b.bill_amount - b.settled_amount)
-        if outstanding <= 0:
+    for d in debtors:
+        net_bal = float(d.total_debit) - float(d.total_credit)
+        
+        # If customer has settled or has advance credit balance, no debt to collect
+        if net_bal <= 0.01:
             continue
 
-        total_receivables += outstanding
-        party_id = b.party_ledger_id
-        party = b.party
+        net_bal = round(net_bal, 2)
+        total_receivables += net_bal
+        party_id = d.ledger_id
+        credit_period = d.credit_period_days or 0
+        rem_bal = net_bal
 
-        credit_period = getattr(party, "bill_credit_period", 0) or 0
-        effective_due_date = b.due_date
-        if not effective_due_date and b.bill_date:
-            from datetime import timedelta
-            effective_due_date = b.bill_date + timedelta(days=credit_period)
-        
-        days_overdue = (today - effective_due_date).days if effective_due_date else 0
-        days_overdue = max(0, days_overdue)
+        p_current = 0.0
+        p_1_30 = 0.0
+        p_31_60 = 0.0
+        p_61_90 = 0.0
+        p_90_plus = 0.0
+        bills_list = []
 
-        if days_overdue > 0:
-            total_overdue += outstanding
-        else:
-            total_current += outstanding
+        # Fetch customer's sales vouchers in descending order (FIFO backwards from most recent)
+        sales_q = await db.execute(text("""
+            SELECT v.voucher_id, v.voucher_number, v.voucher_date, v.total_amount
+            FROM tally_sync.vouchers v
+            JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+            JOIN tally_sync.voucher_entries e ON v.voucher_id = e.voucher_id
+            WHERE e.ledger_id = :ledger_id AND vt.name = 'Sales' 
+              AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+            ORDER BY v.voucher_date DESC, v.voucher_id DESC
+        """), {"ledger_id": party_id})
+        sales_invoices = sales_q.all()
 
-        b_current = 0.0
-        b_1_30 = 0.0
-        b_31_60 = 0.0
-        b_61_90 = 0.0
-        b_90_plus = 0.0
+        for inv in sales_invoices:
+            if rem_bal <= 0.001:
+                break
+            inv_amt = float(inv.total_amount or 0.0)
+            allocated = min(rem_bal, inv_amt)
+            if allocated <= 0:
+                continue
 
-        if days_overdue == 0:
-            b_current = outstanding
-        elif days_overdue <= 30:
-            b_1_30 = outstanding
-            bucket_0_30 += outstanding
-        elif days_overdue <= 60:
-            b_31_60 = outstanding
-            bucket_31_60 += outstanding
-        elif days_overdue <= 90:
-            b_61_90 = outstanding
-            bucket_61_90 += outstanding
-        else:
-            b_90_plus = outstanding
-            bucket_90_plus += outstanding
+            inv_date = inv.voucher_date
+            effective_due_date = inv_date + timedelta(days=credit_period) if inv_date else None
+            days_overdue = (today - effective_due_date).days if effective_due_date else 0
+            days_overdue = max(0, days_overdue)
 
-        bill_item = CustomerAgingBill(
-            bill_id=b.bill_id,
-            voucher_id=b.voucher_id,
-            bill_reference=b.bill_reference or f"BILL-{b.bill_id}",
-            bill_date=b.bill_date.isoformat() if b.bill_date else "",
-            due_date=effective_due_date.isoformat() if effective_due_date else None,
-            bill_amount=float(b.bill_amount),
-            settled_amount=float(b.settled_amount),
-            outstanding_amount=outstanding,
-            days_overdue=days_overdue,
-            status=b.status
-        )
+            if days_overdue == 0:
+                p_current += allocated
+                total_current += allocated
+            elif days_overdue <= 30:
+                p_1_30 += allocated
+                bucket_0_30 += allocated
+                total_overdue += allocated
+            elif days_overdue <= 60:
+                p_31_60 += allocated
+                bucket_31_60 += allocated
+                total_overdue += allocated
+            elif days_overdue <= 90:
+                p_61_90 += allocated
+                bucket_61_90 += allocated
+                total_overdue += allocated
+            else:
+                p_90_plus += allocated
+                bucket_90_plus += allocated
+                total_overdue += allocated
 
-        if party_id not in party_map:
-            party_map[party_id] = {
-                "party_ledger_id": party_id,
-                "party_name": party.name if party else f"Party #{party_id}",
-                "phone": getattr(party, "mobile", None) or getattr(party, "phone", None),
-                "email": getattr(party, "email", None),
-                "credit_period_days": credit_period,
-                "total_outstanding": 0.0,
-                "current_not_due": 0.0,
-                "days_1_30": 0.0,
-                "days_31_60": 0.0,
-                "days_61_90": 0.0,
-                "days_90_plus": 0.0,
-                "open_bills_count": 0,
-                "overdue_bills_count": 0,
-                "bills": []
-            }
+            bill_item = CustomerAgingBill(
+                bill_id=inv.voucher_id,
+                voucher_id=inv.voucher_id,
+                bill_reference=inv.voucher_number or f"INV-{inv.voucher_id}",
+                bill_date=inv_date.isoformat() if inv_date else "",
+                due_date=effective_due_date.isoformat() if effective_due_date else None,
+                bill_amount=inv_amt,
+                settled_amount=round(inv_amt - allocated, 2),
+                outstanding_amount=round(allocated, 2),
+                days_overdue=days_overdue,
+                status="Partially Settled" if allocated < inv_amt else "Open"
+            )
+            bills_list.append(bill_item)
+            rem_bal -= allocated
 
-        p = party_map[party_id]
-        p["total_outstanding"] += outstanding
-        p["current_not_due"] += b_current
-        p["days_1_30"] += b_1_30
-        p["days_31_60"] += b_31_60
-        p["days_61_90"] += b_61_90
-        p["days_90_plus"] += b_90_plus
-        p["open_bills_count"] += 1
-        if days_overdue > 0:
-            p["overdue_bills_count"] += 1
-        p["bills"].append(bill_item)
+        # If opening balance or historic pre-sync invoices remain unpaid
+        if rem_bal > 0.01:
+            p_90_plus += rem_bal
+            bucket_90_plus += rem_bal
+            total_overdue += rem_bal
+            bills_list.append(CustomerAgingBill(
+                bill_id=0,
+                voucher_id=None,
+                bill_reference="Opening / Historic Balance",
+                bill_date="",
+                due_date=None,
+                bill_amount=round(rem_bal, 2),
+                settled_amount=0.0,
+                outstanding_amount=round(rem_bal, 2),
+                days_overdue=91,
+                status="Open"
+            ))
+
+        party_map[party_id] = {
+            "party_ledger_id": party_id,
+            "party_name": d.party_name,
+            "phone": d.mobile or d.phone,
+            "email": d.email,
+            "credit_period_days": credit_period,
+            "total_outstanding": net_bal,
+            "current_not_due": round(p_current, 2),
+            "days_1_30": round(p_1_30, 2),
+            "days_31_60": round(p_31_60, 2),
+            "days_61_90": round(p_61_90, 2),
+            "days_90_plus": round(p_90_plus, 2),
+            "open_bills_count": len(bills_list),
+            "overdue_bills_count": sum(1 for b in bills_list if b.days_overdue > 0),
+            "bills": bills_list
+        }
 
     customers = []
     overdue_debtors_count = 0
@@ -439,27 +478,54 @@ async def generate_whatsapp_reminder(
         company_upi = company.features.get("upi_id") or company.features.get("upi_vpa")
     vpa = company_upi or settings.DEFAULT_UPI_VPA or ""
 
-    party_res = await db.execute(
-        select(MstLedger).where(MstLedger.ledger_id == req.party_ledger_id, MstLedger.company_id == user.company_id)
+    aging_data = await get_aging_dashboard(user=user, db=db)
+    cust = next((c for c in aging_data.customers if c.party_ledger_id == req.party_ledger_id), None)
+    if not cust:
+        # Fallback in case party is not found in debtor aging
+        party_res = await db.execute(
+            select(MstLedger).where(MstLedger.ledger_id == req.party_ledger_id, MstLedger.company_id == user.company_id)
+        )
+        party = party_res.scalars().first()
+        if not party:
+            raise HTTPException(status_code=404, detail="Party ledger not found.")
+        raise HTTPException(status_code=400, detail="Party has no outstanding balance to collect.")
+
+    bucket_filter = (req.aging_bucket or "ALL").upper().strip()
+    if bucket_filter in ["90+", "90", "90+ DAYS", "OVERDUE > 90 DAYS"]:
+        target_bills = [b for b in cust.bills if b.days_overdue > 90]
+        total_due = cust.days_90_plus or sum(b.outstanding_amount for b in target_bills)
+    elif bucket_filter in ["61-90", "61-90 DAYS", "60-90"]:
+        target_bills = [b for b in cust.bills if 60 < b.days_overdue <= 90]
+        total_due = cust.days_61_90 or sum(b.outstanding_amount for b in target_bills)
+    elif bucket_filter in ["31-60", "31-60 DAYS", "30-60"]:
+        target_bills = [b for b in cust.bills if 30 < b.days_overdue <= 60]
+        total_due = cust.days_31_60 or sum(b.outstanding_amount for b in target_bills)
+    elif bucket_filter in ["0-30", "0-30 DAYS", "1-30", "1-30 DAYS"]:
+        target_bills = [b for b in cust.bills if b.days_overdue <= 30]
+        total_due = (cust.current_not_due + cust.days_1_30) or sum(b.outstanding_amount for b in target_bills)
+    elif bucket_filter == "OVERDUE":
+        target_bills = [b for b in cust.bills if b.days_overdue > 0]
+        total_due = sum(b.outstanding_amount for b in target_bills)
+    else:
+        target_bills = cust.bills
+        total_due = cust.total_outstanding
+
+    bills = target_bills if target_bills else cust.bills
+    if not target_bills:
+        total_due = cust.total_outstanding
+
+    dunning = req.dunning_level.upper() if req.dunning_level != "auto" else cust.dunning_level
+    msg_text, upi_uri = _build_dunning_message(
+        cust.party_name,
+        company_name,
+        total_due,
+        bills,
+        vpa,
+        dunning,
+        bucket_name=bucket_filter if bucket_filter != "ALL" else None
     )
-    party = party_res.scalars().first()
-    if not party:
-        raise HTTPException(status_code=404, detail="Party ledger not found.")
 
-    bills_res = await db.execute(
-        select(TrnBill).where(
-            TrnBill.party_ledger_id == req.party_ledger_id,
-            TrnBill.company_id == user.company_id,
-            TrnBill.status != "Settled"
-        ).order_by(TrnBill.bill_date.asc())
-    )
-    bills = bills_res.scalars().all()
-    total_due = sum(float(b.bill_amount - b.settled_amount) for b in bills)
-
-    dunning = req.dunning_level.upper() if req.dunning_level != "auto" else "FORMAL"
-    msg_text, upi_uri = _build_dunning_message(party.name, company_name, total_due, bills, vpa, dunning)
-
-    raw_phone = getattr(party, "mobile", None) or getattr(party, "phone", None) or ""
+    raw_phone = cust.phone or ""
     clean_phone = "".join(filter(str.isdigit, raw_phone))
     if len(clean_phone) == 10:
         clean_phone = "91" + clean_phone
@@ -467,10 +533,10 @@ async def generate_whatsapp_reminder(
     whatsapp_url = f"https://wa.me/{clean_phone}?text={urllib.parse.quote(msg_text)}" if clean_phone else f"https://wa.me/?text={urllib.parse.quote(msg_text)}"
 
     return ReminderMessageResponse(
-        party_ledger_id=party.ledger_id,
-        party_name=party.name,
-        phone=party.mobile or party.phone,
-        email=party.email,
+        party_ledger_id=cust.party_ledger_id,
+        party_name=cust.party_name,
+        phone=cust.phone,
+        email=cust.email,
         total_due=round(total_due, 2),
         overdue_bills_count=len(bills),
         dunning_level=dunning,

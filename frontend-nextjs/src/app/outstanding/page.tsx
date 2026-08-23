@@ -115,6 +115,7 @@ export default function DebtorsAgingPage() {
   const [previewData, setPreviewData] = useState<ReminderPreview | null>(null)
   const [isGeneratingReminder, setIsGeneratingReminder] = useState(false)
   const [selectedDunningLevel, setSelectedDunningLevel] = useState<string>('auto')
+  const [reminderBucket, setReminderBucket] = useState<string>('ALL')
   const [isCopied, setIsCopied] = useState(false)
 
   // Bulk Reminders Modal State
@@ -167,10 +168,11 @@ export default function DebtorsAgingPage() {
     })
   }
 
-  const handleOpenReminder = async (partyId: number, level: string = 'auto') => {
+  const handleOpenReminder = async (partyId: number, level: string = 'auto', bucket: string = selectedBucket) => {
     if (!token) return
     setIsGeneratingReminder(true)
     setSelectedDunningLevel(level)
+    setReminderBucket(bucket)
     try {
       const res = await fetch(`${API_BASE}/payment/reminders/generate-whatsapp`, {
         method: 'POST',
@@ -178,6 +180,7 @@ export default function DebtorsAgingPage() {
         body: JSON.stringify({
           party_ledger_id: partyId,
           dunning_level: level,
+          aging_bucket: bucket,
           channel: 'whatsapp'
         })
       })
@@ -598,27 +601,48 @@ export default function DebtorsAgingPage() {
                       </div>
 
                       {/* Mobile Bill Details Dropdown */}
-                      {isExpanded && (
-                        <div className="pt-2 border-t border-border space-y-2 animate-in fade-in">
-                          <h5 className="text-[11px] font-extrabold uppercase text-muted-foreground">Itemized Bills</h5>
-                          {cust.bills.map((bill) => (
-                            <div key={bill.bill_id} className="p-2.5 bg-muted/40 rounded-xl border border-border/60 space-y-1 text-xs">
-                              <div className="flex justify-between items-center">
-                                <span className="font-mono font-bold text-foreground">{bill.bill_reference}</span>
-                                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                                  {formatCurrency(bill.outstanding_amount)}
+                      {isExpanded && (() => {
+                        const displayBills = cust.bills.filter((b) => {
+                          if (selectedBucket === 'ALL') return true
+                          if (selectedBucket === 'OVERDUE') return b.days_overdue > 0
+                          if (selectedBucket === '0-30') return b.days_overdue <= 30
+                          if (selectedBucket === '31-60') return b.days_overdue > 30 && b.days_overdue <= 60
+                          if (selectedBucket === '61-90') return b.days_overdue > 60 && b.days_overdue <= 90
+                          if (selectedBucket === '90+') return b.days_overdue > 90
+                          return true
+                        })
+
+                        return (
+                          <div className="pt-2 border-t border-border space-y-2 animate-in fade-in">
+                            <div className="flex items-center justify-between">
+                              <h5 className="text-[11px] font-extrabold uppercase text-muted-foreground">
+                                Itemized Bills ({displayBills.length}{selectedBucket !== 'ALL' ? ` of ${cust.bills.length}` : ''})
+                              </h5>
+                              {selectedBucket !== 'ALL' && (
+                                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                  {selectedBucket}
                                 </span>
-                              </div>
-                              <div className="flex justify-between items-center text-[10px] text-muted-foreground">
-                                <span>Date: {formatDate(bill.bill_date)}</span>
-                                <span className={cn("font-bold font-mono", bill.days_overdue > 0 ? "text-rose-600" : "text-emerald-600")}>
-                                  {bill.days_overdue > 0 ? `${bill.days_overdue}d Overdue` : 'Current'}
-                                </span>
-                              </div>
+                              )}
                             </div>
-                          ))}
-                        </div>
-                      )}
+                            {displayBills.map((bill) => (
+                              <div key={bill.bill_id} className="p-2.5 bg-muted/40 rounded-xl border border-border/60 space-y-1 text-xs">
+                                <div className="flex justify-between items-center">
+                                  <span className="font-mono font-bold text-foreground">{bill.bill_reference}</span>
+                                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                    {formatCurrency(bill.outstanding_amount)}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between items-center text-[10px] text-muted-foreground">
+                                  <span>Date: {formatDate(bill.bill_date)}</span>
+                                  <span className={cn("font-bold font-mono", bill.days_overdue > 0 ? "text-rose-600" : "text-emerald-600")}>
+                                    {bill.days_overdue > 0 ? `${bill.days_overdue}d Overdue` : 'Current'}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )
+                      })()}
                     </div>
                   )
                 })}
@@ -778,6 +802,16 @@ export default function DebtorsAgingPage() {
           const cust = data?.customers.find((c) => c.party_ledger_id === partyId)
           if (!cust) return null
 
+          const displayBills = cust.bills.filter((b) => {
+            if (selectedBucket === 'ALL') return true
+            if (selectedBucket === 'OVERDUE') return b.days_overdue > 0
+            if (selectedBucket === '0-30') return b.days_overdue <= 30
+            if (selectedBucket === '31-60') return b.days_overdue > 30 && b.days_overdue <= 60
+            if (selectedBucket === '61-90') return b.days_overdue > 60 && b.days_overdue <= 90
+            if (selectedBucket === '90+') return b.days_overdue > 90
+            return true
+          })
+
           return (
             <div
               key={partyId}
@@ -786,8 +820,15 @@ export default function DebtorsAgingPage() {
               <div className="flex items-center justify-between border-b border-border/80 pb-3">
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <h4 className="font-extrabold text-xs sm:text-sm text-foreground leading-tight">
-                    Bill-by-Bill Breakdown for <span className="text-emerald-600 underline">{cust.party_name}</span> ({cust.bills.length} Invoices)
+                  <h4 className="font-extrabold text-xs sm:text-sm text-foreground leading-tight flex items-center gap-2 flex-wrap">
+                    <span>
+                      Bill-by-Bill Breakdown for <span className="text-emerald-600 underline">{cust.party_name}</span> ({displayBills.length}{selectedBucket !== 'ALL' ? ` of ${cust.bills.length}` : ''} Invoices)
+                    </span>
+                    {selectedBucket !== 'ALL' && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                        {selectedBucket} Bucket
+                      </span>
+                    )}
                   </h4>
                 </div>
                 <button
@@ -800,7 +841,7 @@ export default function DebtorsAgingPage() {
 
               {/* Mobile Invoice Card View (< 768px) */}
               <div className="block md:hidden space-y-2.5">
-                {cust.bills.map((bill) => (
+                {displayBills.map((bill) => (
                   <div
                     key={bill.bill_id}
                     className="p-3 bg-muted/40 rounded-xl border border-border/70 space-y-2 text-xs"
@@ -876,7 +917,7 @@ export default function DebtorsAgingPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
-                    {cust.bills.map((bill) => (
+                    {displayBills.map((bill) => (
                       <tr key={bill.bill_id} className="hover:bg-muted/30">
                         <td className="py-3 px-4 font-mono font-bold text-foreground">
                           {bill.bill_reference}
@@ -946,6 +987,44 @@ export default function DebtorsAgingPage() {
               </button>
             </div>
 
+            {/* Reminder Scope Selector */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                  Reminder Scope
+                </label>
+                <span className="text-[10px] text-muted-foreground font-mono">
+                  {reminderBucket === 'ALL' ? 'All Invoices' : `${reminderBucket} Bucket`}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenReminder(previewData.party_ledger_id, selectedDunningLevel, selectedBucket !== 'ALL' ? selectedBucket : 'OVERDUE')}
+                  className={cn(
+                    "py-2 px-3 rounded-xl text-xs font-bold transition-all border cursor-pointer text-center",
+                    reminderBucket !== 'ALL'
+                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 shadow-xs"
+                      : "bg-muted/40 text-muted-foreground border-border hover:bg-muted"
+                  )}
+                >
+                  <span>🎯 {selectedBucket !== 'ALL' ? selectedBucket : 'Overdue'} Bucket Only</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenReminder(previewData.party_ledger_id, selectedDunningLevel, 'ALL')}
+                  className={cn(
+                    "py-2 px-3 rounded-xl text-xs font-bold transition-all border cursor-pointer text-center",
+                    reminderBucket === 'ALL'
+                      ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                      : "bg-muted/40 text-muted-foreground border-border hover:bg-muted"
+                  )}
+                >
+                  <span>📑 All Outstanding Bills</span>
+                </button>
+              </div>
+            </div>
+
             {/* Dunning Severity Selector */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
@@ -959,7 +1038,7 @@ export default function DebtorsAgingPage() {
                 ].map((lvl) => (
                   <button
                     key={lvl.id}
-                    onClick={() => handleOpenReminder(previewData.party_ledger_id, lvl.id)}
+                    onClick={() => handleOpenReminder(previewData.party_ledger_id, lvl.id, reminderBucket)}
                     className={cn(
                       "py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer",
                       selectedDunningLevel === lvl.id

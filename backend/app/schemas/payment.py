@@ -100,6 +100,7 @@ class AgingDashboardResponse(BaseModel):
 class ReminderMessageRequest(BaseModel):
     party_ledger_id: int
     dunning_level: Optional[str] = "auto"  # "auto", "gentle", "formal", "urgent"
+    aging_bucket: Optional[str] = "ALL"    # "ALL", "OVERDUE", "0-30", "31-60", "61-90", "90+"
     channel: Optional[str] = "whatsapp"   # "whatsapp", "email", "sms"
 
 class ReminderMessageResponse(BaseModel):
