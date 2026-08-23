@@ -2928,6 +2928,11 @@ async def run_once_sync_background(user_id: int):
                         if company.address_line2:
                             addr_list += f"<ADDRESS>{company.address_line2}</ADDRESS>"
 
+                        # Build books/FY date strings for XML
+                        books_from_xml = company.books_begin_date.strftime('%Y%m%d') if company.books_begin_date else ''
+                        fy_start_xml = company.financial_year_start.strftime('%Y%m%d') if company.financial_year_start else ''
+                        fy_end_xml = company.financial_year_end.strftime('%Y%m%d') if company.financial_year_end else ''
+
                         xml_envelope = f"""<ENVELOPE>
 <HEADER>
 <TALLYREQUEST>Import Data</TALLYREQUEST>
@@ -2947,10 +2952,17 @@ async def run_once_sync_background(user_id: int):
 <STATENAME>{company.state or ''}</STATENAME>
 <COUNTRYNAME>{company.country or ''}</COUNTRYNAME>
 <PINCODE>{company.pincode or ''}</PINCODE>
-<BASICCOMPANYPHONE>{company.telephone or ''}</BASICCOMPANYPHONE>
-<BASICCOMPANYMOBILE>{company.mobile or ''}</BASICCOMPANYMOBILE>
-<BASICCOMPANYEMAIL>{company.email or ''}</BASICCOMPANYEMAIL>
+<PHONENUMBER>{company.telephone or ''}</PHONENUMBER>
+<MOBILENUMBERS.LIST><MOBILENUMBERS>{company.mobile or ''}</MOBILENUMBERS></MOBILENUMBERS.LIST>
+<EMAIL>{company.email or ''}</EMAIL>
 <WEBSITE>{company.website or ''}</WEBSITE>
+<INCOMETAXNUMBER>{company.pan or ''}</INCOMETAXNUMBER>
+<GSTREGISTRATIONNUMBER>{company.gstin or ''}</GSTREGISTRATIONNUMBER>
+<BOOKSFROM>{books_from_xml}</BOOKSFROM>
+<STARTINGFROM>{fy_start_xml}</STARTINGFROM>
+<ENDINGAT>{fy_end_xml}</ENDINGAT>
+<CURRENCYNAME>{company.base_currency or 'INR'}</CURRENCYNAME>
+<GUID>{company.tally_guid or ''}</GUID>
 <ADDRESS.LIST>
 {addr_list}
 </ADDRESS.LIST>
