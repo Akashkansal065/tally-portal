@@ -179,6 +179,7 @@ class TallyClient:
         sv_cmp = f"<SVCURRENTCOMPANY>{company_name}</SVCURRENTCOMPANY>" if company_name else ""
         
         collections = [
+            ("Company", "Company", "NAME,GUID,COMPANYNUMBER,STARTINGFROM,BOOKSFROM,ADDRESS.LIST,BASICCOMPANYADDRESS.LIST,STATENAME,COUNTRYNAME,PINCODE,LEDGERPHONE,TELEPHONENUMBER,BASICCOMPANYPHONE,MOBILENUMBER,BASICCOMPANYMOBILE,EMAIL,EMAILID,BASICCOMPANYEMAIL,WEBSITE,BASICCOMPANYWEBSITE,GSTREGISTRATIONNUMBER,INCOMETAXNUMBER,CURRENCYSYMBOL,FORMALNAME", False),
             ("Groups", "Group", "NAME,PARENT,ALTERID", True),
             ("Ledgers", "Ledger", "NAME,PARENT,ALTERID,OPENINGBALANCE,CLOSINGBALANCE,ADDRESS.LIST,STATENAME,PINCODE,LEDGERPHONE,INCOMETAXNUMBER,PARTYGSTIN,ISBILLWISEON", True),
             ("VoucherTypes", "VoucherType", "NAME,PARENT,ALTERID,NUMBERINGMETHOD,USEZEROENTRIES,ISOPTIONAL,COMMONNARRATION,MULTINARRATION,PRINTAFTERSAVE", True),
@@ -191,8 +192,8 @@ class TallyClient:
         
         results = []
         for label, obj_type, fetch_fields, supports_alter_filter in collections:
-            # If incremental sync, only query collections that support ALTERID filtering or if full sync
-            if min_alter_id > 0 and not supports_alter_filter:
+            # If incremental sync, only query collections that support ALTERID filtering, unless it's Company
+            if min_alter_id > 0 and not supports_alter_filter and obj_type != "Company":
                 continue
 
             date_filters = ""

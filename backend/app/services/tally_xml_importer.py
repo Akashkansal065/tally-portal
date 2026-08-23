@@ -439,10 +439,10 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
 
                 # Extract address
                 addr_lines = []
-                for addr_elem in company_node.findall(".//ADDRESS"):
+                for addr_elem in (company_node.findall(".//ADDRESS") + company_node.findall(".//BASICCOMPANYADDRESS") + company_node.findall(".//ADDRESS.LIST/*") + company_node.findall(".//BASICCOMPANYADDRESS.LIST/*")):
                     if addr_elem.text and addr_elem.text.strip():
                         txt = addr_elem.text.strip()
-                        if txt.lower() not in ("none", "null", "n/a", "na", ""):
+                        if txt.lower() not in ("none", "null", "n/a", "na", "") and txt not in addr_lines:
                             addr_lines.append(txt)
                 if addr_lines:
                     company_obj.address_line1 = ", ".join(addr_lines[:2])
@@ -475,9 +475,16 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 website = get_clean_text("WEBSITE") or get_clean_text("BASICCOMPANYWEBSITE")
                 if website: company_obj.website = website; updated = True
 
-                # Extract GSTIN
+                # Extract GSTIN & PAN
                 gstin = get_clean_text("GSTREGISTRATIONNUMBER") or get_clean_text("GSTIN") or get_clean_text("PARTYGSTIN")
                 if gstin: company_obj.gstin = gstin[:15]; updated = True
+
+                pan = get_clean_text("INCOMETAXNUMBER") or get_clean_text("PAN") or get_clean_text("COMPANYPAN")
+                if pan: company_obj.pan = pan[:10]; updated = True
+
+                # Extract base currency
+                base_curr = get_clean_text("CURRENCYSYMBOL") or get_clean_text("BASECURRENCY") or get_clean_text("FORMALNAME")
+                if base_curr: company_obj.base_currency = base_curr; updated = True
 
                 # Extract dates using flexible parser
                 books_from_str = get_clean_text("BOOKSFROM") or get_clean_text("BOOKSBEGINNINGFROM")
