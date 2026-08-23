@@ -91,8 +91,11 @@ async def get_outstanding_bills(
     user: User = Depends(require_permission("payments", "read")),
     db: AsyncSession = Depends(get_db)
 ):
+    from app.models.tally_core import MstGroup
+
     stmt = (
         select(TrnBill)
+        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
         .options(selectinload(TrnBill.party))
         .where(
             TrnBill.company_id == user.company_id,
@@ -101,6 +104,25 @@ async def get_outstanding_bills(
     )
     if party_ledger_id:
         stmt = stmt.where(TrnBill.party_ledger_id == party_ledger_id)
+    else:
+        # Filter to Sundry Debtors hierarchy only
+        all_groups_res = await db.execute(
+            select(MstGroup).where(MstGroup.company_id == user.company_id)
+        )
+        all_groups = all_groups_res.scalars().all()
+        debtor_group_ids = set()
+        for g in all_groups:
+            if g.name.strip().lower() == "sundry debtors":
+                debtor_group_ids.add(g.group_id)
+        changed = True
+        while changed:
+            changed = False
+            for g in all_groups:
+                if g.parent_group_id in debtor_group_ids and g.group_id not in debtor_group_ids:
+                    debtor_group_ids.add(g.group_id)
+                    changed = True
+        if debtor_group_ids:
+            stmt = stmt.where(MstLedger.group_id.in_(debtor_group_ids))
 
     res = await db.execute(stmt)
     bills = res.scalars().all()
@@ -208,13 +230,39 @@ async def get_aging_dashboard(
         company_upi = company.features.get("upi_id") or company.features.get("upi_vpa")
     vpa = company_upi or settings.DEFAULT_UPI_VPA or ""
 
-    # 2. Fetch all open bills with party ledger
+    # 2. Resolve Sundry Debtors group IDs (including sub-groups)
+    #    Only DEBTORS should appear in aging — never Sundry Creditors (suppliers/vendors)
+    from app.models.tally_core import MstGroup
+    debtor_group_ids = set()
+    all_groups_res = await db.execute(
+        select(MstGroup).where(MstGroup.company_id == user.company_id)
+    )
+    all_groups = all_groups_res.scalars().all()
+    group_lookup = {g.group_id: g for g in all_groups}
+
+    # Find root "Sundry Debtors" group(s)
+    for g in all_groups:
+        if g.name.strip().lower() == "sundry debtors":
+            debtor_group_ids.add(g.group_id)
+
+    # Recursively include child sub-groups of Sundry Debtors
+    changed = True
+    while changed:
+        changed = False
+        for g in all_groups:
+            if g.parent_group_id in debtor_group_ids and g.group_id not in debtor_group_ids:
+                debtor_group_ids.add(g.group_id)
+                changed = True
+
+    # 3. Fetch open bills ONLY for Sundry Debtor parties
     bills_stmt = (
         select(TrnBill)
+        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
         .options(selectinload(TrnBill.party))
         .where(
             TrnBill.company_id == user.company_id,
-            TrnBill.status != "Settled"
+            TrnBill.status != "Settled",
+            MstLedger.group_id.in_(debtor_group_ids) if debtor_group_ids else True
         )
         .order_by(TrnBill.bill_date.asc())
     )

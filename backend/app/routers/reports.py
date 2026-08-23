@@ -190,12 +190,35 @@ async def get_outstanding_payables(
     if cached is not None:
         return cached
 
-    from app.models.tally_core import TrnBill
+    from app.models.tally_core import TrnBill, MstGroup, MstLedger
+
+    # Resolve Sundry Creditors group hierarchy
+    all_groups_res = await db.execute(
+        select(MstGroup).where(MstGroup.company_id == user.company_id)
+    )
+    all_groups = all_groups_res.scalars().all()
+    creditor_group_ids = set()
+    for g in all_groups:
+        if g.name.strip().lower() == "sundry creditors":
+            creditor_group_ids.add(g.group_id)
+
+    changed = True
+    while changed:
+        changed = False
+        for g in all_groups:
+            if g.parent_group_id in creditor_group_ids and g.group_id not in creditor_group_ids:
+                creditor_group_ids.add(g.group_id)
+                changed = True
 
     stmt = (
         select(TrnBill)
+        .join(MstLedger, TrnBill.party_ledger_id == MstLedger.ledger_id)
         .options(selectinload(TrnBill.party))
-        .where(TrnBill.company_id == user.company_id, TrnBill.status != "Settled")
+        .where(
+            TrnBill.company_id == user.company_id,
+            TrnBill.status != "Settled",
+            MstLedger.group_id.in_(creditor_group_ids) if creditor_group_ids else True
+        )
     )
     res = await db.execute(stmt)
     bills = res.scalars().all()
