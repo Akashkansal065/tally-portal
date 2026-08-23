@@ -6,6 +6,11 @@ export interface VoucherHeader {
   date?: string | null
   referenceNumber?: string | null
   partyName?: string | null
+  placeOfSupply?: string | null
+  orderReference?: string | null
+  despatchDocNo?: string | null
+  buyerName?: string | null
+  consigneeName?: string | null
 }
 
 export interface AccountEntry {

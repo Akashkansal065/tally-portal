@@ -108,6 +108,8 @@ class LedgerBase(BaseModel):
     is_inventory_affected: bool = False
     is_cost_centres_on: bool = False
     notes: Optional[str] = None
+    enterprise_type: Optional[str] = None
+    udyam_reg_no: Optional[str] = None
     is_active: bool = True
 
 class LedgerBankDetailBase(BaseModel):

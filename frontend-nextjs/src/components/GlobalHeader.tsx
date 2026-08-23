@@ -378,6 +378,7 @@ export function GlobalHeader() {
               {permissions.showStocks && (
                 <CollapsibleMenu label="Inventory Masters" icon={Layers} defaultOpen={true}>
                   <DrawerLink href="/stocks" icon={Layers} label="Stocks" onClick={() => setDrawerOpen(false)} />
+                  <DrawerLink href="/inventory/bom" icon={Layers} label="BOM & Manufacturing" onClick={() => setDrawerOpen(false)} />
                 </CollapsibleMenu>
               )}
 

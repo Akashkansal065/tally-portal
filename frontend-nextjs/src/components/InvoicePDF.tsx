@@ -23,6 +23,11 @@ export interface InvoiceData {
   partyName: string
   partyAddress?: string
   partyGstin?: string
+  placeOfSupply?: string
+  orderReference?: string
+  despatchDocNo?: string
+  buyerName?: string
+  consigneeName?: string
   items: InvoiceItem[]
   subtotal: number
   cgst: number
@@ -106,15 +111,26 @@ export default function InvoicePDF({ data, onClose }: InvoicePDFProps) {
             <h2 className="text-lg font-black text-emerald-600 uppercase tracking-widest">TAX INVOICE</h2>
             <p className="text-xs font-bold text-slate-700 dark:text-slate-300 mt-1">Invoice #: {data.invoiceNumber}</p>
             <p className="text-xs text-slate-500 dark:text-slate-400">Date: {formatDate(data.invoiceDate)}</p>
+            {data.placeOfSupply && <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Place of Supply: <span className="font-semibold text-slate-700 dark:text-slate-300">{data.placeOfSupply}</span></p>}
           </div>
         </div>
 
-        {/* Billed To Details */}
-        <div className="bg-slate-50 dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800">
-          <p className="text-[10px] uppercase font-extrabold tracking-wider text-slate-400">Billed To Customer</p>
-          <p className="text-sm font-black text-slate-900 dark:text-white mt-0.5">{data.partyName}</p>
-          {data.partyAddress && <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">{data.partyAddress}</p>}
-          {data.partyGstin && <p className="text-xs font-bold text-slate-700 dark:text-slate-300 mt-0.5">GSTIN: {data.partyGstin}</p>}
+        {/* Billed To Details & Dispatch Info */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="bg-slate-50 dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800">
+            <p className="text-[10px] uppercase font-extrabold tracking-wider text-slate-400">Billed To (Customer)</p>
+            <p className="text-sm font-black text-slate-900 dark:text-white mt-0.5">{data.buyerName || data.partyName}</p>
+            {data.partyAddress && <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">{data.partyAddress}</p>}
+            {data.partyGstin && <p className="text-xs font-bold text-slate-700 dark:text-slate-300 mt-0.5">GSTIN: {data.partyGstin}</p>}
+          </div>
+          {(data.consigneeName || data.orderReference || data.despatchDocNo) && (
+            <div className="bg-slate-50 dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs space-y-1">
+              <p className="text-[10px] uppercase font-extrabold tracking-wider text-slate-400">Shipping & Dispatch</p>
+              {data.consigneeName && <p><span className="text-slate-400 font-medium">Consignee:</span> <span className="font-bold text-slate-800 dark:text-slate-200">{data.consigneeName}</span></p>}
+              {data.orderReference && <p><span className="text-slate-400 font-medium">Order Ref:</span> <span className="font-bold text-slate-800 dark:text-slate-200">{data.orderReference}</span></p>}
+              {data.despatchDocNo && <p><span className="text-slate-400 font-medium">Despatch / LR No:</span> <span className="font-bold text-slate-800 dark:text-slate-200">{data.despatchDocNo}</span></p>}
+            </div>
+          )}
         </div>
 
         {/* Itemized Table */}

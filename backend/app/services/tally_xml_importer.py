@@ -19,7 +19,8 @@ from app.models.tally_core import (
     MstVoucherTypeClass, MstVoucherTypeClassGroup,
     MstCostCategory, MstCostCentre, CostCenter,
     TrnVoucher, TrnAccounting, TrnInventory, TrnBill, TrnBankAllocation,
-    BillAllocation
+    BillAllocation, MstLedgerGstRegistration, TrnEwayBill, MstHsnDetail,
+    MstLedgerMsmeDetail, MstLedgerAddress, MstLedgerTdsLowerDeduction, TrnCostCentreAllocation
 )
 from app.models.portal_core import Company, User, Role, UserCompanyAccess, Currency, DeletedRecordAudit
 from app.core.security import get_password_hash
@@ -33,6 +34,17 @@ def parse_tally_date(date_str: str) -> Optional[date]:
     for fmt in ("%Y%m%d", "%Y-%m-%d", "%d-%b-%Y", "%d-%b-%y", "%d-%m-%Y"):
         try:
             return datetime.strptime(clean, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def parse_tally_datetime(dt_str: str) -> Optional[datetime]:
+    if not dt_str or not str(dt_str).strip():
+        return None
+    clean = str(dt_str).strip().replace("/", "-")
+    for fmt in ("%Y%m%d%H%M%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(clean, fmt)
         except ValueError:
             continue
     return None
@@ -1091,6 +1103,14 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 except ValueError:
                     pass
 
+            # New Schema v7.0 fields
+            costing_method = si_node.findtext("COSTINGMETHOD")
+            valuation_method = si_node.findtext("VALUATIONMETHOD")
+            gst_type_of_supply = si_node.findtext("GSTTYPEOFSUPPLY") or "Goods"
+            is_batch_wise = (si_node.findtext("ISBATCHWISEON") or "No").strip().lower() in ("yes", "true", "1")
+            is_perishable = (si_node.findtext("ISPERISHABLEON") or "No").strip().lower() in ("yes", "true", "1")
+            ignore_negative = (si_node.findtext("IGNORENEGATIVESTOCK") or "No").strip().lower() in ("yes", "true", "1")
+
             stock_group = None
             if parent_name:
                 stock_group = await get_or_create_stock_group(db, company_id, parent_name)
@@ -1123,6 +1143,15 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     item.hsn_code = hsn_code
                 if gst_rate > 0:
                     item.gst_rate_percent = gst_rate
+                if costing_method:
+                    item.costing_method = costing_method
+                if valuation_method:
+                    item.valuation_method = valuation_method
+                if gst_type_of_supply:
+                    item.gst_type_of_supply = gst_type_of_supply
+                item.is_batch_wise = is_batch_wise
+                item.is_perishable = is_perishable
+                item.ignore_negative_stock = ignore_negative
                 if alter_id:
                     item.tally_alter_id = alter_id
                 await db.flush()
@@ -1140,11 +1169,49 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     closing_value=op_val,
                     hsn_code=hsn_code,
                     gst_rate_percent=gst_rate,
+                    costing_method=costing_method,
+                    valuation_method=valuation_method,
+                    gst_type_of_supply=gst_type_of_supply,
+                    is_batch_wise=is_batch_wise,
+                    is_perishable=is_perishable,
+                    ignore_negative_stock=ignore_negative,
                     is_active=True,
                     tally_alter_id=alter_id
                 )
                 db.add(item)
                 await db.flush()
+
+            # Parse HSN Details for Stock Item (<HSNDETAILS.LIST>)
+            for hsn_node in si_node.findall(".//HSNDETAILS.LIST"):
+                h_code = hsn_node.findtext("HSNCODE") or hsn_code
+                if not h_code:
+                    continue
+                h_desc = hsn_node.findtext("HSNDESCRIPTION")
+                h_app_from = parse_tally_date(hsn_node.findtext("APPLICABLEFROM"))
+                h_taxability = hsn_node.findtext("TAXABILITY") or "Taxable"
+                
+                # Check if already exists for this stock item
+                h_stmt = select(MstHsnDetail).where(
+                    MstHsnDetail.stock_item_id == item.stock_item_id,
+                    MstHsnDetail.hsn_code == h_code
+                )
+                h_res = await db.execute(h_stmt)
+                h_obj = h_res.scalars().first()
+                if not h_obj:
+                    h_obj = MstHsnDetail(
+                        company_id=company_id,
+                        stock_item_id=item.stock_item_id,
+                        hsn_code=h_code,
+                        hsn_description=h_desc,
+                        source_type="Stock Item",
+                        taxability=h_taxability,
+                        igst_rate=gst_rate,
+                        cgst_rate=gst_rate / Decimal("2.0") if gst_rate else Decimal("0.00"),
+                        sgst_rate=gst_rate / Decimal("2.0") if gst_rate else Decimal("0.00"),
+                        applicable_from=h_app_from
+                    )
+                    db.add(h_obj)
+                    await db.flush()
                 
             imported_stock_items += 1
             # Batch commit every 50 stock items
@@ -1341,6 +1408,21 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
             alter_id_str = ledger_node.findtext("ALTERID") or "0"
             alter_id = int(alter_id_str)
 
+            # Parse Closing Balance & Tax Classification from Schema v7.0
+            closing_bal_str = (
+                ledger_node.findtext("CLOSINGBALANCE") or 
+                ledger_node.findtext(".//LEDGERCLOSINGVALUES.LIST/CLOSINGBALANCE")
+            )
+            closing_bal_val = None
+            if closing_bal_str:
+                try:
+                    closing_bal_val = Decimal(closing_bal_str.strip())
+                except Exception:
+                    closing_bal_val = None
+                    
+            ledger_type = ledger_node.findtext("LEDGERTYPE")
+            tax_class_name = ledger_node.findtext("TAXCLASSIFICATIONNAME")
+
             if not ledger:
                 ledger = MstLedger(
                     company_id=company_id,
@@ -1368,6 +1450,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     description=description,
                     fax=fax,
                     email_cc=email_cc,
+                    ledger_type=ledger_type,
+                    closing_balance=closing_bal_val,
+                    tax_classification_name=tax_class_name,
                     tally_guid=guid,
                     tally_alter_id=alter_id
                 )
@@ -1396,9 +1481,170 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 if alias_name: ledger.alias_name = alias_name
                 if credit_limit_val is not None: ledger.credit_limit = credit_limit_val
                 if credit_days_val is not None: ledger.credit_period_days = credit_days_val
+                if ledger_type: ledger.ledger_type = ledger_type
+                if closing_bal_val is not None: ledger.closing_balance = closing_bal_val
+                if tax_class_name: ledger.tax_classification_name = tax_class_name
                 ledger.is_billwise_on = is_billwise_val
                 ledger.tally_guid = guid
                 ledger.tally_alter_id = alter_id
+                
+            await db.flush()
+            
+            # Parse Multi-GST Registrations (<LEDGSTREGDETAILS.LIST>)
+            for gst_node in ledger_node.findall(".//LEDGSTREGDETAILS.LIST"):
+                g_gstin = gst_node.findtext("GSTIN")
+                if not g_gstin or not str(g_gstin).strip():
+                    continue
+                g_gstin = str(g_gstin).strip().upper()
+                g_app_from = parse_tally_date(gst_node.findtext("APPLICABLEFROM"))
+                g_reg_type = gst_node.findtext("GSTREGISTRATIONTYPE") or "Regular"
+                g_state = gst_node.findtext("STATENAME") or state
+                g_pos = gst_node.findtext("PLACEOFSUPPLY") or g_state
+                
+                reg_stmt = select(MstLedgerGstRegistration).where(
+                    MstLedgerGstRegistration.ledger_id == ledger.ledger_id,
+                    MstLedgerGstRegistration.gstin == g_gstin
+                )
+                reg_res = await db.execute(reg_stmt)
+                reg_obj = reg_res.scalars().first()
+                if not reg_obj:
+                    reg_obj = MstLedgerGstRegistration(
+                        ledger_id=ledger.ledger_id,
+                        gstin=g_gstin,
+                        state_name=g_state,
+                        place_of_supply=g_pos,
+                        registration_type=g_reg_type,
+                        applicable_from=g_app_from,
+                        is_default=(g_gstin == gstin)
+                    )
+                    db.add(reg_obj)
+                    await db.flush()
+
+            # Parse HSN Details for Service Ledgers (<HSNDETAILS.LIST>)
+            for hsn_node in ledger_node.findall(".//HSNDETAILS.LIST"):
+                h_code = hsn_node.findtext("HSNCODE")
+                if not h_code:
+                    continue
+                h_desc = hsn_node.findtext("HSNDESCRIPTION")
+                h_app_from = parse_tally_date(hsn_node.findtext("APPLICABLEFROM"))
+                h_taxability = hsn_node.findtext("TAXABILITY") or "Taxable"
+                
+                h_stmt = select(MstHsnDetail).where(
+                    MstHsnDetail.ledger_id == ledger.ledger_id,
+                    MstHsnDetail.hsn_code == h_code
+                )
+                h_res = await db.execute(h_stmt)
+                h_obj = h_res.scalars().first()
+                if not h_obj:
+                    h_obj = MstHsnDetail(
+                        company_id=company_id,
+                        ledger_id=ledger.ledger_id,
+                        hsn_code=h_code,
+                        hsn_description=h_desc,
+                        source_type="Ledger",
+                        taxability=h_taxability,
+                        applicable_from=h_app_from
+                    )
+                    db.add(h_obj)
+                    await db.flush()
+
+            # Parse MSME Registration Details (<MSMEREGISTRATIONDETAILS.LIST>)
+            for msme_node in ledger_node.findall(".//MSMEREGISTRATIONDETAILS.LIST"):
+                ent_type = msme_node.findtext("ENTERPRISETYPE")
+                udyam_no = msme_node.findtext("UDYAMREGNO") or msme_node.findtext("MSMEREGNUMBER") or ledger_node.findtext("MSMEREGNUMBER")
+                if not udyam_no and not ent_type:
+                    continue
+                app_from = parse_tally_date(msme_node.findtext("APPLICABLEFROM"))
+                
+                m_stmt = select(MstLedgerMsmeDetail).where(
+                    MstLedgerMsmeDetail.ledger_id == ledger.ledger_id,
+                    MstLedgerMsmeDetail.udyam_reg_no == udyam_no
+                ) if udyam_no else select(MstLedgerMsmeDetail).where(MstLedgerMsmeDetail.ledger_id == ledger.ledger_id)
+                m_res = await db.execute(m_stmt)
+                m_obj = m_res.scalars().first()
+                if not m_obj:
+                    m_obj = MstLedgerMsmeDetail(
+                        ledger_id=ledger.ledger_id,
+                        enterprise_type=ent_type or "Micro",
+                        udyam_reg_no=udyam_no,
+                        applicable_from=app_from
+                    )
+                    db.add(m_obj)
+                    await db.flush()
+
+            # Parse Multi-Mailing / Branch Addresses (<LEDMAILINGDETAILS.LIST> & <LEDMULTIADDRESSLIST.LIST>)
+            addr_nodes = ledger_node.findall(".//LEDMAILINGDETAILS.LIST") + ledger_node.findall(".//LEDMULTIADDRESSLIST.LIST")
+            for m_node in addr_nodes:
+                addr_name = m_node.findtext("ADDRESSNAME") or m_node.findtext("APPLICABLENAME") or "Primary"
+                m_name = m_node.findtext("MAILINGNAME") or ledger.name
+                
+                m_addr_nodes = m_node.findall(".//ADDRESS.LIST/ADDRESS")
+                m_addr_lines = [a.text.strip() for a in m_addr_nodes if a.text and a.text.strip()]
+                m_address_str = ", ".join(m_addr_lines) if m_addr_lines else (m_node.findtext("ADDRESS") or None)
+                
+                st = m_node.findtext("STATE") or m_node.findtext("STATENAME")
+                co = m_node.findtext("COUNTRY") or "India"
+                pin = m_node.findtext("PINCODE")
+                
+                a_stmt = select(MstLedgerAddress).where(
+                    MstLedgerAddress.ledger_id == ledger.ledger_id,
+                    MstLedgerAddress.address_name == addr_name
+                )
+                a_res = await db.execute(a_stmt)
+                a_obj = a_res.scalars().first()
+                if not a_obj:
+                    a_obj = MstLedgerAddress(
+                        ledger_id=ledger.ledger_id,
+                        address_name=addr_name,
+                        mailing_name=m_name,
+                        address=m_address_str,
+                        state_name=st,
+                        country_name=co,
+                        pincode=pin,
+                        is_default=(addr_name == "Primary")
+                    )
+                    db.add(a_obj)
+                    await db.flush()
+
+            # Parse Lower TDS Deduction Certificates (<LOWERDEDUCTION.LIST>)
+            for ld_node in ledger_node.findall(".//LOWERDEDUCTION.LIST"):
+                sec_no = ld_node.findtext("SECTIONNUMBER") or ld_node.findtext("TDSCATEGORY") or "194C"
+                cert_no = ld_node.findtext("CERTIFICATENO")
+                if not cert_no:
+                    continue
+                rate_str = ld_node.findtext("RATEOFDEDUCTION") or "0"
+                try:
+                    r_ded = Decimal(rate_str.replace("%", "").strip())
+                except Exception:
+                    r_ded = Decimal("0.00")
+                ld_app_from = parse_tally_date(ld_node.findtext("APPLICABLEFROM"))
+                ld_app_to = parse_tally_date(ld_node.findtext("APPLICABLETO"))
+                limit_str = ld_node.findtext("LIMIT") or ld_node.findtext("THRESHOLDLIMIT")
+                t_limit = None
+                if limit_str:
+                    try:
+                        t_limit = Decimal(limit_str.replace(",", "").strip())
+                    except Exception:
+                        t_limit = None
+                
+                ld_stmt = select(MstLedgerTdsLowerDeduction).where(
+                    MstLedgerTdsLowerDeduction.ledger_id == ledger.ledger_id,
+                    MstLedgerTdsLowerDeduction.certificate_no == cert_no
+                )
+                ld_res = await db.execute(ld_stmt)
+                ld_obj = ld_res.scalars().first()
+                if not ld_obj:
+                    ld_obj = MstLedgerTdsLowerDeduction(
+                        ledger_id=ledger.ledger_id,
+                        section_number=sec_no,
+                        certificate_no=cert_no,
+                        rate_of_deduction=r_ded,
+                        applicable_from=ld_app_from,
+                        applicable_to=ld_app_to,
+                        threshold_limit=t_limit
+                    )
+                    db.add(ld_obj)
+                    await db.flush()
                 
             imported_ledgers += 1
             # Batch commit every 50 ledgers
@@ -1448,6 +1694,41 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
             narration = v_node.findtext("NARRATION")
             is_cancelled_val = (v_node.findtext("ISCANCELLED") or "No").strip().lower() == "yes"
             is_optional_val = (v_node.findtext("ISOPTIONAL") or "No").strip().lower() == "yes"
+            is_post_dated_val = (v_node.findtext("ISPOSTDATED") or "No").strip().lower() == "yes"
+            
+            # Schema v7.0 Voucher Fields
+            eff_date_str = v_node.findtext("EFFECTIVEDATE")
+            effective_date = parse_tally_date(eff_date_str) if eff_date_str else v_date
+            
+            ref_date_str = v_node.findtext("REFERENCEDATE")
+            reference_date = parse_tally_date(ref_date_str) if ref_date_str else None
+            
+            place_of_supply = v_node.findtext("PLACEOFSUPPLY") or v_node.findtext("STATENAME")
+            buyer_name = v_node.findtext("BASICBUYERNAME") or v_node.findtext("PARTYNAME")
+            consignee_name = v_node.findtext("CONSIGNEEMAILINGNAME") or v_node.findtext("CONSIGNEENAME")
+            
+            # Buyer Address
+            b_addr_nodes = v_node.findall(".//BASICBUYERADDRESS.LIST/BASICBUYERADDRESS") or v_node.findall(".//ADDRESS.LIST/ADDRESS")
+            b_addr_lines = [a.text.strip() for a in b_addr_nodes if a.text and a.text.strip()]
+            buyer_address = ", ".join(b_addr_lines) if b_addr_lines else None
+            
+            # Consignee Address
+            c_addr_nodes = v_node.findall(".//CONSIGNEEADDRESS.LIST/CONSIGNEEADDRESS")
+            c_addr_lines = [a.text.strip() for a in c_addr_nodes if a.text and a.text.strip()]
+            consignee_address = ", ".join(c_addr_lines) if c_addr_lines else None
+            
+            order_reference = v_node.findtext("BASICORDERREF") or v_node.findtext("ORDERREFERENCE")
+            despatch_doc_no = v_node.findtext("BASICSHIPDELIVERYNOTE") or v_node.findtext("DESPATCHDOCNO")
+
+            # e-Invoice Fields (Schema v7.0 GSTeInvoiceDetail)
+            irn = v_node.findtext("IRN")
+            irn_ack_no = v_node.findtext("IRNACKNO")
+            irn_ack_date = parse_tally_datetime(v_node.findtext("IRNACKDATE"))
+            irn_qr_code = v_node.findtext("IRNQRCODE")
+            irn_cancelled = (v_node.findtext("IRNCANCELLED") or "No").strip().lower() == "yes"
+            irn_cancel_date = parse_tally_datetime(v_node.findtext("IRNCANCELDATE"))
+            irn_cancel_reason = v_node.findtext("IRNCANCELREASON")
+            irn_source = v_node.findtext("IRNIRPSOURCE")
             
             # Get or create MstVoucherType
             vt_stmt = select(MstVoucherType).where(MstVoucherType.company_id == company_id, MstVoucherType.name == vtype_name)
@@ -1502,10 +1783,28 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     voucher_type_id=vtype.voucher_type_id,
                     voucher_number=v_num,
                     voucher_date=v_date,
+                    effective_date=effective_date,
+                    reference_date=reference_date,
+                    place_of_supply=place_of_supply,
+                    buyer_name=buyer_name,
+                    buyer_address=buyer_address,
+                    consignee_name=consignee_name,
+                    consignee_address=consignee_address,
+                    order_reference=order_reference,
+                    despatch_doc_no=despatch_doc_no,
+                    irn=irn,
+                    irn_ack_no=irn_ack_no,
+                    irn_ack_date=irn_ack_date,
+                    irn_qr_code=irn_qr_code,
+                    irn_cancelled=irn_cancelled,
+                    irn_cancel_date=irn_cancel_date,
+                    irn_cancel_reason=irn_cancel_reason,
+                    irn_source=irn_source,
                     tally_guid=guid,
                     tally_alter_id=alter_id,
                     is_cancelled=is_cancelled_val,
                     is_optional=is_optional_val,
+                    is_post_dated=is_post_dated_val,
                     created_by=v_user_id
                 )
                 db.add(voucher)
@@ -1513,10 +1812,28 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 
             voucher.voucher_number = v_num
             voucher.voucher_date = v_date
+            voucher.effective_date = effective_date
+            if reference_date: voucher.reference_date = reference_date
+            if place_of_supply: voucher.place_of_supply = place_of_supply
+            if buyer_name: voucher.buyer_name = buyer_name
+            if buyer_address: voucher.buyer_address = buyer_address
+            if consignee_name: voucher.consignee_name = consignee_name
+            if consignee_address: voucher.consignee_address = consignee_address
+            if order_reference: voucher.order_reference = order_reference
+            if despatch_doc_no: voucher.despatch_doc_no = despatch_doc_no
+            if irn: voucher.irn = irn
+            if irn_ack_no: voucher.irn_ack_no = irn_ack_no
+            if irn_ack_date: voucher.irn_ack_date = irn_ack_date
+            if irn_qr_code: voucher.irn_qr_code = irn_qr_code
+            voucher.irn_cancelled = irn_cancelled
+            if irn_cancel_date: voucher.irn_cancel_date = irn_cancel_date
+            if irn_cancel_reason: voucher.irn_cancel_reason = irn_cancel_reason
+            if irn_source: voucher.irn_source = irn_source
             voucher.narration = narration
             voucher.tally_alter_id = alter_id
             voucher.is_cancelled = is_cancelled_val
             voucher.is_optional = is_optional_val
+            voucher.is_post_dated = is_post_dated_val
             
             total_amt = Decimal("0.00")
             
@@ -1562,11 +1879,16 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 else:
                     cr_amt = amt_val
                     
+                nature_of_tx = (
+                    ent_node.findtext("NATUREOFTRANSACTION") or 
+                    ent_node.findtext("VATNATUREOFTRANSACTION")
+                )
                 entry = TrnAccounting(
                     voucher_id=voucher.voucher_id,
                     ledger_id=ledger.ledger_id,
                     debit_amount=dr_amt,
-                    credit_amount=cr_amt
+                    credit_amount=cr_amt,
+                    nature_of_transaction=nature_of_tx
                 )
                 db.add(entry)
                 await db.flush()
@@ -1665,6 +1987,40 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                         amount=b_amt
                     )
                     db.add(alloc)
+                    await db.flush()
+
+                # Parse Multi-Cost-Centre allocations (<COSTCENTREALLOCATIONS.LIST>)
+                for cc_alloc_node in ent_node.findall(".//COSTCENTREALLOCATIONS.LIST"):
+                    cc_alloc_name = cc_alloc_node.findtext("NAME")
+                    if not cc_alloc_name:
+                        continue
+                    cc_alloc_amt_str = cc_alloc_node.findtext("AMOUNT") or "0"
+                    try:
+                        cc_alloc_amt = abs(Decimal(cc_alloc_amt_str.replace(",", "").strip()))
+                    except Exception:
+                        cc_alloc_amt = Decimal("0.00")
+                    
+                    cc_sub_stmt = select(MstCostCentre).where(MstCostCentre.company_id == company_id, MstCostCentre.name == cc_alloc_name)
+                    cc_sub_res = await db.execute(cc_sub_stmt)
+                    cc_sub_obj = cc_sub_res.scalars().first()
+                    if not cc_sub_obj:
+                        cat_stmt = select(MstCostCategory).where(MstCostCategory.company_id == company_id)
+                        cat_res = await db.execute(cat_stmt)
+                        cat_obj = cat_res.scalars().first()
+                        if not cat_obj:
+                            cat_obj = MstCostCategory(company_id=company_id, name="Primary Cost Category")
+                            db.add(cat_obj)
+                            await db.flush()
+                        cc_sub_obj = MstCostCentre(company_id=company_id, category_id=cat_obj.category_id, name=cc_alloc_name)
+                        db.add(cc_sub_obj)
+                        await db.flush()
+                        
+                    cc_alloc = TrnCostCentreAllocation(
+                        entry_id=entry.entry_id,
+                        cost_centre_id=cc_sub_obj.cost_centre_id,
+                        amount=cc_alloc_amt
+                    )
+                    db.add(cc_alloc)
                     await db.flush()
                     
             # Parse inventory entries inside <ALLINVENTORYENTRIES.LIST>
@@ -1830,18 +2186,86 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 except Exception:
                     disc_val = Decimal("0.00")
 
+                # Parse actual vs billed quantity
+                act_qty_str = inv_node.findtext("ACTUALQTY") or ""
+                act_qty_val = qty_val
+                if act_qty_str:
+                    try:
+                        clean_act_qty = act_qty_str.strip().split()[0].replace(",", "").strip()
+                        act_qty_val = Decimal(clean_act_qty)
+                    except Exception:
+                        pass
+
+                item_desc = inv_node.findtext("ITEMDESCRIPTION") or inv_node.findtext("NARRATION") or inv_node.findtext("DESCRIPTION")
+
                 # Insert TrnInventory
                 stock_entry = TrnInventory(
                     voucher_id=voucher.voucher_id,
                     stock_item_id=item.stock_item_id,
                     quantity=qty_val,
+                    billed_qty=qty_val,
+                    actual_quantity=act_qty_val,
                     rate=rate_val,
                     amount=inv_amt,
                     discount_percent=disc_val,
+                    item_description=item_desc,
                     is_inward=is_inward
                 )
                 db.add(stock_entry)
                 await db.flush()
+
+            # Parse e-Way Bill Details (<EWAYBILLDETAILS.LIST>)
+            for eb_node in v_node.findall(".//EWAYBILLDETAILS.LIST"):
+                eb_num = eb_node.findtext("BILLNUMBER") or eb_node.findtext("EWAYBILLNO")
+                if not eb_num and not eb_node.findtext("DOCNUMBER"):
+                    continue
+                eb_date = parse_tally_date(eb_node.findtext("BILLDATE"))
+                eb_valid_up_to = parse_tally_datetime(eb_node.findtext("VALIDUPTO"))
+                eb_dist_str = eb_node.findtext("DISTANCE") or "0"
+                try:
+                    eb_dist = Decimal(eb_dist_str.replace(",", "").strip())
+                except Exception:
+                    eb_dist = None
+                    
+                eb_trans_id = eb_node.findtext("TRANSPORTERID")
+                eb_trans_name = eb_node.findtext("TRANSPORTERNAME")
+                eb_doc_no = eb_node.findtext("DOCNUMBER") or eb_node.findtext("LRRRNO")
+                eb_doc_date = parse_tally_date(eb_node.findtext("DOCDATE"))
+                eb_veh_no = eb_node.findtext("VEHICLENUMBER") or eb_node.findtext("VEHICLENO")
+                eb_veh_type = eb_node.findtext("VEHICLETYPE") or "Regular"
+                eb_mode = eb_node.findtext("TRANSPORTMODE") or "Road"
+                eb_subtype = eb_node.findtext("SUBTYPE") or "Supply"
+                eb_doctype = eb_node.findtext("DOCTYPE") or "Tax Invoice"
+                
+                # Check if already exists
+                eb_stmt = select(TrnEwayBill).where(
+                    TrnEwayBill.voucher_id == voucher.voucher_id,
+                    TrnEwayBill.bill_number == eb_num
+                ) if eb_num else select(TrnEwayBill).where(
+                    TrnEwayBill.voucher_id == voucher.voucher_id,
+                    TrnEwayBill.doc_number == eb_doc_no
+                )
+                eb_res = await db.execute(eb_stmt)
+                eb_obj = eb_res.scalars().first()
+                if not eb_obj:
+                    eb_obj = TrnEwayBill(
+                        voucher_id=voucher.voucher_id,
+                        bill_number=eb_num,
+                        bill_date=eb_date,
+                        valid_up_to=eb_valid_up_to,
+                        distance_km=eb_dist,
+                        transporter_id=eb_trans_id,
+                        transporter_name=eb_trans_name,
+                        doc_number=eb_doc_no,
+                        doc_date=eb_doc_date,
+                        vehicle_number=eb_veh_no,
+                        vehicle_type=eb_veh_type,
+                        transport_mode=eb_mode,
+                        sub_type=eb_subtype,
+                        doc_type=eb_doctype
+                    )
+                    db.add(eb_obj)
+                    await db.flush()
                     
             voucher.total_amount = total_amt
             imported_vouchers += 1

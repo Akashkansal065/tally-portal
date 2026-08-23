@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useMemo } from 'react'
-import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap, Landmark, CreditCard, QrCode, Percent, ShieldCheck, Info, Settings2 } from 'lucide-react'
+import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap, Landmark, CreditCard, QrCode, Percent, ShieldCheck, Info, Settings2, Network, Split } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders } from '@/lib/utils'
@@ -44,6 +44,26 @@ export default function VoucherFormModal({
   // Voucher F12 Configuration States
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false)
   const [voucherConfig, setVoucherConfig] = useState<VoucherConfiguration | null>(null)
+
+  // Cost Centre Allocation Split States
+  const [availableCostCentres, setAvailableCostCentres] = useState<any[]>([])
+  const [costCentreSplitRowId, setCostCentreSplitRowId] = useState<number | null>(null)
+  const [tempSplits, setTempSplits] = useState<Array<{ cost_centre_id: string; amount: string; percentage: string }>>([])
+
+  useEffect(() => {
+    if (token) {
+      fetch(`${API_BASE}/masters/cost-centres`, {
+        headers: authHeaders(token),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            setAvailableCostCentres(data)
+          }
+        })
+        .catch(console.error)
+    }
+  }, [token])
 
   // Fetch F12 Configuration when voucher type is selected
   useEffect(() => {
@@ -97,8 +117,8 @@ export default function VoucherFormModal({
 
   // 3. Accounting View States
   const [entries, setEntries] = useState([
-    { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [] as any[] },
-    { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [] as any[] }
+    { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [] as any[], cost_centre_allocations: [] as any[] },
+    { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [] as any[], cost_centre_allocations: [] as any[] }
   ])
   const [nextId, setNextId] = useState(3)
   
@@ -107,6 +127,22 @@ export default function VoucherFormModal({
   const [originalVoucherId, setOriginalVoucherId] = useState('')
   const [inventoryEntries, setInventoryEntries] = useState<any[]>([])
   const [nextInvId, setNextInvId] = useState(1)
+  
+  // 4b. Tally Schema v7.0 Order & Dispatch & GST States
+  const [placeOfSupply, setPlaceOfSupply] = useState('')
+  const [buyerName, setBuyerName] = useState('')
+  const [consigneeName, setConsigneeName] = useState('')
+  const [orderReference, setOrderReference] = useState('')
+  const [despatchDocNo, setDespatchDocNo] = useState('')
+  const [effectiveDate, setEffectiveDate] = useState('')
+  const [referenceDate, setReferenceDate] = useState('')
+  const [ewayBillNo, setEwayBillNo] = useState('')
+  const [transporterId, setTransporterId] = useState('')
+  const [vehicleNo, setVehicleNo] = useState('')
+  const [distanceKm, setDistanceKm] = useState('')
+  const [irn, setIrn] = useState('')
+  const [irnAckNo, setIrnAckNo] = useState('')
+  const [showDispatchDetails, setShowDispatchDetails] = useState(false)
   
   // 5. Stock Journal View States
   const [sourceEntries, setSourceEntries] = useState<any[]>([])
@@ -314,28 +350,46 @@ export default function VoucherFormModal({
         setValidationError(null)
         setPartyLedgerId(editVoucher.party_ledger_id ? String(editVoucher.party_ledger_id) : '')
         setOriginalVoucherId(editVoucher.original_voucher_id ? String(editVoucher.original_voucher_id) : '')
+        setPlaceOfSupply(editVoucher.place_of_supply || '')
+        setBuyerName(editVoucher.buyer_name || '')
+        setConsigneeName(editVoucher.consignee_name || '')
+        setOrderReference(editVoucher.order_reference || '')
+        setDespatchDocNo(editVoucher.despatch_doc_no || '')
+        setEffectiveDate(editVoucher.effective_date ? String(editVoucher.effective_date).slice(0, 10) : '')
+        setReferenceDate(editVoucher.reference_date ? String(editVoucher.reference_date).slice(0, 10) : '')
+        
+        // E-way bill & e-Invoice
+        const eb = (editVoucher.eway_bills && editVoucher.eway_bills.length > 0) ? editVoucher.eway_bills[0] : null
+        setEwayBillNo(eb?.bill_number || editVoucher.eway_bill_no || '')
+        setTransporterId(eb?.transporter_id || '')
+        setVehicleNo(eb?.vehicle_number || '')
+        setDistanceKm(eb?.distance_km ? String(eb.distance_km) : '')
+        setIrn(editVoucher.irn || '')
+        setIrnAckNo(editVoucher.irn_ack_no || '')
+        
+        setShowDispatchDetails(Boolean(
+          editVoucher.place_of_supply || editVoucher.buyer_name || editVoucher.order_reference || 
+          editVoucher.despatch_doc_no || eb || editVoucher.irn
+        ))
 
         // Accounting Entries
         const rawEntries = editVoucher.entries || editVoucher.accounts || []
         if (rawEntries.length > 0) {
-          setEntries(rawEntries.map((e: any, idx: number) => {
-            const dr = parseFloat(e.debit_amount || (e.entry_type === 'Debit' ? e.amount : '0') || '0')
-            const cr = parseFloat(e.credit_amount || (e.entry_type === 'Credit' ? e.amount : '0') || '0')
-            const isDr = dr > 0 || e.entry_type === 'Debit'
-            return {
+          setEntries((editVoucher.entries || []).map((e: any, idx: number) => ({
               id: idx + 1,
-              ledger_id: String(e.ledger_id || ''),
-              type: isDr ? 'Debit' : 'Credit',
-              amount: String(isDr ? (dr || e.amount || '') : (cr || e.amount || '')),
+              entry_id: e.entry_id,
+              ledger_id: String(e.ledger_id),
+              type: e.debit_amount > 0 ? 'Debit' : 'Credit',
+              amount: String(e.debit_amount > 0 ? e.debit_amount : e.credit_amount),
               cost_center_id: e.cost_center_id ? String(e.cost_center_id) : '',
-              bank_allocations: e.bank_allocations || []
-            }
-          }))
+              bank_allocations: e.bank_allocations || [],
+              cost_centre_allocations: e.cost_centre_allocations || []
+            })))
           setNextId(rawEntries.length + 1)
         } else {
           setEntries([
-            { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [] },
-            { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [] }
+            { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [], cost_centre_allocations: [] },
+            { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [], cost_centre_allocations: [] }
           ])
           setNextId(3)
         }
@@ -369,9 +423,23 @@ export default function VoucherFormModal({
         setValidationError(null)
         setPartyLedgerId('')
         setOriginalVoucherId('')
+        setPlaceOfSupply('')
+        setBuyerName('')
+        setConsigneeName('')
+        setOrderReference('')
+        setDespatchDocNo('')
+        setEffectiveDate('')
+        setReferenceDate('')
+        setEwayBillNo('')
+        setTransporterId('')
+        setVehicleNo('')
+        setDistanceKm('')
+        setIrn('')
+        setIrnAckNo('')
+        setShowDispatchDetails(false)
         setEntries([
-          { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [] },
-          { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [] }
+          { id: 1, ledger_id: '', type: 'Debit', amount: '', cost_center_id: '', bank_allocations: [], cost_centre_allocations: [] },
+          { id: 2, ledger_id: '', type: 'Credit', amount: '', cost_center_id: '', bank_allocations: [], cost_centre_allocations: [] }
         ])
         setNextId(3)
         setInventoryEntries([
@@ -455,13 +523,13 @@ export default function VoucherFormModal({
     const diff = Math.abs(totals.debits - totals.credits)
     const autoAmount = diff > 0 ? diff.toFixed(2) : ''
 
-    setEntries([...entries, { id: nextId, ledger_id: '', type: newType, amount: autoAmount, cost_center_id: '', bank_allocations: [] }])
+    setEntries([...entries, { id: nextId, ledger_id: '', type: newType, amount: autoAmount, cost_center_id: '', bank_allocations: [], cost_centre_allocations: [] }])
     setNextId(nextId + 1)
   }
 
   const removeEntry = (id: number) => {
     if (entries.length <= 2) {
-      setEntries(entries.map(e => e.id === id ? { ...e, ledger_id: '', amount: '', cost_center_id: '', bank_allocations: [] } : e))
+      setEntries(entries.map(e => e.id === id ? { ...e, ledger_id: '', amount: '', cost_center_id: '', bank_allocations: [], cost_centre_allocations: [] } : e))
     } else {
       setEntries(entries.filter(e => e.id !== id))
     }
@@ -842,14 +910,32 @@ export default function VoucherFormModal({
       return
     }
     
-    let payload: any = {
+    const payload: any = {
       voucher_type_id: selectedType.voucher_type_id,
+      voucher_number: editVoucher?.voucher_number || undefined,
       voucher_date: voucherDate,
-      reference_number: refNumber,
-      narration,
-      status,
+      effective_date: effectiveDate || voucherDate,
+      reference_date: referenceDate || undefined,
+      place_of_supply: placeOfSupply || undefined,
+      buyer_name: buyerName || undefined,
+      consignee_name: consigneeName || undefined,
+      order_reference: orderReference || undefined,
+      despatch_doc_no: despatchDocNo || undefined,
+      irn: irn || undefined,
+      irn_ack_no: irnAckNo || undefined,
+      reference_number: refNumber || undefined,
+      narration: narration || undefined,
+      status: status,
       entries: [],
-      inventory_entries: []
+      inventory_entries: [],
+      eway_bills: (ewayBillNo || vehicleNo || transporterId) ? [{
+        bill_number: ewayBillNo || undefined,
+        transporter_id: transporterId || undefined,
+        vehicle_number: vehicleNo || undefined,
+        distance_km: distanceKm ? parseFloat(distanceKm) : undefined,
+        sub_type: 'Supply',
+        doc_type: 'Tax Invoice'
+      }] : undefined
     }
     
     if (isAccountingView) {
@@ -889,7 +975,8 @@ export default function VoucherFormModal({
         debit_amount: e.type === 'Debit' ? parseFloat(e.amount) : 0,
         credit_amount: e.type === 'Credit' ? parseFloat(e.amount) : 0,
         cost_center_id: e.cost_center_id ? parseInt(e.cost_center_id) : null,
-        bank_allocations: e.bank_allocations && e.bank_allocations.length > 0 ? e.bank_allocations : undefined
+        bank_allocations: e.bank_allocations && e.bank_allocations.length > 0 ? e.bank_allocations : undefined,
+        cost_centre_allocations: e.cost_centre_allocations && e.cost_centre_allocations.length > 0 ? e.cost_centre_allocations : undefined
       }))
     } else if (isInvoiceView) {
       if (!partyLedgerId) {
@@ -1134,45 +1221,176 @@ export default function VoucherFormModal({
           </div>
 
           {isInvoiceView && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 dark:bg-slate-800/50 p-3.5 sm:p-4 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300">Party Ledger</label>
-                  <button 
-                    type="button" 
-                    onClick={() => openQuickLedgerModal('party')} 
-                    className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> New Ledger
-                  </button>
-                </div>
-                <div className="flex gap-2">
-                  <select 
-                    className="flex-1 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium" 
-                    value={partyLedgerId} 
-                    onChange={e => {
-                      if (e.target.value === '__create_new__') {
-                        openQuickLedgerModal('party')
-                      } else {
-                        setPartyLedgerId(e.target.value)
-                      }
-                    }}
-                  >
-                    <option value="">Select Party...</option>
-                    <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
-                    {sortedLedgers.map(l => (
-                      <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              {['Credit Note', 'Debit Note'].includes(parentType) && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 dark:bg-slate-800/50 p-3.5 sm:p-4 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
                 <div>
-                  <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Against Original Invoice ID</label>
-                  <input type="text" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Voucher ID" value={originalVoucherId} onChange={e => setOriginalVoucherId(e.target.value)} />
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300">Party Ledger</label>
+                    <button 
+                      type="button" 
+                      onClick={() => openQuickLedgerModal('party')} 
+                      className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> New Ledger
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <select 
+                      className="flex-1 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium" 
+                      value={partyLedgerId} 
+                      onChange={e => {
+                        if (e.target.value === '__create_new__') {
+                          openQuickLedgerModal('party')
+                        } else {
+                          setPartyLedgerId(e.target.value)
+                        }
+                      }}
+                    >
+                      <option value="">Select Party...</option>
+                      <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
+                      {sortedLedgers.map(l => (
+                        <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-              )}
-            </div>
+                {['Credit Note', 'Debit Note'].includes(parentType) && (
+                  <div>
+                    <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Against Original Invoice ID</label>
+                    <input type="text" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Voucher ID" value={originalVoucherId} onChange={e => setOriginalVoucherId(e.target.value)} />
+                  </div>
+                )}
+              </div>
+
+              {/* Collapsible Order & Dispatch Details Accordion */}
+              <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden bg-slate-50/50 dark:bg-slate-800/30">
+                <button
+                  type="button"
+                  onClick={() => setShowDispatchDetails(!showDispatchDetails)}
+                  className="w-full px-4 py-2.5 flex items-center justify-between text-left text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <span>Order, Dispatch & GST Details (Optional)</span>
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform duration-200", showDispatchDetails && "rotate-180")} />
+                </button>
+
+                {showDispatchDetails && (
+                  <div className="p-4 border-t border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Place of Supply (State)</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
+                        placeholder="e.g. Delhi, Maharashtra" 
+                        value={placeOfSupply} 
+                        onChange={e => setPlaceOfSupply(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Order / PO Reference</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
+                        placeholder="PO Number" 
+                        value={orderReference} 
+                        onChange={e => setOrderReference(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Despatch / LR Document No</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
+                        placeholder="LR / Delivery Note No" 
+                        value={despatchDocNo} 
+                        onChange={e => setDespatchDocNo(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Buyer / Billing Name</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
+                        placeholder="Buyer Name (if different)" 
+                        value={buyerName} 
+                        onChange={e => setBuyerName(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Consignee / Shipping Name</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
+                        placeholder="Consignee Name" 
+                        value={consigneeName} 
+                        onChange={e => setConsigneeName(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Supplier Ref Date</label>
+                      <input 
+                        type="date" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
+                        value={referenceDate} 
+                        onChange={e => setReferenceDate(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">e-Way Bill Number (12 Digits)</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-mono" 
+                        placeholder="e.g. 121000000001" 
+                        value={ewayBillNo} 
+                        onChange={e => setEwayBillNo(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Transporter ID / GSTIN</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-mono" 
+                        placeholder="Transporter GSTIN" 
+                        value={transporterId} 
+                        onChange={e => setTransporterId(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Vehicle Number</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs uppercase" 
+                        placeholder="e.g. DL01AB1234" 
+                        value={vehicleNo} 
+                        onChange={e => setVehicleNo(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Distance (km)</label>
+                      <input 
+                        type="number" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
+                        placeholder="Distance in km" 
+                        value={distanceKm} 
+                        onChange={e => setDistanceKm(e.target.value)} 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">e-Invoice IRN (64-char Hash)</label>
+                      <input 
+                        type="text" 
+                        className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-mono truncate" 
+                        placeholder="IRN Hash" 
+                        value={irn} 
+                        onChange={e => setIrn(e.target.value)} 
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
           {isAccountingView && (
@@ -1254,6 +1472,33 @@ export default function VoucherFormModal({
                         onChange={evt => handleAmountChange(e.id, evt.target.value)} 
                       />
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCostCentreSplitRowId(e.id)
+                        if (e.cost_centre_allocations && e.cost_centre_allocations.length > 0) {
+                          setTempSplits(e.cost_centre_allocations.map((a: any) => ({
+                            cost_centre_id: String(a.cost_centre_id),
+                            amount: String(a.amount || ''),
+                            percentage: a.percentage ? String(a.percentage) : ''
+                          })))
+                        } else {
+                          setTempSplits([
+                            { cost_centre_id: e.cost_center_id || (availableCostCentres[0]?.cost_centre_id ? String(availableCostCentres[0].cost_centre_id) : ''), amount: e.amount || '', percentage: '100' }
+                          ])
+                        }
+                      }}
+                      title="Split row amount across multiple Cost Centres"
+                      className={`px-2.5 h-10 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                        e.cost_centre_allocations && e.cost_centre_allocations.length > 1
+                          ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-600 dark:text-indigo-400 font-bold'
+                          : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 text-slate-500 hover:text-indigo-500'
+                      }`}
+                    >
+                      <Network className="w-3.5 h-3.5" />
+                      {e.cost_centre_allocations && e.cost_centre_allocations.length > 1 ? `${e.cost_centre_allocations.length} CC` : 'CC'}
+                    </button>
 
                     <button 
                       onClick={() => removeEntry(e.id)} 
@@ -2519,6 +2764,188 @@ export default function VoucherFormModal({
                 </button>
               </div>
 
+            </div>
+          </div>
+        )}
+
+        {/* Cost Centre Split Allocations Modal */}
+        {costCentreSplitRowId !== null && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-lg w-full border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+              {/* Modal Header */}
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                    <Network className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-900 dark:text-slate-100">Cost Centre Split Allocations</h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Row Total Amount: <strong className="text-slate-800 dark:text-slate-200">₹{entries.find(e => e.id === costCentreSplitRowId)?.amount || '0.00'}</strong>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCostCentreSplitRowId(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 rounded-lg cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-4 overflow-y-auto space-y-3 flex-1">
+                <div className="flex items-center justify-between text-[11px] font-bold text-slate-400 uppercase tracking-wider px-1">
+                  <span className="flex-1">Cost Centre</span>
+                  <span className="w-20 text-right pr-2">% Split</span>
+                  <span className="w-28 text-right pr-2">Amount (₹)</span>
+                  <span className="w-8"></span>
+                </div>
+
+                {tempSplits.map((s, sIdx) => (
+                  <div key={sIdx} className="flex items-center gap-2">
+                    <select
+                      className="flex-1 h-9 px-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-semibold"
+                      value={s.cost_centre_id}
+                      onChange={e => {
+                        const next = [...tempSplits]
+                        next[sIdx].cost_centre_id = e.target.value
+                        setTempSplits(next)
+                      }}
+                    >
+                      <option value="">Select Cost Centre...</option>
+                      {availableCostCentres.map(c => (
+                        <option key={c.cost_centre_id} value={c.cost_centre_id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <input
+                      type="number"
+                      placeholder="%"
+                      className="w-20 h-9 px-2 text-right bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-semibold"
+                      value={s.percentage}
+                      onChange={e => {
+                        const next = [...tempSplits]
+                        next[sIdx].percentage = e.target.value
+                        const rowTotal = parseFloat(entries.find(r => r.id === costCentreSplitRowId)?.amount || '0')
+                        if (rowTotal > 0 && e.target.value) {
+                          const computed = (rowTotal * parseFloat(e.target.value)) / 100
+                          next[sIdx].amount = computed.toFixed(2)
+                        }
+                        setTempSplits(next)
+                      }}
+                    />
+
+                    <input
+                      type="number"
+                      placeholder="₹ Amount"
+                      className="w-28 h-9 px-2 text-right bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-800 dark:text-slate-100"
+                      value={s.amount}
+                      onChange={e => {
+                        const next = [...tempSplits]
+                        next[sIdx].amount = e.target.value
+                        const rowTotal = parseFloat(entries.find(r => r.id === costCentreSplitRowId)?.amount || '0')
+                        if (rowTotal > 0 && e.target.value) {
+                          const pct = (parseFloat(e.target.value) / rowTotal) * 100
+                          next[sIdx].percentage = pct.toFixed(1)
+                        }
+                        setTempSplits(next)
+                      }}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTempSplits(tempSplits.filter((_, idx) => idx !== sIdx))
+                      }}
+                      className="p-2 text-slate-400 hover:text-rose-500 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const rowTotal = parseFloat(entries.find(r => r.id === costCentreSplitRowId)?.amount || '0')
+                    const allocated = tempSplits.reduce((acc, curr) => acc + (parseFloat(curr.amount) || 0), 0)
+                    const remaining = Math.max(0, rowTotal - allocated)
+                    const remPct = rowTotal > 0 ? ((remaining / rowTotal) * 100).toFixed(1) : ''
+                    setTempSplits([
+                      ...tempSplits,
+                      { cost_centre_id: '', amount: remaining > 0 ? remaining.toFixed(2) : '', percentage: remPct }
+                    ])
+                  }}
+                  className="w-full py-2 bg-slate-100 dark:bg-slate-800/80 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-slate-600 dark:text-slate-300 hover:text-indigo-600 text-xs font-semibold rounded-lg border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add Cost Centre Split
+                </button>
+
+                {/* Allocation Balance Card */}
+                {(() => {
+                  const rowTotal = parseFloat(entries.find(r => r.id === costCentreSplitRowId)?.amount || '0')
+                  const allocated = tempSplits.reduce((acc, curr) => acc + (parseFloat(curr.amount) || 0), 0)
+                  const diff = rowTotal - allocated
+                  const isBalanced = Math.abs(diff) < 0.01
+
+                  return (
+                    <div className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
+                      isBalanced
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400'
+                    }`}>
+                      <span>Allocated: <strong>₹{allocated.toFixed(2)}</strong> / ₹{rowTotal.toFixed(2)}</span>
+                      <span>{isBalanced ? '✅ Perfectly Balanced' : `⚠️ Remaining: ₹${diff.toFixed(2)}`}</span>
+                    </div>
+                  )
+                })()}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCostCentreSplitRowId(null)}
+                  className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const validSplits = tempSplits
+                      .filter(s => s.cost_centre_id && parseFloat(s.amount) > 0)
+                      .map(s => {
+                        const cc = availableCostCentres.find(c => String(c.cost_centre_id) === String(s.cost_centre_id))
+                        return {
+                          cost_centre_id: parseInt(String(s.cost_centre_id)),
+                          cost_centre_name: cc?.name || `Cost Centre #${s.cost_centre_id}`,
+                          amount: parseFloat(s.amount),
+                          percentage: s.percentage ? parseFloat(s.percentage) : null
+                        }
+                      })
+
+                    setEntries(entries.map(e => {
+                      if (e.id === costCentreSplitRowId) {
+                        return {
+                          ...e,
+                          cost_centre_allocations: validSplits,
+                          cost_center_id: validSplits.length > 0 ? String(validSplits[0].cost_centre_id) : e.cost_center_id
+                        }
+                      }
+                      return e
+                    }))
+                    setCostCentreSplitRowId(null)
+                  }}
+                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer"
+                >
+                  Apply Splits
+                </button>
+              </div>
             </div>
           </div>
         )}

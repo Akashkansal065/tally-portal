@@ -356,6 +356,69 @@ export default function AdminPage() {
     }
   }
 
+  const handleDismissDeletedAudit = async (auditId: number) => {
+    if (!token) return
+    try {
+      const res = await fetch(`${API_BASE}/sync/deleted-audits/${auditId}/dismiss`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        await Promise.allSettled([fetchSyncHealth(), fetchDeletedAudits(), fetchSyncLogs()])
+      }
+    } catch (e: any) {
+      alert(e.message || 'Failed to dismiss discrepancy')
+    }
+  }
+
+  const handleDismissAllDeletedAudits = async () => {
+    if (!token) return
+    if (!confirm('Mark all active deletion discrepancies as reconciled?')) return
+    try {
+      const res = await fetch(`${API_BASE}/sync/deleted-audits/dismiss-all`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        await Promise.allSettled([fetchSyncHealth(), fetchDeletedAudits(), fetchSyncLogs()])
+      }
+    } catch (e: any) {
+      alert(e.message || 'Failed to dismiss discrepancies')
+    }
+  }
+
+  const handleClearResolvedTrafficLogs = async () => {
+    if (!token) return
+    if (!confirm('This will clear all historical failed/exception sync logs and mark pending delete discrepancies as resolved. Proceed?')) return
+    try {
+      const res = await fetch(`${API_BASE}/sync/traffic-logs/clear-resolved`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        alert('All inactive sync issues cleared successfully! Active issues reset to 0.')
+        await Promise.allSettled([fetchSyncHealth(), fetchDeletedAudits(), fetchSyncLogs()])
+      }
+    } catch (e: any) {
+      alert(e.message || 'Failed to clear resolved logs')
+    }
+  }
+
+  const handleDeleteTrafficLog = async (logId: number) => {
+    if (!token) return
+    try {
+      const res = await fetch(`${API_BASE}/sync/traffic-logs/${logId}`, {
+        method: 'DELETE',
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        await Promise.allSettled([fetchSyncHealth(), fetchDeletedAudits(), fetchSyncLogs()])
+      }
+    } catch (e: any) {
+      alert(e.message || 'Failed to delete traffic log')
+    }
+  }
+
   // Visit View Filter states (Default to current date)
   const [visitDate, setVisitDate] = useState(() => {
     const d = new Date()
@@ -1306,6 +1369,17 @@ const handleSavePermissions = async () => {
                     </div>
                     
                     <div className="flex items-center gap-2 self-start md:self-auto">
+                      {(syncHealth?.total_sync_issues || 0) > 0 && (
+                        <button
+                          onClick={handleClearResolvedTrafficLogs}
+                          className="px-3.5 py-2 border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                          title="Clear historical failures and reset issue counter"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Clear Inactive Issues</span>
+                        </button>
+                      )}
+
                       <button
                         onClick={() => { fetchSyncHealth(); fetchSyncLogs() }}
                         className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
@@ -1506,6 +1580,17 @@ const handleSavePermissions = async () => {
                                       <RefreshCw className={cn("w-3.5 h-3.5", isRetrying && "animate-spin")} />
                                       <span>{isRetrying ? "Retrying..." : "Retry"}</span>
                                     </button>
+
+                                    {log.status !== 'SUCCESS' && (
+                                      <button
+                                        onClick={() => handleDeleteTrafficLog(log.log_id)}
+                                        className="h-8 px-2.5 rounded-xl text-xs font-bold bg-muted/60 hover:bg-rose-500/10 text-muted-foreground hover:text-rose-600 border border-border/80 hover:border-rose-500/20 transition-all flex items-center gap-1 cursor-pointer active:scale-95"
+                                        title="Dismiss this historical log entry"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                        <span>Dismiss</span>
+                                      </button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -1533,6 +1618,17 @@ const handleSavePermissions = async () => {
                     </div>
                     
                     <div className="flex items-center gap-2 self-start md:self-auto">
+                      {(syncHealth?.unreconciled_deleted_count || 0) > 0 && (
+                        <button
+                          onClick={handleDismissAllDeletedAudits}
+                          className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                          title="Mark all discrepancies as reconciled"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                          <span>Dismiss All</span>
+                        </button>
+                      )}
+
                       <button
                         onClick={() => { fetchSyncHealth(); fetchDeletedAudits() }}
                         className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
@@ -1673,6 +1769,17 @@ const handleSavePermissions = async () => {
 
                                 <td className="py-3.5 px-5 text-right whitespace-nowrap">
                                   <div className="flex items-center justify-end gap-2">
+                                    {audit.tally_sync_status !== 'SYNCED_TO_TALLY' && (
+                                      <button
+                                        onClick={() => handleDismissDeletedAudit(audit.audit_id)}
+                                        className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+                                        title="Mark this discrepancy as resolved/dismissed"
+                                      >
+                                        <Check className="w-3.5 h-3.5" />
+                                        <span>Dismiss</span>
+                                      </button>
+                                    )}
+
                                     <button
                                       onClick={() => handleRetryDeletedAudit(audit.audit_id)}
                                       disabled={isRetrying || audit.tally_sync_status === 'SYNCED_TO_TALLY'}

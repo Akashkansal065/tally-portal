@@ -5,7 +5,8 @@ import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, toTitleCase } from '@/lib/utils'
-import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2 } from 'lucide-react'
+import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2, QrCode, ExternalLink, Copy, CheckCircle2, Zap, X } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherDetailsClient from './voucher-details-client'
@@ -64,6 +65,12 @@ export default function VoucherDetailPage() {
   const [downloading, setDownloading] = useState(false)
   const [generatingEinvoice, setGeneratingEinvoice] = useState(false)
 
+  // Tally Prime 7.0 Paylink & UPI States
+  const [paylink, setPaylink] = useState<any>(null)
+  const [generatingPaylink, setGeneratingPaylink] = useState(false)
+  const [showPaylinkCard, setShowPaylinkCard] = useState(true)
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false)
+
   // Alter (Edit) & Delete States
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -71,6 +78,23 @@ export default function VoucherDetailPage() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [ledgers, setLedgers] = useState<any[]>([])
   const [voucherTypes, setVoucherTypes] = useState<any[]>([])
+
+  const fetchPaylink = useCallback(async () => {
+    if (!id || !token) return
+    try {
+      const res = await fetch(`${API_BASE}/payments/${id}/paylink`, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
+        setPaylink(data)
+      }
+    } catch (err) {
+      console.error(err)
+    }
+  }, [id, token])
+
+  useEffect(() => {
+    fetchPaylink()
+  }, [fetchPaylink])
 
   const fetchVoucher = useCallback(() => {
     if (!id || !token) return
@@ -169,6 +193,37 @@ export default function VoucherDetailPage() {
       toast.error(err.message || 'Failed to delete voucher')
     } finally {
       setIsDeleting(false)
+    }
+  }
+
+  const handleGeneratePaylink = async (openModal = false) => {
+    if (!voucher || !id || !token) return
+    setGeneratingPaylink(true)
+    try {
+      const res = await fetch(`${API_BASE}/payments/generate-link`, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          voucher_id: voucher.voucher_id,
+          amount: finalTotal
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setPaylink(data)
+        setShowPaylinkCard(true)
+        if (openModal) {
+          setIsQrModalOpen(true)
+        }
+        toast.success('Dynamic UPI Paylink generated successfully!')
+      } else {
+        const err = await res.json()
+        toast.error(err.detail || 'Failed to generate paylink')
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Error creating paylink')
+    } finally {
+      setGeneratingPaylink(false)
     }
   }
 
@@ -306,6 +361,23 @@ export default function VoucherDetailPage() {
         </button>
 
         <div className="flex items-center gap-2">
+          {/* UPI Paylink Button (for Sales / Invoice Vouchers) */}
+          <button
+            type="button"
+            onClick={() => {
+              if (!paylink) {
+                handleGeneratePaylink(true)
+              } else {
+                setIsQrModalOpen(true)
+              }
+            }}
+            disabled={generatingPaylink}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm rounded-xl h-10 px-4 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+          >
+            {generatingPaylink ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+            {paylink ? (paylink.status === 'COMPLETED' ? '✅ Paid via UPI' : '⚡ View Paylink & QR') : '⚡ Generate Paylink'}
+          </button>
+
           {/* Alter / Edit Voucher Button */}
           <button
             type="button"
@@ -341,6 +413,166 @@ export default function VoucherDetailPage() {
           </button>
         </div>
       </div>
+
+      {/* Dynamic Paylink & UPI QR Code Banner */}
+      {(showPaylinkCard || paylink) && paylink && (
+        <div className="mb-4 p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 flex flex-col md:flex-row items-center justify-between gap-4 animate-in fade-in duration-200">
+          <div className="flex items-center gap-4">
+            <div 
+              onClick={() => setIsQrModalOpen(true)}
+              className="p-2 bg-white rounded-xl border border-indigo-200 shadow-sm flex flex-col items-center cursor-pointer hover:scale-105 transition-transform"
+              title="Click to view full-size QR code"
+            >
+              {paylink?.upi_uri ? (
+                <QRCodeSVG value={paylink.upi_uri} size={64} level="M" />
+              ) : (
+                <QrCode className="w-16 h-16 text-indigo-600" />
+              )}
+              <span className="text-[8px] font-black uppercase text-indigo-700 tracking-wider mt-1">Click to Scan</span>
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
+                  Tally 7.0 Connected Paylink
+                </span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                  paylink?.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-600' : 'bg-amber-500/20 text-amber-600'
+                }`}>
+                  {paylink?.status || 'PENDING'}
+                </span>
+              </div>
+              <p className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                Amount Payable: ₹{parseFloat(String(paylink?.amount || finalTotal)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </p>
+              <p className="text-xs text-muted-foreground font-mono truncate max-w-sm">
+                UPI VPA: <span className="font-bold text-indigo-600 dark:text-indigo-400">8979921514@upi</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+            <button
+              type="button"
+              onClick={() => setIsQrModalOpen(true)}
+              className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer"
+            >
+              <QrCode className="w-3.5 h-3.5" /> Show QR Code
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (paylink?.payment_url) {
+                  navigator.clipboard.writeText(paylink.payment_url)
+                  toast.success('Payment link copied to clipboard!')
+                }
+              }}
+              className="px-3 py-2 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold rounded-xl border border-border flex items-center gap-1.5 cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5" /> Copy Link
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Full-Screen/Popup QR Modal */}
+      {isQrModalOpen && paylink && (
+        <div 
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          onClick={() => setIsQrModalOpen(false)}
+        >
+          <div 
+            className="bg-card border border-border rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 text-foreground animate-in fade-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/10 text-indigo-600 flex items-center justify-center font-bold">
+                  <Zap className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-foreground leading-snug">Instant UPI Payment QR</h3>
+                  <span className="text-[11px] text-muted-foreground font-mono">Invoice #{voucher?.voucher_number} • Tally Prime 7.0 e-Banking</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsQrModalOpen(false)}
+                className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* QR Code Container with High-Contrast White Surface */}
+            <div className="flex flex-col items-center justify-center p-5 bg-white rounded-2xl border-2 border-indigo-100 shadow-inner">
+              <QRCodeSVG
+                value={paylink.upi_uri || `upi://pay?pa=8979921514@upi&pn=Bhrama+Enterprises&am=${paylink.amount || finalTotal}&cu=INR&tn=Invoice+${voucher?.voucher_number}`}
+                size={200}
+                level="H"
+                includeMargin={true}
+              />
+              <div className="mt-3 flex items-center gap-1.5 text-center">
+                <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                  Scan with GPay, PhonePe, Paytm, BHIM or CRED
+                </span>
+              </div>
+            </div>
+
+            {/* Payment Details Card */}
+            <div className="p-3.5 rounded-xl bg-muted/40 border border-border space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground font-medium">Payee VPA:</span>
+                <div className="flex items-center gap-1.5 font-bold font-mono">
+                  <span>8979921514@upi</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText("8979921514@upi")
+                      toast.success("UPI ID copied!")
+                    }}
+                    className="p-1 hover:bg-muted rounded text-muted-foreground hover:text-foreground cursor-pointer"
+                    title="Copy UPI ID"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground font-medium">Amount Payable:</span>
+                <span className="text-base font-black text-emerald-600 dark:text-emerald-400 font-mono">
+                  ₹{parseFloat(String(paylink.amount || finalTotal)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground font-medium">Settlement Status:</span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                  paylink.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-600' : 'bg-amber-500/20 text-amber-600'
+                }`}>
+                  {paylink.status}
+                </span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (paylink.payment_url) {
+                    navigator.clipboard.writeText(paylink.payment_url)
+                    toast.success('Payment link copied to clipboard!')
+                  }
+                }}
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" /> Copy Payment Link
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main voucher document panel */}
       <div className="p-2 sm:p-5 font-mono text-base border border-foreground sm:border-2 bg-card text-card-foreground shadow-sm dark:shadow-none">

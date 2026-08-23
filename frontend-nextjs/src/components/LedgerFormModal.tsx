@@ -43,6 +43,8 @@ export type LedgerFormData = {
   is_inventory_affected?: boolean
   is_cost_centres_on?: boolean
   notes?: string
+  enterprise_type?: string
+  udyam_reg_no?: string
 }
 
 type Props = {
@@ -252,7 +254,9 @@ export default function LedgerFormModal({
         is_common_party: false,
         is_inventory_affected: false,
         is_cost_centres_on: false,
-        notes: ''
+        notes: '',
+        enterprise_type: '',
+        udyam_reg_no: ''
       })
       setProvideBankDetails(false)
       setBankDetail({
@@ -335,6 +339,8 @@ export default function LedgerFormModal({
         is_inventory_affected: formData.is_inventory_affected ?? false,
         is_cost_centres_on: formData.is_cost_centres_on ?? false,
         notes: formData.notes?.trim() || null,
+        enterprise_type: formData.enterprise_type || null,
+        udyam_reg_no: formData.udyam_reg_no?.trim() || null,
         bank_details: provideBankDetails && (bankDetail.account_number || bankDetail.upi_id || bankDetail.bank_name) ? [
           {
             transaction_type: bankDetail.transaction_type,
@@ -732,6 +738,46 @@ export default function LedgerFormModal({
                     <label htmlFor="is_common_party" className="text-xs text-foreground cursor-pointer">
                       Common Party
                     </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* MSME Registration Details Card (Section 43B(h)) */}
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 space-y-3">
+                <div className="flex items-center justify-between border-b border-amber-500/20 pb-2">
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                    <span className="text-xs font-extrabold text-foreground">MSME Registration (Sec 43B(h))</span>
+                  </div>
+                  <span className="text-[10px] font-mono text-amber-600 bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
+                    Udyam / Statutory
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-foreground mb-1">Enterprise Type</label>
+                    <select
+                      value={formData.enterprise_type || ''}
+                      onChange={e => setFormData({ ...formData, enterprise_type: e.target.value })}
+                      className="w-full px-3 py-2 text-xs border border-border rounded-xl bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500 cursor-pointer font-semibold"
+                    >
+                      <option value="">Not Applicable / Large</option>
+                      <option value="Micro">Micro Enterprise (&lt; ₹1 Cr)</option>
+                      <option value="Small">Small Enterprise (&lt; ₹10 Cr)</option>
+                      <option value="Medium">Medium Enterprise (&lt; ₹50 Cr)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-foreground mb-1">Udyam Registration No.</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. UDYAM-XX-00-0000000"
+                      value={formData.udyam_reg_no || ''}
+                      onChange={e => setFormData({ ...formData, udyam_reg_no: e.target.value.toUpperCase() })}
+                      className="w-full px-3 py-2 text-xs border border-border rounded-xl bg-background text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-amber-500 uppercase"
+                    />
                   </div>
                 </div>
               </div>

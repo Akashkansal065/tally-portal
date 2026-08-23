@@ -37,6 +37,19 @@ class BillAllocationResponse(BillAllocationCreate):
     class Config:
         from_attributes = True
 
+class CostCentreAllocationCreate(BaseModel):
+    cost_centre_id: int
+    amount: Decimal
+    percentage: Optional[Decimal] = None
+
+class CostCentreAllocationResponse(CostCentreAllocationCreate):
+    id: int
+    entry_id: int
+    cost_centre_name: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
 class VoucherEntryCreate(BaseModel):
     ledger_id: int
     cost_center_id: Optional[int] = None
@@ -51,6 +64,7 @@ class VoucherEntryCreate(BaseModel):
     
     bank_allocations: Optional[List[BankAllocationCreate]] = None
     bill_allocations: Optional[List[BillAllocationCreate]] = None
+    cost_centre_allocations: Optional[List[CostCentreAllocationCreate]] = None
 
 from pydantic import model_validator
 
@@ -58,6 +72,7 @@ class VoucherEntryResponse(VoucherEntryCreate):
     entry_id: int
     voucher_id: int
     bank_allocations: Optional[List[BankAllocationResponse]] = []
+    cost_centre_allocations: Optional[List[CostCentreAllocationResponse]] = []
     bill_allocations: Optional[List[BillAllocationResponse]] = []
     
     class Config:

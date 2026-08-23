@@ -9,8 +9,9 @@ import {
   FileSpreadsheet, Plus, RefreshCw, CheckCircle2, Download, Calendar,
   ChevronDown, Loader2, ArrowUpDown, Receipt, ShieldCheck, FileText,
   AlertTriangle, Eye, Lock, ArrowRight, Activity, HelpCircle, Check, Info, Shield,
-  Trash2, Settings, X, Upload, Key, ShieldAlert
+  Trash2, Settings, X, Upload, Key, ShieldAlert, Sparkles
 } from 'lucide-react'
+import { toast } from 'sonner'
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -155,13 +156,16 @@ type GstEinvoice = {
   eway_bill_no: string | null
 }
 
-type TabId = 'periods' | 'gstr1' | 'gstr3b' | 'itc' | 'manualPurchases' | 'gstr2b' | 'gstr9' | 'einvoices'
+type TabId = 'periods' | 'gstr1' | 'gstr3b' | 'itc' | 'manualPurchases' | 'gstr2b' | 'gstr9' | 'einvoices' | 'msme'
 
 export default function GstPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState<TabId>('periods')
+  const [msmeData, setMsmeData] = useState<any>(null)
+  const [expandedVendorId, setExpandedVendorId] = useState<number | null>(null)
+  const [msmeFilter, setMsmeFilter] = useState<'all' | 'risk' | 'critical' | 'compliant'>('all')
   const [periods, setPeriods] = useState<ReturnPeriod[]>([])
   const [gstr1Lines, setGstr1Lines] = useState<Gstr1Line[]>([])
   const [gstr3b, setGstr3b] = useState<Gstr3bSummary | null>(null)
@@ -339,13 +343,31 @@ export default function GstPage() {
     finally { setLoading(false) }
   }, [token])
 
+  const fetchMsmeData = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/gst/msme-compliance`, {
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setMsmeData(data)
+      }
+    } catch (err) {
+      console.error('Failed to fetch MSME data', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [token])
+
   useEffect(() => {
     if (activeTab === 'periods') fetchPeriods()
     if (activeTab === 'itc') fetchItc()
     if (activeTab === 'gstr2b') fetchGstr2b()
     if (activeTab === 'gstr9') fetchGstr9()
     if (activeTab === 'einvoices') fetchEinvoices()
-  }, [activeTab, fetchPeriods, fetchItc, fetchGstr2b, fetchGstr9, fetchEinvoices])
+    if (activeTab === 'msme') fetchMsmeData()
+  }, [activeTab, fetchPeriods, fetchItc, fetchGstr2b, fetchGstr9, fetchEinvoices, fetchMsmeData])
 
   useEffect(() => {
     if (selectedPeriodId) {
@@ -559,23 +581,40 @@ export default function GstPage() {
     finally { setActionLoading(null) }
   }
 
+  const [reconTaxableTolerance, setReconTaxableTolerance] = useState(10)
+  const [reconTaxTolerance, setReconTaxTolerance] = useState(5)
+  const [reconStripPrefix, setReconStripPrefix] = useState(true)
+  const [reconFuzzyMatch, setReconFuzzyMatch] = useState(true)
+  const [reconResultSummary, setReconResultSummary] = useState<any>(null)
+
   // --- GSTR-2B, GSTR-9, E-Invoices Actions ---
   const handleReconcileGstr2b = async () => {
+    handleSmartAutoReconcile()
+  }
+
+  const handleSmartAutoReconcile = async () => {
     setActionLoading('reconcile')
     try {
-      const res = await fetch(`${API_BASE}/gst/gstr2b/reconcile`, {
+      const res = await fetch(`${API_BASE}/gst/gstr2b/reconcile-auto`, {
         method: 'POST',
-        headers: authHeaders(token)
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ignore_diff_in_taxable_amt: Number(reconTaxableTolerance),
+          ignore_diff_in_tax_amt: Number(reconTaxTolerance),
+          strip_prefix_suffix: reconStripPrefix,
+          fuzzy_invoice_match: reconFuzzyMatch
+        })
       })
       if (res.ok) {
         const result = await res.json()
-        alert(`Reconciliation Completed:\n• ${result.matched} Invoices Matched Exactly\n• ${result.mismatches} Mismatched Amounts Found`)
+        setReconResultSummary(result)
+        toast.success(result.detail || 'Auto-Reconciliation completed!')
         fetchGstr2b()
       } else {
         const err = await res.json()
-        alert(err.detail || 'Failed to reconcile GSTR-2B')
+        toast.error(err.detail || 'Failed to auto-reconcile GSTR-2B')
       }
-    } catch (e: any) { alert(e.message) }
+    } catch (e: any) { toast.error(e.message) }
     finally { setActionLoading(null) }
   }
 
@@ -770,6 +809,7 @@ export default function GstPage() {
     { id: 'gstr3b', label: 'GSTR-3B', icon: ShieldCheck },
     { id: 'gstr9', label: 'GSTR-9 (Annual)', icon: FileSpreadsheet },
     { id: 'einvoices', label: 'E-Invoices', icon: Shield },
+    { id: 'msme', label: 'MSME 43B(h)', icon: ShieldAlert },
   ]
 
   const fmt = (n: number) => Number(n).toFixed(2)
@@ -1718,13 +1758,90 @@ export default function GstPage() {
                 Upload GSTR-2B JSON
               </button>
               <button
-                onClick={handleReconcileGstr2b}
+                onClick={handleSmartAutoReconcile}
                 disabled={actionLoading === 'reconcile'}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
               >
-                {actionLoading === 'reconcile' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                Reconcile Books
+                {actionLoading === 'reconcile' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                Smart Auto-Reconcile
               </button>
+            </div>
+          </div>
+
+          {/* Tally Prime 7.0 Smart Reconciliation Config Bar */}
+          <div className="p-4 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <span className="text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider">
+                  Tally 7.0 Intelligent Auto-Match Rules (GstReconConfig)
+                </span>
+              </div>
+              {reconResultSummary && (
+                <div className="flex items-center gap-2 text-[10px] font-bold">
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-600">
+                    {reconResultSummary.exact_matches} Exact
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-600">
+                    {reconResultSummary.tolerance_matches} Tolerance
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-600">
+                    {reconResultSummary.fuzzy_matches} Fuzzy (Date)
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1 text-xs">
+              <div>
+                <label className="block text-[10px] font-bold text-muted-foreground uppercase mb-1">
+                  Taxable Diff Tolerance (₹)
+                </label>
+                <input
+                  type="number"
+                  value={reconTaxableTolerance}
+                  onChange={e => setReconTaxableTolerance(parseFloat(e.target.value) || 0)}
+                  className="w-full h-8 px-2.5 bg-background border border-border rounded-lg text-xs font-bold text-foreground"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-muted-foreground uppercase mb-1">
+                  Tax Diff Tolerance (₹)
+                </label>
+                <input
+                  type="number"
+                  value={reconTaxTolerance}
+                  onChange={e => setReconTaxTolerance(parseFloat(e.target.value) || 0)}
+                  className="w-full h-8 px-2.5 bg-background border border-border rounded-lg text-xs font-bold text-foreground"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-4">
+                <input
+                  type="checkbox"
+                  id="recon_strip"
+                  checked={reconStripPrefix}
+                  onChange={e => setReconStripPrefix(e.target.checked)}
+                  className="rounded border-border text-indigo-600 cursor-pointer"
+                />
+                <label htmlFor="recon_strip" className="text-xs font-semibold cursor-pointer">
+                  Normalize Prefix/Suffix
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2 pt-4">
+                <input
+                  type="checkbox"
+                  id="recon_fuzzy"
+                  checked={reconFuzzyMatch}
+                  onChange={e => setReconFuzzyMatch(e.target.checked)}
+                  className="rounded border-border text-indigo-600 cursor-pointer"
+                />
+                <label htmlFor="recon_fuzzy" className="text-xs font-semibold cursor-pointer">
+                  Fuzzy Date Window (±15d)
+                </label>
+              </div>
             </div>
           </div>
 
@@ -2540,6 +2657,212 @@ export default function GstPage() {
                 <pre className="whitespace-pre-wrap leading-relaxed">{lastGstLog}</pre>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MSME Section 43B(h) Tab */}
+      {activeTab === 'msme' && !loading && msmeData && (
+        <div className="space-y-5 animate-in fade-in duration-200">
+          {/* Header Alert Banner */}
+          <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-start gap-3">
+            <ShieldAlert className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-amber-600 dark:text-amber-400">
+                Income Tax Section 43B(h) MSME Vendor Tracking (FY {msmeData.summary?.fiscal_year})
+              </h4>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Payments to <strong>Micro and Small Enterprises</strong> must be cleared within <strong>15 days</strong> (or up to <strong>45 days</strong> if specified in written agreement). Unsettled payments at year-end cannot be deducted from business profits.
+              </p>
+            </div>
+          </div>
+
+          {/* Metric Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3.5 rounded-xl bg-card border border-border shadow-sm">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase">MSME Vendors</p>
+              <p className="text-lg font-black mt-1 text-foreground">{msmeData.summary?.total_msme_vendors || 0}</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Micro & Small</p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-card border border-border shadow-sm">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase">Total Outstanding</p>
+              <p className="text-lg font-black mt-1 text-foreground">{formatCurrency(msmeData.summary?.total_outstanding_amount || 0)}</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Unpaid purchase bills</p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 shadow-sm">
+              <p className="text-[10px] font-bold text-rose-500 uppercase">Disallowance Risk</p>
+              <p className="text-lg font-black mt-1 text-rose-600 dark:text-rose-400">{formatCurrency(msmeData.summary?.total_at_risk_disallowance || 0)}</p>
+              <p className="text-[10px] text-rose-500/80 mt-0.5">&gt; 45 Days Overdue</p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 shadow-sm">
+              <p className="text-[10px] font-bold text-amber-500 uppercase">Critical (Due Soon)</p>
+              <p className="text-lg font-black mt-1 text-amber-600 dark:text-amber-400">{formatCurrency(msmeData.summary?.total_critical_due_soon || 0)}</p>
+              <p className="text-[10px] text-amber-500/80 mt-0.5">38 - 45 Days Elapsed</p>
+            </div>
+          </div>
+
+          {/* Filter Pills */}
+          <div className="flex items-center justify-between flex-wrap gap-2 pt-2">
+            <div className="flex items-center gap-1.5 bg-muted/40 p-1 rounded-lg">
+              <button
+                onClick={() => setMsmeFilter('all')}
+                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                  msmeFilter === 'all' ? 'bg-background shadow-xs text-foreground' : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                All Vendors ({msmeData.vendors?.length || 0})
+              </button>
+              <button
+                onClick={() => setMsmeFilter('risk')}
+                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                  msmeFilter === 'risk' ? 'bg-rose-500 text-white shadow-xs' : 'text-rose-500 hover:bg-rose-500/10'
+                }`}
+              >
+                High Risk ({msmeData.vendors?.filter((v: any) => v.vendor_risk_status === 'HIGH_RISK').length || 0})
+              </button>
+              <button
+                onClick={() => setMsmeFilter('critical')}
+                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                  msmeFilter === 'critical' ? 'bg-amber-500 text-white shadow-xs' : 'text-amber-500 hover:bg-amber-500/10'
+                }`}
+              >
+                Critical ({msmeData.vendors?.filter((v: any) => v.vendor_risk_status === 'MEDIUM_RISK').length || 0})
+              </button>
+              <button
+                onClick={() => setMsmeFilter('compliant')}
+                className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${
+                  msmeFilter === 'compliant' ? 'bg-emerald-600 text-white shadow-xs' : 'text-emerald-600 hover:bg-emerald-500/10'
+                }`}
+              >
+                Compliant ({msmeData.vendors?.filter((v: any) => v.vendor_risk_status === 'COMPLIANT').length || 0})
+              </button>
+            </div>
+
+            <button
+              onClick={() => fetchMsmeData()}
+              className="px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground bg-muted/30 hover:bg-muted/60 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <RefreshCw className="h-3 w-3" /> Refresh
+            </button>
+          </div>
+
+          {/* Vendors List */}
+          <div className="space-y-3">
+            {msmeData.vendors
+              ?.filter((v: any) => {
+                if (msmeFilter === 'risk') return v.vendor_risk_status === 'HIGH_RISK'
+                if (msmeFilter === 'critical') return v.vendor_risk_status === 'MEDIUM_RISK'
+                if (msmeFilter === 'compliant') return v.vendor_risk_status === 'COMPLIANT'
+                return true
+              })
+              .map((vendor: any) => (
+                <div
+                  key={vendor.ledger_id}
+                  className="rounded-xl border border-border bg-card overflow-hidden shadow-xs transition-all"
+                >
+                  <div
+                    onClick={() => setExpandedVendorId(expandedVendorId === vendor.ledger_id ? null : vendor.ledger_id)}
+                    className="p-3.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-muted/30 transition-colors"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-bold text-foreground">{vendor.name}</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black tracking-wide bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                          {vendor.enterprise_type || 'Micro'}
+                        </span>
+                        {vendor.udyam_reg_no && (
+                          <span className="text-[11px] font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                            {vendor.udyam_reg_no}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        GSTIN: {vendor.gstin || 'Unregistered'} • State: {vendor.state || 'N/A'} • {vendor.pending_bills_count} open bills
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="text-right">
+                        <p className="text-xs font-bold text-foreground">{formatCurrency(vendor.total_outstanding)}</p>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            vendor.vendor_risk_status === 'HIGH_RISK'
+                              ? 'bg-rose-500/10 text-rose-600 border border-rose-500/20'
+                              : vendor.vendor_risk_status === 'MEDIUM_RISK'
+                              ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                              : 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+                          }`}
+                        >
+                          {vendor.vendor_risk_status === 'HIGH_RISK' ? '⚠️ Disallowance Risk' : vendor.vendor_risk_status === 'MEDIUM_RISK' ? '⏳ Due Soon' : '✅ Compliant'}
+                        </span>
+                      </div>
+                      <ChevronDown
+                        className={`h-4 w-4 text-muted-foreground transition-transform ${
+                          expandedVendorId === vendor.ledger_id ? 'rotate-180' : ''
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Expanded Invoices List */}
+                  {expandedVendorId === vendor.ledger_id && (
+                    <div className="p-3.5 bg-muted/20 border-t border-border space-y-2">
+                      <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                        Pending Purchase Invoices ({vendor.bills?.length || 0})
+                      </p>
+                      {vendor.bills?.length === 0 ? (
+                        <p className="text-xs text-muted-foreground py-2">No pending unpaid bills for this vendor.</p>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-border text-[10px] font-bold uppercase text-muted-foreground">
+                                <th className="py-1.5 pr-2">Bill Ref</th>
+                                <th className="py-1.5 px-2">Bill Date</th>
+                                <th className="py-1.5 px-2 text-right">Bill Amount</th>
+                                <th className="py-1.5 px-2 text-right">Outstanding</th>
+                                <th className="py-1.5 px-2 text-center">Days Elapsed</th>
+                                <th className="py-1.5 pl-2 text-right">43B(h) Status</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border/50 font-medium">
+                              {vendor.bills.map((bill: any) => (
+                                <tr key={bill.bill_id} className="hover:bg-muted/40 transition-colors">
+                                  <td className="py-2 pr-2 font-mono font-bold">{bill.bill_reference}</td>
+                                  <td className="py-2 px-2 text-muted-foreground">{bill.bill_date}</td>
+                                  <td className="py-2 px-2 text-right">{formatCurrency(bill.bill_amount)}</td>
+                                  <td className="py-2 px-2 text-right font-bold">{formatCurrency(bill.outstanding_amount)}</td>
+                                  <td className="py-2 px-2 text-center">
+                                    <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                                      bill.days_elapsed > 45 ? 'bg-rose-500/20 text-rose-500' : bill.days_elapsed >= 38 ? 'bg-amber-500/20 text-amber-500' : 'bg-emerald-500/20 text-emerald-500'
+                                    }`}>
+                                      {bill.days_elapsed} days
+                                    </span>
+                                  </td>
+                                  <td className="py-2 pl-2 text-right">
+                                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                      bill.status === 'OVERDUE_DISALLOWANCE'
+                                        ? 'bg-rose-600 text-white'
+                                        : bill.status === 'CRITICAL_WARNING'
+                                        ? 'bg-amber-500 text-white'
+                                        : 'bg-emerald-500/20 text-emerald-600'
+                                    }`}>
+                                      {bill.status === 'OVERDUE_DISALLOWANCE' ? 'DISALLOWANCE RISK' : bill.status === 'CRITICAL_WARNING' ? 'DUE SOON' : 'ON TRACK'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
           </div>
         </div>
       )}

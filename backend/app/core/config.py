@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # Tally Synchronization Settings
     TALLY_URL: Optional[str] = None
     
+    # UPI / Payment Settings
+    DEFAULT_UPI_VPA: str = "***@upi"
+    
     @property
     def PORTAL_DATABASE_NAME(self) -> str:
         db_name = self.DATABASE_URL.rsplit('/', 1)[-1]

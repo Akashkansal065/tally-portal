@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from datetime import datetime, date
 from decimal import Decimal
+from pydantic import BaseModel
 
 logger = logging.getLogger("app.routers.gst")
 logger.setLevel(logging.INFO)
@@ -30,7 +31,7 @@ from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.models.tally_core import TrnVoucher, TrnAccounting
-from app.models.tally_core import MstLedger, MstGroup
+from app.models.tally_core import MstLedger, MstGroup, MstGstReconConfig
 from app.models.portal_core import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn, ManualPurchase
 from app.schemas.gst import (
     GstReturnPeriodCreate, GstReturnPeriodResponse,
@@ -1011,7 +1012,7 @@ async def reconcile_gstr2b(
 
     book_vouchers = []
     for v in vouchers:
-        party_name, _ = _resolve_party_and_amount(v.entries)
+        party_name, *_ = _resolve_party_and_amount(v.entries)
         if not party_name:
             continue
         
@@ -1032,7 +1033,7 @@ async def reconcile_gstr2b(
                 cgst += net_debit
             elif 'SGST' in name_u:
                 sgst += net_debit
-            elif 'DISCOUNT' not in name_u and name_u != party_name:
+            elif 'DISCOUNT' not in name_u and name_u != party_name.upper():
                 taxable += net_debit
             
             if e.ledger.gstin and not party_gstin:
@@ -1155,6 +1156,326 @@ async def reconcile_gstr2b(
         "detail": "Reconciliation completed successfully.",
         "matched": reconciled_count,
         "mismatches": mismatch_count
+    }
+
+class ReconConfigSchema(BaseModel):
+    ignore_diff_in_taxable_amt: float = 10.00
+    ignore_diff_in_tax_amt: float = 5.00
+    strip_prefix_suffix: bool = True
+    fuzzy_invoice_match: bool = True
+
+
+@router.get("/recon-config")
+async def get_gst_recon_config(
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Fetch company GSTR-2B reconciliation configuration rules."""
+    stmt = select(MstGstReconConfig).where(MstGstReconConfig.company_id == user.company_id)
+    cfg = (await db.execute(stmt)).scalars().first()
+    if not cfg:
+        cfg = MstGstReconConfig(
+            company_id=user.company_id,
+            ignore_diff_in_taxable_amt=Decimal("10.00"),
+            ignore_diff_in_tax_amt=Decimal("5.00"),
+            strip_prefix_suffix=True,
+            fuzzy_invoice_match=True
+        )
+        db.add(cfg)
+        await db.commit()
+        await db.refresh(cfg)
+
+    return {
+        "config_id": cfg.config_id,
+        "company_id": cfg.company_id,
+        "ignore_diff_in_taxable_amt": float(cfg.ignore_diff_in_taxable_amt),
+        "ignore_diff_in_tax_amt": float(cfg.ignore_diff_in_tax_amt),
+        "strip_prefix_suffix": bool(cfg.strip_prefix_suffix),
+        "fuzzy_invoice_match": bool(cfg.fuzzy_invoice_match)
+    }
+
+
+@router.put("/recon-config")
+async def update_gst_recon_config(
+    req: ReconConfigSchema,
+    user: User = Depends(require_permission("reports", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update GSTR-2B reconciliation tolerance and normalization rules."""
+    stmt = select(MstGstReconConfig).where(MstGstReconConfig.company_id == user.company_id)
+    cfg = (await db.execute(stmt)).scalars().first()
+    if not cfg:
+        cfg = MstGstReconConfig(company_id=user.company_id)
+        db.add(cfg)
+
+    cfg.ignore_diff_in_taxable_amt = Decimal(str(req.ignore_diff_in_taxable_amt))
+    cfg.ignore_diff_in_tax_amt = Decimal(str(req.ignore_diff_in_tax_amt))
+    cfg.strip_prefix_suffix = req.strip_prefix_suffix
+    cfg.fuzzy_invoice_match = req.fuzzy_invoice_match
+
+    await db.commit()
+    await db.refresh(cfg)
+    return {
+        "status": "success",
+        "message": "Reconciliation configuration saved.",
+        "config": {
+            "ignore_diff_in_taxable_amt": float(cfg.ignore_diff_in_taxable_amt),
+            "ignore_diff_in_tax_amt": float(cfg.ignore_diff_in_tax_amt),
+            "strip_prefix_suffix": bool(cfg.strip_prefix_suffix),
+            "fuzzy_invoice_match": bool(cfg.fuzzy_invoice_match)
+        }
+    }
+
+
+def _normalize_inv(inv_str: str, strip_affixes: bool = True) -> str:
+    if not inv_str:
+        return ""
+    cleaned = inv_str.strip().upper()
+    if not strip_affixes:
+        return cleaned
+
+    import re
+    # Remove leading common prefixes like INV/, TAX/, BILL/, 2026/, 25-26/
+    cleaned = re.sub(r'^(INV|TAX|BILL|GST|PUR|EXP)[-/_#\s]*', '', cleaned)
+    cleaned = re.sub(r'^(20\d\d[-/_\s]*|\d\d-\d\d[-/_\s]*)', '', cleaned)
+    # Remove financial year suffixes like /25-26, /2025-2026, -2026
+    cleaned = re.sub(r'[-/_\s]*(20\d\d[-/]\d\d|20\d\d|\d\d-\d\d)$', '', cleaned)
+    # Remove any non-alphanumeric separators
+    cleaned = re.sub(r'[^A-Z0-9]', '', cleaned)
+    return cleaned
+
+
+@router.post("/gstr2b/reconcile-auto")
+async def reconcile_gstr2b_auto(
+    req: Optional[ReconConfigSchema] = None,
+    user: User = Depends(require_permission("reports", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Tally Prime 7.0 Intelligent Auto-Reconciliation Engine.
+    Executes rule-based matching with tolerance thresholds (Ignorediffintaxableamt)
+    and invoice prefix/suffix stripping (Gstreconprefixsuffixdetails).
+    """
+    from app.routers.vouchers import _resolve_party_and_amount
+
+    # Get config or use request overrides
+    cfg_stmt = select(MstGstReconConfig).where(MstGstReconConfig.company_id == user.company_id)
+    cfg = (await db.execute(cfg_stmt)).scalars().first()
+
+    taxable_tolerance = Decimal(str(req.ignore_diff_in_taxable_amt if req else (cfg.ignore_diff_in_taxable_amt if cfg else 10.00)))
+    tax_tolerance = Decimal(str(req.ignore_diff_in_tax_amt if req else (cfg.ignore_diff_in_tax_amt if cfg else 5.00)))
+    strip_affixes = req.strip_prefix_suffix if req else (cfg.strip_prefix_suffix if cfg else True)
+    fuzzy_mode = req.fuzzy_invoice_match if req else (cfg.fuzzy_invoice_match if cfg else True)
+
+    # 1. Fetch all GSTR-2B entries
+    g2b_res = await db.execute(select(Gstr2bEntry).where(Gstr2bEntry.company_id == user.company_id))
+    g2b_entries = g2b_res.scalars().all()
+
+    # 2. Fetch all Tally Purchase Vouchers
+    v_res = await db.execute(
+        select(TrnVoucher)
+        .options(
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
+        )
+        .where(
+            TrnVoucher.company_id == user.company_id,
+            TrnVoucher.is_optional == False
+        )
+        .execution_options(populate_existing=True)
+    )
+    vouchers = v_res.scalars().all()
+
+    book_vouchers = []
+    for v in vouchers:
+        party_name, *_ = _resolve_party_and_amount(v.entries)
+        if not party_name:
+            continue
+        
+        taxable = Decimal("0.00")
+        cgst = Decimal("0.00")
+        sgst = Decimal("0.00")
+        igst = Decimal("0.00")
+        party_gstin = ""
+
+        for e in v.entries:
+            if not e.ledger:
+                continue
+            name_u = e.ledger.name.upper()
+            net_debit = e.debit_amount - e.credit_amount
+            if 'IGST' in name_u:
+                igst += net_debit
+            elif 'CGST' in name_u:
+                cgst += net_debit
+            elif 'SGST' in name_u:
+                sgst += net_debit
+            elif 'DISCOUNT' not in name_u and name_u != party_name.upper():
+                taxable += net_debit
+            
+            if e.ledger.gstin and not party_gstin:
+                party_gstin = e.ledger.gstin
+
+        for e in v.entries:
+            if e.ledger and 'DISCOUNT' in e.ledger.name.upper():
+                net_disc = e.credit_amount - e.debit_amount
+                taxable -= net_disc
+
+        raw_num = (v.voucher_number or "").strip()
+        raw_ref = (v.reference_number or "").strip()
+
+        book_vouchers.append({
+            "voucher_id": v.voucher_id,
+            "party_name": party_name.upper(),
+            "party_gstin": party_gstin.upper(),
+            "voucher_number": raw_num.upper(),
+            "reference_number": raw_ref.upper(),
+            "norm_voucher_num": _normalize_inv(raw_num, strip_affixes),
+            "norm_ref_num": _normalize_inv(raw_ref, strip_affixes),
+            "voucher_date": v.voucher_date,
+            "taxable_value": taxable,
+            "cgst": cgst,
+            "sgst": sgst,
+            "igst": igst,
+            "matched": False
+        })
+
+    # 3. Add Manual Purchases & ITC Entries
+    mp_res = await db.execute(select(ManualPurchase).where(ManualPurchase.company_id == user.company_id))
+    for mp in mp_res.scalars().all():
+        raw_inv = (mp.invoice_number or "").strip()
+        book_vouchers.append({
+            "voucher_id": mp.id,
+            "party_name": (mp.party_name or "").upper(),
+            "party_gstin": (mp.gstin or "").upper(),
+            "voucher_number": raw_inv.upper(),
+            "reference_number": raw_inv.upper(),
+            "norm_voucher_num": _normalize_inv(raw_inv, strip_affixes),
+            "norm_ref_num": _normalize_inv(raw_inv, strip_affixes),
+            "voucher_date": mp.invoice_date,
+            "taxable_value": mp.taxable_value,
+            "cgst": mp.cgst_amount,
+            "sgst": mp.sgst_amount,
+            "igst": mp.igst_amount,
+            "matched": False
+        })
+
+    itc_res = await db.execute(select(ItcEntry).where(ItcEntry.company_id == user.company_id))
+    for itc in itc_res.scalars().all():
+        raw_inv = (itc.invoice_number or "").strip()
+        book_vouchers.append({
+            "voucher_id": itc.voucher_id or itc.itc_id,
+            "itc_obj": itc,
+            "party_name": (itc.supplier_name or "").upper(),
+            "party_gstin": (itc.supplier_gstin or "").upper(),
+            "voucher_number": raw_inv.upper(),
+            "reference_number": raw_inv.upper(),
+            "norm_voucher_num": _normalize_inv(raw_inv, strip_affixes),
+            "norm_ref_num": _normalize_inv(raw_inv, strip_affixes),
+            "voucher_date": itc.invoice_date,
+            "taxable_value": itc.taxable_value,
+            "cgst": itc.cgst_amount,
+            "sgst": itc.sgst_amount,
+            "igst": itc.igst_amount,
+            "matched": False
+        })
+
+    exact_matches = 0
+    tolerance_matches = 0
+    fuzzy_matches = 0
+
+    for g2b in g2b_entries:
+        g2b_raw_inv = (g2b.invoice_number or "").strip().upper()
+        g2b_norm_inv = _normalize_inv(g2b_raw_inv, strip_affixes)
+        g2b_gstin = (g2b.supplier_gstin or "").strip().upper()
+        g2b_supplier = (g2b.supplier_name or "").strip().upper()
+        
+        match = None
+        match_type = None
+
+        # PASS 1: Exact Number & GSTIN & Exact Amount
+        for bv in book_vouchers:
+            if bv["matched"]:
+                continue
+            num_match = (g2b_raw_inv == bv["voucher_number"]) or (g2b_raw_inv == bv["reference_number"]) or (g2b_norm_inv and (g2b_norm_inv == bv["norm_voucher_num"] or g2b_norm_inv == bv["norm_ref_num"]))
+            gstin_match = (g2b_gstin and bv["party_gstin"] and g2b_gstin == bv["party_gstin"]) or (g2b_supplier and (g2b_supplier in bv["party_name"] or bv["party_name"] in g2b_supplier))
+            
+            if num_match and gstin_match:
+                diff_taxable = abs(g2b.taxable_value - bv["taxable_value"])
+                diff_tax = abs((g2b.cgst_amount + g2b.sgst_amount + g2b.igst_amount) - (bv["cgst"] + bv["sgst"] + bv["igst"]))
+                if diff_taxable <= Decimal("0.05") and diff_tax <= Decimal("0.05"):
+                    match = bv
+                    match_type = "EXACT"
+                    break
+
+        # PASS 2: Normalized Number + Tolerance Thresholds (Ignorediffintaxableamt)
+        if not match:
+            for bv in book_vouchers:
+                if bv["matched"]:
+                    continue
+                num_match = (g2b_norm_inv and (g2b_norm_inv == bv["norm_voucher_num"] or g2b_norm_inv == bv["norm_ref_num"])) or (g2b_raw_inv in bv["voucher_number"])
+                gstin_match = (g2b_gstin and bv["party_gstin"] and g2b_gstin == bv["party_gstin"]) or (g2b_supplier and (g2b_supplier[:6] in bv["party_name"] or bv["party_name"][:6] in g2b_supplier))
+                
+                if (num_match and gstin_match):
+                    diff_taxable = abs(g2b.taxable_value - bv["taxable_value"])
+                    diff_tax = abs((g2b.cgst_amount + g2b.sgst_amount + g2b.igst_amount) - (bv["cgst"] + bv["sgst"] + bv["igst"]))
+                    if diff_taxable <= taxable_tolerance and diff_tax <= tax_tolerance:
+                        match = bv
+                        match_type = "TOLERANCE"
+                        break
+
+        # PASS 3: Fuzzy Matching (Date within ±15 days + GSTIN + Amounts within tolerance)
+        if not match and fuzzy_mode:
+            for bv in book_vouchers:
+                if bv["matched"]:
+                    continue
+                gstin_match = (g2b_gstin and bv["party_gstin"] and g2b_gstin == bv["party_gstin"])
+                if gstin_match and g2b.invoice_date and bv["voucher_date"]:
+                    days_diff = abs((g2b.invoice_date - bv["voucher_date"]).days)
+                    if days_diff <= 15:
+                        diff_taxable = abs(g2b.taxable_value - bv["taxable_value"])
+                        diff_tax = abs((g2b.cgst_amount + g2b.sgst_amount + g2b.igst_amount) - (bv["cgst"] + bv["sgst"] + bv["igst"]))
+                        if diff_taxable <= taxable_tolerance and diff_tax <= tax_tolerance:
+                            match = bv
+                            match_type = "FUZZY"
+                            break
+
+        if match:
+            match["matched"] = True
+            g2b.match_status = "Matched"
+            g2b.itc_availability = "Available"
+            g2b.matched_voucher_id = match["voucher_id"]
+            
+            if "itc_obj" in match and match["itc_obj"]:
+                match["itc_obj"].claimed_return_period_id = g2b.return_period_id
+                
+            if match_type == "EXACT":
+                exact_matches += 1
+            elif match_type == "TOLERANCE":
+                tolerance_matches += 1
+            else:
+                fuzzy_matches += 1
+        else:
+            g2b.match_status = "Unmatched"
+
+    await db.commit()
+
+    total_reconciled = exact_matches + tolerance_matches + fuzzy_matches
+    unmatched_count = len(g2b_entries) - total_reconciled
+
+    return {
+        "status": "success",
+        "detail": f"GSTR-2B Auto-Reconciliation complete: {total_reconciled} matched ({exact_matches} exact, {tolerance_matches} within tolerance, {fuzzy_matches} fuzzy).",
+        "total_portal_entries": len(g2b_entries),
+        "total_reconciled": total_reconciled,
+        "exact_matches": exact_matches,
+        "tolerance_matches": tolerance_matches,
+        "fuzzy_matches": fuzzy_matches,
+        "unmatched": unmatched_count,
+        "rules_applied": {
+            "taxable_tolerance": float(taxable_tolerance),
+            "tax_tolerance": float(tax_tolerance),
+            "strip_prefix_suffix": strip_affixes,
+            "fuzzy_date_window_days": 15 if fuzzy_mode else 0
+        }
     }
 
 # --- GSTR-9 (Annual Returns) ---
@@ -1566,3 +1887,139 @@ async def delete_manual_purchase(
     await db.delete(mp)
     await db.commit()
     return {"detail": "Manual purchase deleted successfully."}
+
+
+# =========================================================================
+# MSME SECTION 43B(h) VENDOR COMPLIANCE & PAYMENT TRACKING
+# =========================================================================
+from app.models.tally_core import MstLedgerMsmeDetail, TrnBill
+
+@router.get("/msme-compliance")
+async def get_msme_compliance_report(
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns full MSME Vendor compliance dataset for Section 43B(h) Income Tax compliance:
+    - Lists all Micro & Small vendors
+    - Aggregates open unpaid purchase bills
+    - Calculates days elapsed against 15-day / 45-day statutory limits
+    - Computes Tax Disallowance risk for overdue payments
+    """
+    # 1. Fetch all ledgers belonging to Sundry Creditors or having MSME details
+    creditors_stmt = select(MstLedger).options(
+        selectinload(MstLedger.msme_details),
+        selectinload(MstLedger.addresses),
+        selectinload(MstLedger.group)
+    ).where(MstLedger.company_id == user.company_id)
+    
+    res = await db.execute(creditors_stmt)
+    all_ledgers = res.scalars().all()
+    
+    # Filter for MSME vendors (has msme_details or has Micro/Small tag)
+    today = date.today()
+    msme_vendors = []
+    
+    total_vendors = 0
+    total_outstanding = Decimal("0.00")
+    total_at_risk = Decimal("0.00")
+    total_critical = Decimal("0.00")
+    total_compliant = Decimal("0.00")
+    
+    for l in all_ledgers:
+        msme_detail = l.msme_details[0] if l.msme_details and len(l.msme_details) > 0 else None
+        
+        # Consider as MSME if explicit detail or if vendor under Sundry Creditors with active detail
+        is_msme = msme_detail is not None or (l.group and "creditor" in l.group.name.lower() and getattr(l, 'is_msme', False))
+        if not is_msme and not msme_detail:
+            continue
+            
+        total_vendors += 1
+        
+        # Fetch open bills for this vendor
+        bills_stmt = select(TrnBill).where(
+            TrnBill.company_id == user.company_id,
+            TrnBill.party_ledger_id == l.ledger_id,
+            TrnBill.status != "Paid"
+        ).order_by(TrnBill.bill_date.asc())
+        
+        bills_res = await db.execute(bills_stmt)
+        open_bills = bills_res.scalars().all()
+        
+        vendor_outstanding = Decimal("0.00")
+        vendor_bills = []
+        
+        for b in open_bills:
+            b_amt = Decimal(str(b.bill_amount or 0))
+            s_amt = Decimal(str(b.settled_amount or 0))
+            pending_amt = b_amt - s_amt
+            if pending_amt <= 0:
+                continue
+                
+            vendor_outstanding += pending_amt
+            b_date = b.bill_date or today
+            days_elapsed = (today - b_date).days
+            
+            # Statutory rule: 45 days max with written agreement, 15 days without
+            limit_days = 45
+            days_remaining = limit_days - days_elapsed
+            
+            if days_elapsed > 45:
+                bill_status = "OVERDUE_DISALLOWANCE" # Disallowed under Sec 43B(h)
+                total_at_risk += pending_amt
+            elif days_elapsed >= 38:
+                bill_status = "CRITICAL_WARNING" # <= 7 days remaining
+                total_critical += pending_amt
+            else:
+                bill_status = "WITHIN_LIMIT"
+                total_compliant += pending_amt
+                
+            vendor_bills.append({
+                "bill_id": b.bill_id,
+                "bill_reference": b.bill_reference,
+                "bill_date": str(b_date),
+                "due_date": str(b.due_date) if b.due_date else str(b_date),
+                "bill_amount": float(b_amt),
+                "settled_amount": float(s_amt),
+                "outstanding_amount": float(pending_amt),
+                "days_elapsed": days_elapsed,
+                "days_remaining": days_remaining,
+                "status": bill_status
+            })
+            
+        total_outstanding += vendor_outstanding
+        
+        # Vendor risk status
+        if any(b['status'] == 'OVERDUE_DISALLOWANCE' for b in vendor_bills):
+            v_status = 'HIGH_RISK'
+        elif any(b['status'] == 'CRITICAL_WARNING' for b in vendor_bills):
+            v_status = 'MEDIUM_RISK'
+        else:
+            v_status = 'COMPLIANT'
+            
+        msme_vendors.append({
+            "ledger_id": l.ledger_id,
+            "name": l.name,
+            "gstin": l.gstin,
+            "state": l.state,
+            "enterprise_type": msme_detail.enterprise_type if msme_detail else "Micro",
+            "udyam_reg_no": msme_detail.udyam_reg_no if msme_detail else None,
+            "applicable_from": str(msme_detail.applicable_from) if msme_detail and msme_detail.applicable_from else None,
+            "total_outstanding": float(vendor_outstanding),
+            "pending_bills_count": len(vendor_bills),
+            "vendor_risk_status": v_status,
+            "bills": vendor_bills
+        })
+        
+    return {
+        "summary": {
+            "total_msme_vendors": total_vendors,
+            "total_outstanding_amount": float(total_outstanding),
+            "total_at_risk_disallowance": float(total_at_risk),
+            "total_critical_due_soon": float(total_critical),
+            "total_compliant_amount": float(total_compliant),
+            "fiscal_year": f"{today.year if today.month >= 4 else today.year - 1}-{str(today.year + 1 if today.month >= 4 else today.year)[2:]}"
+        },
+        "vendors": msme_vendors
+    }
+

@@ -4,6 +4,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from datetime import datetime, date
+from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
@@ -1433,3 +1434,157 @@ async def get_serials(
         stmt = stmt.where(SerialNumber.stock_item_id == stock_item_id)
     res = await db.execute(stmt)
     return res.scalars().all()
+
+
+class ManufacturingJournalRequest(BaseModel):
+    stock_item_id: int
+    bom_id: int
+    quantity_to_produce: float
+    destination_godown_id: Optional[int] = None
+    voucher_date: Optional[str] = None
+    narration: Optional[str] = None
+
+
+@router.post("/manufacturing-journal")
+async def create_manufacturing_journal(
+    req: ManufacturingJournalRequest,
+    user: User = Depends(require_permission("inventory", "create")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Auto-generate a Manufacturing Stock Journal from a Bill of Materials (BOM) recipe.
+    Consumes component raw materials (Source) and adds produced finished items (Destination).
+    """
+    from datetime import date
+    from app.models.tally_core import TrnVoucher, TrnInventory, MstVoucherType, MstGodown
+
+    # 1. Fetch Finished Item & BOM
+    item_stmt = select(MstStockItem).options(
+        selectinload(MstStockItem.unit),
+        selectinload(MstStockItem.boms).selectinload(StockItemBOM.components).selectinload(StockItemBOMComponent.component_item).selectinload(MstStockItem.unit)
+    ).where(
+        MstStockItem.stock_item_id == req.stock_item_id,
+        MstStockItem.company_id == user.company_id
+    )
+    item = (await db.execute(item_stmt)).scalars().first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Finished stock item not found.")
+
+    bom = next((b for b in item.boms if b.bom_id == req.bom_id), None)
+    if not bom:
+        raise HTTPException(status_code=404, detail="Selected BOM recipe not found for this stock item.")
+
+    if req.quantity_to_produce <= 0:
+        raise HTTPException(status_code=400, detail="Quantity to produce must be greater than zero.")
+
+    # 2. Find or create Stock Journal Voucher Type
+    vt_stmt = select(MstVoucherType).where(
+        MstVoucherType.company_id == user.company_id,
+        MstVoucherType.parent_type == "Stock Journal"
+    )
+    vtype = (await db.execute(vt_stmt)).scalars().first()
+    if not vtype:
+        vtype = MstVoucherType(
+            company_id=user.company_id,
+            name="Manufacturing Journal",
+            parent_type="Stock Journal",
+            numbering_method="Auto"
+        )
+        db.add(vtype)
+        await db.flush()
+
+    vch_date = datetime.strptime(req.voucher_date, "%Y-%m-%d").date() if req.voucher_date else date.today()
+    vch_num = f"MFG-{datetime.now().strftime('%y%m%d%H%M%S')}"
+
+    # 3. Calculate Component Consumption & Costs
+    scale = Decimal(str(req.quantity_to_produce)) / Decimal(str(bom.unit_of_manufacture or 1))
+    total_mfg_cost = Decimal("0.00")
+    consumed_entries = []
+
+    for comp in bom.components:
+        comp_item = comp.component_item
+        req_qty = comp.quantity * scale
+        rate = comp_item.standard_cost_price or comp_item.opening_rate or Decimal("10.00")
+        line_amt = req_qty * rate
+        total_mfg_cost += line_amt
+
+        consumed_entries.append({
+            "stock_item_id": comp.component_item_id,
+            "stock_item_name": comp_item.name,
+            "godown_id": comp.godown_id,
+            "quantity": float(req_qty),
+            "rate": float(rate),
+            "amount": float(line_amt),
+            "flow_type": "source",
+            "is_inward": False,
+            "is_deemed_positive": False
+        })
+
+    # Output Finished Good Cost Rate
+    produced_rate = (total_mfg_cost / Decimal(str(req.quantity_to_produce))) if req.quantity_to_produce > 0 else Decimal("0.00")
+
+    # 4. Create Voucher Record
+    voucher = TrnVoucher(
+        company_id=user.company_id,
+        voucher_type_id=vtype.voucher_type_id,
+        voucher_number=vch_num,
+        voucher_date=vch_date,
+        narration=req.narration or f"Manufacturing of {req.quantity_to_produce} {item.unit.symbol if item.unit else 'PCS'} via BOM: {bom.bom_name}",
+        total_amount=total_mfg_cost,
+        status="confirmed",
+        persisted_view="Stock Journal Voucher View",
+        created_by=user.user_id
+    )
+    db.add(voucher)
+    await db.flush()
+
+    # 5. Add Inventory Entries (Consumption + Production)
+    for c in consumed_entries:
+        inv = TrnInventory(
+            voucher_id=voucher.voucher_id,
+            stock_item_id=c["stock_item_id"],
+            godown_id=c["godown_id"],
+            quantity=Decimal(str(c["quantity"])),
+            rate=Decimal(str(c["rate"])),
+            amount=Decimal(str(c["amount"])),
+            is_inward=False,
+            is_deemed_positive=False,
+            flow_type="source"
+        )
+        db.add(inv)
+
+    # Destination Entry (Finished Goods)
+    dest_inv = TrnInventory(
+        voucher_id=voucher.voucher_id,
+        stock_item_id=item.stock_item_id,
+        godown_id=req.destination_godown_id,
+        quantity=Decimal(str(req.quantity_to_produce)),
+        rate=produced_rate,
+        amount=total_mfg_cost,
+        is_inward=True,
+        is_deemed_positive=True,
+        flow_type="destination"
+    )
+    db.add(dest_inv)
+
+    # 6. Outbound Sync Queue
+    sync_item = SyncQueue(
+        company_id=user.company_id,
+        record_type="Voucher",
+        record_id=voucher.voucher_id,
+        action="Create"
+    )
+    db.add(sync_item)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "voucher_id": voucher.voucher_id,
+        "voucher_number": voucher.voucher_number,
+        "finished_item": item.name,
+        "quantity_produced": req.quantity_to_produce,
+        "total_cost": float(total_mfg_cost),
+        "unit_cost": float(produced_rate),
+        "components_consumed": consumed_entries
+    }
+

@@ -19,8 +19,10 @@ from app.routers.admin import require_admin
 from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, DeletedRecordAudit
 from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting, MstStockItem, MstVoucherType
 from app.services.tally_xml_importer import import_tally_xml
+from app.services.tally_schema_validator import TallySchemaValidator
 
 logger = logging.getLogger("uvicorn.error")
+schema_validator = TallySchemaValidator()
 
 router = APIRouter(prefix="/sync", tags=["Tally Synchronization"])
 
@@ -234,7 +236,7 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         from app.models.tally_core import (
             TrnVoucher, TrnAccounting, MstLedger, MstVoucherType, BillAllocation, 
             TrnInventory, MstStockItem, MstGodown, Batch, VoucherAccountingAllocation,
-            CostCenter
+            CostCenter, TrnCostCentreAllocation, MstCostCentre
         )
         from app.models.portal_core import Company
         
@@ -243,10 +245,13 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.cost_centre_allocations).selectinload(TrnCostCentreAllocation.cost_centre),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.godown),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.batch),
-            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations).selectinload(VoucherAccountingAllocation.ledger)
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations).selectinload(VoucherAccountingAllocation.ledger),
+            selectinload(TrnVoucher.eway_bills),
+            selectinload(TrnVoucher.payment_links)
         ).where(TrnVoucher.voucher_id == voucher_id)
         v_res = await db.execute(v_stmt)
         voucher = v_res.scalars().first()
@@ -408,12 +413,16 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                     ba_amt = -float(ba.amount) if ent.debit_amount > 0 else float(ba.amount)
                     inst_date = ba.instrument_date.strftime("%Y%m%d") if ba.instrument_date else vdate_str
                     tx_type = ba.transaction_type or "Others"
-                    entries_xml += f'''
+                    bank_op_tag = f"\n                 <BANKOPERATIONREFERENCE>{ba.bank_operation_ref}</BANKOPERATIONREFERENCE>" if getattr(ba, 'bank_operation_ref', None) else ""
+                bank_prt_tag = f"\n                 <BANKPORTALREFERENCE>{ba.bank_portal_ref}</BANKPORTALREFERENCE>" if getattr(ba, 'bank_portal_ref', None) else ""
+                bank_txn_tag = f"\n                 <BANKTRANSACTIONREFERENCE>{ba.bank_transaction_ref}</BANKTRANSACTIONREFERENCE>" if getattr(ba, 'bank_transaction_ref', None) else ""
+                paylink_tag = f"\n                 <PAYMENTLINK>{ba.payment_link}</PAYMENTLINK>" if getattr(ba, 'payment_link', None) else ""
+                entries_xml += f'''
                <BANKALLOCATIONS.LIST>
                 <DATE>{vdate_str}</DATE>
                 <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>
                 <TRANSACTIONTYPE>{tx_type}</TRANSACTIONTYPE>
-                <PAYMENTMODE>Transacted</PAYMENTMODE>
+                <PAYMENTMODE>Transacted</PAYMENTMODE>{bank_op_tag}{bank_prt_tag}{bank_txn_tag}{paylink_tag}
                 <BANKPARTYNAME>{party_ledger_name or 'Cash'}</BANKPARTYNAME>
                 <AMOUNT>{ba_amt:.2f}</AMOUNT>
                </BANKALLOCATIONS.LIST>'''
@@ -437,16 +446,79 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                 <AMOUNT>{amt:.2f}</AMOUNT>
                </BILLALLOCATIONS.LIST>'''
 
+            # Multi-Cost-Centre allocations support
+            if getattr(ent, 'cost_centre_allocations', None):
+                for cca in ent.cost_centre_allocations:
+                    cc_name = cca.cost_centre.name if getattr(cca, 'cost_centre', None) and cca.cost_centre else "Cost Centre"
+                    cca_amt = -float(cca.amount) if ent.debit_amount > 0 else float(cca.amount)
+                    entries_xml += f'''
+               <COSTCENTREALLOCATIONS.LIST>
+                <NAME>{cc_name}</NAME>
+                <AMOUNT>{cca_amt:.2f}</AMOUNT>
+               </COSTCENTREALLOCATIONS.LIST>'''
+
             entries_xml += f'''
               </{ledger_tag}>'''
 
-        guid_val = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
+        guid_val = getattr(voucher, 'guid', None) or getattr(voucher, 'tally_guid', None) or f"MYTALLY-VCH-{voucher.voucher_id}"
         vch_tag_attrs = f'REMOTEID="{guid_val}" VCHTYPE="{vtype_name}" ACTION="{action}" OBJVIEW="{obj_view}"'
         guid_xml = f"\n              <GUID>{guid_val}</GUID>"
 
         is_invoice_tag = "\n              <ISINVOICE>Yes</ISINVOICE>" if is_inv else ""
+        
+        eff_date_val = voucher.effective_date.strftime("%Y%m%d") if voucher.effective_date else vdate_str
+        ref_date_tag = f"\n              <REFERENCEDATE>{voucher.reference_date.strftime('%Y%m%d')}</REFERENCEDATE>" if getattr(voucher, 'reference_date', None) else ""
+        pos_tag = f"\n              <PLACEOFSUPPLY>{voucher.place_of_supply}</PLACEOFSUPPLY>" if getattr(voucher, 'place_of_supply', None) else ""
+        buyer_tag = f"\n              <BASICBUYERNAME>{voucher.buyer_name}</BASICBUYERNAME>" if getattr(voucher, 'buyer_name', None) else ""
+        consignee_tag = f"\n              <CONSIGNEEMAILINGNAME>{voucher.consignee_name}</CONSIGNEEMAILINGNAME>" if getattr(voucher, 'consignee_name', None) else ""
+        order_ref_tag = f"\n              <BASICORDERREF>{voucher.order_reference}</BASICORDERREF>" if getattr(voucher, 'order_reference', None) else ""
+        despatch_tag = f"\n              <BASICSHIPDELIVERYNOTE>{voucher.despatch_doc_no}</BASICSHIPDELIVERYNOTE>" if getattr(voucher, 'despatch_doc_no', None) else ""
+        post_dated_tag = f"\n              <ISPOSTDATED>{'Yes' if getattr(voucher, 'is_post_dated', False) else 'No'}</ISPOSTDATED>"
 
-        return f'''<ENVELOPE>
+        # e-Invoice XML tags
+        irn_tag = f"\n              <IRN>{voucher.irn}</IRN>" if getattr(voucher, 'irn', None) else ""
+        irn_ack_tag = f"\n              <IRNACKNO>{voucher.irn_ack_no}</IRNACKNO>" if getattr(voucher, 'irn_ack_no', None) else ""
+        irn_date_tag = f"\n              <IRNACKDATE>{voucher.irn_ack_date.strftime('%Y-%m-%d %H:%M:%S')}</IRNACKDATE>" if getattr(voucher, 'irn_ack_date', None) else ""
+        irn_qr_tag = f"\n              <IRNQRCODE>{voucher.irn_qr_code}</IRNQRCODE>" if getattr(voucher, 'irn_qr_code', None) else ""
+        irn_cancelled_tag = f"\n              <IRNCANCELLED>{'Yes' if getattr(voucher, 'irn_cancelled', False) else 'No'}</IRNCANCELLED>" if getattr(voucher, 'irn', None) else ""
+
+        # e-Way Bill XML tags
+        eway_bills_xml = ""
+        if getattr(voucher, 'eway_bills', None):
+            for eb in voucher.eway_bills:
+                b_date = eb.bill_date.strftime("%Y%m%d") if eb.bill_date else ""
+                v_date = eb.valid_up_to.strftime("%Y%m%d") if eb.valid_up_to else ""
+                d_date = eb.doc_date.strftime("%Y%m%d") if eb.doc_date else ""
+                eway_bills_xml += f'''
+              <EWAYBILLDETAILS.LIST>
+               <BILLNUMBER>{eb.bill_number or ''}</BILLNUMBER>
+               <BILLDATE>{b_date}</BILLDATE>
+               <VALIDUPTO>{v_date}</VALIDUPTO>
+               <DISTANCE>{eb.distance_km or '0'}</DISTANCE>
+               <TRANSPORTERID>{eb.transporter_id or ''}</TRANSPORTERID>
+               <TRANSPORTERNAME>{eb.transporter_name or ''}</TRANSPORTERNAME>
+               <DOCNUMBER>{eb.doc_number or ''}</DOCNUMBER>
+               <DOCDATE>{d_date}</DOCDATE>
+               <VEHICLENUMBER>{eb.vehicle_number or ''}</VEHICLENUMBER>
+               <VEHICLETYPE>{eb.vehicle_type or 'Regular'}</VEHICLETYPE>
+               <TRANSPORTMODE>{eb.transport_mode or 'Road'}</TRANSPORTMODE>
+               <SUBTYPE>{eb.sub_type or 'Supply'}</SUBTYPE>
+               <DOCTYPE>{eb.doc_type or 'Tax Invoice'}</DOCTYPE>
+              </EWAYBILLDETAILS.LIST>'''
+
+        paylink_xml = ""
+        if getattr(voucher, 'payment_links', None):
+            for pl in voucher.payment_links:
+                paylink_xml += f'''
+              <PAYLINK.LIST>
+               <PAYLINKID>{pl.link_id}</PAYLINKID>
+               <PAYMENTURL>{pl.payment_url}</PAYMENTURL>
+               <PAYMENTMODE>{pl.payment_mode}</PAYMENTMODE>
+               <STATUS>{pl.status}</STATUS>
+               <AMOUNT>{float(pl.amount):.2f}</AMOUNT>
+              </PAYLINK.LIST>'''
+
+        xml_result = f'''<ENVELOPE>
     <HEADER>
         <VERSION>1</VERSION>
         <TALLYREQUEST>Import</TALLYREQUEST>
@@ -464,14 +536,14 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
             <TALLYMESSAGE xmlns:UDF="TallyUDF">
              <VOUCHER {vch_tag_attrs}>
               <DATE>{vdate_str}</DATE>
-              <EFFECTIVEDATE>{vdate_str}</EFFECTIVEDATE>
+              <EFFECTIVEDATE>{eff_date_val}</EFFECTIVEDATE>
               <VCHSTATUSDATE>{vdate_str}</VCHSTATUSDATE>
               <VOUCHERTYPENAME>{vtype_name}</VOUCHERTYPENAME>
-              <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>
+              <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>{ref_date_tag}{pos_tag}{buyer_tag}{consignee_tag}{order_ref_tag}{despatch_tag}{post_dated_tag}{irn_tag}{irn_ack_tag}{irn_date_tag}{irn_qr_tag}{irn_cancelled_tag}
               <PARTYNAME>{party_ledger_name}</PARTYNAME>
               <PARTYLEDGERNAME>{party_ledger_name}</PARTYLEDGERNAME>
               <PERSISTEDVIEW>{obj_view}</PERSISTEDVIEW>{is_invoice_tag}
-              <NARRATION>{voucher.narration or ''}</NARRATION>{guid_xml}
+              <NARRATION>{voucher.narration or ''}</NARRATION>{guid_xml}{eway_bills_xml}{paylink_xml}
               {all_inventory_xml}
               {entries_xml}
              </VOUCHER>
@@ -479,6 +551,13 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         </DATA>
     </BODY>
 </ENVELOPE>'''
+
+        # Run Phase 3 Schema Pre-Flight Validation
+        val_errors = schema_validator.validate_xml_envelope(xml_result)
+        if val_errors:
+            logger.warning(f"⚠️ [SCHEMA VALIDATION] Voucher ID {voucher_id} generated warnings: {val_errors}")
+
+        return xml_result
     except Exception as e:
         logger.error(f"Error in build_voucher_xml_payload for voucher {voucher_id}: {e}", exc_info=True)
         return ""
@@ -808,6 +887,9 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
     if gst_reg_type == 'Unregistered/Consumer':
         gst_reg_type = 'Unregistered'
 
+    ledger_type_val = getattr(ledger, 'ledger_type', '') or ''
+    tax_class_name = getattr(ledger, 'tax_classification_name', '') or ''
+
     op_sign = '-' if ledger.opening_balance_type == 'Dr' else ''
     op_bal_str = f"{op_sign}{ledger.opening_balance}" if ledger.opening_balance else "0.00"
 
@@ -826,14 +908,73 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
       {addr_list_xml}
     </LEDMAILINGDETAILS.LIST>""" if (state_val or country_val or pincode_val or addr_list_xml) else ""
 
+    # Multi-Address support
+    loaded_addrs = ledger.__dict__.get('addresses')
+    if loaded_addrs and len(loaded_addrs) > 0:
+        mailing_details_xml = ""
+        for a in loaded_addrs:
+            a_lines = [l.strip() for l in (a.address or '').replace('\n', ',').split(',') if l.strip()]
+            a_nodes = "".join([f"<ADDRESS>{l}</ADDRESS>" for l in a_lines])
+            a_list = f"<ADDRESS.LIST>{a_nodes}</ADDRESS.LIST>" if a_nodes else ""
+            mailing_details_xml += f"""<LEDMAILINGDETAILS.LIST>
+      <ADDRESSNAME>{a.address_name or 'Primary'}</ADDRESSNAME>
+      <MAILINGNAME>{a.mailing_name or ledger.name}</MAILINGNAME>
+      <STATE>{a.state_name or state_val}</STATE>
+      <COUNTRY>{a.country_name or country_val}</COUNTRY>
+      <PINCODE>{a.pincode or pincode_val}</PINCODE>
+      {a_list}
+    </LEDMAILINGDETAILS.LIST>"""
+
     applicable_from = getattr(ledger, 'gst_applicable_from', None)
     app_from_str = applicable_from.strftime("%Y%m%d") if applicable_from else "20250401"
 
-    gst_reg_details_xml = f"""<LEDGSTREGDETAILS.LIST>
+    # Multi-GST Registrations support
+    gst_reg_details_xml = ""
+    loaded_regs = ledger.__dict__.get('gst_registrations')
+    if loaded_regs and len(loaded_regs) > 0:
+        for reg in loaded_regs:
+            r_app = reg.applicable_from.strftime("%Y%m%d") if reg.applicable_from else app_from_str
+            gst_reg_details_xml += f"""<LEDGSTREGDETAILS.LIST>
+      <APPLICABLEFROM>{r_app}</APPLICABLEFROM>
+      <GSTREGISTRATIONTYPE>{reg.registration_type or 'Regular'}</GSTREGISTRATIONTYPE>
+      <GSTIN>{reg.gstin}</GSTIN>
+      <STATENAME>{reg.state_name or state_val}</STATENAME>
+      <PLACEOFSUPPLY>{reg.place_of_supply or state_val}</PLACEOFSUPPLY>
+    </LEDGSTREGDETAILS.LIST>"""
+    elif (gst_reg_type or gstin_val):
+        gst_reg_details_xml = f"""<LEDGSTREGDETAILS.LIST>
       <APPLICABLEFROM>{app_from_str}</APPLICABLEFROM>
       <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
       <GSTIN>{gstin_val}</GSTIN>
-    </LEDGSTREGDETAILS.LIST>""" if (gst_reg_type or gstin_val) else ""
+    </LEDGSTREGDETAILS.LIST>"""
+
+    # MSME Details support
+    msme_details_xml = ""
+    loaded_msme = ledger.__dict__.get('msme_details')
+    if loaded_msme and len(loaded_msme) > 0:
+        for m in loaded_msme:
+            m_app = m.applicable_from.strftime("%Y%m%d") if m.applicable_from else app_from_str
+            msme_details_xml += f"""<MSMEREGISTRATIONDETAILS.LIST>
+      <ENTERPRISETYPE>{m.enterprise_type or 'Micro'}</ENTERPRISETYPE>
+      <UDYAMREGNO>{m.udyam_reg_no or ''}</UDYAMREGNO>
+      <APPLICABLEFROM>{m_app}</APPLICABLEFROM>
+    </MSMEREGISTRATIONDETAILS.LIST>"""
+
+    # Lower TDS Deduction support
+    lower_ded_xml = ""
+    loaded_low = ledger.__dict__.get('lower_deductions')
+    if loaded_low and len(loaded_low) > 0:
+        for ld in loaded_low:
+            l_app_from = ld.applicable_from.strftime("%Y%m%d") if ld.applicable_from else "20250401"
+            l_app_to = ld.applicable_to.strftime("%Y%m%d") if ld.applicable_to else "20260331"
+            lower_ded_xml += f"""<LOWERDEDUCTION.LIST>
+      <SECTIONNUMBER>{ld.section_number}</SECTIONNUMBER>
+      <CERTIFICATENO>{ld.certificate_no}</CERTIFICATENO>
+      <RATEOFDEDUCTION>{ld.rate_of_deduction:.2f}</RATEOFDEDUCTION>
+      <APPLICABLEFROM>{l_app_from}</APPLICABLEFROM>
+      <APPLICABLETO>{l_app_to}</APPLICABLETO>
+      <LIMIT>{ld.threshold_limit or '0.00'}</LIMIT>
+    </LOWERDEDUCTION.LIST>"""
 
     return f"""<ENVELOPE>
   <HEADER>
@@ -865,14 +1006,18 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
             <LEDGERPHONE>{phone_val}</LEDGERPHONE>
             <LEDGERMOBILE>{mobile_val}</LEDGERMOBILE>
             <EMAIL>{email_val}</EMAIL>
-            <INCOMETAXNUMBER>{pan_val}</INCOMETAXNUMBER>
-            <GSTIN>{gstin_val}</GSTIN>
-            <PARTYGSTIN>{gstin_val}</PARTYGSTIN>
-            <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
-            {gst_reg_details_xml}
             <ISBILLWISEON>{is_billwise}</ISBILLWISEON>
             <CREDITLIMIT>{credit_limit_val or ''}</CREDITLIMIT>
             <BILLCREDITPERIOD>{f"{credit_days_val} Days" if credit_days_val else ''}</BILLCREDITPERIOD>
+            <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
+            <GSTIN>{gstin_val}</GSTIN>
+            <PAN>{pan_val}</PAN>
+            <LEDGERTYPE>{ledger_type_val}</LEDGERTYPE>
+            <TAXCLASSIFICATIONNAME>{tax_class_name}</TAXCLASSIFICATIONNAME>
+            {mailing_details_xml}
+            {gst_reg_details_xml}
+            {msme_details_xml}
+            {lower_ded_xml}
             <LWLEDADHARNOSTORE>{aadhar_val}</LWLEDADHARNOSTORE>
             <UDF:LWLEDADHARNOSTORE DESC="`LWLedAdharNoStore`" TYPE="String">{aadhar_val}</UDF:LWLEDADHARNOSTORE>
           </LEDGER>
@@ -1799,21 +1944,10 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
         is_already_deleted = (action == "Delete" and "Voucher does not exist" in (response or ""))
 
         if sync_id and sync_id > 0:
-            if is_success:
+            if is_success or is_already_deleted:
                 await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
                     is_processed=True,
                     status="SUCCESS",
-                    last_payload=xml_envelope,
-                    last_response=response,
-                    last_attempt_at=func.now(),
-                    attempts=SyncQueue.attempts + 1
-                ))
-            elif is_already_deleted:
-                # Recorded as EXCEPTION in DB for user review
-                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
-                    is_processed=False,
-                    status="EXCEPTION",
-                    error_message="Voucher does not exist in Tally (Already Deleted / Absent)",
                     last_payload=xml_envelope,
                     last_response=response,
                     last_attempt_at=func.now(),
@@ -1839,8 +1973,8 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
                     DeletedRecordAudit.record_id == voucher_id
                 )
                 .values(
-                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "NOT_DELETED_IN_TALLY",
-                    tally_error_message=None if is_success else (metrics["error_summary"] or "Cannot be deleted in Tally Prime")
+                    tally_sync_status="SYNCED_TO_TALLY" if (is_success or is_already_deleted) else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if (is_success or is_already_deleted) else (metrics["error_summary"] or "Cannot be deleted in Tally Prime")
                 )
             )
             await db.commit()
@@ -4168,7 +4302,9 @@ async def retry_deleted_audit_sync(
         tally_url=tally_url
     )
 
-    if is_success:
+    is_already_deleted = ("does not exist" in (resp_str or "").lower())
+
+    if is_success or is_already_deleted:
         audit.tally_sync_status = "SYNCED_TO_TALLY"
         audit.tally_error_message = None
     else:
@@ -4183,6 +4319,100 @@ async def retry_deleted_audit_sync(
         "tally_error_message": audit.tally_error_message,
         "tally_response": resp_str
     }
+
+@router.post("/deleted-audits/{audit_id}/dismiss")
+async def dismiss_deleted_audit(
+    audit_id: int,
+    user: User = Depends(require_permission("ledgers", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Manually marks an audit discrepancy as reconciled/dismissed (e.g. for test records or known discrepancies).
+    """
+    stmt = select(DeletedRecordAudit).where(
+        DeletedRecordAudit.audit_id == audit_id,
+        DeletedRecordAudit.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    audit = res.scalars().first()
+    if not audit:
+        raise HTTPException(status_code=404, detail="Deleted record audit not found")
+
+    audit.tally_sync_status = "SYNCED_TO_TALLY"
+    audit.tally_error_message = None
+    await db.commit()
+    return {"detail": "Discrepancy dismissed and marked as reconciled.", "audit_id": audit_id}
+
+@router.post("/deleted-audits/dismiss-all")
+async def dismiss_all_deleted_audits(
+    user: User = Depends(require_permission("ledgers", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Dismisses all unresolved deletion discrepancies for the company.
+    """
+    await db.execute(
+        update(DeletedRecordAudit)
+        .where(
+            DeletedRecordAudit.company_id == user.company_id,
+            DeletedRecordAudit.tally_sync_status != "SYNCED_TO_TALLY"
+        )
+        .values(
+            tally_sync_status="SYNCED_TO_TALLY",
+            tally_error_message=None
+        )
+    )
+    await db.commit()
+    return {"detail": "All deletion discrepancies dismissed and marked as reconciled."}
+
+@router.post("/traffic-logs/clear-resolved")
+async def clear_resolved_traffic_logs(
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Clears historical failed and exception logs to reset the active issues count to zero.
+    """
+    from sqlalchemy import delete
+    await db.execute(
+        delete(SyncTrafficLog).where(
+            SyncTrafficLog.company_id == user.company_id,
+            SyncTrafficLog.status.in_(["FAILED", "EXCEPTION", "TIMEOUT"])
+        )
+    )
+    # Also reconcile all pending delete audits
+    await db.execute(
+        update(DeletedRecordAudit)
+        .where(
+            DeletedRecordAudit.company_id == user.company_id,
+            DeletedRecordAudit.tally_sync_status != "SYNCED_TO_TALLY"
+        )
+        .values(
+            tally_sync_status="SYNCED_TO_TALLY",
+            tally_error_message=None
+        )
+    )
+    await db.commit()
+    return {"detail": "All historical sync issues and discrepancies cleared successfully."}
+
+@router.delete("/traffic-logs/{log_id}")
+async def delete_traffic_log(
+    log_id: int,
+    user: User = Depends(require_permission("ledgers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes a single sync traffic log entry.
+    """
+    from sqlalchemy import delete
+    await db.execute(
+        delete(SyncTrafficLog).where(
+            SyncTrafficLog.log_id == log_id,
+            SyncTrafficLog.company_id == user.company_id
+        )
+    )
+    await db.commit()
+    return {"detail": f"Traffic log #{log_id} deleted."}
 
 
 @router.post("/deleted-audits/{audit_id}/deactivate-in-tally")

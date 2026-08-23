@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, get_effective_permission
 from app.models.portal_core import User
 from app.models.portal_core import SyncQueue
-from app.models.tally_core import MstGroup, MstLedger, MstLedgerBankDetail, CostCenter, BankTransactionType
+from app.models.tally_core import MstGroup, MstLedger, MstLedgerBankDetail, CostCenter, BankTransactionType, MstLedgerMsmeDetail
 from app.models.portal_core import GstRegistrationType
 from app.models.tally_core import TrnAccounting
 from app.schemas.ledger import (
@@ -557,15 +557,24 @@ async def create_ledger(
     if data_dict.get("gstin") and len(data_dict["gstin"].strip()) >= 12 and not data_dict.get("pan_number"):
         data_dict["pan_number"] = data_dict["gstin"].strip()[2:12].upper()
 
-    if mobile_val and data_dict.get("address"):
-      if " | Mobile: " not in data_dict["address"]:
-        data_dict["address"] = f"{data_dict['address']} | Mobile: {mobile_val}"
-    elif mobile_val and not data_dict.get("address"):
-      data_dict["address"] = f"| Mobile: {mobile_val}"
+    ent_type = data_dict.pop("enterprise_type", None)
+    udyam_no = data_dict.pop("udyam_reg_no", None)
 
-    ledger = MstLedger(company_id=user.company_id, **data_dict)
+    valid_cols = {c.name for c in MstLedger.__table__.columns}
+    filtered_data = {k: v for k, v in data_dict.items() if k in valid_cols}
+
+    ledger = MstLedger(company_id=user.company_id, **filtered_data)
     db.add(ledger)
     await db.flush()
+
+    if ent_type or udyam_no:
+        from datetime import date
+        db.add(MstLedgerMsmeDetail(
+            ledger_id=ledger.ledger_id,
+            enterprise_type=ent_type or "Micro",
+            udyam_reg_no=udyam_no,
+            applicable_from=date.today()
+        ))
 
     if bank_details_data:
         for bd in bank_details_data:
@@ -665,6 +674,19 @@ async def update_ledger(
     for k, v in data_dict.items():
         if k in valid_cols:
             setattr(ledger, k, v)
+
+    ent_type = data_dict.get("enterprise_type")
+    udyam_no = data_dict.get("udyam_reg_no")
+    if ent_type or udyam_no:
+        from datetime import date
+        m_stmt = select(MstLedgerMsmeDetail).where(MstLedgerMsmeDetail.ledger_id == ledger.ledger_id)
+        m_obj = (await db.execute(m_stmt)).scalars().first()
+        if not m_obj:
+            m_obj = MstLedgerMsmeDetail(ledger_id=ledger.ledger_id, enterprise_type=ent_type or "Micro", udyam_reg_no=udyam_no, applicable_from=date.today())
+            db.add(m_obj)
+        else:
+            if ent_type: m_obj.enterprise_type = ent_type
+            if udyam_no: m_obj.udyam_reg_no = udyam_no
 
     if bank_details_data is not None:
         from sqlalchemy import delete

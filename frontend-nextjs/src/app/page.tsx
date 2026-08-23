@@ -215,6 +215,15 @@ export default function DashboardPage() {
       show: permissions.showStocks,
     },
     {
+      href: '/inventory/bom',
+      label: 'BOM & Manufacturing',
+      description: 'Bill of Materials recipe designer and manufacturing stock journals',
+      icon: Layers,
+      color: 'text-cyan-600',
+      bgColor: 'bg-cyan-500/10 border-cyan-500/20',
+      show: permissions.showStocks,
+    },
+    {
       href: '/temporders',
       label: 'Temporary Orders',
       description: 'Create and manage pre-Tally customer orders',

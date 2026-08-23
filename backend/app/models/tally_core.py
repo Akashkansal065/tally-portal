@@ -352,12 +352,79 @@ class MstLedger(Base):
     is_cost_centres_on = Column(Boolean, default=False)
     notes = Column(String(500), nullable=True)
     is_active = Column(Boolean, default=True)
+    ledger_type = Column(String(50), nullable=True)
+    closing_balance = Column(Numeric(18, 2), nullable=True)
+    tax_classification_name = Column(String(100), nullable=True)
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     group = relationship("MstGroup", back_populates="ledgers")
     company = relationship("Company")
     bank_details = relationship("MstLedgerBankDetail", back_populates="ledger", cascade="all, delete-orphan")
+    gst_registrations = relationship("MstLedgerGstRegistration", back_populates="ledger", cascade="all, delete-orphan")
+    hsn_details = relationship("MstHsnDetail", back_populates="ledger", cascade="all, delete-orphan")
+    msme_details = relationship("MstLedgerMsmeDetail", back_populates="ledger", cascade="all, delete-orphan")
+    addresses = relationship("MstLedgerAddress", back_populates="ledger", cascade="all, delete-orphan")
+    lower_deductions = relationship("MstLedgerTdsLowerDeduction", back_populates="ledger", cascade="all, delete-orphan")
+
+class MstLedgerMsmeDetail(Base):
+    __tablename__ = "ledger_msme_details"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id", ondelete="CASCADE"), nullable=False, index=True)
+    enterprise_type = Column(String(50), nullable=True) # 'Micro', 'Small', 'Medium'
+    udyam_reg_no = Column(String(50), nullable=True)
+    applicable_from = Column(Date, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    ledger = relationship("MstLedger", back_populates="msme_details")
+
+class MstLedgerAddress(Base):
+    __tablename__ = "ledger_addresses"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id", ondelete="CASCADE"), nullable=False, index=True)
+    address_name = Column(String(100), default="Primary")
+    mailing_name = Column(String(150), nullable=True)
+    address = Column(TEXT, nullable=True)
+    state_name = Column(String(100), nullable=True)
+    country_name = Column(String(100), default="India")
+    pincode = Column(String(20), nullable=True)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    ledger = relationship("MstLedger", back_populates="addresses")
+
+class MstLedgerTdsLowerDeduction(Base):
+    __tablename__ = "ledger_tds_lower_deductions"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id", ondelete="CASCADE"), nullable=False, index=True)
+    section_number = Column(String(20), nullable=False) # e.g. '194C', '194J'
+    certificate_no = Column(String(50), nullable=False)
+    rate_of_deduction = Column(Numeric(5, 2), default=0.00)
+    applicable_from = Column(Date, nullable=True)
+    applicable_to = Column(Date, nullable=True)
+    threshold_limit = Column(Numeric(18, 2), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    ledger = relationship("MstLedger", back_populates="lower_deductions")
+
+class MstLedgerGstRegistration(Base):
+    __tablename__ = "ledger_gst_registrations"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id", ondelete="CASCADE"), nullable=False, index=True)
+    gstin = Column(String(15), nullable=False, index=True)
+    state_name = Column(String(100), nullable=True)
+    place_of_supply = Column(String(100), nullable=True)
+    registration_type = Column(String(50), default="Regular")
+    applicable_from = Column(Date, nullable=True)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    ledger = relationship("MstLedger", back_populates="gst_registrations")
 
 class MstLedgerBankDetail(Base):
     __tablename__ = "ledger_bank_details"
@@ -575,17 +642,94 @@ class TrnVoucher(Base):
     is_optional = Column(Boolean, default=False, nullable=False)
     original_voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="SET NULL"), nullable=True)
     gst_registration_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.gst_registrations.id", ondelete="SET NULL"), nullable=True)
+    effective_date = Column(Date, nullable=True, index=True)
+    reference_date = Column(Date, nullable=True)
+    
+    # E-way Bill and E-Invoice Fields
+    place_of_supply = Column(String(100), nullable=True)
+    buyer_name = Column(String(150), nullable=True)
+    buyer_address = Column(TEXT, nullable=True)
+    consignee_name = Column(String(150), nullable=True)
+    consignee_address = Column(TEXT, nullable=True)
+    order_reference = Column(String(100), nullable=True)
+    despatch_doc_no = Column(String(100), nullable=True)
+    is_post_dated = Column(Boolean, default=False)
+    eway_bill_no = Column(String(50), nullable=True)
+    vehicle_no = Column(String(50), nullable=True)
+    irn = Column(String(100), nullable=True)
+    irn_ack_no = Column(String(100), nullable=True)
+    irn_ack_date = Column(DateTime, nullable=True)
+    irn_qr_code = Column(TEXT, nullable=True)
+    irn_cancelled = Column(Boolean, default=False)
+    irn_cancel_date = Column(DateTime, nullable=True)
+    irn_cancel_reason = Column(String(150), nullable=True)
+    irn_source = Column(String(50), nullable=True)
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(Integer, nullable=True)
     created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    @property
+    def guid(self):
+        return self.tally_guid
+
+    @guid.setter
+    def guid(self, val):
+        self.tally_guid = val
     
     voucher_type = relationship("MstVoucherType", back_populates="vouchers")
     entries = relationship("TrnAccounting", back_populates="voucher", cascade="all, delete-orphan")
     inventory_entries = relationship("TrnInventory", back_populates="voucher", cascade="all, delete-orphan")
+    eway_bills = relationship("TrnEwayBill", back_populates="voucher", cascade="all, delete-orphan")
+    payment_links = relationship("TrnPaymentLink", back_populates="voucher", cascade="all, delete-orphan")
     # Will be available when voucher module is imported
     # approvals = relationship("ApprovalRequest", back_populates="voucher", cascade="all, delete-orphan")
+
+class TrnEwayBill(Base):
+    __tablename__ = "eway_bills"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="CASCADE"), nullable=False, index=True)
+    bill_number = Column(String(50), nullable=True, index=True)
+    bill_date = Column(Date, nullable=True)
+    valid_up_to = Column(DateTime, nullable=True)
+    distance_km = Column(Numeric(10, 2), nullable=True)
+    transporter_id = Column(String(50), nullable=True)
+    transporter_name = Column(String(150), nullable=True)
+    doc_number = Column(String(50), nullable=True)
+    doc_date = Column(Date, nullable=True)
+    vehicle_number = Column(String(30), nullable=True)
+    vehicle_type = Column(String(30), default="Regular")
+    transport_mode = Column(String(30), default="Road")
+    sub_type = Column(String(50), default="Supply")
+    doc_type = Column(String(50), default="Tax Invoice")
+    status = Column(String(30), default="ACTIVE")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    voucher = relationship("TrnVoucher", back_populates="eway_bills")
+
+class MstHsnDetail(Base):
+    __tablename__ = "hsn_details"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id", ondelete="CASCADE"), nullable=True, index=True)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id", ondelete="CASCADE"), nullable=True, index=True)
+    hsn_code = Column(String(20), nullable=False, index=True)
+    hsn_description = Column(String(255), nullable=True)
+    source_type = Column(String(50), default="Stock Item")
+    taxability = Column(String(50), default="Taxable")
+    igst_rate = Column(Numeric(5, 2), default=0.00)
+    cgst_rate = Column(Numeric(5, 2), default=0.00)
+    sgst_rate = Column(Numeric(5, 2), default=0.00)
+    applicable_from = Column(Date, nullable=True)
+    is_rcm = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    stock_item = relationship("MstStockItem", back_populates="hsn_details")
+    ledger = relationship("MstLedger", back_populates="hsn_details")
 
 class TrnAccounting(Base):
     __tablename__ = "voucher_entries"
@@ -600,10 +744,25 @@ class TrnAccounting(Base):
     forex_currency_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.currencies.currency_id"), nullable=True)
     forex_amount = Column(Numeric(18, 4), nullable=True)
     exchange_rate_used = Column(Numeric(14, 6), nullable=True)
+    nature_of_transaction = Column(String(100), nullable=True)
     voucher = relationship("TrnVoucher", back_populates="entries")
     ledger = relationship("MstLedger")
     bank_allocations = relationship("TrnBankAllocation", back_populates="entry", cascade="all, delete-orphan")
     bill_allocations = relationship("BillAllocation", back_populates="entry", cascade="all, delete-orphan")
+    cost_centre_allocations = relationship("TrnCostCentreAllocation", back_populates="entry", cascade="all, delete-orphan")
+
+class TrnCostCentreAllocation(Base):
+    __tablename__ = "voucher_entry_cost_centres"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True)
+    entry_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.voucher_entries.entry_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
+    amount = Column(Numeric(18, 2), nullable=False, default=0.00)
+    percentage = Column(Numeric(5, 2), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    entry = relationship("TrnAccounting", back_populates="cost_centre_allocations")
+    cost_centre = relationship("MstCostCentre")
 
 class TrnBankAllocation(Base):
     __tablename__ = "bank_allocations"
@@ -623,7 +782,44 @@ class TrnBankAllocation(Base):
     ifs_code = Column(String(20), nullable=True)
     is_connected_payment = Column(Boolean, default=False)
     
+    # Tally Prime 7.0 e-Banking & Connected Banking Fields
+    bank_operation_ref = Column(String(100), nullable=True)
+    bank_portal_ref = Column(String(100), nullable=True)
+    bank_transaction_ref = Column(String(100), nullable=True)
+    file_ref = Column(String(100), nullable=True)
+    payment_link = Column(String(255), nullable=True)
+    
     entry = relationship("TrnAccounting", back_populates="bank_allocations")
+
+class TrnPaymentLink(Base):
+    __tablename__ = "voucher_payment_links"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    paylink_id = Column(BigInteger, primary_key=True, index=True)
+    voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="CASCADE"), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    link_id = Column(String(100), nullable=False, unique=True, index=True)
+    payment_url = Column(String(500), nullable=False)
+    upi_uri = Column(TEXT, nullable=True)
+    amount = Column(Numeric(18, 2), nullable=False)
+    payment_mode = Column(String(50), default="UPI / Payment Link")
+    status = Column(String(30), default="PENDING")  # PENDING, COMPLETED, EXPIRED, CANCELLED
+    bank_operation_ref = Column(String(100), nullable=True)
+    bank_portal_ref = Column(String(100), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    settled_at = Column(DateTime, nullable=True)
+    
+    voucher = relationship("TrnVoucher", back_populates="payment_links")
+
+class MstGstReconConfig(Base):
+    __tablename__ = "gst_recon_configs"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    config_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    ignore_diff_in_taxable_amt = Column(Numeric(10, 2), default=10.00)
+    ignore_diff_in_tax_amt = Column(Numeric(10, 2), default=5.00)
+    strip_prefix_suffix = Column(Boolean, default=True)
+    fuzzy_invoice_match = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
 # ==========================================
 # MOVED FROM inventory.py
 # ==========================================
@@ -814,6 +1010,12 @@ class MstStockItem(Base):
     minimum_order_qty = Column(Numeric(14, 3), default=0)
     tracking_type = Column(String(20), default="None")
     shelf_life_days = Column(Integer, nullable=True)
+    costing_method = Column(String(50), nullable=True)
+    valuation_method = Column(String(50), nullable=True)
+    gst_type_of_supply = Column(String(50), default="Goods", nullable=True)
+    is_batch_wise = Column(Boolean, default=False, nullable=True)
+    is_perishable = Column(Boolean, default=False, nullable=True)
+    ignore_negative_stock = Column(Boolean, default=False, nullable=True)
     
     is_active = Column(Boolean, default=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
@@ -831,6 +1033,7 @@ class MstStockItem(Base):
     price_level_rates = relationship("StockItemPriceLevelRate", back_populates="stock_item", cascade="all, delete-orphan")
     
     stock_entries = relationship("TrnInventory", back_populates="stock_item")# Will be available when inventory module is imported
+    hsn_details = relationship("MstHsnDetail", back_populates="stock_item", cascade="all, delete-orphan")
     # boms = relationship("BillOfMaterials", back_populates="stock_item", cascade="all, delete-orphan")
 
     @property
@@ -881,6 +1084,8 @@ class TrnInventory(Base):
     is_inward = Column(Boolean, default=True)
     is_deemed_positive = Column(Boolean, default=True)
     flow_type = Column(Enum('source', 'destination', name='stock_flow_type'), nullable=True)
+    actual_quantity = Column(Numeric(14, 3), nullable=True)
+    item_description = Column(TEXT, nullable=True)
     
     voucher = relationship("TrnVoucher", back_populates="inventory_entries")
     godown = relationship("MstGodown", back_populates="stock_entries")

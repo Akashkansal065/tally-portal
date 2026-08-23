@@ -12,7 +12,9 @@ from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
-from app.models.tally_core import MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, BillAllocation, MstLedger, MstGroup, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration
+from app.models.tally_core import (
+    MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, BillAllocation, MstLedger, MstGroup, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration, TrnCostCentreAllocation
+)
 
 from app.schemas.voucher import (
     VoucherCreate, VoucherResponse, VoucherListResponse,
@@ -177,6 +179,15 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                     account_number=getattr(ba, 'account_number', None),
                     ifs_code=getattr(ba, 'ifs_code', None),
                     is_connected_payment=getattr(ba, 'is_connected_payment', False)
+                ))
+
+        if getattr(e, 'cost_centre_allocations', None):
+            for cca in e.cost_centre_allocations:
+                db.add(TrnCostCentreAllocation(
+                    entry_id=entry.entry_id,
+                    cost_centre_id=cca.cost_centre_id,
+                    amount=cca.amount,
+                    percentage=getattr(cca, 'percentage', None)
                 ))
 
         if getattr(e, 'bill_allocations', None):
@@ -746,6 +757,7 @@ async def get_voucher_detail(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+        selectinload(TrnVoucher.entries).selectinload(TrnAccounting.cost_centre_allocations).selectinload(TrnCostCentreAllocation.cost_centre),
         selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.stock_item).selectinload(MstStockItem.unit)
     ).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
     
@@ -791,7 +803,16 @@ async def get_voucher_detail(
             "credit_amount": credit,
             "entry_type": "Debit" if debit > 0 else "Credit",
             "cost_center_id": entry.cost_center_id,
-            "bank_allocations": bank_allocs
+            "bank_allocations": bank_allocs,
+            "cost_centre_allocations": [
+                {
+                    "id": cca.id,
+                    "cost_centre_id": cca.cost_centre_id,
+                    "cost_centre_name": cca.cost_centre.name if getattr(cca, 'cost_centre', None) and cca.cost_centre else f"Cost Centre #{cca.cost_centre_id}",
+                    "amount": float(cca.amount or 0),
+                    "percentage": float(cca.percentage) if cca.percentage is not None else None
+                } for cca in getattr(entry, 'cost_centre_allocations', []) or []
+            ]
         })
 
     inventory = []
