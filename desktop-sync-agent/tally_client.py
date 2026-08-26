@@ -187,7 +187,7 @@ class TallyClient:
             ("UOMs", "Unit", "NAME,ORIGINALNAME,DECIMALPLACES", False),
             ("Godowns", "Godown", "NAME,GUID,ALTERID,PARENT", False),
             ("StockItems", "StockItem", "NAME,GUID,ALTERID,PARENT,CATEGORY,BASEUNITS,OPENINGBALANCE,OPENINGVALUE,OPENINGRATE,DESCRIPTION,NARRATION,BATCHALLOCATIONS.LIST", False),
-            ("Vouchers", "Voucher", "GUID,VCHKEY,VOUCHERKEY,MASTERID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST,BANKALLOCATIONS.LIST,BILLALLOCATIONS.LIST", True)
+            ("Vouchers", "Voucher", "GUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST", True)
         ]
         
         results = []
@@ -241,7 +241,7 @@ class TallyClient:
                     data=xml_req.encode("utf-8"),
                     headers={"Content-Type": "text/xml;charset=utf-8"}
                 )
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=120) as resp:
                     resp_xml = resp.read().decode("utf-8", errors="replace")
                     if "<ENVELOPE>" in resp_xml:
                         results.append((label, resp_xml))

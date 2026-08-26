@@ -13,7 +13,7 @@ def seed_global_data(db: Session):
         db.execute(text("""
             INSERT INTO roles (name, description) VALUES
             ('Admin', 'Full access to all modules including user management'),
-            ('User', 'Standard user with check-in, payments, orders, and attendance access')
+            ('Sales', 'Field sales, check-in, orders, payments collection & attendance')
         """))
         db.commit()
         print("Roles seeded successfully.")
@@ -66,25 +66,28 @@ def seed_global_data(db: Session):
         print("Seeding permissions matrix...")
         
         # Admin gets full CRUD on all modules
-        for mod_code, mod_id in modules.items():
-            db.execute(text(f"""
-                INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
-                VALUES ({roles['Admin']}, {mod_id}, 1, 1, 1, 1)
-            """))
-            
-        # User role permissions (check-in/visits, payments, orders, attendance)
-        user_perms = {
-            'visits': (1, 1, 1, 1),
-            'payments': (1, 1, 1, 1),
-            'orders': (1, 1, 1, 1),
-            'attendance': (1, 1, 1, 1),
-        }
-        for mod_code, (c, r, u, d) in user_perms.items():
-            if mod_code in modules:
+        if 'Admin' in roles:
+            for mod_code, mod_id in modules.items():
                 db.execute(text(f"""
                     INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
-                    VALUES ({roles['User']}, {modules[mod_code]}, {c}, {r}, {u}, {d})
+                    VALUES ({roles['Admin']}, {mod_id}, 1, 1, 1, 1)
                 """))
+            
+        # Sales role permissions (check-in/visits, payments, orders, attendance)
+        sales_role_id = roles.get('Sales') or roles.get('User')
+        if sales_role_id:
+            user_perms = {
+                'visits': (1, 1, 1, 1),
+                'payments': (1, 1, 1, 1),
+                'orders': (1, 1, 1, 1),
+                'attendance': (1, 1, 1, 1),
+            }
+            for mod_code, (c, r, u, d) in user_perms.items():
+                if mod_code in modules:
+                    db.execute(text(f"""
+                        INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
+                        VALUES ({sales_role_id}, {modules[mod_code]}, {c}, {r}, {u}, {d})
+                    """))
                 
         db.commit()
         print("Permissions matrix seeded successfully.")

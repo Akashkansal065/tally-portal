@@ -53,8 +53,5 @@ INSERT INTO voucher_types (company_id, name, parent_type, abbreviation, numberin
 -- Default Roles
 -- ------------------------------------------------------------
 INSERT INTO roles (name, description) VALUES
-('Admin',      'Full access to all modules including user management'),
-('Accountant', 'Can create/edit vouchers and ledgers, view all reports'),
-('DataEntry',  'Can create vouchers only, no edit/delete after posting'),
-('Auditor',    'Read-only access to all ledgers, vouchers and reports'),
-('Viewer',     'Read-only access to reports only');
+('Admin', 'Full access to all modules including user management'),
+('Sales', 'Field sales, check-in, orders, payments collection & attendance');

@@ -224,12 +224,19 @@ async def inbound_sync(
         }
         
     async with sync_lock:
-        result = await import_tally_xml(xml_data, db, user.user_id, override_company_name=company_name)
-        company_id = result.get("company_id")
-        if company_id:
-            from app.core.cache import clear_company_cache
-            clear_company_cache(company_id)
-        return result
+        try:
+            result = await import_tally_xml(xml_data, db, user.user_id, override_company_name=company_name)
+            company_id = result.get("company_id")
+            if company_id:
+                from app.core.cache import clear_company_cache
+                clear_company_cache(company_id)
+            return result
+        except Exception as ex:
+            logger.error(f"❌ [INBOUND SYNC CRITICAL EXCEPTION]: {str(ex)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Inbound XML import failed on server: {type(ex).__name__}: {str(ex)}"
+            )
 
 async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSession) -> str:
     try:
