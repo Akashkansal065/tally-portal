@@ -209,6 +209,36 @@ export default function StocksPage() {
     return result
   }, [items, selectedGroup, search, stockStatus, movement, profitFilter, sortField, sortDir])
 
+  // Compute aggregated totals for the selected stock group
+  const groupTotals = useMemo(() => {
+    const totalInwardQty = filtered.reduce((sum, item) => sum + (Number(item.inward_qty) || 0), 0)
+    const totalInwardValue = filtered.reduce((sum, item) => sum + (Number(item.inward_value) || 0), 0)
+    const totalOutwardQty = filtered.reduce((sum, item) => sum + (Number(item.outward_qty) || 0), 0)
+    const totalOutwardValue = filtered.reduce((sum, item) => sum + (Number(item.outward_value) || 0), 0)
+    const totalConsValue = filtered.reduce((sum, item) => sum + (Number(item.cons_value) || 0), 0)
+    const totalGpValue = filtered.reduce((sum, item) => sum + (Number(item.gp_value) || 0), 0)
+    
+    // In Tally, Gross Profit % is calculated as: (Total Gross Profit / Total Outward Value) * 100
+    const totalGpPercent = totalOutwardValue > 0
+      ? (totalGpValue / totalOutwardValue) * 100
+      : (totalConsValue > 0 ? (totalGpValue / totalConsValue) * 100 : 0)
+      
+    const totalClosingQty = filtered.reduce((sum, item) => sum + (Number(item.closing_balance) || 0), 0)
+    const totalClosingValue = filtered.reduce((sum, item) => sum + (Number(item.closing_value) || 0), 0)
+
+    return {
+      totalInwardQty,
+      totalInwardValue,
+      totalOutwardQty,
+      totalOutwardValue,
+      totalConsValue,
+      totalGpValue,
+      totalGpPercent,
+      totalClosingQty,
+      totalClosingValue,
+    }
+  }, [filtered])
+
   // Filtered vouchers for 3rd level
   const filteredVouchers = itemVouchers.filter(v => {
     if (voucherTypeFilter !== 'All Vouchers' && v.voucher_type !== voucherTypeFilter) return false
@@ -549,6 +579,42 @@ export default function StocksPage() {
                 )
               })
             )}
+
+            {/* Mobile Summary Footer Card */}
+            {filtered.length > 0 && (
+              <div className="sticky bottom-0 bg-card/95 backdrop-blur border-2 border-primary/30 rounded-xl p-4 shadow-xl mt-3 space-y-3 font-sans">
+                <div className="flex justify-between items-center pb-2 border-b border-border">
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-wider text-muted-foreground block">Stock Group Total</span>
+                    <span className="text-xs font-bold text-muted-foreground">{filtered.length} Product{filtered.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-muted-foreground block">Final Closing Value</span>
+                    <span className="text-base font-black text-foreground">{formatCurrency(groupTotals.totalClosingValue)}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-lg flex flex-col justify-between">
+                    <span className="text-[10px] font-extrabold uppercase text-emerald-700 dark:text-emerald-400">Total Gross Profit</span>
+                    <span className="text-sm font-black text-emerald-700 dark:text-emerald-300 mt-1">
+                      {formatCurrency(groupTotals.totalGpValue)} <span className="text-xs font-bold">({groupTotals.totalGpPercent.toFixed(1)}%)</span>
+                    </span>
+                  </div>
+                  <div className="bg-indigo-500/10 border border-indigo-500/20 p-2.5 rounded-lg flex flex-col justify-between">
+                    <span className="text-[10px] font-extrabold uppercase text-indigo-700 dark:text-indigo-400">Total Closing Qty</span>
+                    <span className="text-sm font-black text-indigo-700 dark:text-indigo-300 mt-1">
+                      {groupTotals.totalClosingQty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="bg-muted/40 p-2 rounded flex justify-between items-center col-span-2 text-[11px]">
+                    <span className="text-muted-foreground font-medium">Inward: <strong>{formatCurrency(groupTotals.totalInwardValue)}</strong></span>
+                    <span className="text-muted-foreground font-medium">Outward: <strong>{formatCurrency(groupTotals.totalOutwardValue)}</strong></span>
+                    <span className="text-muted-foreground font-medium">Cons: <strong>{formatCurrency(groupTotals.totalConsValue)}</strong></span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* DESKTOP VIEW (TABULAR LAYOUT) */}
@@ -826,6 +892,58 @@ export default function StocksPage() {
                       )
                     })}
                   </tbody>
+                  {/* Table Grand Total Footer */}
+                  <tfoot className="sticky bottom-0 z-10 bg-muted/95 backdrop-blur border-t-2 border-primary/40 shadow-md select-none">
+                    <tr className="text-xs font-black text-foreground">
+                      {/* Particulars / Total Label */}
+                      <td className="px-4 py-3 border-r border-border bg-muted">
+                        <div className="font-extrabold uppercase text-[12px] text-foreground">Grand Total</div>
+                        <div className="text-[10px] text-muted-foreground font-semibold">
+                          {filtered.length} Product{filtered.length === 1 ? '' : 's'}
+                        </div>
+                      </td>
+                      {/* Inward Qty */}
+                      <td className="px-3 py-3 text-right border-r border-border/50 font-bold bg-muted/90 text-foreground">
+                        {groupTotals.totalInwardQty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      {/* Inward Value */}
+                      <td className="px-3 py-3 text-right border-r border-border font-bold bg-muted/90 text-foreground">
+                        {formatCurrency(groupTotals.totalInwardValue)}
+                      </td>
+                      {/* Outward Qty */}
+                      <td className="px-3 py-3 text-right border-r border-border/50 font-bold bg-muted/90 text-foreground">
+                        {groupTotals.totalOutwardQty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      {/* Outward Value */}
+                      <td className="px-3 py-3 text-right border-r border-border font-bold bg-muted/90 text-foreground">
+                        {formatCurrency(groupTotals.totalOutwardValue)}
+                      </td>
+                      {/* Cons. Value */}
+                      <td className="px-4 py-3 text-right border-r border-border font-bold bg-muted/90 text-foreground">
+                        {formatCurrency(groupTotals.totalConsValue)}
+                      </td>
+                      {/* Total Gross Profit Value */}
+                      <td className={`px-3 py-3 text-right border-r border-border/50 font-extrabold bg-muted/90 ${
+                        groupTotals.totalGpValue >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                      }`}>
+                        {formatCurrency(groupTotals.totalGpValue)}
+                      </td>
+                      {/* Total Gross Profit % */}
+                      <td className={`px-3 py-3 text-right border-r border-border font-extrabold bg-muted/90 ${
+                        groupTotals.totalGpValue >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
+                      }`}>
+                        {groupTotals.totalGpPercent.toFixed(1)}%
+                      </td>
+                      {/* Closing Qty */}
+                      <td className="px-4 py-3 text-right border-r border-border font-bold bg-muted/90 text-foreground">
+                        {groupTotals.totalClosingQty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      {/* Final Closing Value */}
+                      <td className="px-4 py-3 text-right font-black text-sm text-foreground bg-primary/10 border-l border-primary/20">
+                        {formatCurrency(groupTotals.totalClosingValue)}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             )}

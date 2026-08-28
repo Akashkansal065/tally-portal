@@ -181,12 +181,15 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
           <div className="space-y-3">
             <h3 className="text-base font-bold uppercase tracking-wider text-muted-foreground font-mono">Items List</h3>
             {processedInventory.map((item, idx) => {
-              const qty = Math.abs(parseFloat(item.quantity || '0'))
-              const rate = parseFloat(item.rate || '0')
-              const gstRate = parseFloat(item.gstRate || '0')
-              const rateInclTax = rate * (1 + gstRate / 100)
-              const discPercent = parseFloat(item.discountAmount || '0')
-              const amt = Math.abs(parseFloat(item.amount || '0'))
+              const qty = Math.abs(parseFloat(String(item.quantity || '0')))
+              const rate = parseFloat(String(item.rate || '0'))
+              const gstRate = parseFloat(String(item.gstRate ?? item.gst_rate ?? '0'))
+              const rateInclTax = item.rateInclTax !== undefined && item.rateInclTax !== null && parseFloat(String(item.rateInclTax)) > 0
+                ? parseFloat(String(item.rateInclTax))
+                : (gstRate > 0 ? Math.round(rate * (1 + gstRate / 100) * 100) / 100 : rate)
+              const hsnCode = item.gstHsnCode || item.gst_hsn_code || item.hsn_code || ''
+              const discPercent = parseFloat(String(item.discountAmount || item.discount_percent || '0'))
+              const amt = Math.abs(parseFloat(String(item.amount || '0')))
 
               return (
                 <div key={`mob-inv-${idx}`} className="p-4 bg-muted/20 border border-border rounded flex flex-col gap-3 shadow-sm font-sans">
@@ -220,10 +223,10 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                     </div>
 
                     {/* HSN/SAC */}
-                    {item.gstHsnCode && (
+                    {hsnCode && (
                       <div className="bg-card border border-border/50 p-2.5 rounded flex flex-col">
                         <span className="text-[10px] sm:text-[11px] font-bold text-muted-foreground uppercase tracking-wider">HSN/SAC</span>
-                        <span className="font-extrabold font-mono text-foreground text-sm sm:text-base mt-0.5">{item.gstHsnCode}</span>
+                        <span className="font-extrabold font-mono text-foreground text-sm sm:text-base mt-0.5">{hsnCode}</span>
                       </div>
                     )}
 
@@ -310,10 +313,13 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
           <tbody className="divide-y divide-border/40">
             {/* Inventory Items (Stock) */}
             {processedInventory.map((item, idx) => {
-              const rate = parseFloat(item.rate || '0')
-              const gstRate = parseFloat(item.gstRate || '0')
-              const rateInclTax = rate * (1 + gstRate / 100)
-              const discPercent = parseFloat(item.discountAmount || '0')
+              const rate = parseFloat(String(item.rate || '0'))
+              const gstRate = parseFloat(String(item.gstRate ?? item.gst_rate ?? '0'))
+              const rateInclTax = item.rateInclTax !== undefined && item.rateInclTax !== null && parseFloat(String(item.rateInclTax)) > 0
+                ? parseFloat(String(item.rateInclTax))
+                : (gstRate > 0 ? Math.round(rate * (1 + gstRate / 100) * 100) / 100 : rate)
+              const hsnCode = item.gstHsnCode || item.gst_hsn_code || item.hsn_code || ''
+              const discPercent = parseFloat(String(item.discountAmount || item.discount_percent || '0'))
 
               return (
                 <tr key={`inv-${idx}`} className="align-top hover:bg-muted/30 transition-colors">
@@ -335,12 +341,12 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                     })()}
                   </td>
                   <td className="py-2 px-2 font-mono text-xs text-muted-foreground font-semibold">
-                    {item.gstHsnCode || ''}
+                    {hsnCode}
                   </td>
                   <td className="py-2 text-right px-2 font-mono">
-                    {Math.abs(parseFloat(item.quantity || '0')).toLocaleString('en-IN', { maximumFractionDigits: 4 })}
+                    {Math.abs(parseFloat(String(item.quantity || '0'))).toLocaleString('en-IN', { maximumFractionDigits: 4 })}
                   </td>
-                  <td className="py-2 text-right px-2 font-mono">
+                  <td className="py-2 text-right px-2 font-mono font-bold text-foreground">
                     {rateInclTax > 0 ? rateInclTax.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ''}
                   </td>
                   <td className="py-2 text-right px-2 text-muted-foreground">{item.uom || ''}</td>
@@ -351,7 +357,7 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                     {discPercent > 0 ? `${discPercent}%` : ''}
                   </td>
                   <td className="py-2 text-right px-2 font-mono font-bold tabular-nums">
-                    {Math.abs(parseFloat(item.amount || '0')).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    {Math.abs(parseFloat(String(item.amount || '0'))).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                   </td>
                 </tr>
               )

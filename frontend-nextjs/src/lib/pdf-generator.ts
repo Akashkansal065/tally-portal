@@ -30,6 +30,8 @@ export interface InventoryEntry {
   stock_item_name?: string | null
   quantity?: string | number | null
   rate?: string | number | null
+  rate_incl_tax?: string | number | null
+  rateInclTax?: string | number | null
   amount?: string | number | null
   discountAmount?: string | number | null
   discount_amount?: string | number | null
@@ -38,6 +40,7 @@ export interface InventoryEntry {
   gst_rate?: string | number | null
   gstHsnCode?: string | null
   gst_hsn_code?: string | null
+  hsn_code?: string | null
   uom?: string | null
   godown_id?: number | null
   batch_id?: number | null
@@ -228,9 +231,9 @@ export async function generateVoucherPdf({
     const discountFactor = totalInvAmount > 0 ? (totalInvAmount + discountLedgersTotal) / totalInvAmount : 1
 
     safeInventory.forEach(item => {
-      const hsn = item.gstHsnCode || 'N/A'
+      const hsn = item.gstHsnCode || item.gst_hsn_code || item.hsn_code || 'N/A'
       const amount = Math.abs(parseFloat(String(item.amount || '0'))) * discountFactor
-      const gstRate = parseFloat(String(item.gstRate || '0'))
+      const gstRate = parseFloat(String(item.gstRate ?? item.gst_rate ?? '0'))
       const cgstRate = gstRate / 2
       const sgstRate = gstRate / 2
       const cgstAmount = amount * (cgstRate / 100)
@@ -262,16 +265,19 @@ export async function generateVoucherPdf({
   const tableRows: TableRow[] = []
   safeInventory.forEach((item, idx) => {
     const rate = parseFloat(String(item.rate || '0'))
-    const gstRate = parseFloat(String(item.gstRate || '0'))
-    const rateInclTax = rate * (1 + gstRate / 100)
-    const discPercent = parseFloat(String(item.discountAmount || '0'))
+    const gstRate = parseFloat(String(item.gstRate ?? item.gst_rate ?? '0'))
+    const rateInclTax = item.rateInclTax !== undefined && item.rateInclTax !== null && parseFloat(String(item.rateInclTax)) > 0
+      ? parseFloat(String(item.rateInclTax))
+      : (gstRate > 0 ? Math.round(rate * (1 + gstRate / 100) * 100) / 100 : rate)
+    const hsnCode = item.gstHsnCode || item.gst_hsn_code || item.hsn_code || ''
+    const discPercent = parseFloat(String(item.discountAmount || item.discount_percent || '0'))
     const amount = Math.abs(parseFloat(String(item.amount || '0')))
 
     tableRows.push({
       type: 'item',
       sl: idx + 1,
       description: item.item || '',
-      hsn: item.gstHsnCode || '',
+      hsn: hsnCode,
       gstRate: gstRate > 0 ? `${gstRate} %` : '',
       quantity: `${Math.abs(parseFloat(String(item.quantity || '0'))).toLocaleString('en-IN', { maximumFractionDigits: 4 })} ${item.uom || ''}`,
       rateInclTax: rateInclTax > 0 ? rateInclTax.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '',

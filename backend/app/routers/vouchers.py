@@ -815,6 +815,15 @@ async def get_voucher_detail(
             ]
         })
 
+    # Calculate fallback voucher-level tax rate from accounting tax ledgers if item rate is not set
+    total_tax_amt = sum(
+        float(e.credit_amount or e.debit_amount or 0)
+        for e in voucher.entries
+        if e.ledger and any(t in e.ledger.name.upper() for t in ["CGST", "SGST", "IGST", "GST", "TAX", "DUTY", "DUTIES"])
+    )
+    total_inv_amt = sum(float(inv.amount or 0) for inv in voucher.inventory_entries)
+    fallback_gst_rate = round((total_tax_amt / total_inv_amt) * 100, 2) if total_inv_amt > 0 and total_tax_amt > 0 else 0.0
+
     inventory = []
     inventory_entries = []
     for inv in voucher.inventory_entries:
@@ -825,6 +834,13 @@ async def get_voucher_detail(
         disc_pct = float(inv.discount_percent or 0)
         amt = float(inv.amount or 0)
 
+        # GST Rate from stock item or fallback from invoice tax ledger split
+        item_gst_rate = float(inv.stock_item.gst_rate_percent) if inv.stock_item and inv.stock_item.gst_rate_percent is not None and float(inv.stock_item.gst_rate_percent) > 0 else fallback_gst_rate
+        item_hsn = inv.stock_item.hsn_code if inv.stock_item else ""
+
+        # Rate Inclusive of Tax (e.g. 68.64 with 18% GST -> 81.00)
+        rate_incl_tax = round(rate * (1.0 + (item_gst_rate / 100.0)), 2) if item_gst_rate > 0 else rate
+
         inv_dict = {
             "stock_entry_id": inv.stock_entry_id,
             "stock_item_id": inv.stock_item_id,
@@ -832,6 +848,13 @@ async def get_voucher_detail(
             "stock_item_name": item_name,
             "quantity": qty,
             "rate": rate,
+            "gst_rate": item_gst_rate,
+            "gstRate": item_gst_rate,
+            "gst_hsn_code": item_hsn,
+            "gstHsnCode": item_hsn,
+            "hsn_code": item_hsn,
+            "rate_incl_tax": rate_incl_tax,
+            "rateInclTax": rate_incl_tax,
             "discount_percent": disc_pct,
             "discount_amount": float(inv.discount_amount or 0),
             "uom": uom_sym,
