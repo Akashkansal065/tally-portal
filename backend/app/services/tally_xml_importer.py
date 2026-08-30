@@ -1768,6 +1768,20 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
             res = await db.execute(stmt)
             voucher = res.scalars().first()
             
+            # Fallback dedup lookup: by (company_id, voucher_type_id, voucher_number, voucher_date) if GUID is generated/absent
+            if not voucher and guid.startswith("GEN-"):
+                fallback_stmt = select(TrnVoucher).where(
+                    TrnVoucher.company_id == company_id,
+                    TrnVoucher.voucher_type_id == vtype.voucher_type_id,
+                    TrnVoucher.voucher_number == v_num,
+                    TrnVoucher.voucher_date == v_date
+                )
+                fb_res = await db.execute(fallback_stmt)
+                voucher = fb_res.scalars().first()
+                if voucher:
+                    logger.info(f"🔗 [VOUCHER MATCH] Matched existing voucher #{v_num} by (type, number, date). Linking GUID: {guid}")
+                    voucher.tally_guid = guid
+            
             # Auto-provision user if voucher contains entered_by / altered_by
             v_user_id = user_id
             entered_by = v_node.findtext("ENTEREDBY") or v_node.findtext("ALTEREDBY") or v_node.findtext("CREATEDBY")
@@ -1779,12 +1793,45 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
             if voucher:
                 # If present and alter_id is same or lower, skip to prevent overriding local changes
                 if voucher.tally_alter_id and voucher.tally_alter_id >= alter_id:
+                    logger.debug(f"⏭️ [VOUCHER SKIP] Voucher #{v_num} (ID: {voucher.voucher_id}) alter_id {voucher.tally_alter_id} >= {alter_id}")
                     continue
-                # Delete old entries to rebuild (must delete child bill_allocations first)
-                await db.execute(text(f"DELETE FROM `{settings.TALLY_DATABASE_NAME}`.bill_allocations WHERE voucher_entry_id IN (SELECT entry_id FROM `{settings.TALLY_DATABASE_NAME}`.voucher_entries WHERE voucher_id = {voucher.voucher_id})"))
-                await db.execute(text(f"DELETE FROM `{settings.TALLY_DATABASE_NAME}`.voucher_entries WHERE voucher_id = {voucher.voucher_id}"))
+                
+                logger.info(f"🔄 [VOUCHER ALTER] Updating voucher #{v_num} (ID: {voucher.voucher_id}, alter_id: {voucher.tally_alter_id} -> {alter_id})")
+                vid = voucher.voucher_id
+                tally_db = settings.TALLY_DATABASE_NAME
+
+                # 1. Reverse stock movements on MstStockItem BEFORE deleting existing entries
+                old_inv_stmt = select(TrnInventory).where(TrnInventory.voucher_id == vid)
+                old_inv_res = await db.execute(old_inv_stmt)
+                old_inv_list = old_inv_res.scalars().all()
+                for old_inv in old_inv_list:
+                    item_res = await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == old_inv.stock_item_id))
+                    stock_item = item_res.scalars().first()
+                    if stock_item:
+                        qty_val = old_inv.quantity or Decimal("0.000")
+                        amt_val = old_inv.amount or Decimal("0.00")
+                        if old_inv.is_inward:
+                            stock_item.closing_qty = (stock_item.closing_qty or Decimal("0.000")) - qty_val
+                            stock_item.closing_value = (stock_item.closing_value or Decimal("0.00")) - amt_val
+                        else:
+                            stock_item.closing_qty = (stock_item.closing_qty or Decimal("0.000")) + qty_val
+                            avg_cost = Decimal("0.00")
+                            if (stock_item.closing_qty or Decimal("0.000")) > 0:
+                                avg_cost = (stock_item.closing_value or Decimal("0.00")) / stock_item.closing_qty
+                            cons_val = qty_val * avg_cost
+                            stock_item.closing_value = (stock_item.closing_value or Decimal("0.00")) + cons_val
+
+                # 2. Delete ALL existing child records in strict FK dependency order
+                await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_accounting_allocations WHERE stock_entry_id IN (SELECT stock_entry_id FROM `{tally_db}`.stock_entries WHERE voucher_id = {vid})"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.stock_entries WHERE voucher_id = {vid}"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_entry_cost_centres WHERE entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.bank_allocations WHERE entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.bill_allocations WHERE voucher_entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid}"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.eway_bills WHERE voucher_id = {vid}"))
                 await db.flush()
             else:
+                logger.info(f"➕ [VOUCHER NEW] Creating voucher #{v_num} ({vtype_name}, Date: {v_date}, Alter: {alter_id})")
                 voucher = TrnVoucher(
                     company_id=company_id,
                     voucher_type_id=vtype.voucher_type_id,

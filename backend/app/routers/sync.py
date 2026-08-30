@@ -4535,5 +4535,90 @@ async def deactivate_deleted_master_in_tally(
         "tally_response": resp_str
     }
 
+@router.get("/duplicates")
+async def get_duplicate_vouchers(
+    user: User = Depends(require_permission("vouchers", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Scans the database for duplicate vouchers without modifying or deleting any data.
+    Returns grouped list of duplicate vouchers with their alter IDs and child entry counts.
+    """
+    tally_db = settings.TALLY_DATABASE_NAME
+    comp_id = user.company_id
+
+    # 1. Duplicates by (company_id, tally_guid)
+    guid_query = text(f"""
+        SELECT company_id, tally_guid, COUNT(*) as cnt
+        FROM `{tally_db}`.vouchers
+        WHERE company_id = :comp_id AND tally_guid IS NOT NULL AND tally_guid != ''
+        GROUP BY company_id, tally_guid
+        HAVING COUNT(*) > 1
+        ORDER BY cnt DESC
+    """)
+    guid_dupes = (await db.execute(guid_query, {"comp_id": comp_id})).fetchall()
+
+    guid_details = []
+    for row in guid_dupes:
+        c_id, guid, cnt = row
+        v_query = text(f"""
+            SELECT v.voucher_id, v.voucher_number, v.voucher_date, v.total_amount, v.tally_alter_id, v.created_at, vt.name as voucher_type,
+                   (SELECT COUNT(*) FROM `{tally_db}`.voucher_entries WHERE voucher_id = v.voucher_id) as entry_count,
+                   (SELECT COUNT(*) FROM `{tally_db}`.stock_entries WHERE voucher_id = v.voucher_id) as stock_entry_count
+            FROM `{tally_db}`.vouchers v
+            LEFT JOIN `{tally_db}`.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+            WHERE v.company_id = :comp_id AND v.tally_guid = :guid
+            ORDER BY v.tally_alter_id DESC, v.voucher_id DESC
+        """)
+        v_rows = (await db.execute(v_query, {"comp_id": comp_id, "guid": guid})).mappings().all()
+        guid_details.append({
+            "company_id": c_id,
+            "tally_guid": guid,
+            "duplicate_count": cnt,
+            "vouchers": [dict(r) for r in v_rows]
+        })
+
+    # 2. Duplicates by (company_id, voucher_type_id, voucher_number, voucher_date)
+    num_query = text(f"""
+        SELECT v.company_id, v.voucher_type_id, vt.name as voucher_type, v.voucher_number, v.voucher_date, COUNT(*) as cnt
+        FROM `{tally_db}`.vouchers v
+        LEFT JOIN `{tally_db}`.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+        WHERE v.company_id = :comp_id
+        GROUP BY v.company_id, v.voucher_type_id, vt.name, v.voucher_number, v.voucher_date
+        HAVING COUNT(*) > 1
+        ORDER BY cnt DESC
+    """)
+    num_dupes = (await db.execute(num_query, {"comp_id": comp_id})).fetchall()
+
+    num_details = []
+    for row in num_dupes:
+        c_id, vtype_id, vtype_name, vnum, vdate, cnt = row
+        v_query = text(f"""
+            SELECT v.voucher_id, v.tally_guid, v.voucher_number, v.voucher_date, v.total_amount, v.tally_alter_id, v.created_at,
+                   (SELECT COUNT(*) FROM `{tally_db}`.voucher_entries WHERE voucher_id = v.voucher_id) as entry_count,
+                   (SELECT COUNT(*) FROM `{tally_db}`.stock_entries WHERE voucher_id = v.voucher_id) as stock_entry_count
+            FROM `{tally_db}`.vouchers v
+            WHERE v.company_id = :comp_id AND v.voucher_type_id = :vtype_id AND v.voucher_number = :vnum AND v.voucher_date = :vdate
+            ORDER BY v.tally_alter_id DESC, v.voucher_id DESC
+        """)
+        v_rows = (await db.execute(v_query, {"comp_id": comp_id, "vtype_id": vtype_id, "vnum": vnum, "vdate": vdate})).mappings().all()
+        num_details.append({
+            "company_id": c_id,
+            "voucher_type": vtype_name,
+            "voucher_number": vnum,
+            "voucher_date": str(vdate),
+            "duplicate_count": cnt,
+            "vouchers": [dict(r) for r in v_rows]
+        })
+
+    return {
+        "company_id": comp_id,
+        "total_guid_duplicate_groups": len(guid_dupes),
+        "total_number_duplicate_groups": len(num_dupes),
+        "guid_duplicates": guid_details,
+        "number_duplicates": num_details
+    }
+
+
 
 

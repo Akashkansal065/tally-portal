@@ -187,4 +187,19 @@ body {
   html {
     @apply font-sans;
     }
+
+  input[type="date"] {
+    cursor: pointer;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.75;
+    padding: 2px;
+    border-radius: 4px;
+    transition: opacity 0.15s ease-in-out;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+    background-color: rgba(0, 0, 0, 0.05);
+  }
 }

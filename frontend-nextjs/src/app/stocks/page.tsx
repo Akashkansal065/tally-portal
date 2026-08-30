@@ -473,7 +473,7 @@ export default function StocksPage() {
           </div>
 
           {/* MOBILE VIEW (CARD LAYOUT) */}
-          <div className="md:hidden flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-4">
+          <div className="md:hidden flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-4 pb-24">
             {filtered.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <Package className="h-10 w-10 mx-auto mb-3 opacity-30" />
@@ -580,9 +580,9 @@ export default function StocksPage() {
               })
             )}
 
-            {/* Mobile Summary Footer Card */}
+            {/* Mobile Summary Footer Card (Non-sticky, end of list) */}
             {filtered.length > 0 && (
-              <div className="sticky bottom-0 bg-card/95 backdrop-blur border-2 border-primary/30 rounded-xl p-4 shadow-xl mt-3 space-y-3 font-sans">
+              <div className="bg-card border border-primary/20 rounded-2xl p-4 shadow-sm mt-6 mb-4 space-y-3 font-sans">
                 <div className="flex justify-between items-center pb-2 border-b border-border">
                   <div>
                     <span className="text-[10px] font-black uppercase tracking-wider text-muted-foreground block">Stock Group Total</span>

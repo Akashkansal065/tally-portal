@@ -20,9 +20,37 @@ import {
 import ProjectedFinancials from '@/components/ProjectedFinancials'
 
 type TabType = 'executive' | 'financial' | 'sales' | 'inventory' | 'compliance'
-type PresetType = 'month' | 'quarter' | 'year' | 'custom'
+type PresetType = 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
 type ExplanationKey = 'revenue_trend' | 'aging' | 'expense' | 'top_customers' | 'inventory' | 'trial_balance' | null
 type KpiModalKey = 'sales' | 'receipts' | 'purchases' | 'payments' | 'receivables' | 'payables' | null
+
+const getFiscalYearInfo = (date = new Date()) => {
+  const currentMonth = date.getMonth() // 0 = Jan, 3 = Apr, 11 = Dec
+  const currentYear = date.getFullYear()
+  
+  // Current Indian FY start year (April 1)
+  const curFyStartYear = currentMonth >= 3 ? currentYear : currentYear - 1
+  const curFyEndYear = curFyStartYear + 1
+  const curFyLabel = `FY ${curFyStartYear}-${String(curFyEndYear).slice(-2)}`
+  
+  // Previous FY start year
+  const prevFyStartYear = curFyStartYear - 1
+  const prevFyEndYear = curFyStartYear
+  const prevFyLabel = `FY ${prevFyStartYear}-${String(prevFyEndYear).slice(-2)}`
+
+  return {
+    curFyStartYear,
+    curFyEndYear,
+    curFyLabel,
+    curFyFrom: `${curFyStartYear}-04-01`,
+    curFyTo: `${curFyEndYear}-03-31`,
+    prevFyStartYear,
+    prevFyEndYear,
+    prevFyLabel,
+    prevFyFrom: `${prevFyStartYear}-04-01`,
+    prevFyTo: `${prevFyEndYear}-03-31`,
+  }
+}
 
 const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#6366f1']
 
@@ -347,14 +375,21 @@ export default function ReportsPage() {
     const today = new Date()
     const to = today.toISOString().slice(0, 10)
     let from = new Date()
+    const fy = getFiscalYearInfo(today)
 
     if (preset === 'month') {
       from.setDate(1)
     } else if (preset === 'quarter') {
       from.setMonth(from.getMonth() - 3)
       from.setDate(1)
-    } else if (preset === 'year') {
-      from = new Date(today.getFullYear(), 3, 1) // April 1st
+    } else if (preset === 'current_fy' || preset === 'year') {
+      setFromDate(fy.curFyFrom)
+      setToDate(to)
+      return
+    } else if (preset === 'prev_fy') {
+      setFromDate(fy.prevFyFrom)
+      setToDate(fy.prevFyTo)
+      return
     }
     
     if (preset !== 'custom') {
@@ -661,14 +696,24 @@ export default function ReportsPage() {
               Last Quarter
             </button>
             <button
-              onClick={() => setDatePreset('year')}
+              onClick={() => setDatePreset('current_fy')}
               className={cn(
                 'px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5',
-                activePreset === 'year' ? 'bg-primary text-primary-foreground shadow-sm' : 'hover:bg-background text-muted-foreground hover:text-foreground'
+                activePreset === 'current_fy' || activePreset === 'year' ? 'bg-primary text-primary-foreground shadow-sm' : 'hover:bg-background text-muted-foreground hover:text-foreground'
               )}
             >
-              {activePreset === 'year' && <Check className="h-3 w-3" />}
-              FY 2025-26
+              {(activePreset === 'current_fy' || activePreset === 'year') && <Check className="h-3 w-3" />}
+              {getFiscalYearInfo().curFyLabel} (Current FY)
+            </button>
+            <button
+              onClick={() => setDatePreset('prev_fy')}
+              className={cn(
+                'px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5',
+                activePreset === 'prev_fy' ? 'bg-primary text-primary-foreground shadow-sm' : 'hover:bg-background text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {activePreset === 'prev_fy' && <Check className="h-3 w-3" />}
+              {getFiscalYearInfo().prevFyLabel} (Last FY)
             </button>
           </div>
 
@@ -693,23 +738,43 @@ export default function ReportsPage() {
           </button>
 
           <div className={cn(
-            'flex items-center gap-2 bg-card border px-3 py-1.5 rounded-xl text-xs transition-all',
+            'flex items-center gap-2 bg-card border px-3 py-1.5 rounded-xl text-xs transition-all select-none',
             activePreset === 'custom' ? 'border-primary ring-2 ring-primary/20' : 'border-border'
           )}>
-            <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-            <input
-              type="date"
-              value={fromDate}
-              onChange={e => { setFromDate(e.target.value); setActivePreset('custom') }}
-              className="bg-transparent font-medium focus:outline-none"
-            />
+            <div
+              className="flex items-center gap-1.5 cursor-pointer"
+              onClick={() => {
+                const el = document.getElementById('report-from-date') as HTMLInputElement
+                if (el) { try { el.showPicker() } catch (_) { el.focus() } }
+              }}
+            >
+              <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <input
+                id="report-from-date"
+                type="date"
+                value={fromDate}
+                onClick={e => { try { e.currentTarget.showPicker() } catch (_) {} }}
+                onChange={e => { setFromDate(e.target.value); setActivePreset('custom') }}
+                className="bg-transparent font-medium focus:outline-none cursor-pointer"
+              />
+            </div>
             <span className="text-muted-foreground">→</span>
-            <input
-              type="date"
-              value={toDate}
-              onChange={e => { setToDate(e.target.value); setActivePreset('custom') }}
-              className="bg-transparent font-medium focus:outline-none"
-            />
+            <div
+              className="flex items-center gap-1.5 cursor-pointer"
+              onClick={() => {
+                const el = document.getElementById('report-to-date') as HTMLInputElement
+                if (el) { try { el.showPicker() } catch (_) { el.focus() } }
+              }}
+            >
+              <input
+                id="report-to-date"
+                type="date"
+                value={toDate}
+                onClick={e => { try { e.currentTarget.showPicker() } catch (_) {} }}
+                onChange={e => { setToDate(e.target.value); setActivePreset('custom') }}
+                className="bg-transparent font-medium focus:outline-none cursor-pointer"
+              />
+            </div>
           </div>
 
           <button

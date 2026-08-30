@@ -21,6 +21,7 @@ class SyncQueue(Base):
     last_payload = Column(Text, nullable=True)
     last_response = Column(Text, nullable=True)
     last_attempt_at = Column(DateTime, nullable=True)
+    snapshot_data = Column(JSON, nullable=True) # Pre-alter snapshot for rollback if sync fails
     created_at = Column(DateTime, server_default=func.now())
 
 class SyncTrafficLog(Base):

@@ -7,6 +7,7 @@ import { GlobalHeader } from '@/components/GlobalHeader'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
 
 import { PwaRegister } from '@/components/PwaRegister'
+import { DatePickerInitializer } from '@/components/DatePickerInitializer'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
@@ -53,6 +54,7 @@ export default function RootLayout({
           <AuthProvider>
             <PeriodProvider>
               <PwaRegister />
+              <DatePickerInitializer />
               {/* Top Header */}
               <GlobalHeader />
 

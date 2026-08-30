@@ -44,6 +44,10 @@ type VoucherDetail = {
   inventory_entries?: any[]
   is_inventory_voucher: boolean
   party_ledger: any
+  sync_status?: string
+  tally_error_message?: string | null
+  can_rollback?: boolean
+  sync_id?: number | null
   einvoice_metadata?: {
     irn: string
     ack_no: string
@@ -64,6 +68,11 @@ export default function VoucherDetailPage() {
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState(false)
   const [generatingEinvoice, setGeneratingEinvoice] = useState(false)
+
+  // Rollback & Retry Sync States
+  const [isRollingBack, setIsRollingBack] = useState(false)
+  const [isRetrying, setIsRetrying] = useState(false)
+  const [isRollbackModalOpen, setIsRollbackModalOpen] = useState(false)
 
   // Tally Prime 7.0 Paylink & UPI States
   const [paylink, setPaylink] = useState<any>(null)
@@ -149,6 +158,50 @@ export default function VoucherDetailPage() {
       toast.error(err.message || 'Failed to alter voucher')
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  const handleRollback = async () => {
+    if (!token || !id) return
+    setIsRollingBack(true)
+    try {
+      const res = await fetch(`${API_BASE}/vouchers/${id}/rollback`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to rollback voucher')
+      }
+      toast.success('Voucher and inventory rolled back to original pre-edit state!')
+      setIsRollbackModalOpen(false)
+      fetchVoucher()
+    } catch (err: any) {
+      toast.error(err.message || 'Rollback failed')
+    } finally {
+      setIsRollingBack(false)
+    }
+  }
+
+  const handleRetrySync = async () => {
+    if (!token || !id) return
+    setIsRetrying(true)
+    try {
+      const res = await fetch(`${API_BASE}/vouchers/${id}/retry-sync`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const data = await res.json()
+      if (data.tally_synced) {
+        toast.success('Voucher successfully synced to Tally Prime!')
+      } else {
+        toast.error(`Tally sync failed: ${data.tally_message || 'Unknown error'}`)
+      }
+      fetchVoucher()
+    } catch (err: any) {
+      toast.error(err.message || 'Retry sync failed')
+    } finally {
+      setIsRetrying(false)
     }
   }
 
@@ -413,6 +466,47 @@ export default function VoucherDetailPage() {
           </button>
         </div>
       </div>
+
+      {/* Tally Prime Sync Failure Alert Banner */}
+      {voucher?.sync_status === 'FAILED' && (
+        <div className="mb-4 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 dark:border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm animate-in fade-in duration-200">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-black uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                  Tally Prime Sync Failed
+                </h4>
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-extrabold bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                  Out of Sync
+                </span>
+              </div>
+              <p className="text-xs text-amber-700 dark:text-amber-400 mt-1 font-medium">
+                {voucher.tally_error_message || 'This voucher was altered in MyTally but could not be synced to Tally Prime.'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            <button
+              onClick={handleRetrySync}
+              disabled={isRetrying}
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              {isRetrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+              Retry Sync
+            </button>
+            {voucher.can_rollback && (
+              <button
+                onClick={() => setIsRollbackModalOpen(true)}
+                disabled={isRollingBack}
+                className="px-3 py-1.5 bg-white dark:bg-slate-900 border border-amber-500 text-amber-800 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/50 rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+              >
+                Rollback Changes
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Dynamic Paylink & UPI QR Code Banner */}
       {(showPaylinkCard || paylink) && paylink && (
@@ -820,6 +914,47 @@ export default function VoucherDetailPage() {
                 className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rollback Confirmation Modal */}
+      {isRollbackModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+            <div className="flex items-center gap-3 text-amber-600 dark:text-amber-400">
+              <div className="p-3 bg-amber-100 dark:bg-amber-950/60 rounded-xl">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">Rollback Voucher Alter?</h3>
+                <p className="text-xs text-slate-500">Restore to pre-edit state</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              This will discard the failed alter changes and restore <strong className="text-slate-900 dark:text-white">#{voucher.voucher_number}</strong> back to its original header, ledger splits, and inventory stock balances before this edit.
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsRollbackModalOpen(false)}
+                disabled={isRollingBack}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRollback}
+                disabled={isRollingBack}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow flex items-center gap-1.5 cursor-pointer transition-all"
+              >
+                {isRollingBack && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Confirm Rollback
               </button>
             </div>
           </div>

@@ -9,6 +9,7 @@ from decimal import Decimal
 import json
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
@@ -428,6 +429,126 @@ async def create_voucher(
     clear_company_cache(user.company_id)
     return final_query.scalars().first()
 
+from sqlalchemy import delete, text
+
+async def build_voucher_snapshot(voucher: TrnVoucher, db: AsyncSession) -> dict:
+    vid = voucher.voucher_id
+    
+    # 1. Fetch current accounting entries with child allocations
+    entries_stmt = (
+        select(TrnAccounting)
+        .options(
+            selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnAccounting.bill_allocations),
+            selectinload(TrnAccounting.cost_centre_allocations)
+        )
+        .where(TrnAccounting.voucher_id == vid)
+    )
+    entries_res = await db.execute(entries_stmt)
+    old_entries = entries_res.scalars().all()
+    
+    entries_data = []
+    for e in old_entries:
+        entries_data.append({
+            "entry_id": e.entry_id,
+            "ledger_id": e.ledger_id,
+            "cost_center_id": e.cost_center_id,
+            "debit_amount": float(e.debit_amount or 0),
+            "credit_amount": float(e.credit_amount or 0),
+            "entry_narration": e.entry_narration,
+            "forex_currency_id": e.forex_currency_id,
+            "forex_amount": float(e.forex_amount) if e.forex_amount else None,
+            "exchange_rate_used": float(e.exchange_rate_used) if e.exchange_rate_used else None,
+            "bank_allocations": [{
+                "instrument_date": ba.instrument_date.isoformat() if ba.instrument_date else None,
+                "transaction_type": ba.transaction_type,
+                "payment_favouring": ba.payment_favouring,
+                "instrument_number": ba.instrument_number,
+                "amount": float(ba.amount or 0),
+                "transfer_mode": ba.transfer_mode,
+                "virtual_payment_address": ba.virtual_payment_address,
+                "cheque_cross_comment": ba.cheque_cross_comment,
+                "bank_name": ba.bank_name,
+                "account_number": ba.account_number,
+                "ifs_code": ba.ifs_code,
+                "is_connected_payment": ba.is_connected_payment
+            } for ba in (e.bank_allocations or [])],
+            "bill_allocations": [{
+                "bill_id": ba.bill_id,
+                "allocation_type": ba.allocation_type,
+                "amount": float(ba.amount or 0)
+            } for ba in (e.bill_allocations or [])],
+            "cost_centre_allocations": [{
+                "cost_centre_id": cca.cost_centre_id,
+                "amount": float(cca.amount or 0),
+                "percentage": float(cca.percentage) if cca.percentage else None
+            } for cca in (e.cost_centre_allocations or [])]
+        })
+        
+    # 2. Fetch current inventory entries with accounting allocations
+    inv_stmt = (
+        select(TrnInventory)
+        .options(selectinload(TrnInventory.accounting_allocations))
+        .where(TrnInventory.voucher_id == vid)
+    )
+    inv_res = await db.execute(inv_stmt)
+    old_invs = inv_res.scalars().all()
+    
+    inv_data = []
+    item_balances = {}
+    for inv in old_invs:
+        if inv.stock_item_id not in item_balances:
+            si_res = await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == inv.stock_item_id))
+            si = si_res.scalars().first()
+            if si:
+                item_balances[inv.stock_item_id] = {
+                    "closing_qty": float(si.closing_qty or 0),
+                    "closing_value": float(si.closing_value or 0),
+                    "closing_rate": float(si.closing_rate or 0)
+                }
+        inv_data.append({
+            "stock_entry_id": inv.stock_entry_id,
+            "stock_item_id": inv.stock_item_id,
+            "godown_id": inv.godown_id,
+            "batch_id": inv.batch_id,
+            "quantity": float(inv.quantity or 0),
+            "billed_qty": float(inv.billed_qty or 0) if inv.billed_qty else None,
+            "rate": float(inv.rate or 0),
+            "rate_unit_id": inv.rate_unit_id,
+            "amount": float(inv.amount or 0),
+            "discount_percent": float(inv.discount_percent or 0),
+            "discount_amount": float(inv.discount_amount or 0),
+            "is_inward": inv.is_inward,
+            "is_deemed_positive": inv.is_deemed_positive,
+            "flow_type": inv.flow_type,
+            "accounting_allocations": [{
+                "ledger_id": aa.ledger_id,
+                "is_deemed_positive": aa.is_deemed_positive,
+                "amount": float(aa.amount or 0)
+            } for aa in (inv.accounting_allocations or [])]
+        })
+        
+    return {
+        "voucher_id": voucher.voucher_id,
+        "company_id": voucher.company_id,
+        "voucher_type_id": voucher.voucher_type_id,
+        "voucher_number": str(voucher.voucher_number),
+        "voucher_date": voucher.voucher_date.isoformat() if voucher.voucher_date else None,
+        "reference_number": voucher.reference_number,
+        "narration": voucher.narration,
+        "total_amount": float(voucher.total_amount or 0),
+        "status": voucher.status,
+        "party_ledger_id": voucher.party_ledger_id,
+        "is_invoice": voucher.is_invoice,
+        "original_voucher_id": voucher.original_voucher_id,
+        "gst_registration_id": voucher.gst_registration_id,
+        "tally_guid": voucher.tally_guid,
+        "tally_alter_id": voucher.tally_alter_id,
+        "entries": entries_data,
+        "inventory_entries": inv_data,
+        "item_balances": item_balances
+    }
+
 @router.put("/{voucher_id}", response_model=VoucherResponse)
 async def update_voucher(
     voucher_id: int,
@@ -442,6 +563,9 @@ async def update_voucher(
         
     vtype_query = await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == req.voucher_type_id))
     vtype = vtype_query.scalars().first()
+
+    # Capture pre-alter snapshot BEFORE applying any updates
+    snapshot = await build_voucher_snapshot(voucher, db)
     
     voucher.voucher_date = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
     voucher.reference_number = req.reference_number
@@ -457,7 +581,13 @@ async def update_voucher(
     await log_audit(db, user.company_id, user.user_id, "UPDATE", "Voucher", voucher.voucher_id)
     
     if voucher.status == 'confirmed':
-        sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher.voucher_id, action="Alter")
+        sync_item = SyncQueue(
+            company_id=user.company_id,
+            record_type="Voucher",
+            record_id=voucher.voucher_id,
+            action="Alter",
+            snapshot_data=snapshot
+        )
         db.add(sync_item)
         await db.commit()
         await db.refresh(sync_item)
@@ -479,6 +609,219 @@ async def update_voucher(
         .where(TrnVoucher.voucher_id == voucher.voucher_id)
     )
     return final_query.scalars().first()
+
+@router.post("/{voucher_id}/rollback")
+async def rollback_voucher_alter(
+    voucher_id: int,
+    sync_id: Optional[int] = None,
+    user: User = Depends(require_permission("vouchers", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Rolls back a failed voucher alter operation to its pre-alter snapshot.
+    Restores the voucher header, accounting entries, and inventory movements.
+    """
+    v_stmt = select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
+    voucher = (await db.execute(v_stmt)).scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    sq_query = select(SyncQueue).where(
+        SyncQueue.company_id == user.company_id,
+        SyncQueue.record_type == "Voucher",
+        SyncQueue.record_id == voucher_id,
+        SyncQueue.action == "Alter",
+        SyncQueue.snapshot_data != None
+    )
+    if sync_id:
+        sq_query = sq_query.where(SyncQueue.sync_id == sync_id)
+    sq_query = sq_query.order_by(SyncQueue.sync_id.desc())
+    sync_item = (await db.execute(sq_query)).scalars().first()
+    
+    if not sync_item or not sync_item.snapshot_data:
+        raise HTTPException(status_code=400, detail="No pre-alter snapshot available for this voucher rollback.")
+        
+    snap = sync_item.snapshot_data
+    vid = voucher.voucher_id
+    tally_db = settings.TALLY_DATABASE_NAME
+
+    # 1. Reverse CURRENT inventory entries before applying snapshot
+    cur_inv_stmt = select(TrnInventory).where(TrnInventory.voucher_id == vid)
+    cur_invs = (await db.execute(cur_inv_stmt)).scalars().all()
+    for cur_inv in cur_invs:
+        si = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == cur_inv.stock_item_id))).scalars().first()
+        if si:
+            q = float(cur_inv.quantity or 0)
+            if cur_inv.is_inward:
+                si.closing_qty = float(si.closing_qty or 0) - q
+            else:
+                si.closing_qty = float(si.closing_qty or 0) + q
+
+    # 2. Delete current child records
+    await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_accounting_allocations WHERE stock_entry_id IN (SELECT stock_entry_id FROM `{tally_db}`.stock_entries WHERE voucher_id = {vid})"))
+    await db.execute(text(f"DELETE FROM `{tally_db}`.stock_entries WHERE voucher_id = {vid}"))
+    await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_entry_cost_centres WHERE entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
+    await db.execute(text(f"DELETE FROM `{tally_db}`.bank_allocations WHERE entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
+    await db.execute(text(f"DELETE FROM `{tally_db}`.bill_allocations WHERE voucher_entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
+    await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid}"))
+    await db.flush()
+
+    # 3. Restore voucher header
+    if snap.get("voucher_date"):
+        voucher.voucher_date = datetime.strptime(snap["voucher_date"][:10], "%Y-%m-%d").date()
+    voucher.reference_number = snap.get("reference_number")
+    voucher.narration = snap.get("narration")
+    voucher.total_amount = Decimal(str(snap.get("total_amount", 0)))
+    voucher.status = snap.get("status", "confirmed")
+    voucher.party_ledger_id = snap.get("party_ledger_id")
+    voucher.is_invoice = snap.get("is_invoice", False)
+
+    # 4. Re-insert original accounting entries
+    for e_snap in (snap.get("entries") or []):
+        entry = TrnAccounting(
+            voucher_id=vid,
+            ledger_id=e_snap["ledger_id"],
+            cost_center_id=e_snap.get("cost_center_id"),
+            debit_amount=Decimal(str(e_snap.get("debit_amount", 0))),
+            credit_amount=Decimal(str(e_snap.get("credit_amount", 0))),
+            entry_narration=e_snap.get("entry_narration"),
+            forex_currency_id=e_snap.get("forex_currency_id"),
+            forex_amount=Decimal(str(e_snap["forex_amount"])) if e_snap.get("forex_amount") else None,
+            exchange_rate_used=Decimal(str(e_snap["exchange_rate_used"])) if e_snap.get("exchange_rate_used") else None
+        )
+        db.add(entry)
+        await db.flush()
+        
+        for ba in (e_snap.get("bank_allocations") or []):
+            db.add(TrnBankAllocation(
+                entry_id=entry.entry_id,
+                instrument_date=datetime.strptime(ba["instrument_date"][:10], "%Y-%m-%d").date() if ba.get("instrument_date") else None,
+                transaction_type=ba.get("transaction_type", "Others"),
+                payment_favouring=ba.get("payment_favouring"),
+                instrument_number=ba.get("instrument_number"),
+                amount=Decimal(str(ba.get("amount", 0))),
+                transfer_mode=ba.get("transfer_mode"),
+                virtual_payment_address=ba.get("virtual_payment_address"),
+                cheque_cross_comment=ba.get("cheque_cross_comment"),
+                bank_name=ba.get("bank_name"),
+                account_number=ba.get("account_number"),
+                ifs_code=ba.get("ifs_code"),
+                is_connected_payment=ba.get("is_connected_payment", False)
+            ))
+            
+        for bill_a in (e_snap.get("bill_allocations") or []):
+            db.add(BillAllocation(
+                voucher_entry_id=entry.entry_id,
+                bill_id=bill_a.get("bill_id"),
+                allocation_type=bill_a.get("allocation_type", "Against Ref"),
+                amount=Decimal(str(bill_a.get("amount", 0)))
+            ))
+            
+        for cca in (e_snap.get("cost_centre_allocations") or []):
+            db.add(TrnCostCentreAllocation(
+                entry_id=entry.entry_id,
+                cost_centre_id=cca["cost_centre_id"],
+                amount=Decimal(str(cca.get("amount", 0))),
+                percentage=Decimal(str(cca["percentage"])) if cca.get("percentage") else None
+            ))
+
+    # 5. Re-insert original inventory entries and restore stock closing balances
+    for inv_snap in (snap.get("inventory_entries") or []):
+        inv = TrnInventory(
+            voucher_id=vid,
+            stock_item_id=inv_snap["stock_item_id"],
+            godown_id=inv_snap.get("godown_id"),
+            batch_id=inv_snap.get("batch_id"),
+            quantity=Decimal(str(inv_snap.get("quantity", 0))),
+            billed_qty=Decimal(str(inv_snap["billed_qty"])) if inv_snap.get("billed_qty") else None,
+            rate=Decimal(str(inv_snap.get("rate", 0))),
+            rate_unit_id=inv_snap.get("rate_unit_id"),
+            amount=Decimal(str(inv_snap.get("amount", 0))),
+            discount_percent=Decimal(str(inv_snap.get("discount_percent", 0))),
+            discount_amount=Decimal(str(inv_snap.get("discount_amount", 0))),
+            is_inward=inv_snap.get("is_inward", True),
+            is_deemed_positive=inv_snap.get("is_deemed_positive", True),
+            flow_type=inv_snap.get("flow_type")
+        )
+        db.add(inv)
+        await db.flush()
+        
+        for aa in (inv_snap.get("accounting_allocations") or []):
+            db.add(VoucherAccountingAllocation(
+                stock_entry_id=inv.stock_entry_id,
+                ledger_id=aa["ledger_id"],
+                is_deemed_positive=aa["is_deemed_positive"],
+                amount=Decimal(str(aa.get("amount", 0)))
+            ))
+            
+        si = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == inv_snap["stock_item_id"]))).scalars().first()
+        if si:
+            q = float(inv_snap.get("quantity", 0))
+            if inv_snap.get("is_inward", True):
+                si.closing_qty = float(si.closing_qty or 0) + q
+            else:
+                si.closing_qty = float(si.closing_qty or 0) - q
+
+    # Mark SyncQueue status as ROLLED_BACK
+    sync_item.status = "ROLLED_BACK"
+    sync_item.error_message = f"Rolled back to pre-alter snapshot by user #{user.user_id}"
+    
+    await log_audit(db, user.company_id, user.user_id, "ROLLBACK", "Voucher", voucher_id)
+    await db.commit()
+    clear_company_cache(user.company_id)
+
+    res = await db.execute(
+        select(TrnVoucher)
+        .options(
+            selectinload(TrnVoucher.voucher_type),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
+            selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
+        )
+        .where(TrnVoucher.voucher_id == vid)
+    )
+    return res.scalars().first()
+
+@router.post("/{voucher_id}/retry-sync")
+async def retry_voucher_sync(
+    voucher_id: int,
+    user: User = Depends(require_permission("vouchers", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retries pushing an altered or created voucher to Tally Prime.
+    """
+    v_stmt = select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
+    voucher = (await db.execute(v_stmt)).scalars().first()
+    if not voucher:
+        raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    sq_query = (
+        select(SyncQueue)
+        .where(
+            SyncQueue.company_id == user.company_id,
+            SyncQueue.record_type == "Voucher",
+            SyncQueue.record_id == voucher_id
+        )
+        .order_by(SyncQueue.sync_id.desc())
+    )
+    sync_item = (await db.execute(sq_query)).scalars().first()
+    if not sync_item:
+        sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action="Alter")
+        db.add(sync_item)
+        await db.commit()
+        await db.refresh(sync_item)
+        
+    from app.routers.sync import try_push_voucher_realtime
+    tally_ok, tally_status, tally_err = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, sync_item.action, db)
+    return {
+        "voucher_id": voucher_id,
+        "sync_id": sync_item.sync_id,
+        "tally_synced": tally_ok,
+        "tally_status": tally_status,
+        "tally_message": tally_err
+    }
 
 @router.delete("/{voucher_id}")
 async def delete_voucher(
@@ -865,6 +1208,23 @@ async def get_voucher_detail(
         inventory.append(inv_dict)
         inventory_entries.append(inv_dict)
 
+    # Check sync queue status for this voucher
+    sq_stmt = (
+        select(SyncQueue)
+        .where(
+            SyncQueue.company_id == user.company_id,
+            SyncQueue.record_type == "Voucher",
+            SyncQueue.record_id == voucher_id
+        )
+        .order_by(SyncQueue.sync_id.desc())
+    )
+    latest_sync = (await db.execute(sq_stmt)).scalars().first()
+    
+    sync_status = latest_sync.status if latest_sync else "SUCCESS"
+    sync_error = latest_sync.error_message if latest_sync else None
+    can_rollback = bool(latest_sync and latest_sync.snapshot_data and latest_sync.status in ["FAILED", "EXCEPTION"])
+    sync_id = latest_sync.sync_id if latest_sync else None
+
     output = {
         "voucher_id": voucher.voucher_id,
         "date": str(voucher.voucher_date),
@@ -886,5 +1246,9 @@ async def get_voucher_detail(
         "inventory": inventory,
         "inventory_entries": inventory_entries,
         "is_inventory_voucher": len(inventory) > 0,
+        "sync_status": sync_status,
+        "tally_error_message": sync_error,
+        "can_rollback": can_rollback,
+        "sync_id": sync_id
     }
     return output
