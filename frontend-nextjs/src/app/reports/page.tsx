@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
@@ -11,7 +11,7 @@ import {
   ArrowUpRight, ArrowDownRight, Layers3, Users, Building2, Info, HelpCircle, Check, X,
   CheckCircle2, Sparkles, AlertCircle, ExternalLink, Filter, ShoppingBag, Landmark, Clock,
   PackageCheck, ChevronDown, ChevronRight, Skull, AlertTriangle, Zap, RotateCcw, Activity,
-  ArrowUpDown, ArrowUp, ArrowDown, SlidersHorizontal
+  ArrowUpDown, ArrowUp, ArrowDown, SlidersHorizontal, LayoutGrid, Table as TableIcon
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -359,6 +359,16 @@ export default function ReportsPage() {
   const [monthlySortField, setMonthlySortField] = useState<MonthlySortKey>('month')
   const [monthlySortDir, setMonthlySortDir] = useState<'asc' | 'desc'>('asc')
 
+  // Selected product for In/Out voucher drilldown modal
+  const [productDetailItem, setProductDetailItem] = useState<any | null>(null)
+  const [productVouchers, setProductVouchers] = useState<any[]>([])
+  const [productVouchersLoading, setProductVouchersLoading] = useState(false)
+  const [productVoucherSearch, setProductVoucherSearch] = useState('')
+  const [productVoucherTypeFilter, setProductVoucherTypeFilter] = useState('All Vouchers')
+  const [productVoucherFlowFilter, setProductVoucherFlowFilter] = useState<'All Flows' | 'Inward' | 'Outward'>('All Flows')
+  const [productVoucherPeriodFilter, setProductVoucherPeriodFilter] = useState<'period' | 'all'>('period')
+  const [itemViewMode, setItemViewMode] = useState<'auto' | 'cards' | 'table'>('auto')
+
   const handleItemSort = (field: ItemSortKey) => {
     if (itemSortField === field) {
       setItemSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
@@ -506,6 +516,87 @@ export default function ReportsPage() {
   useEffect(() => {
     fetchReportsData()
   }, [fetchReportsData])
+
+  // Fetch individual stock transaction vouchers when product is clicked
+  useEffect(() => {
+    if (!productDetailItem || !token) return
+    setProductVouchersLoading(true)
+    let url = `${API_BASE}/inventory/items/${productDetailItem.item_id}/vouchers`
+    if (productVoucherPeriodFilter === 'period') {
+      const q = new URLSearchParams()
+      if (fromDate) q.append('from_date', fromDate)
+      if (toDate) q.append('to_date', toDate)
+      const qs = q.toString()
+      if (qs) url += `?${qs}`
+    }
+    fetch(url, { headers: authHeaders(token) })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => {
+        setProductVouchers(Array.isArray(data) ? data : [])
+      })
+      .catch(() => setProductVouchers([]))
+      .finally(() => setProductVouchersLoading(false))
+  }, [productDetailItem, token, productVoucherPeriodFilter, fromDate, toDate])
+
+  // Extract distinct voucher types for the selected product
+  const productVoucherTypes = useMemo(() => {
+    const s = new Set<string>()
+    productVouchers.forEach((v: any) => { if (v.voucher_type) s.add(v.voucher_type) })
+    return Array.from(s).sort()
+  }, [productVouchers])
+
+  // Filter product vouchers by search, type, and flow
+  const filteredProductVouchers = useMemo(() => {
+    return productVouchers.filter((v: any) => {
+      if (productVoucherTypeFilter !== 'All Vouchers' && v.voucher_type !== productVoucherTypeFilter) return false
+      if (productVoucherFlowFilter === 'Inward' && !v.is_inward) return false
+      if (productVoucherFlowFilter === 'Outward' && v.is_inward) return false
+      if (productVoucherSearch.trim()) {
+        const q = productVoucherSearch.toLowerCase()
+        const matchVch = (v.voucher_number || '').toLowerCase().includes(q)
+        const matchParty = (v.party_name || '').toLowerCase().includes(q)
+        const matchRef = (v.reference_number || '').toLowerCase().includes(q)
+        const matchType = (v.voucher_type || '').toLowerCase().includes(q)
+        if (!matchVch && !matchParty && !matchRef && !matchType) return false
+      }
+      return true
+    })
+  }, [productVouchers, productVoucherTypeFilter, productVoucherFlowFilter, productVoucherSearch])
+
+  // Aggregated voucher transaction statistics
+  const voucherStats = useMemo(() => {
+    let inwardQty = 0
+    let inwardVal = 0
+    let outwardQty = 0
+    let outwardVal = 0
+    productVouchers.forEach((v: any) => {
+      if (v.is_inward) {
+        inwardQty += Number(v.quantity) || 0
+        inwardVal += Number(v.amount) || 0
+      } else {
+        outwardQty += Number(v.quantity) || 0
+        outwardVal += Number(v.amount) || 0
+      }
+    })
+    return {
+      inwardQty: Math.round(inwardQty * 100) / 100,
+      inwardVal: Math.round(inwardVal * 100) / 100,
+      outwardQty: Math.round(outwardQty * 100) / 100,
+      outwardVal: Math.round(outwardVal * 100) / 100,
+      count: productVouchers.length
+    }
+  }, [productVouchers])
+
+  // Close modal on Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (productDetailItem) setProductDetailItem(null)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [productDetailItem])
 
   const setDatePreset = (preset: PresetType) => {
     setActivePreset(preset)
@@ -1948,6 +2039,24 @@ export default function ReportsPage() {
                               </div>
                               <span className="text-[9px] text-muted-foreground font-bold shrink-0">{comp.sold_ratio}% sold</span>
                             </div>
+
+                            {/* Mobile 3-column financial strip */}
+                            <div className="mt-2.5 grid grid-cols-3 gap-1.5 text-center text-[10px] sm:hidden pt-2 border-t border-border/40">
+                              <div className="bg-muted/40 rounded-lg p-1.5">
+                                <span className="text-muted-foreground block text-[9px] font-medium">Purchased</span>
+                                <span className="font-extrabold text-foreground">{formatCurrency(comp.purchased_value)}</span>
+                              </div>
+                              <div className="bg-emerald-500/10 rounded-lg p-1.5 border border-emerald-500/20">
+                                <span className="text-emerald-600 dark:text-emerald-400 block text-[9px] font-bold">Sold</span>
+                                <span className="font-extrabold text-emerald-600 dark:text-emerald-400">{formatCurrency(comp.sold_value)}</span>
+                              </div>
+                              <div className={cn("rounded-lg p-1.5 border", comp.profit_on_sold >= 0 ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20")}>
+                                <span className="text-muted-foreground block text-[9px] font-medium">Profit</span>
+                                <span className={cn("font-extrabold", comp.profit_on_sold >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
+                                  {formatCurrency(comp.profit_on_sold)}
+                                </span>
+                              </div>
+                            </div>
                           </div>
                           <div className="text-right shrink-0 hidden sm:block">
                             <div className="grid grid-cols-3 gap-4 text-[11px]">
@@ -1969,28 +2078,21 @@ export default function ReportsPage() {
                           </div>
                         </button>
 
-                        {/* Mobile summary row */}
-                        {!isExpanded && (
-                          <div className="px-5 pb-2 grid grid-cols-3 gap-2 text-[10px] sm:hidden">
-                            <div><span className="text-muted-foreground">Purchased:</span> <span className="font-bold">{formatCurrency(comp.purchased_value)}</span></div>
-                            <div><span className="text-muted-foreground">Sold:</span> <span className="font-bold text-emerald-600">{formatCurrency(comp.sold_value)}</span></div>
-                            <div><span className="text-muted-foreground">Profit:</span> <span className={cn("font-bold", comp.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>{formatCurrency(comp.profit_on_sold)}</span></div>
-                          </div>
-                        )}
-
                         {/* Expanded Items */}
                         {isExpanded && (
-                          <div className="px-5 pb-4">
-                            <div className="mb-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-muted/40 p-2 rounded-xl border border-border/60">
-                              <div className="flex items-center gap-2 flex-1">
-                                <div className="relative flex-1 max-w-xs">
+                          <div className="px-3 sm:px-5 pb-4">
+                            {/* Responsive Controls Bar */}
+                            <div className="mb-3 space-y-2 bg-muted/40 p-2.5 rounded-xl border border-border/60">
+                              {/* Search Bar + Item Count */}
+                              <div className="flex items-center gap-2">
+                                <div className="relative flex-1">
                                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                                   <input
                                     type="text"
                                     placeholder={`Filter ${comp.company_name} items...`}
                                     value={itemSearchQuery}
                                     onChange={e => setItemSearchQuery(e.target.value)}
-                                    className="w-full bg-background border border-border rounded-lg pl-8 pr-7 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary font-medium"
+                                    className="w-full bg-background border border-border rounded-lg pl-8 pr-7 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary font-medium text-foreground"
                                   />
                                   {itemSearchQuery && (
                                     <button
@@ -2001,15 +2103,15 @@ export default function ReportsPage() {
                                     </button>
                                   )}
                                 </div>
-                                <span className="text-[10px] text-muted-foreground font-semibold whitespace-nowrap">
-                                  {filteredAndSortedItems.length} of {comp.items.length} items
+                                <span className="text-[10px] text-muted-foreground font-semibold whitespace-nowrap bg-background border border-border px-2 py-1.5 rounded-lg shrink-0">
+                                  {filteredAndSortedItems.length} items
                                 </span>
                               </div>
 
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <div className="flex items-center gap-1.5">
-                                  <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
-                                  <span className="text-[11px] text-muted-foreground whitespace-nowrap font-semibold">Sort by:</span>
+                              {/* Sort & View Mode Controls Row */}
+                              <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+                                <div className="flex items-center gap-1.5 flex-1 min-w-[200px]">
+                                  <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                                   <select
                                     value={`${itemSortField}_${itemSortDir}`}
                                     onChange={(e) => {
@@ -2019,41 +2121,157 @@ export default function ReportsPage() {
                                       setItemSortField(field)
                                       setItemSortDir(dir)
                                     }}
-                                    className="bg-background border border-border rounded-lg px-2 py-1 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer text-foreground"
+                                    className="flex-1 bg-background border border-border rounded-lg px-2 py-1 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer text-foreground truncate"
                                   >
-                                    <option value="sold_value_desc">Sold Value (Highest first)</option>
-                                    <option value="sold_value_asc">Sold Value (Lowest first)</option>
-                                    <option value="sold_qty_desc">Sold Quantity (Highest first)</option>
-                                    <option value="sold_qty_asc">Sold Quantity (Lowest first)</option>
-                                    <option value="profit_on_sold_desc">Realized Profit (Highest profit)</option>
-                                    <option value="profit_on_sold_asc">Realized Profit (Lowest / Losses first)</option>
-                                    <option value="gp_percent_desc">Gross Profit % (Highest margin)</option>
-                                    <option value="gp_percent_asc">Gross Profit % (Lowest margin)</option>
-                                    <option value="pending_value_desc">Pending Value (Highest first)</option>
-                                    <option value="pending_value_asc">Pending Value (Lowest first)</option>
-                                    <option value="pending_qty_desc">Pending Quantity (Highest first)</option>
-                                    <option value="purchased_value_desc">Purchased Value (Highest first)</option>
-                                    <option value="purchased_qty_desc">Purchased Quantity (Highest first)</option>
-                                    <option value="cost_of_sold_desc">COGS (Highest first)</option>
-                                    <option value="name_asc">Item Name (A to Z)</option>
-                                    <option value="name_desc">Item Name (Z to A)</option>
+                                    <option value="sold_value_desc">Sold Value (High to Low)</option>
+                                    <option value="sold_value_asc">Sold Value (Low to High)</option>
+                                    <option value="sold_qty_desc">Sold Qty (High to Low)</option>
+                                    <option value="profit_on_sold_desc">Profit (High to Low)</option>
+                                    <option value="profit_on_sold_asc">Profit (Low to High)</option>
+                                    <option value="gp_percent_desc">GP% (High to Low)</option>
+                                    <option value="gp_percent_asc">GP% (Low to High)</option>
+                                    <option value="pending_value_desc">Pending (High to Low)</option>
+                                    <option value="pending_qty_desc">Pending Qty (High to Low)</option>
+                                    <option value="purchased_value_desc">Purchased (High to Low)</option>
+                                    <option value="purchased_qty_desc">Purchased Qty (High to Low)</option>
+                                    <option value="cost_of_sold_desc">COGS (High to Low)</option>
+                                    <option value="name_asc">Name (A to Z)</option>
+                                    <option value="name_desc">Name (Z to A)</option>
                                   </select>
+                                  <button
+                                    onClick={() => setItemSortDir(prev => prev === 'asc' ? 'desc' : 'asc')}
+                                    className="px-2 py-1 rounded-lg border border-border bg-background hover:bg-muted transition-colors text-xs font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                                    title={`Currently ${itemSortDir === 'asc' ? 'Ascending' : 'Descending'}. Click to reverse.`}
+                                  >
+                                    {itemSortDir === 'asc' ? (
+                                      <span className="text-primary inline-flex items-center gap-0.5 text-[11px]"><ArrowUp className="h-3 w-3" /> Asc</span>
+                                    ) : (
+                                      <span className="text-primary inline-flex items-center gap-0.5 text-[11px]"><ArrowDown className="h-3 w-3" /> Desc</span>
+                                    )}
+                                  </button>
                                 </div>
-                                <button
-                                  onClick={() => setItemSortDir(prev => prev === 'asc' ? 'desc' : 'asc')}
-                                  className="px-2 py-1 rounded-lg border border-border hover:bg-background transition-colors text-xs font-bold flex items-center gap-1 cursor-pointer"
-                                  title={`Currently ${itemSortDir === 'asc' ? 'Ascending' : 'Descending'}. Click to reverse.`}
-                                >
-                                  {itemSortDir === 'asc' ? (
-                                    <span className="text-primary inline-flex items-center gap-1 text-[11px]"><ArrowUp className="h-3.5 w-3.5" /> Asc</span>
-                                  ) : (
-                                    <span className="text-primary inline-flex items-center gap-1 text-[11px]"><ArrowDown className="h-3.5 w-3.5" /> Desc</span>
-                                  )}
-                                </button>
+
+                                {/* View Mode Switcher: Cards vs Table */}
+                                <div className="flex items-center gap-0.5 bg-background border border-border p-0.5 rounded-lg text-[11px] font-bold shrink-0">
+                                  <button
+                                    onClick={() => setItemViewMode('cards')}
+                                    className={cn(
+                                      "px-2 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer",
+                                      itemViewMode === 'cards' || (itemViewMode === 'auto')
+                                        ? "bg-primary text-primary-foreground shadow-2xs"
+                                        : "text-muted-foreground hover:text-foreground"
+                                    )}
+                                    title="Mobile-optimized Card view"
+                                  >
+                                    <LayoutGrid className="h-3 w-3" />
+                                    <span>Cards</span>
+                                  </button>
+                                  <button
+                                    onClick={() => setItemViewMode('table')}
+                                    className={cn(
+                                      "px-2 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer",
+                                      itemViewMode === 'table'
+                                        ? "bg-primary text-primary-foreground shadow-2xs"
+                                        : "text-muted-foreground hover:text-foreground"
+                                    )}
+                                    title="Multi-column Table view"
+                                  >
+                                    <TableIcon className="h-3 w-3" />
+                                    <span>Table</span>
+                                  </button>
+                                </div>
                               </div>
                             </div>
 
-                            <div className="border border-border rounded-xl overflow-hidden shadow-2xs">
+                            {/* 1. MOBILE-OPTIMIZED CARD VIEW (Default on mobile, clean 2x2 grid, never clips) */}
+                            <div className={cn("space-y-2.5", itemViewMode === 'auto' ? "sm:hidden" : itemViewMode === 'cards' ? "block" : "hidden")}>
+                              {filteredAndSortedItems.map((item: any) => (
+                                <div
+                                  key={item.item_id}
+                                  onClick={() => {
+                                    setProductDetailItem(item)
+                                    setProductVoucherSearch('')
+                                    setProductVoucherTypeFilter('All Vouchers')
+                                    setProductVoucherFlowFilter('All Flows')
+                                    setProductVoucherPeriodFilter('period')
+                                  }}
+                                  className="bg-card border border-border/80 hover:border-primary/50 active:scale-[0.99] rounded-xl p-3.5 space-y-2.5 transition-all cursor-pointer shadow-2xs group"
+                                >
+                                  {/* Card Header: Product Name + GP% badge */}
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-1.5 font-bold text-sm text-foreground group-hover:text-primary transition-colors">
+                                        <span className="truncate">{item.name}</span>
+                                        <ExternalLink className="h-3 w-3 opacity-40 group-hover:opacity-100 text-primary shrink-0 transition-opacity" />
+                                      </div>
+                                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                                        {item.uom || 'PCS'} • Avg Cost: <strong className="text-foreground font-semibold">{formatCurrency(item.avg_cost)}</strong>
+                                      </p>
+                                    </div>
+                                    <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full shrink-0",
+                                      item.gp_percent >= 15 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                                      : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                                      : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                                    )}>
+                                      GP: {item.gp_percent}%
+                                    </span>
+                                  </div>
+
+                                  {/* 2x2 Financial Metrics Grid */}
+                                  <div className="grid grid-cols-2 gap-2 text-xs">
+                                    {/* Purchased */}
+                                    <div className="bg-muted/40 rounded-lg p-2 border border-border/40">
+                                      <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Purchased</span>
+                                      <p className="font-black text-foreground text-xs mt-0.5">{formatCurrency(item.purchased_value)}</p>
+                                      <p className="text-[10px] text-muted-foreground">{item.purchased_qty} {item.uom || 'PCS'}</p>
+                                    </div>
+
+                                    {/* Sold */}
+                                    <div className="bg-emerald-500/5 rounded-lg p-2 border border-emerald-500/20">
+                                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase tracking-wider block">Sold</span>
+                                      <p className="font-black text-emerald-600 dark:text-emerald-400 text-xs mt-0.5">{formatCurrency(item.sold_value)}</p>
+                                      <p className="text-[10px] text-muted-foreground">{item.sold_qty} {item.uom || 'PCS'}</p>
+                                    </div>
+
+                                    {/* Pending */}
+                                    <div className="bg-amber-500/5 rounded-lg p-2 border border-amber-500/20">
+                                      <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold uppercase tracking-wider block">Pending</span>
+                                      <p className="font-black text-amber-600 dark:text-amber-400 text-xs mt-0.5">{formatCurrency(item.pending_value)}</p>
+                                      <p className="text-[10px] text-muted-foreground">{item.pending_qty} {item.uom || 'PCS'}</p>
+                                    </div>
+
+                                    {/* Realized Profit & COGS */}
+                                    <div className={cn("rounded-lg p-2 border",
+                                      item.profit_on_sold >= 0 ? "bg-emerald-500/5 border-emerald-500/20" : "bg-rose-500/5 border-rose-500/20"
+                                    )}>
+                                      <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Realized Profit</span>
+                                      <p className={cn("font-black text-xs mt-0.5", item.profit_on_sold >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
+                                        {formatCurrency(item.profit_on_sold)}
+                                      </p>
+                                      <p className="text-[10px] text-muted-foreground">COGS: {formatCurrency(item.cost_of_sold)}</p>
+                                    </div>
+                                  </div>
+
+                                  {/* Bottom Action Strip */}
+                                  <div className="flex items-center justify-between pt-1 border-t border-border/40 text-[10px] text-muted-foreground">
+                                    <span className="font-semibold">
+                                      {item.purchased_qty > 0 ? `${Math.min(100, Math.round((item.sold_qty / item.purchased_qty) * 100))}% sold` : 'No purchases'}
+                                    </span>
+                                    <span className="text-primary font-bold inline-flex items-center gap-1 group-hover:underline">
+                                      View Vouchers ➔
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
+                              {filteredAndSortedItems.length === 0 && (
+                                <div className="text-center py-6 text-muted-foreground text-xs font-medium bg-card rounded-xl border border-border">
+                                  No items matched &quot;{itemSearchQuery}&quot;
+                                </div>
+                              )}
+                            </div>
+
+                            {/* 2. FULL MULTI-COLUMN TABLE VIEW (Sticky item column, nowrap numbers) */}
+                            <div className={cn("border border-border rounded-xl overflow-hidden shadow-2xs", itemViewMode === 'auto' ? "hidden sm:block" : itemViewMode === 'table' ? "block" : "hidden")}>
                               <div className="overflow-x-auto">
                                 <table className="w-full text-[11px]">
                                   <thead>
@@ -2061,7 +2279,7 @@ export default function ReportsPage() {
                                       <th
                                         onClick={() => handleItemSort('name')}
                                         className={cn(
-                                          "text-left px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          "sticky left-0 bg-muted/95 backdrop-blur-xs z-10 min-w-[130px] sm:min-w-[160px] text-left px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted shadow-[1px_0_0_0_rgba(0,0,0,0.08)] dark:shadow-[1px_0_0_0_rgba(255,255,255,0.08)]",
                                           itemSortField === 'name' && "bg-primary/10 text-primary"
                                         )}
                                         title="Click to sort by Item Name (A-Z / Z-A)"
@@ -2074,7 +2292,7 @@ export default function ReportsPage() {
                                       <th
                                         onClick={() => handleItemSort('purchased_value')}
                                         className={cn(
-                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          "min-w-[105px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
                                           (itemSortField === 'purchased_value' || itemSortField === 'purchased_qty') && "bg-primary/10 text-primary"
                                         )}
                                         title="Click to sort by Purchased Value (click again to toggle direction)"
@@ -2087,7 +2305,7 @@ export default function ReportsPage() {
                                       <th
                                         onClick={() => handleItemSort('sold_value')}
                                         className={cn(
-                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          "min-w-[105px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
                                           (itemSortField === 'sold_value' || itemSortField === 'sold_qty') && "bg-primary/10 text-primary"
                                         )}
                                         title="Click to sort by Sold Value (click again to toggle direction)"
@@ -2100,7 +2318,7 @@ export default function ReportsPage() {
                                       <th
                                         onClick={() => handleItemSort('pending_value')}
                                         className={cn(
-                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          "min-w-[105px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
                                           (itemSortField === 'pending_value' || itemSortField === 'pending_qty') && "bg-primary/10 text-primary"
                                         )}
                                         title="Click to sort by Pending Value (click again to toggle direction)"
@@ -2113,7 +2331,7 @@ export default function ReportsPage() {
                                       <th
                                         onClick={() => handleItemSort('cost_of_sold')}
                                         className={cn(
-                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          "min-w-[95px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
                                           itemSortField === 'cost_of_sold' && "bg-primary/10 text-primary"
                                         )}
                                         title="Click to sort by Cost of Goods Sold (COGS)"
@@ -2126,7 +2344,7 @@ export default function ReportsPage() {
                                       <th
                                         onClick={() => handleItemSort('profit_on_sold')}
                                         className={cn(
-                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          "min-w-[100px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
                                           itemSortField === 'profit_on_sold' && "bg-primary/10 text-primary"
                                         )}
                                         title="Click to sort by Realized Profit (click again to toggle direction)"
@@ -2139,7 +2357,7 @@ export default function ReportsPage() {
                                       <th
                                         onClick={() => handleItemSort('gp_percent')}
                                         className={cn(
-                                          "text-right px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          "min-w-[70px] text-right px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
                                           itemSortField === 'gp_percent' && "bg-primary/10 text-primary"
                                         )}
                                         title="Click to sort by Gross Profit % (click again to toggle direction)"
@@ -2154,29 +2372,43 @@ export default function ReportsPage() {
                                   <tbody className="divide-y divide-border/30">
                                     {filteredAndSortedItems.map((item: any) => (
                                       <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
-                                        <td className="px-3 py-2">
-                                          <p className="font-bold">{item.name}</p>
-                                          <p className="text-[9px] text-muted-foreground">{item.uom} • Avg Cost: {formatCurrency(item.avg_cost)}</p>
+                                        <td className="sticky left-0 bg-card z-10 min-w-[130px] sm:min-w-[160px] max-w-[200px] px-3 py-2 shadow-[1px_0_0_0_rgba(0,0,0,0.06)] dark:shadow-[1px_0_0_0_rgba(255,255,255,0.06)]">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setProductDetailItem(item)
+                                              setProductVoucherSearch('')
+                                              setProductVoucherTypeFilter('All Vouchers')
+                                              setProductVoucherFlowFilter('All Flows')
+                                              setProductVoucherPeriodFilter('period')
+                                            }}
+                                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1.5 group/item cursor-pointer w-full"
+                                            title="Click to view complete inward & outward transaction details"
+                                          >
+                                            <span className="group-hover/item:underline truncate">{item.name}</span>
+                                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                                          </button>
+                                          <p className="text-[9px] text-muted-foreground truncate">{item.uom} • Avg: {formatCurrency(item.avg_cost)}</p>
                                         </td>
-                                        <td className="text-right px-2 py-2">
+                                        <td className="text-right px-2 py-2 whitespace-nowrap">
                                           <p className="font-bold">{formatCurrency(item.purchased_value)}</p>
                                           <p className="text-[9px] text-muted-foreground">{item.purchased_qty} {item.uom}</p>
                                         </td>
-                                        <td className="text-right px-2 py-2">
+                                        <td className="text-right px-2 py-2 whitespace-nowrap">
                                           <p className="font-bold text-emerald-600">{formatCurrency(item.sold_value)}</p>
                                           <p className="text-[9px] text-muted-foreground">{item.sold_qty} {item.uom}</p>
                                         </td>
-                                        <td className="text-right px-2 py-2">
+                                        <td className="text-right px-2 py-2 whitespace-nowrap">
                                           <p className="font-bold text-amber-600">{formatCurrency(item.pending_value)}</p>
                                           <p className="text-[9px] text-muted-foreground">{item.pending_qty} {item.uom}</p>
                                         </td>
-                                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.cost_of_sold)}</td>
-                                        <td className="text-right px-2 py-2">
+                                        <td className="text-right px-2 py-2 font-medium whitespace-nowrap">{formatCurrency(item.cost_of_sold)}</td>
+                                        <td className="text-right px-2 py-2 whitespace-nowrap">
                                           <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
                                             {formatCurrency(item.profit_on_sold)}
                                           </span>
                                         </td>
-                                        <td className="text-right px-3 py-2">
+                                        <td className="text-right px-3 py-2 whitespace-nowrap">
                                           <span className={cn("text-[10px] font-black px-1.5 py-0.5 rounded-full",
                                             item.gp_percent >= 15 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
                                             : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
@@ -2399,7 +2631,21 @@ export default function ReportsPage() {
                       <tr key={item.item_id} className="hover:bg-muted/20">
                         <td className="px-4 py-2 font-black text-muted-foreground">{idx + 1}</td>
                         <td className="px-2 py-2">
-                          <p className="font-bold">{item.name}</p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProductDetailItem(item)
+                              setProductVoucherSearch('')
+                              setProductVoucherTypeFilter('All Vouchers')
+                              setProductVoucherFlowFilter('All Flows')
+                              setProductVoucherPeriodFilter('period')
+                            }}
+                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
+                            title="Click to view complete inward & outward transaction details"
+                          >
+                            <span className="group-hover/item:underline">{item.name}</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                          </button>
                         </td>
                         <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
                         <td className="text-right px-2 py-2 font-extrabold">{item.sold_qty} {item.uom}</td>
@@ -2495,7 +2741,23 @@ export default function ReportsPage() {
                       })
                       .map((item: any) => (
                       <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
-                        <td className="px-4 py-2 font-bold">{item.name}</td>
+                        <td className="px-4 py-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProductDetailItem(item)
+                              setProductVoucherSearch('')
+                              setProductVoucherTypeFilter('All Vouchers')
+                              setProductVoucherFlowFilter('All Flows')
+                              setProductVoucherPeriodFilter('period')
+                            }}
+                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
+                            title="Click to view complete inward & outward transaction details"
+                          >
+                            <span className="group-hover/item:underline">{item.name}</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                          </button>
+                        </td>
                         <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
                         <td className="text-right px-2 py-2 font-medium">{item.closing_qty} {item.uom}</td>
                         <td className="text-right px-2 py-2 font-extrabold text-orange-600">{formatCurrency(item.closing_value)}</td>
@@ -2597,7 +2859,23 @@ export default function ReportsPage() {
                       })
                       .map((item: any) => (
                       <tr key={item.item_id} className="hover:bg-muted/20">
-                        <td className="px-4 py-2 font-bold">{item.name}</td>
+                        <td className="px-4 py-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProductDetailItem(item)
+                              setProductVoucherSearch('')
+                              setProductVoucherTypeFilter('All Vouchers')
+                              setProductVoucherFlowFilter('All Flows')
+                              setProductVoucherPeriodFilter('period')
+                            }}
+                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
+                            title="Click to view complete inward & outward transaction details"
+                          >
+                            <span className="group-hover/item:underline">{item.name}</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                          </button>
+                        </td>
                         <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
                         <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.avg_purchase_rate)}</td>
                         <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.avg_selling_rate)}</td>
@@ -2635,7 +2913,21 @@ export default function ReportsPage() {
                     <div className="flex items-center gap-3">
                       <AlertTriangle className="h-4 w-4 text-rose-500 shrink-0" />
                       <div>
-                        <p className="font-bold text-xs">{item.name}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProductDetailItem(item)
+                            setProductVoucherSearch('')
+                            setProductVoucherTypeFilter('All Vouchers')
+                            setProductVoucherFlowFilter('All Flows')
+                            setProductVoucherPeriodFilter('period')
+                          }}
+                          className="text-left font-bold text-xs text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
+                          title="Click to view complete inward & outward transaction details"
+                        >
+                          <span className="group-hover/item:underline">{item.name}</span>
+                          <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                        </button>
                         <p className="text-[10px] text-muted-foreground">{item.company_name}</p>
                       </div>
                     </div>
@@ -3352,6 +3644,307 @@ export default function ReportsPage() {
                 className="px-4 py-2 bg-primary text-primary-foreground font-bold text-xs rounded-xl hover:bg-primary/90 transition-all cursor-pointer"
               >
                 Close Breakdown
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* PRODUCT IN & OUT TRANSACTION DETAILS MODAL */}
+      {productDetailItem && (
+        <div
+          onClick={() => setProductDetailItem(null)}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in"
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className="bg-card border border-border rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl relative overflow-hidden animate-in zoom-in-95"
+          >
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-border flex items-start justify-between gap-4 bg-muted/40">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="p-2.5 rounded-xl bg-primary/10 text-primary border border-primary/20 shrink-0 mt-0.5">
+                  <Package className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-extrabold text-base sm:text-lg text-foreground truncate">
+                      {productDetailItem.name}
+                    </h3>
+                    {productDetailItem.company_name && (
+                      <span className="text-[10px] bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded-full font-bold">
+                        {productDetailItem.company_name}
+                      </span>
+                    )}
+                    <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full font-semibold text-muted-foreground">
+                      UOM: {productDetailItem.uom || 'PCS'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
+                    <span>Avg Purchase Rate: <strong className="text-foreground">{formatCurrency(productDetailItem.avg_purchase_rate || productDetailItem.avg_cost || 0)}</strong></span>
+                    {productDetailItem.avg_selling_rate > 0 && (
+                      <span>• Avg Selling Rate: <strong className="text-emerald-600 dark:text-emerald-400">{formatCurrency(productDetailItem.avg_selling_rate)}</strong></span>
+                    )}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <Link
+                  href="/stocks"
+                  target="_blank"
+                  className="px-2.5 py-1.5 rounded-xl bg-muted hover:bg-background border border-border text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5 cursor-pointer"
+                  title="Open Stocks management page in new tab"
+                >
+                  <span className="hidden sm:inline">Stocks Dashboard</span>
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+                <button
+                  onClick={() => setProductDetailItem(null)}
+                  className="p-1.5 rounded-xl hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  title="Close (Esc)"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Product Performance KPI Summary Strip */}
+            <div className="px-6 py-3 bg-muted/20 border-b border-border/70 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Purchased (Inward)</p>
+                <p className="text-sm font-extrabold text-foreground mt-0.5">
+                  {formatCurrency(productDetailItem.purchased_value || 0)}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {productDetailItem.purchased_qty || 0} {productDetailItem.uom || 'PCS'}
+                </p>
+              </div>
+
+              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Sold (Outward)</p>
+                <p className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                  {formatCurrency(productDetailItem.sold_value || 0)}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {productDetailItem.sold_qty || 0} {productDetailItem.uom || 'PCS'}
+                </p>
+              </div>
+
+              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">Pending Stock</p>
+                <p className="text-sm font-extrabold text-amber-600 dark:text-amber-400 mt-0.5">
+                  {formatCurrency(productDetailItem.pending_value || 0)}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {productDetailItem.pending_qty || 0} {productDetailItem.uom || 'PCS'}
+                </p>
+              </div>
+
+              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Realized Profit / GP%</p>
+                <p className={cn("text-sm font-extrabold mt-0.5", (productDetailItem.profit_on_sold || 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
+                  {formatCurrency(productDetailItem.profit_on_sold || 0)}
+                </p>
+                <p className="text-[10px] font-bold text-muted-foreground">
+                  Margin: <span className={cn((productDetailItem.gp_percent || 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>{productDetailItem.gp_percent || 0}%</span>
+                </p>
+              </div>
+            </div>
+
+            {/* Filter Bar (Search, Flow, Type, Period toggle) */}
+            <div className="px-6 py-3 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-background">
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <input
+                  type="text"
+                  placeholder="Search party, voucher or invoice..."
+                  value={productVoucherSearch}
+                  onChange={e => setProductVoucherSearch(e.target.value)}
+                  className="w-full bg-muted/40 border border-border rounded-lg pl-8 pr-7 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary font-medium text-foreground"
+                />
+                {productVoucherSearch && (
+                  <button
+                    onClick={() => setProductVoucherSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap text-xs">
+                {/* Flow Filter */}
+                <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg border border-border text-[11px] font-bold">
+                  {(['All Flows', 'Inward', 'Outward'] as const).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => setProductVoucherFlowFilter(f)}
+                      className={cn(
+                        "px-2 py-1 rounded-md transition-all cursor-pointer",
+                        productVoucherFlowFilter === f ? "bg-background text-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {f === 'All Flows' ? 'All' : f}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Voucher Type Filter */}
+                <select
+                  value={productVoucherTypeFilter}
+                  onChange={e => setProductVoucherTypeFilter(e.target.value)}
+                  className="bg-muted/40 border border-border rounded-lg px-2 py-1.5 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer text-foreground"
+                >
+                  <option value="All Vouchers">All Voucher Types</option>
+                  {productVoucherTypes.map(vt => (
+                    <option key={vt} value={vt}>{vt}</option>
+                  ))}
+                </select>
+
+                {/* Period Range Toggle */}
+                <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg border border-border text-[11px] font-bold">
+                  <button
+                    onClick={() => setProductVoucherPeriodFilter('period')}
+                    className={cn(
+                      "px-2 py-1 rounded-md transition-all cursor-pointer",
+                      productVoucherPeriodFilter === 'period' ? "bg-primary text-primary-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"
+                    )}
+                    title="Vouchers in the currently selected report period"
+                  >
+                    Selected Period
+                  </button>
+                  <button
+                    onClick={() => setProductVoucherPeriodFilter('all')}
+                    className={cn(
+                      "px-2 py-1 rounded-md transition-all cursor-pointer",
+                      productVoucherPeriodFilter === 'all' ? "bg-primary text-primary-foreground shadow-2xs" : "text-muted-foreground hover:text-foreground"
+                    )}
+                    title="All lifetime vouchers for this product"
+                  >
+                    All Time
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Voucher Transactions List */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-2.5 min-h-[300px] bg-muted/10">
+              {productVouchersLoading ? (
+                <div className="py-20 flex flex-col items-center justify-center gap-3">
+                  <div className="w-8 h-8 border-3 border-primary border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-muted-foreground font-semibold">Loading product vouchers...</p>
+                </div>
+              ) : filteredProductVouchers.length === 0 ? (
+                <div className="py-16 text-center text-muted-foreground space-y-2">
+                  <Package className="h-10 w-10 mx-auto opacity-30" />
+                  <p className="font-bold text-sm">No transactions found</p>
+                  <p className="text-xs max-w-sm mx-auto">
+                    No matching inward or outward transactions found for the selected filters or period.
+                  </p>
+                  {productVoucherPeriodFilter === 'period' && (
+                    <button
+                      onClick={() => setProductVoucherPeriodFilter('all')}
+                      className="mt-2 px-3 py-1.5 rounded-lg bg-primary/10 text-primary font-bold text-xs hover:bg-primary/20 transition-colors cursor-pointer"
+                    >
+                      Show All Time Vouchers
+                    </button>
+                  )}
+                </div>
+              ) : (
+                filteredProductVouchers.map((v: any) => {
+                  const isInward = v.is_inward
+                  const date = new Date(v.voucher_date)
+                  const dateStr = !isNaN(date.getTime())
+                    ? date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+                    : v.voucher_date
+                  const vType = (v.voucher_type || '').toUpperCase()
+
+                  return (
+                    <div
+                      key={v.stock_entry_id}
+                      onClick={() => router.push(`/vouchers/${v.voucher_id}`)}
+                      className="bg-card border border-border/80 hover:border-primary/50 hover:shadow-xs rounded-xl p-3.5 transition-all cursor-pointer group"
+                      title="Click to view voucher"
+                    >
+                      {/* Top Row: Date, Voucher Type badge, Reference, Voucher # */}
+                      <div className="flex items-center justify-between gap-2 flex-wrap text-xs mb-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-muted-foreground text-[11px]">{dateStr}</span>
+                          <span className={cn(
+                            "text-[9px] font-black px-2 py-0.5 rounded-md uppercase tracking-wider text-white",
+                            isInward ? "bg-emerald-600 dark:bg-emerald-700" : "bg-rose-600 dark:bg-rose-700"
+                          )}>
+                            {vType}
+                          </span>
+                          {v.reference_number && (
+                            <span className="text-[11px] text-muted-foreground font-medium">#{v.reference_number}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <span className="font-bold text-primary group-hover:underline">
+                            Vch: {v.voucher_number}
+                          </span>
+                          <ExternalLink className="h-3 w-3 text-primary opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                      </div>
+
+                      {/* Middle Row: Party Name */}
+                      <div className="font-bold text-sm text-foreground mb-2">
+                        {v.party_name}
+                      </div>
+
+                      {/* Bottom Row: Inward/Outward badge + Qty + Rate + Amount */}
+                      <div className={cn(
+                        "flex items-center justify-between gap-2 rounded-lg px-3 py-2 border text-xs flex-wrap",
+                        isInward
+                          ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-900 dark:text-emerald-200"
+                          : "bg-rose-500/10 border-rose-500/20 text-rose-900 dark:text-rose-200"
+                      )}>
+                        <div className="flex items-center gap-2">
+                          <span className={cn(
+                            "text-[10px] font-black px-1.5 py-0.5 rounded border uppercase tracking-wider",
+                            isInward
+                              ? "border-emerald-600 text-emerald-700 dark:text-emerald-300"
+                              : "border-rose-600 text-rose-700 dark:text-rose-300"
+                          )}>
+                            {isInward ? 'INWARD' : 'OUTWARD'}
+                          </span>
+                          {v.rate > 0 && (
+                            <span className="text-[11px] font-semibold text-muted-foreground">
+                              @ {formatCurrency(v.rate)} / {productDetailItem.uom || 'unit'}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="text-right flex items-center gap-3">
+                          <span className="font-bold text-foreground">
+                            {Number(v.quantity).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {productDetailItem.uom || 'PCS'}
+                          </span>
+                          <span className={cn("font-extrabold text-sm", isInward ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300")}>
+                            {formatCurrency(v.amount)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3 border-t border-border bg-muted/30 flex items-center justify-between text-xs text-muted-foreground">
+              <span>
+                Showing <strong>{filteredProductVouchers.length}</strong> of <strong>{productVouchers.length}</strong> vouchers
+                {voucherStats.count > 0 && (
+                  <span className="ml-2 hidden sm:inline">
+                    (In: <strong className="text-emerald-600">{voucherStats.inwardQty}</strong> • Out: <strong className="text-rose-600">{voucherStats.outwardQty}</strong>)
+                  </span>
+                )}
+              </span>
+              <button
+                onClick={() => setProductDetailItem(null)}
+                className="px-4 py-1.5 bg-primary text-primary-foreground font-bold rounded-xl hover:bg-primary/90 transition-colors cursor-pointer text-xs"
+              >
+                Close
               </button>
             </div>
           </div>

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -1213,12 +1213,24 @@ async def get_stock_items(
 @router.get("/items/{item_id}/vouchers")
 async def get_item_vouchers(
     item_id: int,
+    from_date: Optional[str] = Query(None, description="Filter vouchers from date (YYYY-MM-DD)"),
+    to_date: Optional[str] = Query(None, description="Filter vouchers to date (YYYY-MM-DD)"),
     user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """Return individual stock transaction vouchers for a specific stock item,
     including party name (Sundry Debtors / Sundry Creditors ledger on the voucher)."""
     from sqlalchemy import text as sa_text
+    
+    date_filter = ""
+    params: dict = {"item_id": item_id, "company_id": user.company_id}
+    if from_date:
+        date_filter += " AND v.voucher_date >= :from_date"
+        params["from_date"] = from_date
+    if to_date:
+        date_filter += " AND v.voucher_date <= :to_date"
+        params["to_date"] = to_date
+
     sql = sa_text(f"""
         SELECT
             se.stock_entry_id,
@@ -1250,9 +1262,12 @@ async def get_item_vouchers(
         ) party_sub2 ON party_sub2.voucher_id = v.voucher_id
         WHERE se.stock_item_id = :item_id
           AND v.company_id = :company_id
+          AND COALESCE(v.is_cancelled, FALSE) = FALSE
+          AND COALESCE(v.is_optional, FALSE) = FALSE
+          {date_filter}
         ORDER BY v.voucher_date DESC, se.stock_entry_id DESC
     """)
-    result = await db.execute(sql, {"item_id": item_id, "company_id": user.company_id})
+    result = await db.execute(sql, params)
     rows = result.fetchall()
 
     return [
@@ -1260,6 +1275,7 @@ async def get_item_vouchers(
             "stock_entry_id": r.stock_entry_id,
             "quantity": float(r.quantity),
             "amount": float(r.amount),
+            "rate": round(abs(float(r.amount) / float(r.quantity)), 2) if float(r.quantity) != 0 else 0.0,
             "is_inward": bool(r.is_inward),
             "voucher_id": r.voucher_id,
             "voucher_number": r.voucher_number,
