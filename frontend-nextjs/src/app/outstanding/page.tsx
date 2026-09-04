@@ -33,6 +33,7 @@ import {
   Sparkles
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
 
 interface CustomerAgingBill {
   bill_id: number
@@ -123,6 +124,17 @@ export default function DebtorsAgingPage() {
   const [bulkBucket, setBulkBucket] = useState<string>('ALL_OVERDUE')
   const [bulkResults, setBulkResults] = useState<ReminderPreview[]>([])
   const [isGeneratingBulk, setIsGeneratingBulk] = useState(false)
+
+  // Reorderable column hooks
+  const outstandingCustomersCols = useReorderableColumns({
+    tableKey: 'outstanding_customers',
+    defaultColumns: ['party_name', 'dunning_state', 'aging_breakdown', 'open_bills', 'total_outstanding', 'quick_reminder'],
+  })
+
+  const outstandingBillsCols = useReorderableColumns({
+    tableKey: 'outstanding_bills',
+    defaultColumns: ['bill_reference', 'bill_date', 'due_date', 'days_overdue', 'bill_amount', 'settled', 'balance_due', 'action'],
+  })
 
   const fetchAgingData = async () => {
     if (!token) return
@@ -446,6 +458,9 @@ export default function DebtorsAgingPage() {
                 ))}
               </div>
 
+              {/* Reset columns button */}
+              <ResetColumnsButton {...outstandingCustomersCols} />
+
               {/* Search Bar */}
               <div className="relative w-full sm:w-52">
                 <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -650,148 +665,188 @@ export default function DebtorsAgingPage() {
 
               {/* DESKTOP TABLE VIEW (Rendered on screens >= 768px) */}
               <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse min-w-[950px]">
-                  <thead>
-                    <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-extrabold text-[11px] uppercase tracking-wider">
-                      <th className="py-3 px-4 w-10"></th>
-                      <th className="py-3 px-4 w-72">Customer / Party Name</th>
-                      <th className="py-3 px-4 w-36">Dunning State</th>
-                      <th className="py-3 px-4 w-52">Aging Breakdown</th>
-                      <th className="py-3 px-4 w-28 text-center">Open Bills</th>
-                      <th className="py-3 px-4 w-36 text-right">Total Outstanding</th>
-                      <th className="py-3 px-5 text-right w-44">Quick Reminder</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/60">
-                    {filteredCustomers.map((cust) => {
-                      const isExpanded = expandedPartyIds.has(cust.party_ledger_id)
-                      const total = cust.total_outstanding || 1
+                {(() => {
+                  const custColDefs: Record<string, { label: string; align?: 'left' | 'center' | 'right'; width?: string }> = {
+                    party_name: { label: 'Customer / Party Name', align: 'left', width: 'w-72' },
+                    dunning_state: { label: 'Dunning State', align: 'left', width: 'w-36' },
+                    aging_breakdown: { label: 'Aging Breakdown', align: 'left', width: 'w-52' },
+                    open_bills: { label: 'Open Bills', align: 'center', width: 'w-28' },
+                    total_outstanding: { label: 'Total Outstanding', align: 'right', width: 'w-36' },
+                    quick_reminder: { label: 'Quick Reminder', align: 'right', width: 'w-44' },
+                  }
 
-                      return (
-                        <tr key={cust.party_ledger_id} className="group hover:bg-muted/30 transition-colors">
-                          <td className="py-3.5 px-4 text-center">
-                            <button
-                              onClick={() => toggleExpand(cust.party_ledger_id)}
-                              className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                              title="Expand bill breakdown"
-                            >
-                              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                            </button>
-                          </td>
-
-                          <td className="py-3.5 px-4">
-                            <div className="font-extrabold text-xs text-foreground flex items-center gap-2">
-                              <Link
-                                href={`/ledgers/${cust.party_ledger_id}`}
-                                className="hover:text-emerald-600 transition-colors hover:underline"
-                              >
-                                {cust.party_name}
-                              </Link>
-                            </div>
-                            <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1">
-                              {cust.phone && (
-                                <span className="flex items-center gap-1 font-mono">
-                                  <PhoneCall className="w-3 h-3 text-muted-foreground" />
-                                  {cust.phone}
-                                </span>
-                              )}
-                              <span className="font-medium">Credit: {cust.credit_period_days} Days</span>
-                            </div>
-                          </td>
-
-                          <td className="py-3.5 px-4">
-                            {cust.dunning_level === 'URGENT' ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
-                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
-                                URGENT (61d+)
-                              </span>
-                            ) : cust.dunning_level === 'FORMAL' ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                                FORMAL (31-60d)
-                              </span>
-                            ) : cust.dunning_level === 'GENTLE' ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-blue-500/10 text-blue-600 border border-blue-500/20">
-                                GENTLE (1-30d)
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                                CURRENT (On Time)
-                              </span>
-                            )}
-                          </td>
-
-                          <td className="py-3.5 px-4">
-                            {/* Segmented Multi-color Aging Progress Bar */}
-                            <div className="w-full bg-muted/60 h-2 rounded-full overflow-hidden flex shadow-2xs">
-                              {cust.current_not_due > 0 && (
-                                <div
-                                  style={{ width: `${(cust.current_not_due / total) * 100}%` }}
-                                  className="bg-emerald-500 h-full"
-                                  title={`Current: ₹${cust.current_not_due.toLocaleString()}`}
-                                />
-                              )}
-                              {cust.days_1_30 > 0 && (
-                                <div
-                                  style={{ width: `${(cust.days_1_30 / total) * 100}%` }}
-                                  className="bg-blue-500 h-full"
-                                  title={`1-30 Days: ₹${cust.days_1_30.toLocaleString()}`}
-                                />
-                              )}
-                              {cust.days_31_60 > 0 && (
-                                <div
-                                  style={{ width: `${(cust.days_31_60 / total) * 100}%` }}
-                                  className="bg-amber-500 h-full"
-                                  title={`31-60 Days: ₹${cust.days_31_60.toLocaleString()}`}
-                                />
-                              )}
-                              {cust.days_61_90 > 0 && (
-                                <div
-                                  style={{ width: `${(cust.days_61_90 / total) * 100}%` }}
-                                  className="bg-orange-500 h-full"
-                                  title={`61-90 Days: ₹${cust.days_61_90.toLocaleString()}`}
-                                />
-                              )}
-                              {cust.days_90_plus > 0 && (
-                                <div
-                                  style={{ width: `${(cust.days_90_plus / total) * 100}%` }}
-                                  className="bg-rose-500 h-full"
-                                  title={`90+ Days: ₹${cust.days_90_plus.toLocaleString()}`}
-                                />
-                              )}
-                            </div>
-                            <div className="flex justify-between items-center text-[10px] text-muted-foreground mt-1 font-mono">
-                              <span>0d</span>
-                              {cust.days_90_plus > 0 && <span className="text-rose-600 font-bold">90d+ : ₹{cust.days_90_plus.toLocaleString()}</span>}
-                            </div>
-                          </td>
-
-                          <td className="py-3.5 px-4 text-center font-mono font-bold">
-                            <span className="px-2 py-0.5 rounded-md bg-muted text-foreground text-xs">
-                              {cust.open_bills_count}
-                            </span>
-                          </td>
-
-                          <td className="py-3.5 px-4 text-right font-mono font-black text-sm text-foreground">
-                            {formatCurrency(cust.total_outstanding)}
-                          </td>
-
-                          <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                            <div className="flex items-center justify-end gap-2">
-                              <button
-                                onClick={() => handleOpenReminder(cust.party_ledger_id, 'auto')}
-                                className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                                title="Generate WhatsApp Dunning Message with Direct UPI link"
-                              >
-                                <MessageCircle className="w-3.5 h-3.5" />
-                                <span>WhatsApp</span>
-                              </button>
-                            </div>
-                          </td>
+                  return (
+                    <table className="w-full text-left text-xs border-collapse min-w-[950px]">
+                      <thead>
+                        <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-extrabold text-[11px] uppercase tracking-wider">
+                          <th className="py-3 px-4 w-10"></th>
+                          {outstandingCustomersCols.columns.map((colId) => {
+                            const def = custColDefs[colId]
+                            if (!def) return null
+                            return (
+                              <DraggableTh
+                                key={colId}
+                                id={colId}
+                                label={def.label}
+                                align={def.align}
+                                reorderProps={outstandingCustomersCols}
+                                className={`py-3 px-4 ${def.width || ''}`}
+                              />
+                            )
+                          })}
                         </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {filteredCustomers.map((cust) => {
+                          const isExpanded = expandedPartyIds.has(cust.party_ledger_id)
+                          const total = cust.total_outstanding || 1
+
+                          return (
+                            <tr key={cust.party_ledger_id} className="group hover:bg-muted/30 transition-colors">
+                              <td className="py-3.5 px-4 text-center">
+                                <button
+                                  onClick={() => toggleExpand(cust.party_ledger_id)}
+                                  className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                                  title="Expand bill breakdown"
+                                >
+                                  {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                </button>
+                              </td>
+
+                              {outstandingCustomersCols.columns.map((colId) => {
+                                switch (colId) {
+                                  case 'party_name':
+                                    return (
+                                      <td key="party_name" className="py-3.5 px-4">
+                                        <div className="font-extrabold text-xs text-foreground flex items-center gap-2">
+                                          <Link
+                                            href={`/ledgers/${cust.party_ledger_id}`}
+                                            className="hover:text-emerald-600 transition-colors hover:underline"
+                                          >
+                                            {cust.party_name}
+                                          </Link>
+                                        </div>
+                                        <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1">
+                                          {cust.phone && (
+                                            <span className="flex items-center gap-1 font-mono">
+                                              <PhoneCall className="w-3 h-3 text-muted-foreground" />
+                                              {cust.phone}
+                                            </span>
+                                          )}
+                                          <span className="font-medium">Credit: {cust.credit_period_days} Days</span>
+                                        </div>
+                                      </td>
+                                    )
+                                  case 'dunning_state':
+                                    return (
+                                      <td key="dunning_state" className="py-3.5 px-4">
+                                        {cust.dunning_level === 'URGENT' ? (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                                            URGENT (61d+)
+                                          </span>
+                                        ) : cust.dunning_level === 'FORMAL' ? (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                            FORMAL (31-60d)
+                                          </span>
+                                        ) : cust.dunning_level === 'GENTLE' ? (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                                            GENTLE (1-30d)
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                            CURRENT (On Time)
+                                          </span>
+                                        )}
+                                      </td>
+                                    )
+                                  case 'aging_breakdown':
+                                    return (
+                                      <td key="aging_breakdown" className="py-3.5 px-4">
+                                        {/* Segmented Multi-color Aging Progress Bar */}
+                                        <div className="w-full bg-muted/60 h-2 rounded-full overflow-hidden flex shadow-2xs">
+                                          {cust.current_not_due > 0 && (
+                                            <div
+                                              style={{ width: `${(cust.current_not_due / total) * 100}%` }}
+                                              className="bg-emerald-500 h-full"
+                                              title={`Current: ₹${cust.current_not_due.toLocaleString()}`}
+                                            />
+                                          )}
+                                          {cust.days_1_30 > 0 && (
+                                            <div
+                                              style={{ width: `${(cust.days_1_30 / total) * 100}%` }}
+                                              className="bg-blue-500 h-full"
+                                              title={`1-30 Days: ₹${cust.days_1_30.toLocaleString()}`}
+                                            />
+                                          )}
+                                          {cust.days_31_60 > 0 && (
+                                            <div
+                                              style={{ width: `${(cust.days_31_60 / total) * 100}%` }}
+                                              className="bg-amber-500 h-full"
+                                              title={`31-60 Days: ₹${cust.days_31_60.toLocaleString()}`}
+                                            />
+                                          )}
+                                          {cust.days_61_90 > 0 && (
+                                            <div
+                                              style={{ width: `${(cust.days_61_90 / total) * 100}%` }}
+                                              className="bg-orange-500 h-full"
+                                              title={`61-90 Days: ₹${cust.days_61_90.toLocaleString()}`}
+                                            />
+                                          )}
+                                          {cust.days_90_plus > 0 && (
+                                            <div
+                                              style={{ width: `${(cust.days_90_plus / total) * 100}%` }}
+                                              className="bg-rose-500 h-full"
+                                              title={`90+ Days: ₹${cust.days_90_plus.toLocaleString()}`}
+                                            />
+                                          )}
+                                        </div>
+                                        <div className="flex justify-between items-center text-[10px] text-muted-foreground mt-1 font-mono">
+                                          <span>0d</span>
+                                          {cust.days_90_plus > 0 && <span className="text-rose-600 font-bold">90d+ : ₹{cust.days_90_plus.toLocaleString()}</span>}
+                                        </div>
+                                      </td>
+                                    )
+                                  case 'open_bills':
+                                    return (
+                                      <td key="open_bills" className="py-3.5 px-4 text-center font-mono font-bold">
+                                        <span className="px-2 py-0.5 rounded-md bg-muted text-foreground text-xs">
+                                          {cust.open_bills_count}
+                                        </span>
+                                      </td>
+                                    )
+                                  case 'total_outstanding':
+                                    return (
+                                      <td key="total_outstanding" className="py-3.5 px-4 text-right font-mono font-black text-sm text-foreground">
+                                        {formatCurrency(cust.total_outstanding)}
+                                      </td>
+                                    )
+                                  case 'quick_reminder':
+                                    return (
+                                      <td key="quick_reminder" className="py-3.5 px-5 text-right whitespace-nowrap">
+                                        <div className="flex items-center justify-end gap-2">
+                                          <button
+                                            onClick={() => handleOpenReminder(cust.party_ledger_id, 'auto')}
+                                            className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                                            title="Generate WhatsApp Dunning Message with Direct UPI link"
+                                          >
+                                            <MessageCircle className="w-3.5 h-3.5" />
+                                            <span>WhatsApp</span>
+                                          </button>
+                                        </div>
+                                      </td>
+                                    )
+                                  default:
+                                    return null
+                                }
+                              })}
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )
+                })()}
               </div>
             </>
           )}
@@ -831,12 +886,15 @@ export default function DebtorsAgingPage() {
                     )}
                   </h4>
                 </div>
-                <button
-                  onClick={() => toggleExpand(partyId)}
-                  className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <ResetColumnsButton {...outstandingBillsCols} />
+                  <button
+                    onClick={() => toggleExpand(partyId)}
+                    className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               {/* Mobile Invoice Card View (< 768px) */}
@@ -848,49 +906,45 @@ export default function DebtorsAgingPage() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <span className="font-mono font-bold text-foreground text-sm block">
-                          {bill.bill_reference}
-                        </span>
-                        <div className="text-[11px] text-muted-foreground font-mono mt-0.5">
-                          <span>Date: {bill.bill_date ? formatDate(bill.bill_date) : '—'}</span>
-                          {bill.due_date && <span className="ml-2">Due: {formatDate(bill.due_date)}</span>}
+                        <span className="font-mono font-bold text-foreground text-xs">{bill.bill_reference}</span>
+                        <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                          <span>Dated: {bill.bill_date ? formatDate(bill.bill_date) : '—'}</span>
+                          {bill.due_date && <span>Due: {formatDate(bill.due_date)}</span>}
                         </div>
                       </div>
                       <div>
                         {bill.days_overdue > 0 ? (
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20 font-mono whitespace-nowrap">
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20 font-mono">
                             {bill.days_overdue}d Overdue
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 whitespace-nowrap">
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
                             Current
                           </span>
                         )}
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-1.5 pt-1 border-t border-border/50 text-[11px]">
+                    <div className="grid grid-cols-3 gap-1 py-1.5 px-2 rounded-lg bg-background/50 border border-border/40 font-mono text-[11px]">
                       <div>
-                        <span className="text-[10px] text-muted-foreground block">Bill Amt</span>
-                        <span className="font-mono font-semibold text-foreground">{formatCurrency(bill.bill_amount)}</span>
+                        <span className="text-[9px] uppercase font-bold text-muted-foreground block">Bill Amt</span>
+                        <span>{formatCurrency(bill.bill_amount)}</span>
                       </div>
                       <div>
-                        <span className="text-[10px] text-muted-foreground block">Settled</span>
-                        <span className="font-mono text-muted-foreground">{formatCurrency(bill.settled_amount)}</span>
+                        <span className="text-[9px] uppercase font-bold text-muted-foreground block">Settled</span>
+                        <span className="text-muted-foreground">{formatCurrency(bill.settled_amount)}</span>
                       </div>
                       <div className="text-right">
-                        <span className="text-[10px] text-muted-foreground block">Balance Due</span>
-                        <span className="font-mono font-bold text-rose-600 dark:text-rose-400">
-                          {formatCurrency(bill.outstanding_amount)}
-                        </span>
+                        <span className="text-[9px] uppercase font-bold text-rose-600 block">Due</span>
+                        <span className="font-black text-rose-600">{formatCurrency(bill.outstanding_amount)}</span>
                       </div>
                     </div>
 
                     {bill.voucher_id && (
-                      <div className="pt-1 flex justify-end">
+                      <div className="flex justify-end pt-1">
                         <Link
                           href={`/vouchers/${bill.voucher_id}`}
-                          className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-background border border-border hover:bg-muted text-foreground transition-all inline-flex items-center gap-1"
+                          className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 hover:underline"
                         >
                           <span>View Voucher</span>
                           <ExternalLink className="w-3 h-3" />
@@ -903,58 +957,117 @@ export default function DebtorsAgingPage() {
 
               {/* Desktop Table View (>= 768px) */}
               <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse min-w-[700px]">
-                  <thead>
-                    <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-bold text-[11px]">
-                      <th className="py-2.5 px-4">Invoice / Bill Ref</th>
-                      <th className="py-2.5 px-4">Bill Date</th>
-                      <th className="py-2.5 px-4">Due Date</th>
-                      <th className="py-2.5 px-4">Days Overdue</th>
-                      <th className="py-2.5 px-4 text-right">Bill Amount</th>
-                      <th className="py-2.5 px-4 text-right">Settled</th>
-                      <th className="py-2.5 px-4 text-right">Balance Due</th>
-                      <th className="py-2.5 px-4 text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/60">
-                    {displayBills.map((bill) => (
-                      <tr key={bill.bill_id} className="hover:bg-muted/30">
-                        <td className="py-3 px-4 font-mono font-bold text-foreground">
-                          {bill.bill_reference}
-                        </td>
-                        <td className="py-3 px-4 font-mono text-muted-foreground">{bill.bill_date ? formatDate(bill.bill_date) : '—'}</td>
-                        <td className="py-3 px-4 font-mono text-muted-foreground">{bill.due_date ? formatDate(bill.due_date) : '—'}</td>
-                        <td className="py-3 px-4">
-                          {bill.days_overdue > 0 ? (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20 font-mono">
-                              {bill.days_overdue} Days Overdue
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                              Current
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono">{formatCurrency(bill.bill_amount)}</td>
-                        <td className="py-3 px-4 text-right font-mono text-muted-foreground">{formatCurrency(bill.settled_amount)}</td>
-                        <td className="py-3 px-4 text-right font-mono font-black text-rose-600 dark:text-rose-400">
-                          {formatCurrency(bill.outstanding_amount)}
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          {bill.voucher_id && (
-                            <Link
-                              href={`/vouchers/${bill.voucher_id}`}
-                              className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-muted hover:bg-muted/80 text-foreground transition-all inline-flex items-center gap-1"
-                            >
-                              <span>View</span>
-                              <ExternalLink className="w-3 h-3" />
-                            </Link>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                {(() => {
+                  const billColDefs: Record<string, { label: string; align?: 'left' | 'center' | 'right' }> = {
+                    bill_reference: { label: 'Invoice / Bill Ref', align: 'left' },
+                    bill_date: { label: 'Bill Date', align: 'left' },
+                    due_date: { label: 'Due Date', align: 'left' },
+                    days_overdue: { label: 'Days Overdue', align: 'left' },
+                    bill_amount: { label: 'Bill Amount', align: 'right' },
+                    settled: { label: 'Settled', align: 'right' },
+                    balance_due: { label: 'Balance Due', align: 'right' },
+                    action: { label: 'Action', align: 'right' },
+                  }
+
+                  return (
+                    <table className="w-full text-left text-xs border-collapse min-w-[700px]">
+                      <thead>
+                        <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-bold text-[11px]">
+                          {outstandingBillsCols.columns.map((colId) => {
+                            const def = billColDefs[colId]
+                            if (!def) return null
+                            return (
+                              <DraggableTh
+                                key={colId}
+                                id={colId}
+                                label={def.label}
+                                align={def.align}
+                                reorderProps={outstandingBillsCols}
+                                className="py-2.5 px-4"
+                              />
+                            )
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {displayBills.map((bill) => (
+                          <tr key={bill.bill_id} className="hover:bg-muted/30">
+                            {outstandingBillsCols.columns.map((colId) => {
+                              switch (colId) {
+                                case 'bill_reference':
+                                  return (
+                                    <td key="bill_reference" className="py-3 px-4 font-mono font-bold text-foreground">
+                                      {bill.bill_reference}
+                                    </td>
+                                  )
+                                case 'bill_date':
+                                  return (
+                                    <td key="bill_date" className="py-3 px-4 font-mono text-muted-foreground">
+                                      {bill.bill_date ? formatDate(bill.bill_date) : '—'}
+                                    </td>
+                                  )
+                                case 'due_date':
+                                  return (
+                                    <td key="due_date" className="py-3 px-4 font-mono text-muted-foreground">
+                                      {bill.due_date ? formatDate(bill.due_date) : '—'}
+                                    </td>
+                                  )
+                                case 'days_overdue':
+                                  return (
+                                    <td key="days_overdue" className="py-3 px-4">
+                                      {bill.days_overdue > 0 ? (
+                                        <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20 font-mono">
+                                          {bill.days_overdue} Days Overdue
+                                        </span>
+                                      ) : (
+                                        <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                          Current
+                                        </span>
+                                      )}
+                                    </td>
+                                  )
+                                case 'bill_amount':
+                                  return (
+                                    <td key="bill_amount" className="py-3 px-4 text-right font-mono">
+                                      {formatCurrency(bill.bill_amount)}
+                                    </td>
+                                  )
+                                case 'settled':
+                                  return (
+                                    <td key="settled" className="py-3 px-4 text-right font-mono text-muted-foreground">
+                                      {formatCurrency(bill.settled_amount)}
+                                    </td>
+                                  )
+                                case 'balance_due':
+                                  return (
+                                    <td key="balance_due" className="py-3 px-4 text-right font-mono font-black text-rose-600 dark:text-rose-400">
+                                      {formatCurrency(bill.outstanding_amount)}
+                                    </td>
+                                  )
+                                case 'action':
+                                  return (
+                                    <td key="action" className="py-3 px-4 text-right">
+                                      {bill.voucher_id && (
+                                        <Link
+                                          href={`/vouchers/${bill.voucher_id}`}
+                                          className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-muted hover:bg-muted/80 text-foreground transition-all inline-flex items-center gap-1"
+                                        >
+                                          <span>View</span>
+                                          <ExternalLink className="w-3 h-3" />
+                                        </Link>
+                                      )}
+                                    </td>
+                                  )
+                                default:
+                                  return null
+                              }
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )
+                })()}
               </div>
             </div>
           )

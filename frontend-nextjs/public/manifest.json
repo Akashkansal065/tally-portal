@@ -3,6 +3,8 @@
   "short_name": "MyTally",
   "description": "Mobile ERP for inventory and ledger management",
   "start_url": "/",
+  "scope": "/",
+  "id": "/",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#10b981",
@@ -17,7 +19,10 @@
     {
       "src": "/icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
-  ]
+  ],
+  "categories": ["business", "finance", "productivity"],
+  "prefer_related_applications": false
 }

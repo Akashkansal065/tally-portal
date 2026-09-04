@@ -8,6 +8,7 @@ import { MobileBottomNav } from '@/components/MobileBottomNav'
 
 import { PwaRegister } from '@/components/PwaRegister'
 import { DatePickerInitializer } from '@/components/DatePickerInitializer'
+import { MobileInstallPrompt } from '@/components/MobileInstallPrompt'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
@@ -24,6 +25,16 @@ export const metadata: Metadata = {
     capable: true,
     statusBarStyle: 'default',
     title: 'MyTally',
+  },
+  icons: {
+    icon: '/icon-192.png',
+    apple: [
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+  },
+  formatDetection: {
+    telephone: false,
   },
 }
 
@@ -48,6 +59,13 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap"
           rel="stylesheet"
         />
+        <link rel="apple-touch-icon" href="/icon-192.png" />
+        <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
+        <link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="apple-mobile-web-app-title" content="MyTally" />
+        <meta name="mobile-web-app-capable" content="yes" />
       </head>
       <body className="flex flex-col h-dvh overflow-hidden">
         <ThemeProvider>
@@ -55,11 +73,15 @@ export default function RootLayout({
             <PeriodProvider>
               <PwaRegister />
               <DatePickerInitializer />
+              <MobileInstallPrompt />
               {/* Top Header */}
               <GlobalHeader />
 
-              {/* Scrollable main content, padded for bottom nav */}
-              <main className="flex-1 overflow-y-auto overflow-x-hidden pb-16">
+              {/* Scrollable main content, padded for bottom nav and iOS home indicator */}
+              <main
+                className="flex-1 overflow-y-auto overflow-x-hidden"
+                style={{ paddingBottom: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))' }}
+              >
                 <RouteGuard>{children}</RouteGuard>
               </main>
 

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { Plus, Edit2, Trash2, X, Info, Search, FileText, Tag, Banknote, MapPin, Package, Settings, ChevronRight, Wrench } from 'lucide-react'
+import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
 
 export default function StockItemsPage() {
   const { user, token, permissions } = useAuth()
@@ -60,6 +61,12 @@ export default function StockItemsPage() {
   
   // BOMs
   const [boms, setBoms] = useState<any[]>([])
+
+  // Reorderable column hook
+  const stockItemCols = useReorderableColumns({
+    tableKey: 'master_stock_items',
+    defaultColumns: ['name', 'group_name', 'uom', 'hsn_code', 'closing_balance', 'actions'],
+  })
 
   const fetchDependencies = async () => {
     try {
@@ -305,55 +312,111 @@ export default function StockItemsPage() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">Stock Items</h1>
             <p className="text-sm text-muted-foreground mt-1">Manage your inventory products, raw materials, and services.</p>
           </div>
-          <button 
-            onClick={openCreate}
-            className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors shadow-sm"
-          >
-            <Plus className="h-4 w-4" /> Create Item
-          </button>
+          <div className="flex items-center gap-3">
+            <ResetColumnsButton {...stockItemCols} />
+            <button 
+              onClick={openCreate}
+              className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors shadow-sm"
+            >
+              <Plus className="h-4 w-4" /> Create Item
+            </button>
+          </div>
         </div>
 
         {loading ? (
           <div className="flex justify-center p-8"><div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" /></div>
         ) : (
           <div className="bg-card border border-border rounded-xl shadow-sm overflow-hidden">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="bg-muted/50 border-b border-border">
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Item Name</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">Group</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">UOM</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground">HSN</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground text-right">Closing Qty</th>
-                  <th className="px-4 py-3 font-semibold text-muted-foreground text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">No stock items found.</td>
-                  </tr>
-                ) : (
-                  items.map(item => (
-                    <tr key={item.stock_item_id} className="border-b border-border last:border-0 hover:bg-muted/20 transition-colors">
-                      <td className="px-4 py-3 align-middle">
-                        <div className="flex items-center gap-2">
-                          <span className={`font-semibold ${!item.is_active && 'line-through text-muted-foreground'}`}>{item.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 align-middle text-muted-foreground">{item.group_name || 'Primary'}</td>
-                      <td className="px-4 py-3 align-middle text-muted-foreground">{item.uom || '—'}</td>
-                      <td className="px-4 py-3 align-middle text-muted-foreground">{item.hsn_code || '—'}</td>
-                      <td className="px-4 py-3 align-middle text-right font-medium">{item.closing_balance}</td>
-                      <td className="px-4 py-3 align-middle text-right space-x-2">
-                        <button onClick={() => openEdit(item)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
-                        <button onClick={() => handleDelete(item.stock_item_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
-                      </td>
+            {(() => {
+              const stockItemColDefs: Record<string, { label: string; align?: 'left' | 'center' | 'right' }> = {
+                name: { label: 'Item Name', align: 'left' },
+                group_name: { label: 'Group', align: 'left' },
+                uom: { label: 'UOM', align: 'left' },
+                hsn_code: { label: 'HSN', align: 'left' },
+                closing_balance: { label: 'Closing Qty', align: 'right' },
+                actions: { label: 'Actions', align: 'right' },
+              }
+
+              return (
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="bg-muted/50 border-b border-border">
+                      {stockItemCols.columns.map((colId) => {
+                        const def = stockItemColDefs[colId]
+                        if (!def) return null
+                        return (
+                          <DraggableTh
+                            key={colId}
+                            id={colId}
+                            label={def.label}
+                            align={def.align}
+                            reorderProps={stockItemCols}
+                            className="px-4 py-3 font-semibold text-muted-foreground"
+                          />
+                        )
+                      })}
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {items.length === 0 ? (
+                      <tr>
+                        <td colSpan={stockItemCols.columns.length} className="px-4 py-8 text-center text-muted-foreground">No stock items found.</td>
+                      </tr>
+                    ) : (
+                      items.map(item => (
+                        <tr key={item.stock_item_id} className="border-b border-border last:border-0 hover:bg-muted/20 transition-colors">
+                          {stockItemCols.columns.map((colId) => {
+                            switch (colId) {
+                              case 'name':
+                                return (
+                                  <td key="name" className="px-4 py-3 align-middle">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`font-semibold ${!item.is_active && 'line-through text-muted-foreground'}`}>{item.name}</span>
+                                    </div>
+                                  </td>
+                                )
+                              case 'group_name':
+                                return (
+                                  <td key="group_name" className="px-4 py-3 align-middle text-muted-foreground">
+                                    {item.group_name || 'Primary'}
+                                  </td>
+                                )
+                              case 'uom':
+                                return (
+                                  <td key="uom" className="px-4 py-3 align-middle text-muted-foreground">
+                                    {item.uom || '—'}
+                                  </td>
+                                )
+                              case 'hsn_code':
+                                return (
+                                  <td key="hsn_code" className="px-4 py-3 align-middle text-muted-foreground">
+                                    {item.hsn_code || '—'}
+                                  </td>
+                                )
+                              case 'closing_balance':
+                                return (
+                                  <td key="closing_balance" className="px-4 py-3 align-middle text-right font-medium">
+                                    {item.closing_balance}
+                                  </td>
+                                )
+                              case 'actions':
+                                return (
+                                  <td key="actions" className="px-4 py-3 align-middle text-right space-x-2">
+                                    <button onClick={() => openEdit(item)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
+                                    <button onClick={() => handleDelete(item.stock_item_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                                  </td>
+                                )
+                              default:
+                                return null
+                            }
+                          })}
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )
+            })()}
           </div>
         )}
       </div>

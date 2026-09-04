@@ -20,6 +20,7 @@ import {
   XAxis, YAxis, Tooltip, Legend, CartesianGrid
 } from 'recharts'
 import ProjectedFinancials from '@/components/ProjectedFinancials'
+import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
 
 type TabType = 'executive' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance'
 type PresetType = 'all' | 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
@@ -368,6 +369,62 @@ export default function ReportsPage() {
   const [productVoucherFlowFilter, setProductVoucherFlowFilter] = useState<'All Flows' | 'Inward' | 'Outward'>('All Flows')
   const [productVoucherPeriodFilter, setProductVoucherPeriodFilter] = useState<'period' | 'all'>('period')
   const [itemViewMode, setItemViewMode] = useState<'auto' | 'cards' | 'table'>('auto')
+
+  // Reorderable table column hooks with localStorage persistence & drag/drop/touch support
+  const fastCols = useReorderableColumns({
+    tableKey: 'fast_movers',
+    defaultColumns: ['rank', 'name', 'company_name', 'sold_qty', 'sold_value', 'remaining_qty', 'profit_on_sold', 'gp_percent'],
+  })
+
+  const companyItemCols = useReorderableColumns({
+    tableKey: 'company_items',
+    defaultColumns: ['name', 'purchased_value', 'sold_value', 'pending_value', 'cost_of_sold', 'profit_on_sold', 'gp_percent'],
+  })
+
+  const monthlyCols = useReorderableColumns({
+    tableKey: 'monthly_trends',
+    defaultColumns: ['month', 'inward_value', 'outward_value', 'net_movement', 'items_moved', 'voucher_count'],
+  })
+
+  const deadCols = useReorderableColumns({
+    tableKey: 'dead_stock',
+    defaultColumns: ['name', 'company_name', 'closing_qty', 'closing_value', 'last_sold_date'],
+  })
+
+  const lossCols = useReorderableColumns({
+    tableKey: 'loss_making',
+    defaultColumns: ['name', 'company_name', 'avg_purchase_rate', 'avg_selling_rate', 'rate_difference', 'sold_qty', 'loss_amount'],
+  })
+
+  const turnoverCols = useReorderableColumns({
+    tableKey: 'turnover_ratios',
+    defaultColumns: ['company_name', 'items_count', 'cost_of_goods_sold', 'turnover_ratio', 'days_to_sell', 'velocity'],
+  })
+
+  const returnsCols = useReorderableColumns({
+    tableKey: 'returns_analysis',
+    defaultColumns: ['voucher_type', 'voucher_count', 'return_in_qty', 'return_in_value', 'return_out_qty', 'return_out_value'],
+  })
+
+  const salesRegisterCols = useReorderableColumns({
+    tableKey: 'sales_register',
+    defaultColumns: ['voucher_number', 'date', 'party_name', 'amount'],
+  })
+
+  const daybookCols = useReorderableColumns({
+    tableKey: 'daybook',
+    defaultColumns: ['date', 'voucher_number', 'type', 'party_name', 'amount'],
+  })
+
+  const trialBalanceCols = useReorderableColumns({
+    tableKey: 'trial_balance',
+    defaultColumns: ['name', 'debit', 'credit', 'balance'],
+  })
+
+  const agingModalCols = useReorderableColumns({
+    tableKey: 'aging_modal',
+    defaultColumns: ['party_name', 'voucher_number', 'date', 'days', 'amount'],
+  })
 
   const handleItemSort = (field: ItemSortKey) => {
     if (itemSortField === field) {
@@ -1695,6 +1752,7 @@ export default function ReportsPage() {
                 <p className="text-xs text-muted-foreground">Itemized invoice ledger entries for selected date period</p>
               </div>
               <div className="flex items-center gap-2">
+                <ResetColumnsButton isCustomized={salesRegisterCols.isCustomized} onReset={salesRegisterCols.resetColumns} />
                 <div className="relative">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                   <input
@@ -1714,46 +1772,113 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            <div className="overflow-x-auto -mx-5 px-5">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border text-muted-foreground text-left">
-                    <th className="py-2.5 px-2 font-bold">Voucher #</th>
-                    <th className="py-2.5 px-2 font-bold">Date</th>
-                    <th className="py-2.5 px-2 font-bold">Party / Customer Name</th>
-                    <th className="py-2.5 px-2 font-bold text-right">Total Invoice Value</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/50">
-                  {salesRegister
-                    .filter(r => (r.party_name || '').toLowerCase().includes(searchQuery.toLowerCase()) || (r.voucher_number || '').toLowerCase().includes(searchQuery.toLowerCase()))
-                    .map((row, idx) => (
-                      <tr key={idx} className="hover:bg-muted/30 transition-colors">
-                        <td className="py-2.5 px-2 font-mono font-bold">
-                          <Link
-                            href={`/vouchers/${row.id}`}
-                            className="text-primary hover:underline hover:text-indigo-600 font-bold"
-                            title="Click to open voucher details"
-                          >
-                            <span>{row.voucher_number || `#${row.id}`}</span>
-                          </Link>
-                        </td>
-                        <td className="py-2.5 px-2 text-muted-foreground">{formatDate(row.date)}</td>
-                        <td className="py-2.5 px-2 font-semibold">
-                          <Link
-                            href={`/ledgers?search=${encodeURIComponent(row.party_name)}`}
-                            className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
-                            title={`Search ${row.party_name} in ledgers`}
-                          >
-                            {toTitleCase(row.party_name)}
-                          </Link>
-                        </td>
-                        <td className="py-2.5 px-2 text-right font-bold text-emerald-600">{formatCurrency(row.amount)}</td>
+            {(() => {
+              const salesRegisterColumnDefs: Record<string, {
+                label: string
+                align?: 'left' | 'right' | 'center'
+                cellClassName: string
+                renderHeader: () => React.ReactNode
+                renderCell: (row: any) => React.ReactNode
+              }> = {
+                voucher_number: {
+                  label: 'Voucher #',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2 font-mono font-bold',
+                  renderHeader: () => <span>Voucher #</span>,
+                  renderCell: (row) => (
+                    <Link
+                      href={`/vouchers/${row.id}`}
+                      className="text-primary hover:underline hover:text-indigo-600 font-bold"
+                      title="Click to open voucher details"
+                    >
+                      <span>{row.voucher_number || `#${row.id}`}</span>
+                    </Link>
+                  ),
+                },
+                date: {
+                  label: 'Date',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2 text-muted-foreground',
+                  renderHeader: () => <span>Date</span>,
+                  renderCell: (row) => formatDate(row.date),
+                },
+                party_name: {
+                  label: 'Party / Customer Name',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2 font-semibold',
+                  renderHeader: () => <span>Party / Customer Name</span>,
+                  renderCell: (row) => (
+                    <Link
+                      href={`/ledgers?search=${encodeURIComponent(row.party_name)}`}
+                      className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                      title={`Search ${row.party_name} in ledgers`}
+                    >
+                      {toTitleCase(row.party_name)}
+                    </Link>
+                  ),
+                },
+                amount: {
+                  label: 'Total Invoice Value',
+                  align: 'right',
+                  cellClassName: 'py-2.5 px-2 text-right font-bold text-emerald-600',
+                  renderHeader: () => <span>Total Invoice Value</span>,
+                  renderCell: (row) => formatCurrency(row.amount),
+                },
+              }
+
+              const filteredSales = salesRegister.filter(r =>
+                (r.party_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                (r.voucher_number || '').toLowerCase().includes(searchQuery.toLowerCase())
+              )
+
+              return (
+                <div className="overflow-x-auto -mx-5 px-5">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border text-muted-foreground select-none">
+                        {salesRegisterCols.columns.map(colId => {
+                          const col = salesRegisterColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={salesRegisterCols.columns}
+                              getHeaderProps={salesRegisterCols.getHeaderProps}
+                              draggedCol={salesRegisterCols.draggedCol}
+                              dragOverCol={salesRegisterCols.dragOverCol}
+                              dropPosition={salesRegisterCols.dropPosition}
+                              hasDraggedRef={salesRegisterCols.hasDraggedRef}
+                              moveLeft={salesRegisterCols.moveLeft}
+                              moveRight={salesRegisterCols.moveRight}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
                       </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
+                    </thead>
+                    <tbody className="divide-y divide-border/50">
+                      {filteredSales.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-muted/30 transition-colors">
+                          {salesRegisterCols.columns.map(colId => {
+                            const col = salesRegisterColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(row)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })()}
+
           </div>
         </div>
       )}
@@ -2151,34 +2276,37 @@ export default function ReportsPage() {
                                   </button>
                                 </div>
 
-                                {/* View Mode Switcher: Cards vs Table */}
-                                <div className="flex items-center gap-0.5 bg-background border border-border p-0.5 rounded-lg text-[11px] font-bold shrink-0">
-                                  <button
-                                    onClick={() => setItemViewMode('cards')}
-                                    className={cn(
-                                      "px-2 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer",
-                                      itemViewMode === 'cards' || (itemViewMode === 'auto')
-                                        ? "bg-primary text-primary-foreground shadow-2xs"
-                                        : "text-muted-foreground hover:text-foreground"
-                                    )}
-                                    title="Mobile-optimized Card view"
-                                  >
-                                    <LayoutGrid className="h-3 w-3" />
-                                    <span>Cards</span>
-                                  </button>
-                                  <button
-                                    onClick={() => setItemViewMode('table')}
-                                    className={cn(
-                                      "px-2 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer",
-                                      itemViewMode === 'table'
-                                        ? "bg-primary text-primary-foreground shadow-2xs"
-                                        : "text-muted-foreground hover:text-foreground"
-                                    )}
-                                    title="Multi-column Table view"
-                                  >
-                                    <TableIcon className="h-3 w-3" />
-                                    <span>Table</span>
-                                  </button>
+                                {/* Reset Columns Button & View Mode Switcher */}
+                                <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                                  <ResetColumnsButton isCustomized={companyItemCols.isCustomized} onReset={companyItemCols.resetColumns} />
+                                  <div className="flex items-center gap-0.5 bg-background border border-border p-0.5 rounded-lg text-[11px] font-bold">
+                                    <button
+                                      onClick={() => setItemViewMode('cards')}
+                                      className={cn(
+                                        "px-2 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer",
+                                        itemViewMode === 'cards' || (itemViewMode === 'auto')
+                                          ? "bg-primary text-primary-foreground shadow-2xs"
+                                          : "text-muted-foreground hover:text-foreground"
+                                      )}
+                                      title="Mobile-optimized Card view"
+                                    >
+                                      <LayoutGrid className="h-3 w-3" />
+                                      <span>Cards</span>
+                                    </button>
+                                    <button
+                                      onClick={() => setItemViewMode('table')}
+                                      className={cn(
+                                        "px-2 py-1 rounded-md transition-all flex items-center gap-1 cursor-pointer",
+                                        itemViewMode === 'table'
+                                          ? "bg-primary text-primary-foreground shadow-2xs"
+                                          : "text-muted-foreground hover:text-foreground"
+                                      )}
+                                      title="Multi-column Table view (Draggable columns)"
+                                    >
+                                      <TableIcon className="h-3 w-3" />
+                                      <span>Table</span>
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
                             </div>
@@ -2204,7 +2332,7 @@ export default function ReportsPage() {
                                         <span className="truncate">{item.name}</span>
                                         <ExternalLink className="h-3 w-3 opacity-40 group-hover:opacity-100 text-primary shrink-0 transition-opacity" />
                                       </div>
-                                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                                      <p className="text-xs text-muted-foreground mt-0.5">
                                         {item.uom || 'PCS'} • Avg Cost: <strong className="text-foreground font-semibold">{formatCurrency(item.avg_cost)}</strong>
                                       </p>
                                     </div>
@@ -2270,166 +2398,215 @@ export default function ReportsPage() {
                               )}
                             </div>
 
-                            {/* 2. FULL MULTI-COLUMN TABLE VIEW (Sticky item column, nowrap numbers) */}
-                            <div className={cn("border border-border rounded-xl overflow-hidden shadow-2xs", itemViewMode === 'auto' ? "hidden sm:block" : itemViewMode === 'table' ? "block" : "hidden")}>
-                              <div className="overflow-x-auto">
-                                <table className="w-full text-[11px]">
-                                  <thead>
-                                    <tr className="bg-muted/60 text-muted-foreground border-b border-border select-none">
-                                      <th
-                                        onClick={() => handleItemSort('name')}
-                                        className={cn(
-                                          "sticky left-0 bg-muted/95 backdrop-blur-xs z-10 min-w-[130px] sm:min-w-[160px] text-left px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted shadow-[1px_0_0_0_rgba(0,0,0,0.08)] dark:shadow-[1px_0_0_0_rgba(255,255,255,0.08)]",
-                                          itemSortField === 'name' && "bg-primary/10 text-primary"
-                                        )}
-                                        title="Click to sort by Item Name (A-Z / Z-A)"
+                            {/* 2. FULL MULTI-COLUMN TABLE VIEW (Sticky item column, nowrap numbers, Reorderable columns) */}
+                            {(() => {
+                              const companyItemColumnDefs: Record<string, {
+                                label: string
+                                align?: 'left' | 'right' | 'center'
+                                minWidth?: string
+                                cellClassName: string
+                                renderHeader: () => React.ReactNode
+                                renderCell: (item: any) => React.ReactNode
+                              }> = {
+                                name: {
+                                  label: 'Item',
+                                  align: 'left',
+                                  minWidth: '130px',
+                                  cellClassName: 'sticky left-0 bg-card z-10 min-w-[130px] sm:min-w-[160px] max-w-[200px] px-3 py-2 shadow-[1px_0_0_0_rgba(0,0,0,0.06)] dark:shadow-[1px_0_0_0_rgba(255,255,255,0.06)]',
+                                  renderHeader: () => (
+                                    <div className="inline-flex items-center gap-1">
+                                      <span className={cn(itemSortField === 'name' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Item</span>
+                                      {renderSortIcon('name', itemSortField, itemSortDir)}
+                                    </div>
+                                  ),
+                                  renderCell: (item) => (
+                                    <div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setProductDetailItem(item)
+                                          setProductVoucherSearch('')
+                                          setProductVoucherTypeFilter('All Vouchers')
+                                          setProductVoucherFlowFilter('All Flows')
+                                          setProductVoucherPeriodFilter('period')
+                                        }}
+                                        className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1.5 group/item cursor-pointer w-full"
+                                        title="Click to view complete inward & outward transaction details"
                                       >
-                                        <div className="inline-flex items-center gap-1">
-                                          <span className={cn(itemSortField === 'name' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Item</span>
-                                          {renderSortIcon('name', itemSortField, itemSortDir)}
-                                        </div>
-                                      </th>
-                                      <th
-                                        onClick={() => handleItemSort('purchased_value')}
-                                        className={cn(
-                                          "min-w-[105px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
-                                          (itemSortField === 'purchased_value' || itemSortField === 'purchased_qty') && "bg-primary/10 text-primary"
+                                        <span className="group-hover/item:underline truncate">{item.name}</span>
+                                        <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                                      </button>
+                                      <p className="text-[9px] text-muted-foreground truncate">{item.uom} • Avg: {formatCurrency(item.avg_cost)}</p>
+                                    </div>
+                                  ),
+                                },
+                                purchased_value: {
+                                  label: 'Purchased',
+                                  align: 'right',
+                                  minWidth: '105px',
+                                  cellClassName: 'text-right px-2 py-2 whitespace-nowrap',
+                                  renderHeader: () => (
+                                    <div className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className={cn((itemSortField === 'purchased_value' || itemSortField === 'purchased_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Purchased</span>
+                                      {renderSortIcon('purchased_value', itemSortField, itemSortDir)}
+                                    </div>
+                                  ),
+                                  renderCell: (item) => (
+                                    <div>
+                                      <p className="font-bold">{formatCurrency(item.purchased_value)}</p>
+                                      <p className="text-[9px] text-muted-foreground">{item.purchased_qty} {item.uom}</p>
+                                    </div>
+                                  ),
+                                },
+                                sold_value: {
+                                  label: 'Sold',
+                                  align: 'right',
+                                  minWidth: '105px',
+                                  cellClassName: 'text-right px-2 py-2 whitespace-nowrap',
+                                  renderHeader: () => (
+                                    <div className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className={cn((itemSortField === 'sold_value' || itemSortField === 'sold_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Sold</span>
+                                      {renderSortIcon('sold_value', itemSortField, itemSortDir)}
+                                    </div>
+                                  ),
+                                  renderCell: (item) => (
+                                    <div>
+                                      <p className="font-bold text-emerald-600">{formatCurrency(item.sold_value)}</p>
+                                      <p className="text-[9px] text-muted-foreground">{item.sold_qty} {item.uom}</p>
+                                    </div>
+                                  ),
+                                },
+                                pending_value: {
+                                  label: 'Pending',
+                                  align: 'right',
+                                  minWidth: '105px',
+                                  cellClassName: 'text-right px-2 py-2 whitespace-nowrap',
+                                  renderHeader: () => (
+                                    <div className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className={cn((itemSortField === 'pending_value' || itemSortField === 'pending_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Pending</span>
+                                      {renderSortIcon('pending_value', itemSortField, itemSortDir)}
+                                    </div>
+                                  ),
+                                  renderCell: (item) => (
+                                    <div>
+                                      <p className="font-bold text-amber-600">{formatCurrency(item.pending_value)}</p>
+                                      <p className="text-[9px] text-muted-foreground">{item.pending_qty} {item.uom}</p>
+                                    </div>
+                                  ),
+                                },
+                                cost_of_sold: {
+                                  label: 'COGS',
+                                  align: 'right',
+                                  minWidth: '95px',
+                                  cellClassName: 'text-right px-2 py-2 font-medium whitespace-nowrap',
+                                  renderHeader: () => (
+                                    <div className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className={cn(itemSortField === 'cost_of_sold' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>COGS</span>
+                                      {renderSortIcon('cost_of_sold', itemSortField, itemSortDir)}
+                                    </div>
+                                  ),
+                                  renderCell: (item) => formatCurrency(item.cost_of_sold),
+                                },
+                                profit_on_sold: {
+                                  label: 'Profit',
+                                  align: 'right',
+                                  minWidth: '100px',
+                                  cellClassName: 'text-right px-2 py-2 whitespace-nowrap',
+                                  renderHeader: () => (
+                                    <div className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className={cn(itemSortField === 'profit_on_sold' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Profit</span>
+                                      {renderSortIcon('profit_on_sold', itemSortField, itemSortDir)}
+                                    </div>
+                                  ),
+                                  renderCell: (item) => (
+                                    <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                      {formatCurrency(item.profit_on_sold)}
+                                    </span>
+                                  ),
+                                },
+                                gp_percent: {
+                                  label: 'GP%',
+                                  align: 'right',
+                                  minWidth: '70px',
+                                  cellClassName: 'text-right px-3 py-2 whitespace-nowrap',
+                                  renderHeader: () => (
+                                    <div className="inline-flex items-center justify-end gap-1 w-full">
+                                      <span className={cn(itemSortField === 'gp_percent' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>GP%</span>
+                                      {renderSortIcon('gp_percent', itemSortField, itemSortDir)}
+                                    </div>
+                                  ),
+                                  renderCell: (item) => (
+                                    <span className={cn("text-[10px] font-black px-1.5 py-0.5 rounded-full",
+                                      item.gp_percent >= 15 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                                      : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                                      : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                                    )}>
+                                      {item.gp_percent}%
+                                    </span>
+                                  ),
+                                },
+                              }
+
+                              return (
+                                <div className={cn("border border-border rounded-xl overflow-hidden shadow-2xs", itemViewMode === 'auto' ? "hidden sm:block" : itemViewMode === 'table' ? "block" : "hidden")}>
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-[11px]">
+                                      <thead>
+                                        <tr className="bg-muted/60 text-muted-foreground border-b border-border select-none">
+                                          {companyItemCols.columns.map(colId => {
+                                            const col = companyItemColumnDefs[colId]
+                                            if (!col) return null
+                                            const isSticky = colId === 'name' && companyItemCols.columns[0] === 'name'
+                                            return (
+                                              <DraggableTh
+                                                key={colId}
+                                                colId={colId}
+                                                columns={companyItemCols.columns}
+                                                getHeaderProps={companyItemCols.getHeaderProps}
+                                                draggedCol={companyItemCols.draggedCol}
+                                                dragOverCol={companyItemCols.dragOverCol}
+                                                dropPosition={companyItemCols.dropPosition}
+                                                hasDraggedRef={companyItemCols.hasDraggedRef}
+                                                moveLeft={companyItemCols.moveLeft}
+                                                moveRight={companyItemCols.moveRight}
+                                                onClick={() => handleItemSort(colId as ItemSortKey)}
+                                                align={col.align}
+                                                minWidth={col.minWidth}
+                                                sticky={isSticky}
+                                              >
+                                                {col.renderHeader()}
+                                              </DraggableTh>
+                                            )
+                                          })}
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-border/30">
+                                        {filteredAndSortedItems.map((item: any) => (
+                                          <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
+                                            {companyItemCols.columns.map(colId => {
+                                              const col = companyItemColumnDefs[colId]
+                                              if (!col) return null
+                                              return (
+                                                <td key={colId} className={col.cellClassName}>
+                                                  {col.renderCell(item)}
+                                                </td>
+                                              )
+                                            })}
+                                          </tr>
+                                        ))}
+                                        {filteredAndSortedItems.length === 0 && (
+                                          <tr>
+                                            <td colSpan={companyItemCols.columns.length} className="text-center py-6 text-muted-foreground text-xs">
+                                              No items match &quot;{itemSearchQuery}&quot;
+                                            </td>
+                                          </tr>
                                         )}
-                                        title="Click to sort by Purchased Value (click again to toggle direction)"
-                                      >
-                                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                                          <span className={cn((itemSortField === 'purchased_value' || itemSortField === 'purchased_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Purchased</span>
-                                          {renderSortIcon('purchased_value', itemSortField, itemSortDir)}
-                                        </div>
-                                      </th>
-                                      <th
-                                        onClick={() => handleItemSort('sold_value')}
-                                        className={cn(
-                                          "min-w-[105px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
-                                          (itemSortField === 'sold_value' || itemSortField === 'sold_qty') && "bg-primary/10 text-primary"
-                                        )}
-                                        title="Click to sort by Sold Value (click again to toggle direction)"
-                                      >
-                                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                                          <span className={cn((itemSortField === 'sold_value' || itemSortField === 'sold_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Sold</span>
-                                          {renderSortIcon('sold_value', itemSortField, itemSortDir)}
-                                        </div>
-                                      </th>
-                                      <th
-                                        onClick={() => handleItemSort('pending_value')}
-                                        className={cn(
-                                          "min-w-[105px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
-                                          (itemSortField === 'pending_value' || itemSortField === 'pending_qty') && "bg-primary/10 text-primary"
-                                        )}
-                                        title="Click to sort by Pending Value (click again to toggle direction)"
-                                      >
-                                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                                          <span className={cn((itemSortField === 'pending_value' || itemSortField === 'pending_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Pending</span>
-                                          {renderSortIcon('pending_value', itemSortField, itemSortDir)}
-                                        </div>
-                                      </th>
-                                      <th
-                                        onClick={() => handleItemSort('cost_of_sold')}
-                                        className={cn(
-                                          "min-w-[95px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
-                                          itemSortField === 'cost_of_sold' && "bg-primary/10 text-primary"
-                                        )}
-                                        title="Click to sort by Cost of Goods Sold (COGS)"
-                                      >
-                                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                                          <span className={cn(itemSortField === 'cost_of_sold' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>COGS</span>
-                                          {renderSortIcon('cost_of_sold', itemSortField, itemSortDir)}
-                                        </div>
-                                      </th>
-                                      <th
-                                        onClick={() => handleItemSort('profit_on_sold')}
-                                        className={cn(
-                                          "min-w-[100px] text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
-                                          itemSortField === 'profit_on_sold' && "bg-primary/10 text-primary"
-                                        )}
-                                        title="Click to sort by Realized Profit (click again to toggle direction)"
-                                      >
-                                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                                          <span className={cn(itemSortField === 'profit_on_sold' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Profit</span>
-                                          {renderSortIcon('profit_on_sold', itemSortField, itemSortDir)}
-                                        </div>
-                                      </th>
-                                      <th
-                                        onClick={() => handleItemSort('gp_percent')}
-                                        className={cn(
-                                          "min-w-[70px] text-right px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
-                                          itemSortField === 'gp_percent' && "bg-primary/10 text-primary"
-                                        )}
-                                        title="Click to sort by Gross Profit % (click again to toggle direction)"
-                                      >
-                                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                                          <span className={cn(itemSortField === 'gp_percent' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>GP%</span>
-                                          {renderSortIcon('gp_percent', itemSortField, itemSortDir)}
-                                        </div>
-                                      </th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-border/30">
-                                    {filteredAndSortedItems.map((item: any) => (
-                                      <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
-                                        <td className="sticky left-0 bg-card z-10 min-w-[130px] sm:min-w-[160px] max-w-[200px] px-3 py-2 shadow-[1px_0_0_0_rgba(0,0,0,0.06)] dark:shadow-[1px_0_0_0_rgba(255,255,255,0.06)]">
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              setProductDetailItem(item)
-                                              setProductVoucherSearch('')
-                                              setProductVoucherTypeFilter('All Vouchers')
-                                              setProductVoucherFlowFilter('All Flows')
-                                              setProductVoucherPeriodFilter('period')
-                                            }}
-                                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1.5 group/item cursor-pointer w-full"
-                                            title="Click to view complete inward & outward transaction details"
-                                          >
-                                            <span className="group-hover/item:underline truncate">{item.name}</span>
-                                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
-                                          </button>
-                                          <p className="text-[9px] text-muted-foreground truncate">{item.uom} • Avg: {formatCurrency(item.avg_cost)}</p>
-                                        </td>
-                                        <td className="text-right px-2 py-2 whitespace-nowrap">
-                                          <p className="font-bold">{formatCurrency(item.purchased_value)}</p>
-                                          <p className="text-[9px] text-muted-foreground">{item.purchased_qty} {item.uom}</p>
-                                        </td>
-                                        <td className="text-right px-2 py-2 whitespace-nowrap">
-                                          <p className="font-bold text-emerald-600">{formatCurrency(item.sold_value)}</p>
-                                          <p className="text-[9px] text-muted-foreground">{item.sold_qty} {item.uom}</p>
-                                        </td>
-                                        <td className="text-right px-2 py-2 whitespace-nowrap">
-                                          <p className="font-bold text-amber-600">{formatCurrency(item.pending_value)}</p>
-                                          <p className="text-[9px] text-muted-foreground">{item.pending_qty} {item.uom}</p>
-                                        </td>
-                                        <td className="text-right px-2 py-2 font-medium whitespace-nowrap">{formatCurrency(item.cost_of_sold)}</td>
-                                        <td className="text-right px-2 py-2 whitespace-nowrap">
-                                          <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                                            {formatCurrency(item.profit_on_sold)}
-                                          </span>
-                                        </td>
-                                        <td className="text-right px-3 py-2 whitespace-nowrap">
-                                          <span className={cn("text-[10px] font-black px-1.5 py-0.5 rounded-full",
-                                            item.gp_percent >= 15 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                                            : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                                            : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                                          )}>
-                                            {item.gp_percent}%
-                                          </span>
-                                        </td>
-                                      </tr>
-                                    ))}
-                                    {filteredAndSortedItems.length === 0 && (
-                                      <tr>
-                                        <td colSpan={7} className="text-center py-6 text-muted-foreground text-xs font-medium">
-                                          No items matched &quot;{itemSearchQuery}&quot;
-                                        </td>
-                                      </tr>
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              )
+                            })()}
                           </div>
                         )}
                       </div>
@@ -2441,462 +2618,1063 @@ export default function ReportsPage() {
           })()}
 
           {/* SUB-TAB: Monthly Trends */}
-          {stockSubTab === 'trends' && companyStockData?.monthly_trend && (
-            <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
-              <div className="flex items-center justify-between border-b border-border/50 pb-3">
-                <div>
-                  <h3 className="font-extrabold text-base flex items-center gap-2">
-                    <Activity className="h-4 w-4 text-blue-500" /> Monthly Stock Movement Trend
-                  </h3>
-                  <p className="text-xs text-muted-foreground">Inward (Purchase) vs Outward (Sales) value over time</p>
+          {stockSubTab === 'trends' && companyStockData?.monthly_trend && (() => {
+            const monthlyColumnDefs: Record<string, {
+              label: string
+              align?: 'left' | 'right' | 'center'
+              cellClassName: string
+              renderHeader: () => React.ReactNode
+              renderCell: (m: any) => React.ReactNode
+            }> = {
+              month: {
+                label: 'Month',
+                align: 'left',
+                cellClassName: 'px-3 py-2 font-bold',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(monthlySortField === 'month' && "text-primary font-black")}>Month</span>
+                    {renderSortIcon('month', monthlySortField, monthlySortDir)}
+                  </div>
+                ),
+                renderCell: (m) => {
+                  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+                  const [y, mo] = m.month.split('-')
+                  return `${months[parseInt(mo)-1]} ${y}`
+                },
+              },
+              inward_value: {
+                label: 'Inward ₹',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium text-blue-600',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(monthlySortField === 'inward_value' && "text-primary font-black")}>Inward ₹</span>
+                    {renderSortIcon('inward_value', monthlySortField, monthlySortDir)}
+                  </div>
+                ),
+                renderCell: (m) => formatCurrency(m.inward_value),
+              },
+              outward_value: {
+                label: 'Outward ₹',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium text-emerald-600',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(monthlySortField === 'outward_value' && "text-primary font-black")}>Outward ₹</span>
+                    {renderSortIcon('outward_value', monthlySortField, monthlySortDir)}
+                  </div>
+                ),
+                renderCell: (m) => formatCurrency(m.outward_value),
+              },
+              net_movement: {
+                label: 'Net Movement',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-extrabold',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(monthlySortField === 'net_movement' && "text-primary font-black")}>Net Movement</span>
+                    {renderSortIcon('net_movement', monthlySortField, monthlySortDir)}
+                  </div>
+                ),
+                renderCell: (m) => (
+                  <span className={m.net_movement >= 0 ? "text-blue-600" : "text-emerald-600"}>
+                    {m.net_movement >= 0 ? '+' : ''}{formatCurrency(m.net_movement)}
+                  </span>
+                ),
+              },
+              items_moved: {
+                label: 'Items Moved',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(monthlySortField === 'items_moved' && "text-primary font-black")}>Items Moved</span>
+                    {renderSortIcon('items_moved', monthlySortField, monthlySortDir)}
+                  </div>
+                ),
+                renderCell: (m) => m.items_moved,
+              },
+              voucher_count: {
+                label: 'Vouchers',
+                align: 'right',
+                cellClassName: 'text-right px-3 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(monthlySortField === 'voucher_count' && "text-primary font-black")}>Vouchers</span>
+                    {renderSortIcon('voucher_count', monthlySortField, monthlySortDir)}
+                  </div>
+                ),
+                renderCell: (m) => m.voucher_count,
+              },
+            }
+
+            const sortedTrend = companyStockData.monthly_trend
+              .slice()
+              .sort((a: any, b: any) => {
+                if (monthlySortField === 'month') {
+                  return monthlySortDir === 'asc' ? (a.month || '').localeCompare(b.month || '') : (b.month || '').localeCompare(a.month || '')
+                }
+                const valA = Number(a[monthlySortField]) || 0
+                const valB = Number(b[monthlySortField]) || 0
+                return monthlySortDir === 'asc' ? valA - valB : valB - valA
+              })
+
+            return (
+              <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+                <div className="flex items-center justify-between border-b border-border/50 pb-3 flex-wrap gap-2">
+                  <div>
+                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                      <Activity className="h-4 w-4 text-blue-500" /> Monthly Stock Movement Trend
+                    </h3>
+                    <p className="text-xs text-muted-foreground">Inward (Purchase) vs Outward (Sales) value over time • Click & drag column headers to move left/right</p>
+                  </div>
+                  <ResetColumnsButton isCustomized={monthlyCols.isCustomized} onReset={monthlyCols.resetColumns} />
+                </div>
+                <div className="h-72 w-full">
+                  {companyStockData.monthly_trend.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={companyStockData.monthly_trend}>
+                        <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+                        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+                        <Tooltip formatter={(val: any) => [formatCurrency(Number(val)), '']}
+                          labelFormatter={(label) => {
+                            const [y, m] = (label as string).split('-')
+                            const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+                            return `${months[parseInt(m)-1]} ${y}`
+                          }}
+                        />
+                        <Legend />
+                        <Bar dataKey="inward_value" name="Inward (Purchase)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="outward_value" name="Outward (Sales)" fill="#10b981" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-xs text-muted-foreground">No monthly data available</div>
+                  )}
+                </div>
+                {/* Monthly detail table */}
+                <div className="overflow-x-auto border border-border rounded-xl">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="bg-muted/50 text-muted-foreground select-none">
+                        {monthlyCols.columns.map(colId => {
+                          const col = monthlyColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={monthlyCols.columns}
+                              getHeaderProps={monthlyCols.getHeaderProps}
+                              draggedCol={monthlyCols.draggedCol}
+                              dragOverCol={monthlyCols.dragOverCol}
+                              dropPosition={monthlyCols.dropPosition}
+                              hasDraggedRef={monthlyCols.hasDraggedRef}
+                              moveLeft={monthlyCols.moveLeft}
+                              moveRight={monthlyCols.moveRight}
+                              onClick={() => handleMonthlySort(colId as MonthlySortKey)}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      {sortedTrend.map((m: any) => (
+                        <tr key={m.month} className="hover:bg-muted/20 transition-colors">
+                          {monthlyCols.columns.map(colId => {
+                            const col = monthlyColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(m)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
-              <div className="h-72 w-full">
-                {companyStockData.monthly_trend.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={companyStockData.monthly_trend}>
-                      <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-                      <Tooltip formatter={(val: any) => [formatCurrency(Number(val)), '']}
-                        labelFormatter={(label) => {
-                          const [y, m] = (label as string).split('-')
-                          const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-                          return `${months[parseInt(m)-1]} ${y}`
-                        }}
-                      />
-                      <Legend />
-                      <Bar dataKey="inward_value" name="Inward (Purchase)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="outward_value" name="Outward (Sales)" fill="#10b981" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground">No monthly data available</div>
-                )}
-              </div>
-              {/* Monthly detail table */}
-              <div className="overflow-x-auto border border-border rounded-xl">
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="bg-muted/50 text-muted-foreground select-none">
-                      <th onClick={() => handleMonthlySort('month')} className="text-left px-3 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(monthlySortField === 'month' && "text-primary font-black")}>Month</span>
-                          {renderSortIcon('month', monthlySortField, monthlySortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleMonthlySort('inward_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(monthlySortField === 'inward_value' && "text-primary font-black")}>Inward ₹</span>
-                          {renderSortIcon('inward_value', monthlySortField, monthlySortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleMonthlySort('outward_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(monthlySortField === 'outward_value' && "text-primary font-black")}>Outward ₹</span>
-                          {renderSortIcon('outward_value', monthlySortField, monthlySortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleMonthlySort('net_movement')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(monthlySortField === 'net_movement' && "text-primary font-black")}>Net Movement</span>
-                          {renderSortIcon('net_movement', monthlySortField, monthlySortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleMonthlySort('items_moved')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(monthlySortField === 'items_moved' && "text-primary font-black")}>Items Moved</span>
-                          {renderSortIcon('items_moved', monthlySortField, monthlySortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleMonthlySort('voucher_count')} className="text-right px-3 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(monthlySortField === 'voucher_count' && "text-primary font-black")}>Vouchers</span>
-                          {renderSortIcon('voucher_count', monthlySortField, monthlySortDir)}
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/30">
-                    {companyStockData.monthly_trend
-                      .slice()
-                      .sort((a: any, b: any) => {
-                        if (monthlySortField === 'month') {
-                          return monthlySortDir === 'asc' ? (a.month || '').localeCompare(b.month || '') : (b.month || '').localeCompare(a.month || '')
-                        }
-                        const valA = Number(a[monthlySortField]) || 0
-                        const valB = Number(b[monthlySortField]) || 0
-                        return monthlySortDir === 'asc' ? valA - valB : valB - valA
-                      })
-                      .map((m: any) => {
-                      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-                      const [y, mo] = m.month.split('-')
-                      const label = `${months[parseInt(mo)-1]} ${y}`
-                      return (
-                        <tr key={m.month} className="hover:bg-muted/20">
-                          <td className="px-3 py-2 font-bold">{label}</td>
-                          <td className="text-right px-2 py-2 font-medium text-blue-600">{formatCurrency(m.inward_value)}</td>
-                          <td className="text-right px-2 py-2 font-medium text-emerald-600">{formatCurrency(m.outward_value)}</td>
-                          <td className={cn("text-right px-2 py-2 font-extrabold", m.net_movement >= 0 ? "text-blue-600" : "text-emerald-600")}>
-                            {m.net_movement >= 0 ? '+' : ''}{formatCurrency(m.net_movement)}
-                          </td>
-                          <td className="text-right px-2 py-2">{m.items_moved}</td>
-                          <td className="text-right px-3 py-2">{m.voucher_count}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+            )
+          })()}
+
 
           {/* SUB-TAB: Fast Movers */}
-          {stockSubTab === 'fast' && companyStockData?.fast_movers && (
-            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
-                <div>
-                  <h3 className="font-extrabold text-base flex items-center gap-2">
-                    <Zap className="h-4 w-4 text-yellow-500" /> Top 25 Fast-Moving Items
-                  </h3>
-                  <p className="text-xs text-muted-foreground">Ranked by sold quantity with profit analysis • Click column headers to re-order</p>
+          {stockSubTab === 'fast' && companyStockData?.fast_movers && (() => {
+            const fastMoverColumnDefs: Record<string, {
+              label: string
+              align?: 'left' | 'right' | 'center'
+              cellClassName: string
+              renderHeader: () => React.ReactNode
+              renderCell: (item: any, idx: number) => React.ReactNode
+            }> = {
+              rank: {
+                label: '#',
+                align: 'left',
+                cellClassName: 'px-4 py-2 font-black text-muted-foreground',
+                renderHeader: () => <span>#</span>,
+                renderCell: (_, idx) => idx + 1,
+              },
+              name: {
+                label: 'Item',
+                align: 'left',
+                cellClassName: 'px-2 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(fastSortField === 'name' && "text-primary font-black")}>Item</span>
+                    {renderSortIcon('name', fastSortField, fastSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductDetailItem(item)
+                      setProductVoucherSearch('')
+                      setProductVoucherTypeFilter('All Vouchers')
+                      setProductVoucherFlowFilter('All Flows')
+                      setProductVoucherPeriodFilter('period')
+                    }}
+                    className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
+                    title="Click to view complete inward & outward transaction details"
+                  >
+                    <span className="group-hover/item:underline">{item.name}</span>
+                    <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                  </button>
+                ),
+              },
+              company_name: {
+                label: 'Company',
+                align: 'left',
+                cellClassName: 'px-2 py-2 text-muted-foreground',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(fastSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                    {renderSortIcon('company_name', fastSortField, fastSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => item.company_name,
+              },
+              sold_qty: {
+                label: 'Sold Qty',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-extrabold',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(fastSortField === 'sold_qty' && "text-primary font-black")}>Sold Qty</span>
+                    {renderSortIcon('sold_qty', fastSortField, fastSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => `${item.sold_qty} ${item.uom}`,
+              },
+              sold_value: {
+                label: 'Revenue',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-bold text-emerald-600',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(fastSortField === 'sold_value' && "text-primary font-black")}>Revenue</span>
+                    {renderSortIcon('sold_value', fastSortField, fastSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => formatCurrency(item.sold_value),
+              },
+              remaining_qty: {
+                label: 'Remaining',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium text-amber-600',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(fastSortField === 'remaining_qty' && "text-primary font-black")}>Remaining</span>
+                    {renderSortIcon('remaining_qty', fastSortField, fastSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => `${item.remaining_qty} ${item.uom}`,
+              },
+              profit_on_sold: {
+                label: 'Profit',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(fastSortField === 'profit_on_sold' && "text-primary font-black")}>Profit</span>
+                    {renderSortIcon('profit_on_sold', fastSortField, fastSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => (
+                  <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(item.profit_on_sold)}
+                  </span>
+                ),
+              },
+              gp_percent: {
+                label: 'GP%',
+                align: 'right',
+                cellClassName: 'text-right px-4 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(fastSortField === 'gp_percent' && "text-primary font-black")}>GP%</span>
+                    {renderSortIcon('gp_percent', fastSortField, fastSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => (
+                  <span className={cn("text-[10px] font-black px-1.5 py-0.5 rounded-full",
+                    item.gp_percent >= 10 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                    : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                    : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                  )}>
+                    {item.gp_percent}%
+                  </span>
+                ),
+              },
+            }
+
+            const sortedItems = companyStockData.fast_movers
+              .slice()
+              .sort((a: any, b: any) => {
+                if (fastSortField === 'name' || fastSortField === 'company_name') {
+                  return fastSortDir === 'asc'
+                    ? (a[fastSortField] || '').localeCompare(b[fastSortField] || '')
+                    : (b[fastSortField] || '').localeCompare(a[fastSortField] || '')
+                }
+                const valA = Number(a[fastSortField]) || 0
+                const valB = Number(b[fastSortField]) || 0
+                return fastSortDir === 'asc' ? valA - valB : valB - valA
+              })
+
+            return (
+              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                      <Zap className="h-4 w-4 text-yellow-500" /> Top 25 Fast-Moving Items
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Ranked by sold quantity with profit analysis • Click & drag column headers to move left/right • Click to sort
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <ResetColumnsButton isCustomized={fastCols.isCustomized} onReset={fastCols.resetColumns} />
+                    <button onClick={() => exportToCsv('Fast_Moving_Items', companyStockData.fast_movers)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <button onClick={() => exportToCsv('Fast_Moving_Items', companyStockData.fast_movers)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer">
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="bg-muted/50 text-muted-foreground select-none">
-                      <th className="text-left px-4 py-2 font-bold">#</th>
-                      <th onClick={() => handleFastSort('name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(fastSortField === 'name' && "text-primary font-black")}>Item</span>
-                          {renderSortIcon('name', fastSortField, fastSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleFastSort('company_name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(fastSortField === 'company_name' && "text-primary font-black")}>Company</span>
-                          {renderSortIcon('company_name', fastSortField, fastSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleFastSort('sold_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(fastSortField === 'sold_qty' && "text-primary font-black")}>Sold Qty</span>
-                          {renderSortIcon('sold_qty', fastSortField, fastSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleFastSort('sold_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(fastSortField === 'sold_value' && "text-primary font-black")}>Revenue</span>
-                          {renderSortIcon('sold_value', fastSortField, fastSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleFastSort('remaining_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(fastSortField === 'remaining_qty' && "text-primary font-black")}>Remaining</span>
-                          {renderSortIcon('remaining_qty', fastSortField, fastSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleFastSort('profit_on_sold')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(fastSortField === 'profit_on_sold' && "text-primary font-black")}>Profit</span>
-                          {renderSortIcon('profit_on_sold', fastSortField, fastSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleFastSort('gp_percent')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(fastSortField === 'gp_percent' && "text-primary font-black")}>GP%</span>
-                          {renderSortIcon('gp_percent', fastSortField, fastSortDir)}
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/30">
-                    {companyStockData.fast_movers
-                      .slice()
-                      .sort((a: any, b: any) => {
-                        if (fastSortField === 'name' || fastSortField === 'company_name') {
-                          return fastSortDir === 'asc'
-                            ? (a[fastSortField] || '').localeCompare(b[fastSortField] || '')
-                            : (b[fastSortField] || '').localeCompare(a[fastSortField] || '')
-                        }
-                        const valA = Number(a[fastSortField]) || 0
-                        const valB = Number(b[fastSortField]) || 0
-                        return fastSortDir === 'asc' ? valA - valB : valB - valA
-                      })
-                      .map((item: any, idx: number) => (
-                      <tr key={item.item_id} className="hover:bg-muted/20">
-                        <td className="px-4 py-2 font-black text-muted-foreground">{idx + 1}</td>
-                        <td className="px-2 py-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setProductDetailItem(item)
-                              setProductVoucherSearch('')
-                              setProductVoucherTypeFilter('All Vouchers')
-                              setProductVoucherFlowFilter('All Flows')
-                              setProductVoucherPeriodFilter('period')
-                            }}
-                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
-                            title="Click to view complete inward & outward transaction details"
-                          >
-                            <span className="group-hover/item:underline">{item.name}</span>
-                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
-                          </button>
-                        </td>
-                        <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
-                        <td className="text-right px-2 py-2 font-extrabold">{item.sold_qty} {item.uom}</td>
-                        <td className="text-right px-2 py-2 font-bold text-emerald-600">{formatCurrency(item.sold_value)}</td>
-                        <td className="text-right px-2 py-2 font-medium text-amber-600">{item.remaining_qty} {item.uom}</td>
-                        <td className="text-right px-2 py-2">
-                          <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                            {formatCurrency(item.profit_on_sold)}
-                          </span>
-                        </td>
-                        <td className="text-right px-4 py-2">
-                          <span className={cn("text-[10px] font-black px-1.5 py-0.5 rounded-full",
-                            item.gp_percent >= 10 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                            : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                            : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                          )}>
-                            {item.gp_percent}%
-                          </span>
-                        </td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="bg-muted/50 text-muted-foreground select-none">
+                        {fastCols.columns.map(colId => {
+                          const col = fastMoverColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={fastCols.columns}
+                              getHeaderProps={fastCols.getHeaderProps}
+                              draggedCol={fastCols.draggedCol}
+                              dragOverCol={fastCols.dragOverCol}
+                              dropPosition={fastCols.dropPosition}
+                              hasDraggedRef={fastCols.hasDraggedRef}
+                              moveLeft={fastCols.moveLeft}
+                              moveRight={fastCols.moveRight}
+                              onClick={() => colId !== 'rank' && handleFastSort(colId as FastSortKey)}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      {sortedItems.map((item: any, idx: number) => (
+                        <tr key={item.item_id || idx} className="hover:bg-muted/20 transition-colors">
+                          {fastCols.columns.map(colId => {
+                            const col = fastMoverColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(item, idx)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
 
           {/* SUB-TAB: Dead Stock */}
-          {stockSubTab === 'dead' && companyStockData?.dead_stock && (
-            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
-                <div>
-                  <h3 className="font-extrabold text-base flex items-center gap-2">
-                    <Skull className="h-4 w-4 text-orange-500" /> Dead / Slow-Moving Stock
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    {companyStockData.dead_stock.count} items with zero sales in last {companyStockData.dead_stock.days_threshold} days •
-                    <span className="font-extrabold text-orange-600 ml-1">{formatCurrency(companyStockData.dead_stock.total_locked_value)} capital locked</span>
-                  </p>
+          {stockSubTab === 'dead' && companyStockData?.dead_stock && (() => {
+            const deadColumnDefs: Record<string, {
+              label: string
+              align?: 'left' | 'right' | 'center'
+              cellClassName: string
+              renderHeader: () => React.ReactNode
+              renderCell: (item: any) => React.ReactNode
+            }> = {
+              name: {
+                label: 'Item',
+                align: 'left',
+                cellClassName: 'px-4 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(deadSortField === 'name' && "text-primary font-black")}>Item</span>
+                    {renderSortIcon('name', deadSortField, deadSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductDetailItem(item)
+                      setProductVoucherSearch('')
+                      setProductVoucherTypeFilter('All Vouchers')
+                      setProductVoucherFlowFilter('All Flows')
+                      setProductVoucherPeriodFilter('period')
+                    }}
+                    className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
+                    title="Click to view complete inward & outward transaction details"
+                  >
+                    <span className="group-hover/item:underline">{item.name}</span>
+                    <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                  </button>
+                ),
+              },
+              company_name: {
+                label: 'Company',
+                align: 'left',
+                cellClassName: 'px-2 py-2 text-muted-foreground',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(deadSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                    {renderSortIcon('company_name', deadSortField, deadSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => item.company_name,
+              },
+              closing_qty: {
+                label: 'Closing Qty',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(deadSortField === 'closing_qty' && "text-primary font-black")}>Closing Qty</span>
+                    {renderSortIcon('closing_qty', deadSortField, deadSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => `${item.closing_qty} ${item.uom}`,
+              },
+              closing_value: {
+                label: 'Locked Capital',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-extrabold text-orange-600',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(deadSortField === 'closing_value' && "text-primary font-black")}>Locked Capital</span>
+                    {renderSortIcon('closing_value', deadSortField, deadSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => formatCurrency(item.closing_value),
+              },
+              last_sold_date: {
+                label: 'Last Sold Date',
+                align: 'right',
+                cellClassName: 'text-right px-4 py-2 text-muted-foreground',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(deadSortField === 'last_sold_date' && "text-primary font-black")}>Last Sold Date</span>
+                    {renderSortIcon('last_sold_date', deadSortField, deadSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => item.last_sold_date || 'Never sold',
+              },
+            }
+
+            const sortedDead = companyStockData.dead_stock.items
+              .slice()
+              .sort((a: any, b: any) => {
+                if (deadSortField === 'name' || deadSortField === 'company_name' || deadSortField === 'last_sold_date') {
+                  return deadSortDir === 'asc'
+                    ? (a[deadSortField] || '').localeCompare(b[deadSortField] || '')
+                    : (b[deadSortField] || '').localeCompare(a[deadSortField] || '')
+                }
+                const valA = Number(a[deadSortField]) || 0
+                const valB = Number(b[deadSortField]) || 0
+                return deadSortDir === 'asc' ? valA - valB : valB - valA
+              })
+
+            return (
+              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                      <Skull className="h-4 w-4 text-orange-500" /> Dead / Slow-Moving Stock
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      {companyStockData.dead_stock.count} items with zero sales in last {companyStockData.dead_stock.days_threshold} days •
+                      <span className="font-extrabold text-orange-600 ml-1">{formatCurrency(companyStockData.dead_stock.total_locked_value)} capital locked</span> • Click & drag column headers to move left/right
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <ResetColumnsButton isCustomized={deadCols.isCustomized} onReset={deadCols.resetColumns} />
+                    <button onClick={() => exportToCsv('Dead_Stock', companyStockData.dead_stock.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <button onClick={() => exportToCsv('Dead_Stock', companyStockData.dead_stock.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer">
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="bg-muted/50 text-muted-foreground select-none">
-                      <th onClick={() => handleDeadSort('name')} className="text-left px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(deadSortField === 'name' && "text-primary font-black")}>Item</span>
-                          {renderSortIcon('name', deadSortField, deadSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleDeadSort('company_name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(deadSortField === 'company_name' && "text-primary font-black")}>Company</span>
-                          {renderSortIcon('company_name', deadSortField, deadSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleDeadSort('closing_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(deadSortField === 'closing_qty' && "text-primary font-black")}>Closing Qty</span>
-                          {renderSortIcon('closing_qty', deadSortField, deadSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleDeadSort('closing_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(deadSortField === 'closing_value' && "text-primary font-black")}>Locked Capital</span>
-                          {renderSortIcon('closing_value', deadSortField, deadSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleDeadSort('last_sold_date')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(deadSortField === 'last_sold_date' && "text-primary font-black")}>Last Sold Date</span>
-                          {renderSortIcon('last_sold_date', deadSortField, deadSortDir)}
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/30">
-                    {companyStockData.dead_stock.items
-                      .slice()
-                      .sort((a: any, b: any) => {
-                        if (deadSortField === 'name' || deadSortField === 'company_name' || deadSortField === 'last_sold_date') {
-                          return deadSortDir === 'asc'
-                            ? (a[deadSortField] || '').localeCompare(b[deadSortField] || '')
-                            : (b[deadSortField] || '').localeCompare(a[deadSortField] || '')
-                        }
-                        const valA = Number(a[deadSortField]) || 0
-                        const valB = Number(b[deadSortField]) || 0
-                        return deadSortDir === 'asc' ? valA - valB : valB - valA
-                      })
-                      .map((item: any) => (
-                      <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
-                        <td className="px-4 py-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setProductDetailItem(item)
-                              setProductVoucherSearch('')
-                              setProductVoucherTypeFilter('All Vouchers')
-                              setProductVoucherFlowFilter('All Flows')
-                              setProductVoucherPeriodFilter('period')
-                            }}
-                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
-                            title="Click to view complete inward & outward transaction details"
-                          >
-                            <span className="group-hover/item:underline">{item.name}</span>
-                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
-                          </button>
-                        </td>
-                        <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
-                        <td className="text-right px-2 py-2 font-medium">{item.closing_qty} {item.uom}</td>
-                        <td className="text-right px-2 py-2 font-extrabold text-orange-600">{formatCurrency(item.closing_value)}</td>
-                        <td className="text-right px-4 py-2 text-muted-foreground">{item.last_sold_date || 'Never sold'}</td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="bg-muted/50 text-muted-foreground select-none">
+                        {deadCols.columns.map(colId => {
+                          const col = deadColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={deadCols.columns}
+                              getHeaderProps={deadCols.getHeaderProps}
+                              draggedCol={deadCols.draggedCol}
+                              dragOverCol={deadCols.dragOverCol}
+                              dropPosition={deadCols.dropPosition}
+                              hasDraggedRef={deadCols.hasDraggedRef}
+                              moveLeft={deadCols.moveLeft}
+                              moveRight={deadCols.moveRight}
+                              onClick={() => handleDeadSort(colId as DeadSortKey)}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
                       </tr>
-                    ))}
-                    {companyStockData.dead_stock.items.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="py-8 text-center text-xs text-muted-foreground">
-                          <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
-                          <p className="font-bold">No dead stock detected!</p>
-                          <p>All items have had sales activity in the last {companyStockData.dead_stock.days_threshold} days</p>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      {sortedDead.map((item: any) => (
+                        <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
+                          {deadCols.columns.map(colId => {
+                            const col = deadColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(item)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                      {companyStockData.dead_stock.items.length === 0 && (
+                        <tr>
+                          <td colSpan={deadCols.columns.length} className="py-8 text-center text-xs text-muted-foreground">
+                            <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+                            <p className="font-bold">No dead stock detected!</p>
+                            <p>All items have had sales activity in the last {companyStockData.dead_stock.days_threshold} days</p>
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
 
           {/* SUB-TAB: Loss-Making Items */}
-          {stockSubTab === 'loss' && companyStockData?.loss_making_items && (
-            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
-                <div>
-                  <h3 className="font-extrabold text-base flex items-center gap-2">
-                    <TrendingDown className="h-4 w-4 text-rose-500" /> Loss-Making Items
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    {companyStockData.loss_making_items.count} items sold below purchase cost •
-                    <span className="font-extrabold text-rose-600 ml-1">{formatCurrency(Math.abs(companyStockData.loss_making_items.total_loss))} total loss</span>
-                  </p>
+          {stockSubTab === 'loss' && companyStockData?.loss_making_items && (() => {
+            const lossColumnDefs: Record<string, {
+              label: string
+              align?: 'left' | 'right' | 'center'
+              cellClassName: string
+              renderHeader: () => React.ReactNode
+              renderCell: (item: any) => React.ReactNode
+            }> = {
+              name: {
+                label: 'Item',
+                align: 'left',
+                cellClassName: 'px-4 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(lossSortField === 'name' && "text-primary font-black")}>Item</span>
+                    {renderSortIcon('name', lossSortField, lossSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductDetailItem(item)
+                      setProductVoucherSearch('')
+                      setProductVoucherTypeFilter('All Vouchers')
+                      setProductVoucherFlowFilter('All Flows')
+                      setProductVoucherPeriodFilter('period')
+                    }}
+                    className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
+                    title="Click to view complete inward & outward transaction details"
+                  >
+                    <span className="group-hover/item:underline">{item.name}</span>
+                    <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
+                  </button>
+                ),
+              },
+              company_name: {
+                label: 'Company',
+                align: 'left',
+                cellClassName: 'px-2 py-2 text-muted-foreground',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(lossSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                    {renderSortIcon('company_name', lossSortField, lossSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => item.company_name,
+              },
+              avg_purchase_rate: {
+                label: 'Buy Rate',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(lossSortField === 'avg_purchase_rate' && "text-primary font-black")}>Buy Rate</span>
+                    {renderSortIcon('avg_purchase_rate', lossSortField, lossSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => formatCurrency(item.avg_purchase_rate),
+              },
+              avg_selling_rate: {
+                label: 'Sell Rate',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(lossSortField === 'avg_selling_rate' && "text-primary font-black")}>Sell Rate</span>
+                    {renderSortIcon('avg_selling_rate', lossSortField, lossSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => formatCurrency(item.avg_selling_rate),
+              },
+              rate_difference: {
+                label: 'Rate Gap',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-extrabold text-rose-600',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(lossSortField === 'rate_difference' && "text-primary font-black")}>Rate Gap</span>
+                    {renderSortIcon('rate_difference', lossSortField, lossSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => `-${formatCurrency(item.rate_difference)}`,
+              },
+              sold_qty: {
+                label: 'Sold Qty',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(lossSortField === 'sold_qty' && "text-primary font-black")}>Sold Qty</span>
+                    {renderSortIcon('sold_qty', lossSortField, lossSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => `${item.sold_qty} ${item.uom}`,
+              },
+              loss_amount: {
+                label: 'Loss Amount',
+                align: 'right',
+                cellClassName: 'text-right px-4 py-2 font-extrabold text-rose-600',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(lossSortField === 'loss_amount' && "text-primary font-black")}>Loss Amount</span>
+                    {renderSortIcon('loss_amount', lossSortField, lossSortDir)}
+                  </div>
+                ),
+                renderCell: (item) => formatCurrency(item.loss_amount),
+              },
+            }
+
+            const sortedLoss = companyStockData.loss_making_items.items
+              .slice()
+              .sort((a: any, b: any) => {
+                if (lossSortField === 'name' || lossSortField === 'company_name') {
+                  return lossSortDir === 'asc'
+                    ? (a[lossSortField] || '').localeCompare(b[lossSortField] || '')
+                    : (b[lossSortField] || '').localeCompare(a[lossSortField] || '')
+                }
+                const valA = Number(a[lossSortField]) || 0
+                const valB = Number(b[lossSortField]) || 0
+                return lossSortDir === 'asc' ? valA - valB : valB - valA
+              })
+
+            return (
+              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                      <TrendingDown className="h-4 w-4 text-rose-500" /> Loss-Making Items
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      {companyStockData.loss_making_items.count} items sold below purchase cost •
+                      <span className="font-extrabold text-rose-600 ml-1">{formatCurrency(Math.abs(companyStockData.loss_making_items.total_loss))} total loss</span> • Click & drag column headers to move left/right
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <ResetColumnsButton isCustomized={lossCols.isCustomized} onReset={lossCols.resetColumns} />
+                    <button onClick={() => exportToCsv('Loss_Making_Items', companyStockData.loss_making_items.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <button onClick={() => exportToCsv('Loss_Making_Items', companyStockData.loss_making_items.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer">
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="bg-muted/50 text-muted-foreground select-none">
-                      <th onClick={() => handleLossSort('name')} className="text-left px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(lossSortField === 'name' && "text-primary font-black")}>Item</span>
-                          {renderSortIcon('name', lossSortField, lossSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleLossSort('company_name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(lossSortField === 'company_name' && "text-primary font-black")}>Company</span>
-                          {renderSortIcon('company_name', lossSortField, lossSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleLossSort('avg_purchase_rate')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(lossSortField === 'avg_purchase_rate' && "text-primary font-black")}>Buy Rate</span>
-                          {renderSortIcon('avg_purchase_rate', lossSortField, lossSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleLossSort('avg_selling_rate')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(lossSortField === 'avg_selling_rate' && "text-primary font-black")}>Sell Rate</span>
-                          {renderSortIcon('avg_selling_rate', lossSortField, lossSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleLossSort('rate_difference')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(lossSortField === 'rate_difference' && "text-primary font-black")}>Rate Gap</span>
-                          {renderSortIcon('rate_difference', lossSortField, lossSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleLossSort('sold_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(lossSortField === 'sold_qty' && "text-primary font-black")}>Sold Qty</span>
-                          {renderSortIcon('sold_qty', lossSortField, lossSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleLossSort('loss_amount')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(lossSortField === 'loss_amount' && "text-primary font-black")}>Loss Amount</span>
-                          {renderSortIcon('loss_amount', lossSortField, lossSortDir)}
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/30">
-                    {companyStockData.loss_making_items.items
-                      .slice()
-                      .sort((a: any, b: any) => {
-                        if (lossSortField === 'name' || lossSortField === 'company_name') {
-                          return lossSortDir === 'asc'
-                            ? (a[lossSortField] || '').localeCompare(b[lossSortField] || '')
-                            : (b[lossSortField] || '').localeCompare(a[lossSortField] || '')
-                        }
-                        const valA = Number(a[lossSortField]) || 0
-                        const valB = Number(b[lossSortField]) || 0
-                        return lossSortDir === 'asc' ? valA - valB : valB - valA
-                      })
-                      .map((item: any) => (
-                      <tr key={item.item_id} className="hover:bg-muted/20">
-                        <td className="px-4 py-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setProductDetailItem(item)
-                              setProductVoucherSearch('')
-                              setProductVoucherTypeFilter('All Vouchers')
-                              setProductVoucherFlowFilter('All Flows')
-                              setProductVoucherPeriodFilter('period')
-                            }}
-                            className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
-                            title="Click to view complete inward & outward transaction details"
-                          >
-                            <span className="group-hover/item:underline">{item.name}</span>
-                            <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
-                          </button>
-                        </td>
-                        <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
-                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.avg_purchase_rate)}</td>
-                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.avg_selling_rate)}</td>
-                        <td className="text-right px-2 py-2 font-extrabold text-rose-600">-{formatCurrency(item.rate_difference)}</td>
-                        <td className="text-right px-2 py-2">{item.sold_qty} {item.uom}</td>
-                        <td className="text-right px-4 py-2 font-extrabold text-rose-600">{formatCurrency(item.loss_amount)}</td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="bg-muted/50 text-muted-foreground select-none">
+                        {lossCols.columns.map(colId => {
+                          const col = lossColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={lossCols.columns}
+                              getHeaderProps={lossCols.getHeaderProps}
+                              draggedCol={lossCols.draggedCol}
+                              dragOverCol={lossCols.dragOverCol}
+                              dropPosition={lossCols.dropPosition}
+                              hasDraggedRef={lossCols.hasDraggedRef}
+                              moveLeft={lossCols.moveLeft}
+                              moveRight={lossCols.moveRight}
+                              onClick={() => handleLossSort(colId as LossSortKey)}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
                       </tr>
-                    ))}
-                    {companyStockData.loss_making_items.items.length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="py-8 text-center text-xs text-muted-foreground">
-                          <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
-                          <p className="font-bold">No loss-making items detected!</p>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      {sortedLoss.map((item: any) => (
+                        <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
+                          {lossCols.columns.map(colId => {
+                            const col = lossColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(item)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
+
+          {/* SUB-TAB: Turnover Ratios */}
+          {stockSubTab === 'turnover' && companyStockData?.turnover_ratios && (() => {
+            const turnoverColumnDefs: Record<string, {
+              label: string
+              align?: 'left' | 'right' | 'center'
+              cellClassName: string
+              renderHeader: () => React.ReactNode
+              renderCell: (t: any) => React.ReactNode
+            }> = {
+              company_name: {
+                label: 'Company',
+                align: 'left',
+                cellClassName: 'px-4 py-2 font-bold',
+                renderHeader: () => (
+                  <div className="inline-flex items-center gap-1">
+                    <span className={cn(turnoverSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                    {renderSortIcon('company_name', turnoverSortField, turnoverSortDir)}
+                  </div>
+                ),
+                renderCell: (t) => t.company_name,
+              },
+              items_count: {
+                label: 'Items',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(turnoverSortField === 'items_count' && "text-primary font-black")}>Items</span>
+                    {renderSortIcon('items_count', turnoverSortField, turnoverSortDir)}
+                  </div>
+                ),
+                renderCell: (t) => t.items_count,
+              },
+              cost_of_goods_sold: {
+                label: 'COGS',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(turnoverSortField === 'cost_of_goods_sold' && "text-primary font-black")}>COGS</span>
+                    {renderSortIcon('cost_of_goods_sold', turnoverSortField, turnoverSortDir)}
+                  </div>
+                ),
+                renderCell: (t) => formatCurrency(t.cost_of_goods_sold),
+              },
+              avg_inventory_value: {
+                label: 'Inventory Value',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(turnoverSortField === 'avg_inventory_value' && "text-primary font-black")}>Inventory Value</span>
+                    {renderSortIcon('avg_inventory_value', turnoverSortField, turnoverSortDir)}
+                  </div>
+                ),
+                renderCell: (t) => formatCurrency(t.avg_inventory_value),
+              },
+              turnover_ratio: {
+                label: 'Turnover Ratio',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(turnoverSortField === 'turnover_ratio' && "text-primary font-black")}>Turnover Ratio</span>
+                    {renderSortIcon('turnover_ratio', turnoverSortField, turnoverSortDir)}
+                  </div>
+                ),
+                renderCell: (t) => (
+                  <span className={cn("font-extrabold px-1.5 py-0.5 rounded-full text-[10px]",
+                    t.turnover_ratio >= 5 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                    : t.turnover_ratio >= 2 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                    : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                  )}>
+                    {t.turnover_ratio}x
+                  </span>
+                ),
+              },
+              days_to_sell: {
+                label: 'Days to Sell',
+                align: 'right',
+                cellClassName: 'text-right px-4 py-2 font-medium',
+                renderHeader: () => (
+                  <div className="inline-flex items-center justify-end gap-1 w-full">
+                    <span className={cn(turnoverSortField === 'days_to_sell' && "text-primary font-black")}>Days to Sell</span>
+                    {renderSortIcon('days_to_sell', turnoverSortField, turnoverSortDir)}
+                  </div>
+                ),
+                renderCell: (t) => (t.days_to_sell >= 999 ? '—' : `${t.days_to_sell} days`),
+              },
+            }
+
+            const sortedTurnover = companyStockData.turnover_ratios
+              .slice()
+              .sort((a: any, b: any) => {
+                if (turnoverSortField === 'company_name') {
+                  return turnoverSortDir === 'asc'
+                    ? (a.company_name || '').localeCompare(b.company_name || '')
+                    : (b.company_name || '').localeCompare(a.company_name || '')
+                }
+                const valA = Number(a[turnoverSortField]) || 0
+                const valB = Number(b[turnoverSortField]) || 0
+                return turnoverSortDir === 'asc' ? valA - valB : valB - valA
+              })
+
+            return (
+              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                      <RotateCcw className="h-4 w-4 text-purple-500" /> Stock Turnover Ratio by Company
+                    </h3>
+                    <p className="text-xs text-muted-foreground">How quickly each company&apos;s stock converts to revenue • Higher = Faster • Click & drag columns to reorder</p>
+                  </div>
+                  <ResetColumnsButton isCustomized={turnoverCols.isCustomized} onReset={turnoverCols.resetColumns} />
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="bg-muted/50 text-muted-foreground select-none">
+                        {turnoverCols.columns.map(colId => {
+                          const col = turnoverColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={turnoverCols.columns}
+                              getHeaderProps={turnoverCols.getHeaderProps}
+                              draggedCol={turnoverCols.draggedCol}
+                              dragOverCol={turnoverCols.dragOverCol}
+                              dropPosition={turnoverCols.dropPosition}
+                              hasDraggedRef={turnoverCols.hasDraggedRef}
+                              moveLeft={turnoverCols.moveLeft}
+                              moveRight={turnoverCols.moveRight}
+                              onClick={() => handleTurnoverSort(colId as TurnoverSortKey)}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      {sortedTurnover.map((t: any) => (
+                        <tr key={t.company_name} className="hover:bg-muted/20 transition-colors">
+                          {turnoverCols.columns.map(colId => {
+                            const col = turnoverColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(t)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* SUB-TAB: Returns Analysis */}
+          {stockSubTab === 'returns' && companyStockData?.returns_analysis && (() => {
+            const returnColumnDefs: Record<string, {
+              label: string
+              align?: 'left' | 'right' | 'center'
+              cellClassName: string
+              renderHeader: () => React.ReactNode
+              renderCell: (entry: any) => React.ReactNode
+            }> = {
+              voucher_type: {
+                label: 'Type',
+                align: 'left',
+                cellClassName: 'px-4 py-2',
+                renderHeader: () => <span>Type</span>,
+                renderCell: (entry) => (
+                  <span className={cn("font-bold px-2 py-0.5 rounded-full text-[10px]",
+                    entry.parent_type === 'Credit Note' ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                    : "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                  )}>
+                    {entry.voucher_type}
+                  </span>
+                ),
+              },
+              voucher_count: {
+                label: 'Vouchers',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-bold',
+                renderHeader: () => <span>Vouchers</span>,
+                renderCell: (entry) => entry.voucher_count,
+              },
+              return_in_qty: {
+                label: 'Return In (Qty)',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2',
+                renderHeader: () => <span>Return In (Qty)</span>,
+                renderCell: (entry) => entry.return_in_qty,
+              },
+              return_in_value: {
+                label: 'Return In (₹)',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2 font-medium',
+                renderHeader: () => <span>Return In (₹)</span>,
+                renderCell: (entry) => formatCurrency(entry.return_in_value),
+              },
+              return_out_qty: {
+                label: 'Return Out (Qty)',
+                align: 'right',
+                cellClassName: 'text-right px-2 py-2',
+                renderHeader: () => <span>Return Out (Qty)</span>,
+                renderCell: (entry) => entry.return_out_qty,
+              },
+              return_out_value: {
+                label: 'Return Out (₹)',
+                align: 'right',
+                cellClassName: 'text-right px-4 py-2 font-medium',
+                renderHeader: () => <span>Return Out (₹)</span>,
+                renderCell: (entry) => formatCurrency(entry.return_out_value),
+              },
+            }
+
+            return (
+              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                      <RotateCcw className="h-4 w-4 text-teal-500" /> Returns Analysis (Credit / Debit Notes)
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Stock impacted by sales returns (Credit Notes) and purchase returns (Debit Notes) •
+                      <span className="font-extrabold ml-1">Total: {formatCurrency(companyStockData.returns_analysis.total_return_value)}</span> • Click & drag columns to reorder
+                    </p>
+                  </div>
+                  <ResetColumnsButton isCustomized={returnsCols.isCustomized} onReset={returnsCols.resetColumns} />
+                </div>
+                {companyStockData.returns_analysis.entries.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="bg-muted/50 text-muted-foreground select-none">
+                          {returnsCols.columns.map(colId => {
+                            const col = returnColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <DraggableTh
+                                key={colId}
+                                colId={colId}
+                                columns={returnsCols.columns}
+                                getHeaderProps={returnsCols.getHeaderProps}
+                                draggedCol={returnsCols.draggedCol}
+                                dragOverCol={returnsCols.dragOverCol}
+                                dropPosition={returnsCols.dropPosition}
+                                hasDraggedRef={returnsCols.hasDraggedRef}
+                                moveLeft={returnsCols.moveLeft}
+                                moveRight={returnsCols.moveRight}
+                                align={col.align}
+                              >
+                                {col.renderHeader()}
+                              </DraggableTh>
+                            )
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/30">
+                        {companyStockData.returns_analysis.entries.map((entry: any) => (
+                          <tr key={entry.voucher_type} className="hover:bg-muted/20 transition-colors">
+                            {returnsCols.columns.map(colId => {
+                              const col = returnColumnDefs[colId]
+                              if (!col) return null
+                              return (
+                                <td key={colId} className={col.cellClassName}>
+                                  {col.renderCell(entry)}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="px-5 py-8 text-center text-xs text-muted-foreground">
+                    <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+                    <p className="font-bold">No returns recorded in this period</p>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
 
           {/* SUB-TAB: Negative Stock */}
           {stockSubTab === 'negative' && companyStockData?.negative_stock && (
@@ -2947,151 +3725,6 @@ export default function ReportsPage() {
               </div>
             </div>
           )}
-
-          {/* SUB-TAB: Turnover Ratios */}
-          {stockSubTab === 'turnover' && companyStockData?.turnover_ratios && (
-            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-border/50">
-                <h3 className="font-extrabold text-base flex items-center gap-2">
-                  <RotateCcw className="h-4 w-4 text-purple-500" /> Stock Turnover Ratio by Company
-                </h3>
-                <p className="text-xs text-muted-foreground">How quickly each company&apos;s stock converts to revenue • Higher = Faster</p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-[11px]">
-                  <thead>
-                    <tr className="bg-muted/50 text-muted-foreground select-none">
-                      <th onClick={() => handleTurnoverSort('company_name')} className="text-left px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center gap-1">
-                          <span className={cn(turnoverSortField === 'company_name' && "text-primary font-black")}>Company</span>
-                          {renderSortIcon('company_name', turnoverSortField, turnoverSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleTurnoverSort('items_count')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(turnoverSortField === 'items_count' && "text-primary font-black")}>Items</span>
-                          {renderSortIcon('items_count', turnoverSortField, turnoverSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleTurnoverSort('cost_of_goods_sold')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(turnoverSortField === 'cost_of_goods_sold' && "text-primary font-black")}>COGS</span>
-                          {renderSortIcon('cost_of_goods_sold', turnoverSortField, turnoverSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleTurnoverSort('avg_inventory_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(turnoverSortField === 'avg_inventory_value' && "text-primary font-black")}>Inventory Value</span>
-                          {renderSortIcon('avg_inventory_value', turnoverSortField, turnoverSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleTurnoverSort('turnover_ratio')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(turnoverSortField === 'turnover_ratio' && "text-primary font-black")}>Turnover Ratio</span>
-                          {renderSortIcon('turnover_ratio', turnoverSortField, turnoverSortDir)}
-                        </div>
-                      </th>
-                      <th onClick={() => handleTurnoverSort('days_to_sell')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
-                        <div className="inline-flex items-center justify-end gap-1 w-full">
-                          <span className={cn(turnoverSortField === 'days_to_sell' && "text-primary font-black")}>Days to Sell</span>
-                          {renderSortIcon('days_to_sell', turnoverSortField, turnoverSortDir)}
-                        </div>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/30">
-                    {companyStockData.turnover_ratios
-                      .slice()
-                      .sort((a: any, b: any) => {
-                        if (turnoverSortField === 'company_name') {
-                          return turnoverSortDir === 'asc'
-                            ? (a.company_name || '').localeCompare(b.company_name || '')
-                            : (b.company_name || '').localeCompare(a.company_name || '')
-                        }
-                        const valA = Number(a[turnoverSortField]) || 0
-                        const valB = Number(b[turnoverSortField]) || 0
-                        return turnoverSortDir === 'asc' ? valA - valB : valB - valA
-                      })
-                      .map((t: any) => (
-                      <tr key={t.company_name} className="hover:bg-muted/20">
-                        <td className="px-4 py-2 font-bold">{t.company_name}</td>
-                        <td className="text-right px-2 py-2">{t.items_count}</td>
-                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(t.cost_of_goods_sold)}</td>
-                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(t.avg_inventory_value)}</td>
-                        <td className="text-right px-2 py-2">
-                          <span className={cn("font-extrabold px-1.5 py-0.5 rounded-full text-[10px]",
-                            t.turnover_ratio >= 5 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                            : t.turnover_ratio >= 2 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                            : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                          )}>
-                            {t.turnover_ratio}x
-                          </span>
-                        </td>
-                        <td className="text-right px-4 py-2 font-medium">
-                          {t.days_to_sell >= 999 ? '—' : `${t.days_to_sell} days`}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* SUB-TAB: Returns Analysis */}
-          {stockSubTab === 'returns' && companyStockData?.returns_analysis && (
-            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-              <div className="px-5 py-4 border-b border-border/50">
-                <h3 className="font-extrabold text-base flex items-center gap-2">
-                  <RotateCcw className="h-4 w-4 text-teal-500" /> Returns Analysis (Credit / Debit Notes)
-                </h3>
-                <p className="text-xs text-muted-foreground">
-                  Stock impacted by sales returns (Credit Notes) and purchase returns (Debit Notes) •
-                  <span className="font-extrabold ml-1">Total: {formatCurrency(companyStockData.returns_analysis.total_return_value)}</span>
-                </p>
-              </div>
-              {companyStockData.returns_analysis.entries.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[11px]">
-                    <thead>
-                      <tr className="bg-muted/50 text-muted-foreground">
-                        <th className="text-left px-4 py-2 font-bold">Type</th>
-                        <th className="text-right px-2 py-2 font-bold">Vouchers</th>
-                        <th className="text-right px-2 py-2 font-bold">Return In (Qty)</th>
-                        <th className="text-right px-2 py-2 font-bold">Return In (₹)</th>
-                        <th className="text-right px-2 py-2 font-bold">Return Out (Qty)</th>
-                        <th className="text-right px-4 py-2 font-bold">Return Out (₹)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/30">
-                      {companyStockData.returns_analysis.entries.map((entry: any) => (
-                        <tr key={entry.voucher_type} className="hover:bg-muted/20">
-                          <td className="px-4 py-2">
-                            <span className={cn("font-bold px-2 py-0.5 rounded-full text-[10px]",
-                              entry.parent_type === 'Credit Note' ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                              : "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
-                            )}>
-                              {entry.voucher_type}
-                            </span>
-                          </td>
-                          <td className="text-right px-2 py-2 font-bold">{entry.voucher_count}</td>
-                          <td className="text-right px-2 py-2">{entry.return_in_qty}</td>
-                          <td className="text-right px-2 py-2 font-medium">{formatCurrency(entry.return_in_value)}</td>
-                          <td className="text-right px-2 py-2">{entry.return_out_qty}</td>
-                          <td className="text-right px-4 py-2 font-medium">{formatCurrency(entry.return_out_value)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="px-5 py-8 text-center text-xs text-muted-foreground">
-                  <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
-                  <p className="font-bold">No returns recorded in this period</p>
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
 
@@ -3116,49 +3749,115 @@ export default function ReportsPage() {
                   <Info className="h-4 w-4" />
                 </button>
               </div>
-              <button onClick={() => exportToCsv('Trial_Balance', trialBalance)} className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-center">
-                <Download className="h-3.5 w-3.5" /> CSV Export
-              </button>
+              <div className="flex items-center gap-2">
+                <ResetColumnsButton isCustomized={trialBalanceCols.isCustomized} onReset={trialBalanceCols.resetColumns} />
+                <button onClick={() => exportToCsv('Trial_Balance', trialBalance)} className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-center">
+                  <Download className="h-3.5 w-3.5" /> CSV Export
+                </button>
+              </div>
             </div>
 
-            <div className="overflow-x-auto -mx-5 px-5">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border text-muted-foreground text-left">
-                    <th className="py-2.5 px-2 font-bold">Account Group Name</th>
-                    <th className="py-2.5 px-2 font-bold text-right">Total Debit (Dr)</th>
-                    <th className="py-2.5 px-2 font-bold text-right">Total Credit (Cr)</th>
-                    <th className="py-2.5 px-2 font-bold text-right">Net Closing Balance</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/50">
-                  {trialBalance.map((row, idx) => (
-                    <tr key={idx} className="hover:bg-muted/30 transition-colors">
-                      <td className="py-2.5 px-2 font-semibold flex items-center gap-2">
-                        <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                        <span>{row.name}</span>
-                        <button
-                          onClick={() => setSelectedGroupInfo(row.name)}
-                          className="p-1 rounded-md text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors cursor-pointer"
-                          title={`Click for info about ${row.name}`}
-                        >
-                          <Info className="h-3.5 w-3.5" />
-                        </button>
-                      </td>
-                      <td className="py-2.5 px-2 text-right font-medium text-emerald-700 dark:text-emerald-400">
-                        {formatCurrency(row.debit || 0)}
-                      </td>
-                      <td className="py-2.5 px-2 text-right font-medium text-blue-700 dark:text-blue-400">
-                        {formatCurrency(row.credit || 0)}
-                      </td>
-                      <td className={cn('py-2.5 px-2 text-right font-bold', row.balance >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400')}>
-                        {formatCurrency(Math.abs(row.balance))} {row.balance >= 0 ? 'Dr' : 'Cr'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {(() => {
+              const trialBalanceColumnDefs: Record<string, {
+                label: string
+                align?: 'left' | 'right' | 'center'
+                cellClassName: string
+                renderHeader: () => React.ReactNode
+                renderCell: (row: any) => React.ReactNode
+              }> = {
+                name: {
+                  label: 'Account Group Name',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2 font-semibold flex items-center gap-2',
+                  renderHeader: () => <span>Account Group Name</span>,
+                  renderCell: (row) => (
+                    <>
+                      <Building2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span>{row.name}</span>
+                      <button
+                        onClick={() => setSelectedGroupInfo(row.name)}
+                        className="p-1 rounded-md text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors cursor-pointer"
+                        title={`Click for info about ${row.name}`}
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  ),
+                },
+                debit: {
+                  label: 'Total Debit (Dr)',
+                  align: 'right',
+                  cellClassName: 'py-2.5 px-2 text-right font-medium text-emerald-700 dark:text-emerald-400',
+                  renderHeader: () => <span>Total Debit (Dr)</span>,
+                  renderCell: (row) => formatCurrency(row.debit || 0),
+                },
+                credit: {
+                  label: 'Total Credit (Cr)',
+                  align: 'right',
+                  cellClassName: 'py-2.5 px-2 text-right font-medium text-blue-700 dark:text-blue-400',
+                  renderHeader: () => <span>Total Credit (Cr)</span>,
+                  renderCell: (row) => formatCurrency(row.credit || 0),
+                },
+                balance: {
+                  label: 'Net Closing Balance',
+                  align: 'right',
+                  cellClassName: 'py-2.5 px-2 text-right font-bold',
+                  renderHeader: () => <span>Net Closing Balance</span>,
+                  renderCell: (row) => (
+                    <span className={row.balance >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                      {formatCurrency(Math.abs(row.balance))} {row.balance >= 0 ? 'Dr' : 'Cr'}
+                    </span>
+                  ),
+                },
+              }
+
+              return (
+                <div className="overflow-x-auto -mx-5 px-5">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border text-muted-foreground select-none">
+                        {trialBalanceCols.columns.map(colId => {
+                          const col = trialBalanceColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={trialBalanceCols.columns}
+                              getHeaderProps={trialBalanceCols.getHeaderProps}
+                              draggedCol={trialBalanceCols.draggedCol}
+                              dragOverCol={trialBalanceCols.dragOverCol}
+                              dropPosition={trialBalanceCols.dropPosition}
+                              hasDraggedRef={trialBalanceCols.hasDraggedRef}
+                              moveLeft={trialBalanceCols.moveLeft}
+                              moveRight={trialBalanceCols.moveRight}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/50">
+                      {trialBalance.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-muted/30 transition-colors">
+                          {trialBalanceCols.columns.map(colId => {
+                            const col = trialBalanceColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(row)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })()}
           </div>
 
           {/* Day Book Chronological Audit Stream */}
@@ -3168,60 +3867,139 @@ export default function ReportsPage() {
                 <h3 className="font-extrabold text-base flex items-center gap-2">
                   <FileText className="h-4 w-4 text-blue-500" /> Day Book Transaction Register
                 </h3>
-                <p className="text-xs text-muted-foreground">Chronological audit stream of all transaction vouchers (Sales, Purchases, Receipts, Payments)</p>
+                <p className="text-xs text-muted-foreground">Chronological audit stream of all transaction vouchers (Sales, Purchases, Receipts, Payments) • Click & drag columns to reorder</p>
               </div>
-              <button onClick={() => exportToCsv('Daybook', daybook)} className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-center">
-                <Download className="h-3.5 w-3.5" /> Export Daybook CSV
-              </button>
+              <div className="flex items-center gap-2">
+                <ResetColumnsButton isCustomized={daybookCols.isCustomized} onReset={daybookCols.resetColumns} />
+                <button onClick={() => exportToCsv('Daybook', daybook)} className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-center">
+                  <Download className="h-3.5 w-3.5" /> Export Daybook CSV
+                </button>
+              </div>
             </div>
 
-            <div className="overflow-x-auto -mx-5 px-5">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border text-muted-foreground text-left">
-                    <th className="py-2.5 px-2 font-bold">Date</th>
-                    <th className="py-2.5 px-2 font-bold">Voucher #</th>
-                    <th className="py-2.5 px-2 font-bold">Voucher Type</th>
-                    <th className="py-2.5 px-2 font-bold">Party / Account</th>
-                    <th className="py-2.5 px-2 font-bold text-right">Amount</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/50">
-                  {daybook.map((row, idx) => {
+            {(() => {
+              const daybookColumnDefs: Record<string, {
+                label: string
+                align?: 'left' | 'right' | 'center'
+                cellClassName: string
+                renderHeader: () => React.ReactNode
+                renderCell: (row: any) => React.ReactNode
+              }> = {
+                date: {
+                  label: 'Date',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2 text-muted-foreground',
+                  renderHeader: () => <span>Date</span>,
+                  renderCell: (row) => formatDate(row.date),
+                },
+                voucher_number: {
+                  label: 'Voucher #',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2 font-mono font-bold',
+                  renderHeader: () => <span>Voucher #</span>,
+                  renderCell: (row) => (
+                    <Link
+                      href={`/vouchers/${row.id}`}
+                      className="text-primary hover:underline hover:text-indigo-600 font-bold"
+                      title="Click to open voucher details"
+                    >
+                      <span>{row.voucher_number || `#${row.id}`}</span>
+                    </Link>
+                  ),
+                },
+                type: {
+                  label: 'Voucher Type',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2',
+                  renderHeader: () => <span>Voucher Type</span>,
+                  renderCell: (row) => {
                     const typeStyle = getVoucherTypeBadge(row.type)
                     return (
-                      <tr key={idx} className="hover:bg-muted/30 transition-colors">
-                        <td className="py-2.5 px-2 text-muted-foreground">{formatDate(row.date)}</td>
-                        <td className="py-2.5 px-2 font-mono font-bold">
-                          <Link
-                            href={`/vouchers/${row.id}`}
-                            className="text-primary hover:underline hover:text-indigo-600 font-bold"
-                            title="Click to open voucher details"
-                          >
-                            <span>{row.voucher_number || `#${row.id}`}</span>
-                          </Link>
-                        </td>
-                        <td className="py-2.5 px-2">
-                          <span className={cn('px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border', typeStyle.badge)}>
-                            {row.type}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-2 font-semibold">
-                          <Link
-                            href={`/ledgers?search=${encodeURIComponent(row.party_name)}`}
-                            className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
-                            title={`Search ${row.party_name} in ledgers`}
-                          >
-                            {toTitleCase(row.party_name)}
-                          </Link>
-                        </td>
-                        <td className={cn('py-2.5 px-2 text-right font-bold', typeStyle.amount)}>{formatCurrency(row.amount)}</td>
-                      </tr>
+                      <span className={cn('px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border', typeStyle.badge)}>
+                        {row.type}
+                      </span>
                     )
-                  })}
-                </tbody>
-              </table>
-            </div>
+                  },
+                },
+                party_name: {
+                  label: 'Party / Account',
+                  align: 'left',
+                  cellClassName: 'py-2.5 px-2 font-semibold',
+                  renderHeader: () => <span>Party / Account</span>,
+                  renderCell: (row) => (
+                    <Link
+                      href={`/ledgers?search=${encodeURIComponent(row.party_name)}`}
+                      className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                      title={`Search ${row.party_name} in ledgers`}
+                    >
+                      {toTitleCase(row.party_name)}
+                    </Link>
+                  ),
+                },
+                amount: {
+                  label: 'Amount',
+                  align: 'right',
+                  cellClassName: 'py-2.5 px-2 text-right font-bold',
+                  renderHeader: () => <span>Amount</span>,
+                  renderCell: (row) => {
+                    const typeStyle = getVoucherTypeBadge(row.type)
+                    return (
+                      <span className={typeStyle.amount}>
+                        {formatCurrency(row.amount)}
+                      </span>
+                    )
+                  },
+                },
+              }
+
+              return (
+                <div className="overflow-x-auto -mx-5 px-5">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border text-muted-foreground select-none">
+                        {daybookCols.columns.map(colId => {
+                          const col = daybookColumnDefs[colId]
+                          if (!col) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              colId={colId}
+                              columns={daybookCols.columns}
+                              getHeaderProps={daybookCols.getHeaderProps}
+                              draggedCol={daybookCols.draggedCol}
+                              dragOverCol={daybookCols.dragOverCol}
+                              dropPosition={daybookCols.dropPosition}
+                              hasDraggedRef={daybookCols.hasDraggedRef}
+                              moveLeft={daybookCols.moveLeft}
+                              moveRight={daybookCols.moveRight}
+                              align={col.align}
+                            >
+                              {col.renderHeader()}
+                            </DraggableTh>
+                          )
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/50">
+                      {daybook.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-muted/30 transition-colors">
+                          {daybookCols.columns.map(colId => {
+                            const col = daybookColumnDefs[colId]
+                            if (!col) return null
+                            return (
+                              <td key={colId} className={col.cellClassName}>
+                                {col.renderCell(row)}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })()}
+
           </div>
         </div>
       )}
@@ -3533,6 +4311,7 @@ export default function ReportsPage() {
                     <span className="text-xs font-bold text-muted-foreground">
                       Total Debt: <strong className="text-amber-600 dark:text-amber-400 font-extrabold text-sm">{formatCurrency(totalBucketAmt)}</strong>
                     </span>
+                    <ResetColumnsButton {...agingModalCols} />
                     <button
                       onClick={() => exportToCsv(`Debtors_Aging_${agingModalBucket.replace(/\s+/g, '_')}`, bucketItems)}
                       className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
@@ -3573,62 +4352,100 @@ export default function ReportsPage() {
                   )
                 }
 
+                const agingColDefs: Record<string, { label: string; align?: 'left' | 'center' | 'right' }> = {
+                  party_name: { label: 'Customer / Debtor Name', align: 'left' },
+                  voucher_number: { label: 'Voucher / Invoice #', align: 'left' },
+                  date: { label: 'Invoice Date', align: 'left' },
+                  days: { label: 'Age', align: 'center' },
+                  amount: { label: 'Unpaid Amount', align: 'right' },
+                }
+
                 return (
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b border-border text-muted-foreground text-left">
-                        <th className="py-2.5 px-2 font-bold">Customer / Debtor Name</th>
-                        <th className="py-2.5 px-2 font-bold">Voucher / Invoice #</th>
-                        <th className="py-2.5 px-2 font-bold">Invoice Date</th>
-                        <th className="py-2.5 px-2 font-bold text-center">Age</th>
-                        <th className="py-2.5 px-2 font-bold text-right">Unpaid Amount</th>
+                        {agingModalCols.columns.map((colId) => {
+                          const def = agingColDefs[colId]
+                          if (!def) return null
+                          return (
+                            <DraggableTh
+                              key={colId}
+                              id={colId}
+                              label={def.label}
+                              align={def.align}
+                              reorderProps={agingModalCols}
+                              className="py-2.5 px-2 font-bold"
+                            />
+                          )
+                        })}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border/50">
                       {filteredItems.map((item: any, idx: number) => (
                         <tr key={idx} className="hover:bg-muted/30 transition-colors">
-                          <td className="py-2.5 px-2 font-semibold text-foreground">
-                            {item.ledger_id ? (
-                              <Link
-                                href={`/ledgers/${item.ledger_id}`}
-                                className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
-                                title={`Open ${item.party_name} ledger statement`}
-                              >
-                                {item.party_name}
-                              </Link>
-                            ) : (
-                              <Link
-                                href={`/ledgers?search=${encodeURIComponent(item.party_name)}`}
-                                className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
-                                title={`Search ${item.party_name} in ledgers`}
-                              >
-                                {item.party_name}
-                              </Link>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-2 font-medium">
-                            {item.id > 0 ? (
-                              <Link
-                                href={`/vouchers/${item.id}`}
-                                className="text-primary hover:underline font-bold"
-                              >
-                                <span>{item.voucher_number}</span>
-                              </Link>
-                            ) : (
-                              <span className="text-muted-foreground italic">{item.voucher_number}</span>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-2 text-muted-foreground">
-                            {item.date ? new Date(item.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A'}
-                          </td>
-                          <td className="py-2.5 px-2 text-center">
-                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20">
-                              {item.days} Days
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-2 text-right font-black text-amber-600 dark:text-amber-400">
-                            {formatCurrency(item.amount)}
-                          </td>
+                          {agingModalCols.columns.map((colId) => {
+                            switch (colId) {
+                              case 'party_name':
+                                return (
+                                  <td key="party_name" className="py-2.5 px-2 font-semibold text-foreground">
+                                    {item.ledger_id ? (
+                                      <Link
+                                        href={`/ledgers/${item.ledger_id}`}
+                                        className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                                        title={`Open ${item.party_name} ledger statement`}
+                                      >
+                                        {item.party_name}
+                                      </Link>
+                                    ) : (
+                                      <Link
+                                        href={`/ledgers?search=${encodeURIComponent(item.party_name)}`}
+                                        className="text-foreground hover:text-primary hover:underline font-bold transition-colors"
+                                        title={`Search ${item.party_name} in ledgers`}
+                                      >
+                                        {item.party_name}
+                                      </Link>
+                                    )}
+                                  </td>
+                                )
+                              case 'voucher_number':
+                                return (
+                                  <td key="voucher_number" className="py-2.5 px-2 font-medium">
+                                    {item.id > 0 ? (
+                                      <Link
+                                        href={`/vouchers/${item.id}`}
+                                        className="text-primary hover:underline font-bold"
+                                      >
+                                        <span>{item.voucher_number}</span>
+                                      </Link>
+                                    ) : (
+                                      <span className="text-muted-foreground italic">{item.voucher_number}</span>
+                                    )}
+                                  </td>
+                                )
+                              case 'date':
+                                return (
+                                  <td key="date" className="py-2.5 px-2 text-muted-foreground">
+                                    {item.date ? new Date(item.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A'}
+                                  </td>
+                                )
+                              case 'days':
+                                return (
+                                  <td key="days" className="py-2.5 px-2 text-center">
+                                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20">
+                                      {item.days} Days
+                                    </span>
+                                  </td>
+                                )
+                              case 'amount':
+                                return (
+                                  <td key="amount" className="py-2.5 px-2 text-right font-black text-amber-600 dark:text-amber-400">
+                                    {formatCurrency(item.amount)}
+                                  </td>
+                                )
+                              default:
+                                return null
+                            }
+                          })}
                         </tr>
                       ))}
                     </tbody>
