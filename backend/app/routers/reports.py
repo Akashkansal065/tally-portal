@@ -1328,3 +1328,506 @@ async def get_inactive_items(
     set_cached_response(user.company_id, cache_key, results)
     return results
 
+
+# =====================================================================
+# COMPANY STOCK & PROFIT PERFORMANCE REPORT
+# =====================================================================
+
+@router.get("/company-stock-performance")
+async def get_company_stock_performance(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    dead_stock_days: int = Query(90, description="Days threshold for dead/slow-moving stock"),
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Comprehensive company-wise stock & profit performance report.
+    Returns 8 sub-sections:
+    1. Company-wise performance (purchased, sold, pending, profit)
+    2. Monthly movement trend
+    3. Dead/slow-moving stock
+    4. Loss-making items
+    5. Negative stock alerts
+    6. Fast-moving items (top sellers)
+    7. Stock turnover ratios by company
+    8. Returns analysis (credit/debit notes)
+    """
+    from sqlalchemy import text as sa_text
+    from app.core.config import settings
+
+    cache_key = f"company_stock_perf_{from_date}_{to_date}_{dead_stock_days}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
+    ts = settings.TALLY_DATABASE_NAME
+    cid = user.company_id
+
+    # Build optional date filter for stock_entries via voucher date
+    date_filter = ""
+    params: dict = {"company_id": cid, "dead_days": dead_stock_days}
+    if from_date:
+        date_filter += " AND v.voucher_date >= :from_date"
+        params["from_date"] = from_date
+    if to_date:
+        date_filter += " AND v.voucher_date <= :to_date"
+        params["to_date"] = to_date
+
+    # -------------------------------------------------------------------
+    # 1. Company-wise Performance (with item-level drill-down data)
+    # -------------------------------------------------------------------
+    company_sql = sa_text(f"""
+        SELECT
+            COALESCE(sg.name, 'Others') AS company_name,
+            sg.stock_group_id AS group_id,
+            si.stock_item_id,
+            si.name AS item_name,
+            COALESCE(u.symbol, 'PCS') AS uom,
+            COALESCE(si.opening_qty, 0) AS opening_qty,
+            COALESCE(si.opening_rate, 0) AS opening_rate,
+            COALESCE(si.closing_qty, 0) AS closing_qty,
+            COALESCE(si.closing_rate, 0) AS closing_rate,
+            COALESCE(si.closing_value, 0) AS closing_value,
+            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.quantity ELSE 0 END), 0) AS inward_qty,
+            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.amount ELSE 0 END), 0) AS inward_value,
+            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN se.quantity ELSE 0 END), 0) AS outward_qty,
+            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN se.amount ELSE 0 END), 0) AS outward_value,
+            COALESCE(AVG(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.rate END), 0) AS avg_purchase_rate,
+            COALESCE(AVG(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN se.rate END), 0) AS avg_selling_rate
+        FROM {ts}.stock_items si
+        LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
+        LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
+        LEFT JOIN {ts}.stock_entries se ON si.stock_item_id = se.stock_item_id
+        LEFT JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
+            AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+            {date_filter}
+        WHERE si.company_id = :company_id
+        GROUP BY sg.name, sg.stock_group_id, si.stock_item_id, si.name, u.symbol,
+                 si.opening_qty, si.opening_rate, si.closing_qty, si.closing_rate, si.closing_value
+    """)
+    res = await db.execute(company_sql, params)
+    rows = res.fetchall()
+
+    # Aggregate by company (stock group)
+    companies_map: dict = {}
+    all_items_list = []
+
+    for r in rows:
+        cname = r.company_name
+        op_qty = float(r.opening_qty)
+        op_rate = float(r.opening_rate)
+        in_qty = float(r.inward_qty)
+        in_val = float(r.inward_value)
+        out_qty = float(r.outward_qty)
+        out_val = float(r.outward_value)
+        cl_qty = float(r.closing_qty)
+        cl_val = float(r.closing_value)
+
+        # Weighted average cost
+        total_avail_qty = op_qty + in_qty
+        total_avail_val = (op_qty * op_rate) + in_val
+        avg_cost = total_avail_val / total_avail_qty if total_avail_qty > 0 else op_rate
+
+        cost_of_sold = out_qty * avg_cost
+        profit_on_sold = out_val - cost_of_sold
+        gp_pct = (profit_on_sold / out_val * 100) if out_val > 0 else 0.0
+
+        item_data = {
+            "item_id": r.stock_item_id,
+            "name": r.item_name,
+            "uom": r.uom,
+            "company_name": cname,
+            "opening_qty": round(op_qty, 3),
+            "opening_value": round(op_qty * op_rate, 2),
+            "purchased_qty": round(in_qty, 3),
+            "purchased_value": round(in_val, 2),
+            "avg_purchase_rate": round(float(r.avg_purchase_rate), 2),
+            "sold_qty": round(out_qty, 3),
+            "sold_value": round(out_val, 2),
+            "avg_selling_rate": round(float(r.avg_selling_rate), 2),
+            "pending_qty": round(cl_qty, 3),
+            "pending_value": round(cl_val, 2),
+            "cost_of_sold": round(cost_of_sold, 2),
+            "profit_on_sold": round(profit_on_sold, 2),
+            "gp_percent": round(gp_pct, 2),
+            "avg_cost": round(avg_cost, 2),
+        }
+        all_items_list.append(item_data)
+
+        if cname not in companies_map:
+            companies_map[cname] = {
+                "company_name": cname,
+                "group_id": r.group_id,
+                "items_count": 0,
+                "purchased_qty": 0.0,
+                "purchased_value": 0.0,
+                "sold_qty": 0.0,
+                "sold_value": 0.0,
+                "pending_qty": 0.0,
+                "pending_value": 0.0,
+                "cost_of_sold": 0.0,
+                "profit_on_sold": 0.0,
+                "items": [],
+            }
+        comp = companies_map[cname]
+        comp["items_count"] += 1
+        comp["purchased_qty"] += total_avail_qty
+        comp["purchased_value"] += total_avail_val
+        comp["sold_qty"] += out_qty
+        comp["sold_value"] += out_val
+        comp["pending_qty"] += cl_qty
+        comp["pending_value"] += cl_val
+        comp["cost_of_sold"] += cost_of_sold
+        comp["profit_on_sold"] += profit_on_sold
+        comp["items"].append(item_data)
+
+    # Calculate GP% for each company
+    companies_list = []
+    for comp in companies_map.values():
+        comp["gp_percent"] = round(
+            (comp["profit_on_sold"] / comp["sold_value"] * 100) if comp["sold_value"] > 0 else 0.0, 2
+        )
+        comp["sold_ratio"] = round(
+            (comp["sold_qty"] / comp["purchased_qty"] * 100) if comp["purchased_qty"] > 0 else 0.0, 2
+        )
+        # Round numeric fields
+        for k in ["purchased_qty", "purchased_value", "sold_qty", "sold_value",
+                   "pending_qty", "pending_value", "cost_of_sold", "profit_on_sold"]:
+            comp[k] = round(comp[k], 2)
+        companies_list.append(comp)
+    companies_list.sort(key=lambda x: x["sold_value"], reverse=True)
+
+    # Grand totals
+    grand_totals = {
+        "total_purchased_value": round(sum(c["purchased_value"] for c in companies_list), 2),
+        "total_purchased_qty": round(sum(c["purchased_qty"] for c in companies_list), 2),
+        "total_sold_value": round(sum(c["sold_value"] for c in companies_list), 2),
+        "total_sold_qty": round(sum(c["sold_qty"] for c in companies_list), 2),
+        "total_pending_value": round(sum(c["pending_value"] for c in companies_list), 2),
+        "total_pending_qty": round(sum(c["pending_qty"] for c in companies_list), 2),
+        "total_cost_of_sold": round(sum(c["cost_of_sold"] for c in companies_list), 2),
+        "total_profit_on_sold": round(sum(c["profit_on_sold"] for c in companies_list), 2),
+        "total_items": sum(c["items_count"] for c in companies_list),
+        "total_companies": len(companies_list),
+    }
+    total_sold = grand_totals["total_sold_value"]
+    grand_totals["overall_gp_percent"] = round(
+        (grand_totals["total_profit_on_sold"] / total_sold * 100) if total_sold > 0 else 0.0, 2
+    )
+
+    # -------------------------------------------------------------------
+    # 2. Monthly Movement Trend
+    # -------------------------------------------------------------------
+    monthly_sql = sa_text(f"""
+        SELECT DATE_FORMAT(v.voucher_date, '%Y-%m') AS month,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.amount ELSE 0 END) AS inward_value,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.amount ELSE 0 END) AS outward_value,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.quantity ELSE 0 END) AS inward_qty,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.quantity ELSE 0 END) AS outward_qty,
+               COUNT(DISTINCT se.stock_item_id) AS items_moved,
+               COUNT(DISTINCT v.voucher_id) AS voucher_count
+        FROM {ts}.stock_entries se
+        JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id
+        WHERE v.company_id = :company_id
+          AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+          {date_filter}
+        GROUP BY DATE_FORMAT(v.voucher_date, '%Y-%m')
+        ORDER BY month ASC
+    """)
+    monthly_res = await db.execute(monthly_sql, params)
+    monthly_trend = []
+    for r in monthly_res.fetchall():
+        inv = float(r.inward_value)
+        outv = float(r.outward_value)
+        monthly_trend.append({
+            "month": r.month,
+            "inward_value": round(inv, 2),
+            "outward_value": round(outv, 2),
+            "inward_qty": round(float(r.inward_qty), 2),
+            "outward_qty": round(float(r.outward_qty), 2),
+            "items_moved": r.items_moved,
+            "voucher_count": r.voucher_count,
+            "net_movement": round(inv - outv, 2),
+        })
+
+    # -------------------------------------------------------------------
+    # 3. Dead / Slow-Moving Stock
+    # -------------------------------------------------------------------
+    dead_sql = sa_text(f"""
+        SELECT si.stock_item_id, si.name AS item_name,
+               COALESCE(sg.name, 'Others') AS company_name,
+               COALESCE(u.symbol, 'PCS') AS uom,
+               si.closing_qty, si.closing_value,
+               COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 AND v.voucher_date >= DATE_SUB(CURDATE(), INTERVAL :dead_days DAY) THEN se.quantity ELSE 0 END), 0) AS sold_in_period,
+               MAX(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN v.voucher_date ELSE NULL END) AS last_sold_date
+        FROM {ts}.stock_items si
+        LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
+        LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
+        LEFT JOIN {ts}.stock_entries se ON si.stock_item_id = se.stock_item_id
+        LEFT JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
+            AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+        WHERE si.company_id = :company_id AND si.closing_qty > 0
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_value
+        HAVING sold_in_period = 0
+        ORDER BY si.closing_value DESC
+        LIMIT 50
+    """)
+    dead_res = await db.execute(dead_sql, params)
+    dead_stock = []
+    total_dead_value = 0.0
+    for r in dead_res.fetchall():
+        val = float(r.closing_value or 0)
+        total_dead_value += val
+        dead_stock.append({
+            "item_id": r.stock_item_id,
+            "name": r.item_name,
+            "company_name": r.company_name,
+            "uom": r.uom,
+            "closing_qty": round(float(r.closing_qty), 3),
+            "closing_value": round(val, 2),
+            "last_sold_date": str(r.last_sold_date) if r.last_sold_date else None,
+            "days_threshold": dead_stock_days,
+        })
+
+    # -------------------------------------------------------------------
+    # 4. Loss-Making Items
+    # -------------------------------------------------------------------
+    loss_sql = sa_text(f"""
+        SELECT si.stock_item_id, si.name AS item_name,
+               COALESCE(sg.name, 'Others') AS company_name,
+               COALESCE(u.symbol, 'PCS') AS uom,
+               COALESCE(si.opening_qty, 0) AS opening_qty,
+               COALESCE(si.opening_rate, 0) AS opening_rate,
+               COALESCE(AVG(CASE WHEN se.is_inward = 1 THEN se.rate END), 0) AS avg_purchase_rate,
+               COALESCE(AVG(CASE WHEN se.is_inward = 0 THEN se.rate END), 0) AS avg_selling_rate,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.quantity ELSE 0 END) AS purchased_qty,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.amount ELSE 0 END) AS purchased_value,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.quantity ELSE 0 END) AS sold_qty,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.amount ELSE 0 END) AS sold_value
+        FROM {ts}.stock_items si
+        JOIN {ts}.stock_entries se ON si.stock_item_id = se.stock_item_id
+        JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
+            AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+            {date_filter}
+        LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
+        LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
+        WHERE si.company_id = :company_id
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.opening_qty, si.opening_rate
+        HAVING sold_qty > 0 AND avg_selling_rate > 0 AND avg_purchase_rate > avg_selling_rate
+        ORDER BY (avg_purchase_rate - avg_selling_rate) * sold_qty DESC
+        LIMIT 30
+    """)
+    loss_res = await db.execute(loss_sql, params)
+    loss_making = []
+    for r in loss_res.fetchall():
+        buy_rate = float(r.avg_purchase_rate)
+        sell_rate = float(r.avg_selling_rate)
+        s_qty = float(r.sold_qty)
+        s_val = float(r.sold_value)
+
+        # Weighted avg cost
+        op_q = float(r.opening_qty)
+        op_r = float(r.opening_rate)
+        in_q = float(r.purchased_qty)
+        in_v = float(r.purchased_value)
+        total_q = op_q + in_q
+        total_v = (op_q * op_r) + in_v
+        avg_cost = total_v / total_q if total_q > 0 else buy_rate
+
+        cogs = s_qty * avg_cost
+        loss_amount = s_val - cogs
+
+        loss_making.append({
+            "item_id": r.stock_item_id,
+            "name": r.item_name,
+            "company_name": r.company_name,
+            "uom": r.uom,
+            "avg_purchase_rate": round(buy_rate, 2),
+            "avg_selling_rate": round(sell_rate, 2),
+            "rate_difference": round(buy_rate - sell_rate, 2),
+            "sold_qty": round(s_qty, 3),
+            "sold_value": round(s_val, 2),
+            "cost_of_sold": round(cogs, 2),
+            "loss_amount": round(loss_amount, 2),
+        })
+
+    # -------------------------------------------------------------------
+    # 5. Negative Stock Alerts
+    # -------------------------------------------------------------------
+    neg_sql = sa_text(f"""
+        SELECT si.stock_item_id, si.name AS item_name,
+               COALESCE(sg.name, 'Others') AS company_name,
+               COALESCE(u.symbol, 'PCS') AS uom,
+               si.closing_qty, si.closing_value
+        FROM {ts}.stock_items si
+        LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
+        LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
+        WHERE si.company_id = :company_id AND si.closing_qty < 0
+        ORDER BY si.closing_qty ASC
+    """)
+    neg_res = await db.execute(neg_sql, {"company_id": cid})
+    negative_stock = [
+        {
+            "item_id": r.stock_item_id,
+            "name": r.item_name,
+            "company_name": r.company_name,
+            "uom": r.uom,
+            "closing_qty": round(float(r.closing_qty), 3),
+            "closing_value": round(float(r.closing_value or 0), 2),
+        }
+        for r in neg_res.fetchall()
+    ]
+
+    # -------------------------------------------------------------------
+    # 6. Fast-Moving Items (Top Sellers by qty)
+    # -------------------------------------------------------------------
+    fast_sql = sa_text(f"""
+        SELECT si.stock_item_id, si.name AS item_name,
+               COALESCE(sg.name, 'Others') AS company_name,
+               COALESCE(u.symbol, 'PCS') AS uom,
+               si.closing_qty, si.closing_value,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.quantity ELSE 0 END) AS sold_qty,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.amount ELSE 0 END) AS sold_value,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.quantity ELSE 0 END) AS purchased_qty,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.amount ELSE 0 END) AS purchased_value,
+               COALESCE(si.opening_qty, 0) AS opening_qty,
+               COALESCE(si.opening_rate, 0) AS opening_rate
+        FROM {ts}.stock_items si
+        JOIN {ts}.stock_entries se ON si.stock_item_id = se.stock_item_id
+        JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
+            AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+            {date_filter}
+        LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
+        LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
+        WHERE si.company_id = :company_id
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_value, si.opening_qty, si.opening_rate
+        HAVING sold_qty > 0
+        ORDER BY sold_qty DESC
+        LIMIT 25
+    """)
+    fast_res = await db.execute(fast_sql, params)
+    fast_movers = []
+    for r in fast_res.fetchall():
+        s_qty = float(r.sold_qty)
+        s_val = float(r.sold_value)
+        op_q = float(r.opening_qty)
+        op_r = float(r.opening_rate)
+        in_q = float(r.purchased_qty)
+        in_v = float(r.purchased_value)
+        total_q = op_q + in_q
+        total_v = (op_q * op_r) + in_v
+        avg_cost = total_v / total_q if total_q > 0 else 0
+        cogs = s_qty * avg_cost
+        profit = s_val - cogs
+        gp_pct = (profit / s_val * 100) if s_val > 0 else 0
+
+        fast_movers.append({
+            "item_id": r.stock_item_id,
+            "name": r.item_name,
+            "company_name": r.company_name,
+            "uom": r.uom,
+            "sold_qty": round(s_qty, 3),
+            "sold_value": round(s_val, 2),
+            "remaining_qty": round(float(r.closing_qty), 3),
+            "remaining_value": round(float(r.closing_value or 0), 2),
+            "profit_on_sold": round(profit, 2),
+            "gp_percent": round(gp_pct, 2),
+        })
+
+    # -------------------------------------------------------------------
+    # 7. Stock Turnover Ratios by Company
+    # -------------------------------------------------------------------
+    turnover_data = []
+    for comp in companies_list:
+        avg_inventory = comp["pending_value"]  # Current closing as proxy
+        cogs = comp["cost_of_sold"]
+        turnover_ratio = round(cogs / avg_inventory, 2) if avg_inventory > 0 else 0
+        # Days to sell = 365 / turnover ratio
+        days_to_sell = round(365 / turnover_ratio) if turnover_ratio > 0 else 999
+        turnover_data.append({
+            "company_name": comp["company_name"],
+            "items_count": comp["items_count"],
+            "cost_of_goods_sold": comp["cost_of_sold"],
+            "avg_inventory_value": comp["pending_value"],
+            "turnover_ratio": turnover_ratio,
+            "days_to_sell": days_to_sell,
+            "sold_ratio": comp["sold_ratio"],
+        })
+    turnover_data.sort(key=lambda x: x["turnover_ratio"], reverse=True)
+
+    # -------------------------------------------------------------------
+    # 8. Returns Analysis (Credit Note / Debit Note)
+    # -------------------------------------------------------------------
+    returns_sql = sa_text(f"""
+        SELECT vt.name AS voucher_type, vt.parent_type,
+               COUNT(DISTINCT v.voucher_id) AS voucher_count,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.quantity ELSE 0 END) AS return_in_qty,
+               SUM(CASE WHEN se.is_inward = 1 THEN se.amount ELSE 0 END) AS return_in_value,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.quantity ELSE 0 END) AS return_out_qty,
+               SUM(CASE WHEN se.is_inward = 0 THEN se.amount ELSE 0 END) AS return_out_value
+        FROM {ts}.stock_entries se
+        JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id
+        JOIN {ts}.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+        WHERE v.company_id = :company_id
+          AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+          AND vt.parent_type IN ('Credit Note', 'Debit Note')
+          {date_filter}
+        GROUP BY vt.name, vt.parent_type
+    """)
+    returns_res = await db.execute(returns_sql, params)
+    returns_analysis = []
+    total_return_value = 0.0
+    for r in returns_res.fetchall():
+        in_val = float(r.return_in_value or 0)
+        out_val = float(r.return_out_value or 0)
+        total_return_value += in_val + out_val
+        returns_analysis.append({
+            "voucher_type": r.voucher_type,
+            "parent_type": r.parent_type,
+            "voucher_count": r.voucher_count,
+            "return_in_qty": round(float(r.return_in_qty or 0), 3),
+            "return_in_value": round(in_val, 2),
+            "return_out_qty": round(float(r.return_out_qty or 0), 3),
+            "return_out_value": round(out_val, 2),
+        })
+
+    # -------------------------------------------------------------------
+    # Final Response
+    # -------------------------------------------------------------------
+    output = {
+        "grand_totals": grand_totals,
+        "companies": companies_list,
+        "monthly_trend": monthly_trend,
+        "dead_stock": {
+            "items": dead_stock,
+            "total_locked_value": round(total_dead_value, 2),
+            "count": len(dead_stock),
+            "days_threshold": dead_stock_days,
+        },
+        "loss_making_items": {
+            "items": loss_making,
+            "count": len(loss_making),
+            "total_loss": round(sum(i["loss_amount"] for i in loss_making), 2),
+        },
+        "negative_stock": {
+            "items": negative_stock,
+            "count": len(negative_stock),
+        },
+        "fast_movers": fast_movers,
+        "turnover_ratios": turnover_data,
+        "returns_analysis": {
+            "entries": returns_analysis,
+            "total_return_value": round(total_return_value, 2),
+        },
+        "filters": {
+            "from_date": from_date,
+            "to_date": to_date,
+            "dead_stock_days": dead_stock_days,
+        },
+    }
+
+    set_cached_response(user.company_id, cache_key, output)
+    return output
+
+

@@ -4,7 +4,8 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
-import { Search, X, Package, ArrowLeft, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import Link from 'next/link'
+import { Search, X, Package, ArrowLeft, ArrowUpDown, ArrowUp, ArrowDown, PackageCheck } from 'lucide-react'
 
 type SortKey =
   | 'name'
@@ -303,8 +304,17 @@ export default function StocksPage() {
               <h2 className="text-xl font-black tracking-tight text-foreground">{activeCompanyName}</h2>
               <p className="text-xs text-muted-foreground font-medium">Period: 1-Apr-2026 to 31-Mar-2027</p>
             </div>
-            <div className="bg-[#e2f5ec] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-extrabold uppercase self-start">
-              Closing Balance
+            <div className="flex items-center gap-2">
+              <Link
+                href="/reports?tab=company_stock"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900 transition-colors shadow-2xs"
+              >
+                <PackageCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                <span>Stock & Profit Report</span>
+              </Link>
+              <div className="bg-[#e2f5ec] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-extrabold uppercase self-start">
+                Closing Balance
+              </div>
             </div>
           </div>
 

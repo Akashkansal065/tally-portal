@@ -184,7 +184,7 @@ async def generate_gst_snapshot(
         # Check if v.voucher_type_id name is Sales
         # For simplicity, we scan entries for SGST / CGST / IGST tax ledgers
         # Resolve party details dynamically first to avoid matching party ledgers as sales ledgers
-        party_name, _ = _resolve_party_and_amount(v.entries)
+        party_name, *_ = _resolve_party_and_amount(v.entries)
         
         has_tax = False
         cgst = Decimal("0.00")
@@ -899,7 +899,7 @@ async def verify_gstr2b_otp_and_fetch(
     for v in vouchers:
         # Check if purchase voucher
         if any(e.ledger and 'PURCHASE' in e.ledger.name.upper() for e in v.entries):
-            party_name, party_amount = _resolve_party_and_amount(v.entries)
+            party_name, party_amount, *_ = _resolve_party_and_amount(v.entries)
             
             party_gstin = "09AABCU9603R1ZM"
             if party_name:
@@ -1745,7 +1745,7 @@ async def get_einvoices_list(
     for v in sales_vouchers:
         # Resolve party name and amount
         from app.routers.vouchers import _resolve_party_and_amount
-        party_name, amount = _resolve_party_and_amount(v.entries)
+        party_name, amount, *_ = _resolve_party_and_amount(v.entries)
         
         # Resolve party GSTIN
         party_gstin = None

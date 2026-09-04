@@ -9,7 +9,9 @@ import {
   BarChart3, TrendingUp, TrendingDown, Package, Layers, BookOpen, FileText,
   DollarSign, PieChart as PieChartIcon, Calendar, Download, RefreshCw, Search,
   ArrowUpRight, ArrowDownRight, Layers3, Users, Building2, Info, HelpCircle, Check, X,
-  CheckCircle2, Sparkles, AlertCircle, ExternalLink, Filter, ShoppingBag, Landmark, Clock
+  CheckCircle2, Sparkles, AlertCircle, ExternalLink, Filter, ShoppingBag, Landmark, Clock,
+  PackageCheck, ChevronDown, ChevronRight, Skull, AlertTriangle, Zap, RotateCcw, Activity,
+  ArrowUpDown, ArrowUp, ArrowDown, SlidersHorizontal
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -19,10 +21,19 @@ import {
 } from 'recharts'
 import ProjectedFinancials from '@/components/ProjectedFinancials'
 
-type TabType = 'executive' | 'financial' | 'sales' | 'inventory' | 'compliance'
-type PresetType = 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
+type TabType = 'executive' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance'
+type PresetType = 'all' | 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
 type ExplanationKey = 'revenue_trend' | 'aging' | 'expense' | 'top_customers' | 'inventory' | 'trial_balance' | null
 type KpiModalKey = 'sales' | 'receipts' | 'purchases' | 'payments' | 'receivables' | 'payables' | null
+
+// Sort keys for Company Stock & Profit report
+type ItemSortKey = 'name' | 'purchased_value' | 'purchased_qty' | 'sold_value' | 'sold_qty' | 'pending_value' | 'pending_qty' | 'cost_of_sold' | 'profit_on_sold' | 'gp_percent'
+type CompanySortKey = 'sold_value' | 'profit_on_sold' | 'gp_percent' | 'purchased_value' | 'pending_value' | 'company_name' | 'items_count'
+type FastSortKey = 'name' | 'company_name' | 'sold_qty' | 'sold_value' | 'remaining_qty' | 'profit_on_sold' | 'gp_percent'
+type DeadSortKey = 'name' | 'company_name' | 'closing_qty' | 'closing_value' | 'last_sold_date'
+type LossSortKey = 'name' | 'company_name' | 'avg_purchase_rate' | 'avg_selling_rate' | 'rate_difference' | 'sold_qty' | 'loss_amount'
+type TurnoverSortKey = 'company_name' | 'items_count' | 'cost_of_goods_sold' | 'avg_inventory_value' | 'turnover_ratio' | 'days_to_sell'
+type MonthlySortKey = 'month' | 'inward_value' | 'outward_value' | 'net_movement' | 'items_moved' | 'voucher_count'
 
 const getFiscalYearInfo = (date = new Date()) => {
   const currentMonth = date.getMonth() // 0 = Jan, 3 = Apr, 11 = Dec
@@ -320,10 +331,130 @@ export default function ReportsPage() {
   const [cashFlowData, setCashFlowData] = useState<any>(null)
   const [ratiosData, setRatiosData] = useState<any>(null)
 
+  // Company Stock & Profit state
+  const [companyStockData, setCompanyStockData] = useState<any>(null)
+  const [expandedCompany, setExpandedCompany] = useState<string | null>(null)
+  const [stockSubTab, setStockSubTab] = useState<'overview' | 'trends' | 'dead' | 'loss' | 'negative' | 'fast' | 'turnover' | 'returns'>('overview')
+
+  // Sorting state for Company Stock & Profit report
+  const [itemSortField, setItemSortField] = useState<ItemSortKey>('sold_value')
+  const [itemSortDir, setItemSortDir] = useState<'asc' | 'desc'>('desc')
+  const [itemSearchQuery, setItemSearchQuery] = useState('')
+
+  const [companySortField, setCompanySortField] = useState<CompanySortKey>('sold_value')
+  const [companySortDir, setCompanySortDir] = useState<'asc' | 'desc'>('desc')
+
+  const [fastSortField, setFastSortField] = useState<FastSortKey>('sold_qty')
+  const [fastSortDir, setFastSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const [deadSortField, setDeadSortField] = useState<DeadSortKey>('closing_value')
+  const [deadSortDir, setDeadSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const [lossSortField, setLossSortField] = useState<LossSortKey>('loss_amount')
+  const [lossSortDir, setLossSortDir] = useState<'asc' | 'desc'>('asc')
+
+  const [turnoverSortField, setTurnoverSortField] = useState<TurnoverSortKey>('turnover_ratio')
+  const [turnoverSortDir, setTurnoverSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const [monthlySortField, setMonthlySortField] = useState<MonthlySortKey>('month')
+  const [monthlySortDir, setMonthlySortDir] = useState<'asc' | 'desc'>('asc')
+
+  const handleItemSort = (field: ItemSortKey) => {
+    if (itemSortField === field) {
+      setItemSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setItemSortField(field)
+      setItemSortDir(field === 'name' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleCompanySort = (field: CompanySortKey) => {
+    if (companySortField === field) {
+      setCompanySortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setCompanySortField(field)
+      setCompanySortDir(field === 'company_name' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleFastSort = (field: FastSortKey) => {
+    if (fastSortField === field) {
+      setFastSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setFastSortField(field)
+      setFastSortDir(field === 'name' || field === 'company_name' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleDeadSort = (field: DeadSortKey) => {
+    if (deadSortField === field) {
+      setDeadSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setDeadSortField(field)
+      setDeadSortDir(field === 'name' || field === 'company_name' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleLossSort = (field: LossSortKey) => {
+    if (lossSortField === field) {
+      setLossSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setLossSortField(field)
+      setLossSortDir(field === 'name' || field === 'company_name' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleTurnoverSort = (field: TurnoverSortKey) => {
+    if (turnoverSortField === field) {
+      setTurnoverSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setTurnoverSortField(field)
+      setTurnoverSortDir(field === 'company_name' ? 'asc' : 'desc')
+    }
+  }
+
+  const handleMonthlySort = (field: MonthlySortKey) => {
+    if (monthlySortField === field) {
+      setMonthlySortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setMonthlySortField(field)
+      setMonthlySortDir(field === 'month' ? 'asc' : 'desc')
+    }
+  }
+
+  const renderSortIcon = (field: string, currentField: string, currentDir: 'asc' | 'desc') => {
+    const isCurrent = currentField === field ||
+      (field === 'purchased_value' && currentField === 'purchased_qty') ||
+      (field === 'sold_value' && currentField === 'sold_qty') ||
+      (field === 'pending_value' && currentField === 'pending_qty')
+    if (isCurrent) {
+      return (
+        <span className="text-primary font-black text-[10px] inline-flex items-center ml-1 bg-primary/15 px-1 py-0.5 rounded shadow-2xs">
+          {currentDir === 'asc' ? <ArrowUp className="h-3 w-3 stroke-[2.5]" /> : <ArrowDown className="h-3 w-3 stroke-[2.5]" />}
+        </span>
+      )
+    }
+    return <ArrowUpDown className="h-2.5 w-2.5 opacity-40 group-hover:opacity-100 group-hover:text-primary transition-all text-muted-foreground ml-1" />
+  }
+
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
     if (!permissions.showReports && !permissions.isAdmin) { router.replace('/'); return }
   }, [user, permissions, router])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const tab = params.get('tab')
+      if (tab && ['executive', 'financial', 'sales', 'inventory', 'company_stock', 'compliance'].includes(tab)) {
+        setActiveTab(tab as TabType)
+      }
+      const sub = params.get('sub')
+      if (sub && ['overview', 'trends', 'dead', 'loss', 'negative', 'fast', 'turnover', 'returns'].includes(sub)) {
+        setStockSubTab(sub as any)
+      }
+    }
+  }, [])
 
   const fetchReportsData = useCallback(async () => {
     if (!token) return
@@ -344,6 +475,7 @@ export default function ReportsPage() {
         fetch(`${API_BASE}/reports/balance-sheet`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/cash-flow?${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/ratio-analysis`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/company-stock-performance?${q}`, { headers }).then(r => r.ok ? r.json() : null),
       ])
 
       if (results[0].status === 'fulfilled' && results[0].value) setSummary(results[0].value)
@@ -357,8 +489,13 @@ export default function ReportsPage() {
       if (results[8].status === 'fulfilled' && results[8].value) setBalanceSheetData(results[8].value)
       if (results[9].status === 'fulfilled' && results[9].value) setCashFlowData(results[9].value)
       if (results[10].status === 'fulfilled' && results[10].value) setRatiosData(results[10].value)
+      if (results[11].status === 'fulfilled' && results[11].value) setCompanyStockData(results[11].value)
 
-      setLastUpdatedMessage(`Updated data for period: ${formatDate(fromDate)} to ${formatDate(toDate)}`)
+      setLastUpdatedMessage(
+        fromDate || toDate
+          ? `Updated data for period: ${formatDate(fromDate)} to ${formatDate(toDate)}`
+          : 'Updated data for: All Time'
+      )
     } catch (err) {
       console.error('Failed to load reports:', err)
     } finally {
@@ -377,7 +514,11 @@ export default function ReportsPage() {
     let from = new Date()
     const fy = getFiscalYearInfo(today)
 
-    if (preset === 'month') {
+    if (preset === 'all') {
+      setFromDate('')
+      setToDate('')
+      return
+    } else if (preset === 'month') {
       from.setDate(1)
     } else if (preset === 'quarter') {
       from.setMonth(from.getMonth() - 3)
@@ -676,6 +817,16 @@ export default function ReportsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1 bg-muted/50 p-1 rounded-xl border border-border">
             <button
+              onClick={() => setDatePreset('all')}
+              className={cn(
+                'px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5',
+                activePreset === 'all' ? 'bg-primary text-primary-foreground shadow-sm' : 'hover:bg-background text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {activePreset === 'all' && <Check className="h-3 w-3" />}
+              All Time
+            </button>
+            <button
               onClick={() => setDatePreset('month')}
               className={cn(
                 'px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5',
@@ -807,6 +958,7 @@ export default function ReportsPage() {
           { id: 'financial', label: 'Financial Statements', icon: BarChart3, desc: 'P&L, Balance Sheet, Cash Flow & Ratios' },
           { id: 'sales', label: 'Sales & Customers', icon: BookOpen, desc: 'Top Debtors & Invoicing Register' },
           { id: 'inventory', label: 'Inventory Valuation', icon: Layers, desc: 'Stock Group Capital & Item Valuation' },
+          { id: 'company_stock', label: 'Company Stock & Profit', icon: PackageCheck, desc: 'Purchased vs Sold, Pending & Realized Profit' },
           { id: 'compliance', label: 'Audit & Trial Balance', icon: FileText, desc: 'Double-Entry Trial Balance & Daybook' }
         ].map(tab => {
           const Icon = tab.icon
@@ -1603,6 +1755,1051 @@ export default function ReportsPage() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TAB: COMPANY STOCK & PROFIT PERFORMANCE */}
+      {activeTab === 'company_stock' && (
+        <div className="space-y-5">
+          {/* Top KPI Cards */}
+          {companyStockData?.grand_totals && (() => {
+            const gt = companyStockData.grand_totals
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-1">
+                  <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                    <Package className="h-3.5 w-3.5 text-blue-500" /> Total Purchased
+                  </div>
+                  <p className="text-lg font-black">{formatCurrency(gt.total_purchased_value)}</p>
+                  <p className="text-[10px] text-muted-foreground">{gt.total_purchased_qty.toLocaleString()} units across {gt.total_items} items</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-1">
+                  <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                    <TrendingUp className="h-3.5 w-3.5 text-emerald-500" /> Total Sold
+                  </div>
+                  <p className="text-lg font-black text-emerald-600">{formatCurrency(gt.total_sold_value)}</p>
+                  <p className="text-[10px] text-muted-foreground">{gt.total_sold_qty.toLocaleString()} units sold</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-1">
+                  <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                    <Layers className="h-3.5 w-3.5 text-amber-500" /> Pending Stock
+                  </div>
+                  <p className="text-lg font-black text-amber-600">{formatCurrency(gt.total_pending_value)}</p>
+                  <p className="text-[10px] text-muted-foreground">{gt.total_pending_qty.toLocaleString()} units remaining</p>
+                </div>
+                <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-1">
+                  <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                    <DollarSign className="h-3.5 w-3.5 text-indigo-500" /> Realized Profit
+                  </div>
+                  <p className={cn("text-lg font-black", gt.total_profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(gt.total_profit_on_sold)}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">GP: {gt.overall_gp_percent}% (on sold stock only)</p>
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Sub-tabs */}
+          <div className="flex gap-1 bg-muted/50 p-1 rounded-xl overflow-x-auto no-scrollbar border border-border">
+            {([
+              { id: 'overview', label: 'Company Performance', icon: Building2 },
+              { id: 'trends', label: 'Monthly Trends', icon: Activity },
+              { id: 'fast', label: 'Fast Movers', icon: Zap },
+              { id: 'dead', label: 'Dead Stock', icon: Skull },
+              { id: 'loss', label: 'Loss-Making', icon: TrendingDown },
+              { id: 'negative', label: 'Negative Stock', icon: AlertTriangle },
+              { id: 'turnover', label: 'Turnover Ratios', icon: RotateCcw },
+              { id: 'returns', label: 'Returns', icon: RotateCcw },
+            ] as const).map(tab => {
+              const Icon = tab.icon
+              const isActive = stockSubTab === tab.id
+              const count = tab.id === 'dead' ? companyStockData?.dead_stock?.count
+                : tab.id === 'loss' ? companyStockData?.loss_making_items?.count
+                : tab.id === 'negative' ? companyStockData?.negative_stock?.count
+                : null
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setStockSubTab(tab.id)}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap cursor-pointer',
+                    isActive ? 'bg-background shadow-sm text-foreground border border-border' : 'text-muted-foreground hover:text-foreground hover:bg-background/40'
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  {tab.label}
+                  {count != null && count > 0 && (
+                    <span className={cn("px-1.5 py-0.5 rounded-full text-[9px] font-black",
+                      tab.id === 'negative' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                      : tab.id === 'loss' ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                      : 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300'
+                    )}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* SUB-TAB: Company Performance Overview */}
+          {stockSubTab === 'overview' && companyStockData?.companies && (() => {
+            const sortedCompanies = [...companyStockData.companies].sort((a: any, b: any) => {
+              if (companySortField === 'company_name') {
+                return companySortDir === 'asc'
+                  ? (a.company_name || '').localeCompare(b.company_name || '')
+                  : (b.company_name || '').localeCompare(a.company_name || '')
+              }
+              const valA = Number(a[companySortField]) || 0
+              const valB = Number(b[companySortField]) || 0
+              return companySortDir === 'asc' ? valA - valB : valB - valA
+            })
+
+            return (
+              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                      <Building2 className="h-4 w-4 text-indigo-500" /> Company / Brand Performance
+                    </h3>
+                    <p className="text-xs text-muted-foreground">{companyStockData.grand_totals.total_companies} companies • Click to expand item details</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-1 bg-muted/60 p-1 rounded-xl text-[11px] font-bold border border-border">
+                      <span className="text-muted-foreground px-1.5 hidden md:inline">Sort:</span>
+                      {([
+                        { id: 'sold_value', label: 'Sold' },
+                        { id: 'profit_on_sold', label: 'Profit' },
+                        { id: 'gp_percent', label: 'GP%' },
+                        { id: 'pending_value', label: 'Pending' },
+                        { id: 'purchased_value', label: 'Purchased' },
+                        { id: 'items_count', label: 'Items' },
+                        { id: 'company_name', label: 'Name' },
+                      ] as const).map(s => {
+                        const isActive = companySortField === s.id
+                        return (
+                          <button
+                            key={s.id}
+                            onClick={() => handleCompanySort(s.id)}
+                            className={cn(
+                              'px-2 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1',
+                              isActive ? 'bg-primary text-primary-foreground shadow-xs' : 'hover:bg-background text-muted-foreground hover:text-foreground'
+                            )}
+                          >
+                            {s.label}
+                            {isActive && (companySortDir === 'asc' ? <ArrowUp className="h-2.5 w-2.5 stroke-[2.5]" /> : <ArrowDown className="h-2.5 w-2.5 stroke-[2.5]" />)}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <button onClick={() => exportToCsv('Company_Stock_Performance', companyStockData.companies.map((c: any) => ({
+                      Company: c.company_name, Items: c.items_count,
+                      'Purchased Value': c.purchased_value, 'Sold Value': c.sold_value,
+                      'Pending Value': c.pending_value, 'COGS': c.cost_of_sold,
+                      'Profit': c.profit_on_sold, 'GP%': c.gp_percent
+                    })))} className="p-2 bg-muted hover:bg-background border border-border text-xs rounded-xl transition-colors cursor-pointer" title="Export CSV">
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="divide-y divide-border/50">
+                  {sortedCompanies.map((comp: any) => {
+                    const isExpanded = expandedCompany === comp.company_name
+                    const filteredAndSortedItems = comp.items
+                      .filter((item: any) => !itemSearchQuery.trim() || (item.name || '').toLowerCase().includes(itemSearchQuery.toLowerCase()))
+                      .sort((a: any, b: any) => {
+                        if (itemSortField === 'name') {
+                          return itemSortDir === 'asc'
+                            ? (a.name || '').localeCompare(b.name || '')
+                            : (b.name || '').localeCompare(a.name || '')
+                        }
+                        const valA = Number(a[itemSortField]) || 0
+                        const valB = Number(b[itemSortField]) || 0
+                        return itemSortDir === 'asc' ? valA - valB : valB - valA
+                      })
+
+                    return (
+                      <div key={comp.company_name}>
+                        <button
+                          onClick={() => {
+                            setExpandedCompany(isExpanded ? null : comp.company_name)
+                            setItemSearchQuery('')
+                          }}
+                          className="w-full px-5 py-3.5 flex items-center gap-3 hover:bg-muted/30 transition-colors cursor-pointer text-left"
+                        >
+                          {isExpanded ? <ChevronDown className="h-4 w-4 text-primary shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-extrabold text-sm">{comp.company_name}</p>
+                              <span className="text-[10px] bg-muted px-2 py-0.5 rounded-full font-bold text-muted-foreground">{comp.items_count} items</span>
+                              <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-black",
+                                comp.gp_percent >= 15 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                                : comp.gp_percent >= 5 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                                : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                              )}>
+                                GP: {comp.gp_percent}%
+                              </span>
+                            </div>
+                            {/* Progress bar: sold vs pending */}
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${comp.sold_ratio}%` }} />
+                              </div>
+                              <span className="text-[9px] text-muted-foreground font-bold shrink-0">{comp.sold_ratio}% sold</span>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0 hidden sm:block">
+                            <div className="grid grid-cols-3 gap-4 text-[11px]">
+                              <div>
+                                <p className="text-muted-foreground font-medium">Purchased</p>
+                                <p className="font-extrabold">{formatCurrency(comp.purchased_value)}</p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground font-medium">Sold</p>
+                                <p className="font-extrabold text-emerald-600">{formatCurrency(comp.sold_value)}</p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground font-medium">Profit</p>
+                                <p className={cn("font-extrabold", comp.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                  {formatCurrency(comp.profit_on_sold)}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+
+                        {/* Mobile summary row */}
+                        {!isExpanded && (
+                          <div className="px-5 pb-2 grid grid-cols-3 gap-2 text-[10px] sm:hidden">
+                            <div><span className="text-muted-foreground">Purchased:</span> <span className="font-bold">{formatCurrency(comp.purchased_value)}</span></div>
+                            <div><span className="text-muted-foreground">Sold:</span> <span className="font-bold text-emerald-600">{formatCurrency(comp.sold_value)}</span></div>
+                            <div><span className="text-muted-foreground">Profit:</span> <span className={cn("font-bold", comp.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>{formatCurrency(comp.profit_on_sold)}</span></div>
+                          </div>
+                        )}
+
+                        {/* Expanded Items */}
+                        {isExpanded && (
+                          <div className="px-5 pb-4">
+                            <div className="mb-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-muted/40 p-2 rounded-xl border border-border/60">
+                              <div className="flex items-center gap-2 flex-1">
+                                <div className="relative flex-1 max-w-xs">
+                                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                                  <input
+                                    type="text"
+                                    placeholder={`Filter ${comp.company_name} items...`}
+                                    value={itemSearchQuery}
+                                    onChange={e => setItemSearchQuery(e.target.value)}
+                                    className="w-full bg-background border border-border rounded-lg pl-8 pr-7 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary font-medium"
+                                  />
+                                  {itemSearchQuery && (
+                                    <button
+                                      onClick={() => setItemSearchQuery('')}
+                                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </button>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-muted-foreground font-semibold whitespace-nowrap">
+                                  {filteredAndSortedItems.length} of {comp.items.length} items
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <div className="flex items-center gap-1.5">
+                                  <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
+                                  <span className="text-[11px] text-muted-foreground whitespace-nowrap font-semibold">Sort by:</span>
+                                  <select
+                                    value={`${itemSortField}_${itemSortDir}`}
+                                    onChange={(e) => {
+                                      const parts = e.target.value.split('_')
+                                      const dir = parts.pop() as 'asc' | 'desc'
+                                      const field = parts.join('_') as ItemSortKey
+                                      setItemSortField(field)
+                                      setItemSortDir(dir)
+                                    }}
+                                    className="bg-background border border-border rounded-lg px-2 py-1 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer text-foreground"
+                                  >
+                                    <option value="sold_value_desc">Sold Value (Highest first)</option>
+                                    <option value="sold_value_asc">Sold Value (Lowest first)</option>
+                                    <option value="sold_qty_desc">Sold Quantity (Highest first)</option>
+                                    <option value="sold_qty_asc">Sold Quantity (Lowest first)</option>
+                                    <option value="profit_on_sold_desc">Realized Profit (Highest profit)</option>
+                                    <option value="profit_on_sold_asc">Realized Profit (Lowest / Losses first)</option>
+                                    <option value="gp_percent_desc">Gross Profit % (Highest margin)</option>
+                                    <option value="gp_percent_asc">Gross Profit % (Lowest margin)</option>
+                                    <option value="pending_value_desc">Pending Value (Highest first)</option>
+                                    <option value="pending_value_asc">Pending Value (Lowest first)</option>
+                                    <option value="pending_qty_desc">Pending Quantity (Highest first)</option>
+                                    <option value="purchased_value_desc">Purchased Value (Highest first)</option>
+                                    <option value="purchased_qty_desc">Purchased Quantity (Highest first)</option>
+                                    <option value="cost_of_sold_desc">COGS (Highest first)</option>
+                                    <option value="name_asc">Item Name (A to Z)</option>
+                                    <option value="name_desc">Item Name (Z to A)</option>
+                                  </select>
+                                </div>
+                                <button
+                                  onClick={() => setItemSortDir(prev => prev === 'asc' ? 'desc' : 'asc')}
+                                  className="px-2 py-1 rounded-lg border border-border hover:bg-background transition-colors text-xs font-bold flex items-center gap-1 cursor-pointer"
+                                  title={`Currently ${itemSortDir === 'asc' ? 'Ascending' : 'Descending'}. Click to reverse.`}
+                                >
+                                  {itemSortDir === 'asc' ? (
+                                    <span className="text-primary inline-flex items-center gap-1 text-[11px]"><ArrowUp className="h-3.5 w-3.5" /> Asc</span>
+                                  ) : (
+                                    <span className="text-primary inline-flex items-center gap-1 text-[11px]"><ArrowDown className="h-3.5 w-3.5" /> Desc</span>
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="border border-border rounded-xl overflow-hidden shadow-2xs">
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-[11px]">
+                                  <thead>
+                                    <tr className="bg-muted/60 text-muted-foreground border-b border-border select-none">
+                                      <th
+                                        onClick={() => handleItemSort('name')}
+                                        className={cn(
+                                          "text-left px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          itemSortField === 'name' && "bg-primary/10 text-primary"
+                                        )}
+                                        title="Click to sort by Item Name (A-Z / Z-A)"
+                                      >
+                                        <div className="inline-flex items-center gap-1">
+                                          <span className={cn(itemSortField === 'name' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Item</span>
+                                          {renderSortIcon('name', itemSortField, itemSortDir)}
+                                        </div>
+                                      </th>
+                                      <th
+                                        onClick={() => handleItemSort('purchased_value')}
+                                        className={cn(
+                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          (itemSortField === 'purchased_value' || itemSortField === 'purchased_qty') && "bg-primary/10 text-primary"
+                                        )}
+                                        title="Click to sort by Purchased Value (click again to toggle direction)"
+                                      >
+                                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                                          <span className={cn((itemSortField === 'purchased_value' || itemSortField === 'purchased_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Purchased</span>
+                                          {renderSortIcon('purchased_value', itemSortField, itemSortDir)}
+                                        </div>
+                                      </th>
+                                      <th
+                                        onClick={() => handleItemSort('sold_value')}
+                                        className={cn(
+                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          (itemSortField === 'sold_value' || itemSortField === 'sold_qty') && "bg-primary/10 text-primary"
+                                        )}
+                                        title="Click to sort by Sold Value (click again to toggle direction)"
+                                      >
+                                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                                          <span className={cn((itemSortField === 'sold_value' || itemSortField === 'sold_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Sold</span>
+                                          {renderSortIcon('sold_value', itemSortField, itemSortDir)}
+                                        </div>
+                                      </th>
+                                      <th
+                                        onClick={() => handleItemSort('pending_value')}
+                                        className={cn(
+                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          (itemSortField === 'pending_value' || itemSortField === 'pending_qty') && "bg-primary/10 text-primary"
+                                        )}
+                                        title="Click to sort by Pending Value (click again to toggle direction)"
+                                      >
+                                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                                          <span className={cn((itemSortField === 'pending_value' || itemSortField === 'pending_qty') ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Pending</span>
+                                          {renderSortIcon('pending_value', itemSortField, itemSortDir)}
+                                        </div>
+                                      </th>
+                                      <th
+                                        onClick={() => handleItemSort('cost_of_sold')}
+                                        className={cn(
+                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          itemSortField === 'cost_of_sold' && "bg-primary/10 text-primary"
+                                        )}
+                                        title="Click to sort by Cost of Goods Sold (COGS)"
+                                      >
+                                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                                          <span className={cn(itemSortField === 'cost_of_sold' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>COGS</span>
+                                          {renderSortIcon('cost_of_sold', itemSortField, itemSortDir)}
+                                        </div>
+                                      </th>
+                                      <th
+                                        onClick={() => handleItemSort('profit_on_sold')}
+                                        className={cn(
+                                          "text-right px-2 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          itemSortField === 'profit_on_sold' && "bg-primary/10 text-primary"
+                                        )}
+                                        title="Click to sort by Realized Profit (click again to toggle direction)"
+                                      >
+                                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                                          <span className={cn(itemSortField === 'profit_on_sold' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>Profit</span>
+                                          {renderSortIcon('profit_on_sold', itemSortField, itemSortDir)}
+                                        </div>
+                                      </th>
+                                      <th
+                                        onClick={() => handleItemSort('gp_percent')}
+                                        className={cn(
+                                          "text-right px-3 py-2.5 font-bold cursor-pointer group transition-all select-none hover:bg-muted/90",
+                                          itemSortField === 'gp_percent' && "bg-primary/10 text-primary"
+                                        )}
+                                        title="Click to sort by Gross Profit % (click again to toggle direction)"
+                                      >
+                                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                                          <span className={cn(itemSortField === 'gp_percent' ? "text-primary font-black" : "text-muted-foreground group-hover:text-foreground")}>GP%</span>
+                                          {renderSortIcon('gp_percent', itemSortField, itemSortDir)}
+                                        </div>
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-border/30">
+                                    {filteredAndSortedItems.map((item: any) => (
+                                      <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
+                                        <td className="px-3 py-2">
+                                          <p className="font-bold">{item.name}</p>
+                                          <p className="text-[9px] text-muted-foreground">{item.uom} • Avg Cost: {formatCurrency(item.avg_cost)}</p>
+                                        </td>
+                                        <td className="text-right px-2 py-2">
+                                          <p className="font-bold">{formatCurrency(item.purchased_value)}</p>
+                                          <p className="text-[9px] text-muted-foreground">{item.purchased_qty} {item.uom}</p>
+                                        </td>
+                                        <td className="text-right px-2 py-2">
+                                          <p className="font-bold text-emerald-600">{formatCurrency(item.sold_value)}</p>
+                                          <p className="text-[9px] text-muted-foreground">{item.sold_qty} {item.uom}</p>
+                                        </td>
+                                        <td className="text-right px-2 py-2">
+                                          <p className="font-bold text-amber-600">{formatCurrency(item.pending_value)}</p>
+                                          <p className="text-[9px] text-muted-foreground">{item.pending_qty} {item.uom}</p>
+                                        </td>
+                                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.cost_of_sold)}</td>
+                                        <td className="text-right px-2 py-2">
+                                          <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                            {formatCurrency(item.profit_on_sold)}
+                                          </span>
+                                        </td>
+                                        <td className="text-right px-3 py-2">
+                                          <span className={cn("text-[10px] font-black px-1.5 py-0.5 rounded-full",
+                                            item.gp_percent >= 15 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                                            : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                                            : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                                          )}>
+                                            {item.gp_percent}%
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                    {filteredAndSortedItems.length === 0 && (
+                                      <tr>
+                                        <td colSpan={7} className="text-center py-6 text-muted-foreground text-xs font-medium">
+                                          No items matched &quot;{itemSearchQuery}&quot;
+                                        </td>
+                                      </tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* SUB-TAB: Monthly Trends */}
+          {stockSubTab === 'trends' && companyStockData?.monthly_trend && (
+            <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+              <div className="flex items-center justify-between border-b border-border/50 pb-3">
+                <div>
+                  <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <Activity className="h-4 w-4 text-blue-500" /> Monthly Stock Movement Trend
+                  </h3>
+                  <p className="text-xs text-muted-foreground">Inward (Purchase) vs Outward (Sales) value over time</p>
+                </div>
+              </div>
+              <div className="h-72 w-full">
+                {companyStockData.monthly_trend.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={companyStockData.monthly_trend}>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+                      <Tooltip formatter={(val: any) => [formatCurrency(Number(val)), '']}
+                        labelFormatter={(label) => {
+                          const [y, m] = (label as string).split('-')
+                          const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+                          return `${months[parseInt(m)-1]} ${y}`
+                        }}
+                      />
+                      <Legend />
+                      <Bar dataKey="inward_value" name="Inward (Purchase)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="outward_value" name="Outward (Sales)" fill="#10b981" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground">No monthly data available</div>
+                )}
+              </div>
+              {/* Monthly detail table */}
+              <div className="overflow-x-auto border border-border rounded-xl">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="bg-muted/50 text-muted-foreground select-none">
+                      <th onClick={() => handleMonthlySort('month')} className="text-left px-3 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(monthlySortField === 'month' && "text-primary font-black")}>Month</span>
+                          {renderSortIcon('month', monthlySortField, monthlySortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleMonthlySort('inward_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(monthlySortField === 'inward_value' && "text-primary font-black")}>Inward ₹</span>
+                          {renderSortIcon('inward_value', monthlySortField, monthlySortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleMonthlySort('outward_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(monthlySortField === 'outward_value' && "text-primary font-black")}>Outward ₹</span>
+                          {renderSortIcon('outward_value', monthlySortField, monthlySortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleMonthlySort('net_movement')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(monthlySortField === 'net_movement' && "text-primary font-black")}>Net Movement</span>
+                          {renderSortIcon('net_movement', monthlySortField, monthlySortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleMonthlySort('items_moved')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(monthlySortField === 'items_moved' && "text-primary font-black")}>Items Moved</span>
+                          {renderSortIcon('items_moved', monthlySortField, monthlySortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleMonthlySort('voucher_count')} className="text-right px-3 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(monthlySortField === 'voucher_count' && "text-primary font-black")}>Vouchers</span>
+                          {renderSortIcon('voucher_count', monthlySortField, monthlySortDir)}
+                        </div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/30">
+                    {companyStockData.monthly_trend
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        if (monthlySortField === 'month') {
+                          return monthlySortDir === 'asc' ? (a.month || '').localeCompare(b.month || '') : (b.month || '').localeCompare(a.month || '')
+                        }
+                        const valA = Number(a[monthlySortField]) || 0
+                        const valB = Number(b[monthlySortField]) || 0
+                        return monthlySortDir === 'asc' ? valA - valB : valB - valA
+                      })
+                      .map((m: any) => {
+                      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+                      const [y, mo] = m.month.split('-')
+                      const label = `${months[parseInt(mo)-1]} ${y}`
+                      return (
+                        <tr key={m.month} className="hover:bg-muted/20">
+                          <td className="px-3 py-2 font-bold">{label}</td>
+                          <td className="text-right px-2 py-2 font-medium text-blue-600">{formatCurrency(m.inward_value)}</td>
+                          <td className="text-right px-2 py-2 font-medium text-emerald-600">{formatCurrency(m.outward_value)}</td>
+                          <td className={cn("text-right px-2 py-2 font-extrabold", m.net_movement >= 0 ? "text-blue-600" : "text-emerald-600")}>
+                            {m.net_movement >= 0 ? '+' : ''}{formatCurrency(m.net_movement)}
+                          </td>
+                          <td className="text-right px-2 py-2">{m.items_moved}</td>
+                          <td className="text-right px-3 py-2">{m.voucher_count}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB: Fast Movers */}
+          {stockSubTab === 'fast' && companyStockData?.fast_movers && (
+            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
+                <div>
+                  <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <Zap className="h-4 w-4 text-yellow-500" /> Top 25 Fast-Moving Items
+                  </h3>
+                  <p className="text-xs text-muted-foreground">Ranked by sold quantity with profit analysis • Click column headers to re-order</p>
+                </div>
+                <button onClick={() => exportToCsv('Fast_Moving_Items', companyStockData.fast_movers)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer">
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="bg-muted/50 text-muted-foreground select-none">
+                      <th className="text-left px-4 py-2 font-bold">#</th>
+                      <th onClick={() => handleFastSort('name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(fastSortField === 'name' && "text-primary font-black")}>Item</span>
+                          {renderSortIcon('name', fastSortField, fastSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleFastSort('company_name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(fastSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                          {renderSortIcon('company_name', fastSortField, fastSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleFastSort('sold_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(fastSortField === 'sold_qty' && "text-primary font-black")}>Sold Qty</span>
+                          {renderSortIcon('sold_qty', fastSortField, fastSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleFastSort('sold_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(fastSortField === 'sold_value' && "text-primary font-black")}>Revenue</span>
+                          {renderSortIcon('sold_value', fastSortField, fastSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleFastSort('remaining_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(fastSortField === 'remaining_qty' && "text-primary font-black")}>Remaining</span>
+                          {renderSortIcon('remaining_qty', fastSortField, fastSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleFastSort('profit_on_sold')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(fastSortField === 'profit_on_sold' && "text-primary font-black")}>Profit</span>
+                          {renderSortIcon('profit_on_sold', fastSortField, fastSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleFastSort('gp_percent')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(fastSortField === 'gp_percent' && "text-primary font-black")}>GP%</span>
+                          {renderSortIcon('gp_percent', fastSortField, fastSortDir)}
+                        </div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/30">
+                    {companyStockData.fast_movers
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        if (fastSortField === 'name' || fastSortField === 'company_name') {
+                          return fastSortDir === 'asc'
+                            ? (a[fastSortField] || '').localeCompare(b[fastSortField] || '')
+                            : (b[fastSortField] || '').localeCompare(a[fastSortField] || '')
+                        }
+                        const valA = Number(a[fastSortField]) || 0
+                        const valB = Number(b[fastSortField]) || 0
+                        return fastSortDir === 'asc' ? valA - valB : valB - valA
+                      })
+                      .map((item: any, idx: number) => (
+                      <tr key={item.item_id} className="hover:bg-muted/20">
+                        <td className="px-4 py-2 font-black text-muted-foreground">{idx + 1}</td>
+                        <td className="px-2 py-2">
+                          <p className="font-bold">{item.name}</p>
+                        </td>
+                        <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
+                        <td className="text-right px-2 py-2 font-extrabold">{item.sold_qty} {item.uom}</td>
+                        <td className="text-right px-2 py-2 font-bold text-emerald-600">{formatCurrency(item.sold_value)}</td>
+                        <td className="text-right px-2 py-2 font-medium text-amber-600">{item.remaining_qty} {item.uom}</td>
+                        <td className="text-right px-2 py-2">
+                          <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                            {formatCurrency(item.profit_on_sold)}
+                          </span>
+                        </td>
+                        <td className="text-right px-4 py-2">
+                          <span className={cn("text-[10px] font-black px-1.5 py-0.5 rounded-full",
+                            item.gp_percent >= 10 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                            : item.gp_percent >= 0 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                            : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                          )}>
+                            {item.gp_percent}%
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB: Dead Stock */}
+          {stockSubTab === 'dead' && companyStockData?.dead_stock && (
+            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
+                <div>
+                  <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <Skull className="h-4 w-4 text-orange-500" /> Dead / Slow-Moving Stock
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {companyStockData.dead_stock.count} items with zero sales in last {companyStockData.dead_stock.days_threshold} days •
+                    <span className="font-extrabold text-orange-600 ml-1">{formatCurrency(companyStockData.dead_stock.total_locked_value)} capital locked</span>
+                  </p>
+                </div>
+                <button onClick={() => exportToCsv('Dead_Stock', companyStockData.dead_stock.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer">
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="bg-muted/50 text-muted-foreground select-none">
+                      <th onClick={() => handleDeadSort('name')} className="text-left px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(deadSortField === 'name' && "text-primary font-black")}>Item</span>
+                          {renderSortIcon('name', deadSortField, deadSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleDeadSort('company_name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(deadSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                          {renderSortIcon('company_name', deadSortField, deadSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleDeadSort('closing_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(deadSortField === 'closing_qty' && "text-primary font-black")}>Closing Qty</span>
+                          {renderSortIcon('closing_qty', deadSortField, deadSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleDeadSort('closing_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(deadSortField === 'closing_value' && "text-primary font-black")}>Locked Capital</span>
+                          {renderSortIcon('closing_value', deadSortField, deadSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleDeadSort('last_sold_date')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(deadSortField === 'last_sold_date' && "text-primary font-black")}>Last Sold Date</span>
+                          {renderSortIcon('last_sold_date', deadSortField, deadSortDir)}
+                        </div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/30">
+                    {companyStockData.dead_stock.items
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        if (deadSortField === 'name' || deadSortField === 'company_name' || deadSortField === 'last_sold_date') {
+                          return deadSortDir === 'asc'
+                            ? (a[deadSortField] || '').localeCompare(b[deadSortField] || '')
+                            : (b[deadSortField] || '').localeCompare(a[deadSortField] || '')
+                        }
+                        const valA = Number(a[deadSortField]) || 0
+                        const valB = Number(b[deadSortField]) || 0
+                        return deadSortDir === 'asc' ? valA - valB : valB - valA
+                      })
+                      .map((item: any) => (
+                      <tr key={item.item_id} className="hover:bg-muted/20 transition-colors">
+                        <td className="px-4 py-2 font-bold">{item.name}</td>
+                        <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
+                        <td className="text-right px-2 py-2 font-medium">{item.closing_qty} {item.uom}</td>
+                        <td className="text-right px-2 py-2 font-extrabold text-orange-600">{formatCurrency(item.closing_value)}</td>
+                        <td className="text-right px-4 py-2 text-muted-foreground">{item.last_sold_date || 'Never sold'}</td>
+                      </tr>
+                    ))}
+                    {companyStockData.dead_stock.items.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-xs text-muted-foreground">
+                          <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+                          <p className="font-bold">No dead stock detected!</p>
+                          <p>All items have had sales activity in the last {companyStockData.dead_stock.days_threshold} days</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB: Loss-Making Items */}
+          {stockSubTab === 'loss' && companyStockData?.loss_making_items && (
+            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
+                <div>
+                  <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <TrendingDown className="h-4 w-4 text-rose-500" /> Loss-Making Items
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {companyStockData.loss_making_items.count} items sold below purchase cost •
+                    <span className="font-extrabold text-rose-600 ml-1">{formatCurrency(Math.abs(companyStockData.loss_making_items.total_loss))} total loss</span>
+                  </p>
+                </div>
+                <button onClick={() => exportToCsv('Loss_Making_Items', companyStockData.loss_making_items.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer">
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="bg-muted/50 text-muted-foreground select-none">
+                      <th onClick={() => handleLossSort('name')} className="text-left px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(lossSortField === 'name' && "text-primary font-black")}>Item</span>
+                          {renderSortIcon('name', lossSortField, lossSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleLossSort('company_name')} className="text-left px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(lossSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                          {renderSortIcon('company_name', lossSortField, lossSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleLossSort('avg_purchase_rate')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(lossSortField === 'avg_purchase_rate' && "text-primary font-black")}>Buy Rate</span>
+                          {renderSortIcon('avg_purchase_rate', lossSortField, lossSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleLossSort('avg_selling_rate')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(lossSortField === 'avg_selling_rate' && "text-primary font-black")}>Sell Rate</span>
+                          {renderSortIcon('avg_selling_rate', lossSortField, lossSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleLossSort('rate_difference')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(lossSortField === 'rate_difference' && "text-primary font-black")}>Rate Gap</span>
+                          {renderSortIcon('rate_difference', lossSortField, lossSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleLossSort('sold_qty')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(lossSortField === 'sold_qty' && "text-primary font-black")}>Sold Qty</span>
+                          {renderSortIcon('sold_qty', lossSortField, lossSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleLossSort('loss_amount')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(lossSortField === 'loss_amount' && "text-primary font-black")}>Loss Amount</span>
+                          {renderSortIcon('loss_amount', lossSortField, lossSortDir)}
+                        </div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/30">
+                    {companyStockData.loss_making_items.items
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        if (lossSortField === 'name' || lossSortField === 'company_name') {
+                          return lossSortDir === 'asc'
+                            ? (a[lossSortField] || '').localeCompare(b[lossSortField] || '')
+                            : (b[lossSortField] || '').localeCompare(a[lossSortField] || '')
+                        }
+                        const valA = Number(a[lossSortField]) || 0
+                        const valB = Number(b[lossSortField]) || 0
+                        return lossSortDir === 'asc' ? valA - valB : valB - valA
+                      })
+                      .map((item: any) => (
+                      <tr key={item.item_id} className="hover:bg-muted/20">
+                        <td className="px-4 py-2 font-bold">{item.name}</td>
+                        <td className="px-2 py-2 text-muted-foreground">{item.company_name}</td>
+                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.avg_purchase_rate)}</td>
+                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(item.avg_selling_rate)}</td>
+                        <td className="text-right px-2 py-2 font-extrabold text-rose-600">-{formatCurrency(item.rate_difference)}</td>
+                        <td className="text-right px-2 py-2">{item.sold_qty} {item.uom}</td>
+                        <td className="text-right px-4 py-2 font-extrabold text-rose-600">{formatCurrency(item.loss_amount)}</td>
+                      </tr>
+                    ))}
+                    {companyStockData.loss_making_items.items.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="py-8 text-center text-xs text-muted-foreground">
+                          <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+                          <p className="font-bold">No loss-making items detected!</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB: Negative Stock */}
+          {stockSubTab === 'negative' && companyStockData?.negative_stock && (
+            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-border/50">
+                <h3 className="font-extrabold text-base flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-rose-500" /> Negative Stock Alerts
+                </h3>
+                <p className="text-xs text-muted-foreground">{companyStockData.negative_stock.count} items with negative closing quantity (data integrity issue)</p>
+              </div>
+              <div className="divide-y divide-border/30">
+                {companyStockData.negative_stock.items.map((item: any) => (
+                  <div key={item.item_id} className="px-5 py-3 flex items-center justify-between hover:bg-muted/20 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <AlertTriangle className="h-4 w-4 text-rose-500 shrink-0" />
+                      <div>
+                        <p className="font-bold text-xs">{item.name}</p>
+                        <p className="text-[10px] text-muted-foreground">{item.company_name}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-extrabold text-xs text-rose-600">{item.closing_qty} {item.uom}</p>
+                      <p className="text-[9px] text-muted-foreground">Value: {formatCurrency(item.closing_value)}</p>
+                    </div>
+                  </div>
+                ))}
+                {companyStockData.negative_stock.items.length === 0 && (
+                  <div className="px-5 py-8 text-center text-xs text-muted-foreground">
+                    <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+                    <p className="font-bold">No negative stock items!</p>
+                    <p>All items have valid closing quantities</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB: Turnover Ratios */}
+          {stockSubTab === 'turnover' && companyStockData?.turnover_ratios && (
+            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-border/50">
+                <h3 className="font-extrabold text-base flex items-center gap-2">
+                  <RotateCcw className="h-4 w-4 text-purple-500" /> Stock Turnover Ratio by Company
+                </h3>
+                <p className="text-xs text-muted-foreground">How quickly each company&apos;s stock converts to revenue • Higher = Faster</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="bg-muted/50 text-muted-foreground select-none">
+                      <th onClick={() => handleTurnoverSort('company_name')} className="text-left px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center gap-1">
+                          <span className={cn(turnoverSortField === 'company_name' && "text-primary font-black")}>Company</span>
+                          {renderSortIcon('company_name', turnoverSortField, turnoverSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleTurnoverSort('items_count')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(turnoverSortField === 'items_count' && "text-primary font-black")}>Items</span>
+                          {renderSortIcon('items_count', turnoverSortField, turnoverSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleTurnoverSort('cost_of_goods_sold')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(turnoverSortField === 'cost_of_goods_sold' && "text-primary font-black")}>COGS</span>
+                          {renderSortIcon('cost_of_goods_sold', turnoverSortField, turnoverSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleTurnoverSort('avg_inventory_value')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(turnoverSortField === 'avg_inventory_value' && "text-primary font-black")}>Inventory Value</span>
+                          {renderSortIcon('avg_inventory_value', turnoverSortField, turnoverSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleTurnoverSort('turnover_ratio')} className="text-right px-2 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(turnoverSortField === 'turnover_ratio' && "text-primary font-black")}>Turnover Ratio</span>
+                          {renderSortIcon('turnover_ratio', turnoverSortField, turnoverSortDir)}
+                        </div>
+                      </th>
+                      <th onClick={() => handleTurnoverSort('days_to_sell')} className="text-right px-4 py-2 font-bold cursor-pointer group hover:text-foreground">
+                        <div className="inline-flex items-center justify-end gap-1 w-full">
+                          <span className={cn(turnoverSortField === 'days_to_sell' && "text-primary font-black")}>Days to Sell</span>
+                          {renderSortIcon('days_to_sell', turnoverSortField, turnoverSortDir)}
+                        </div>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/30">
+                    {companyStockData.turnover_ratios
+                      .slice()
+                      .sort((a: any, b: any) => {
+                        if (turnoverSortField === 'company_name') {
+                          return turnoverSortDir === 'asc'
+                            ? (a.company_name || '').localeCompare(b.company_name || '')
+                            : (b.company_name || '').localeCompare(a.company_name || '')
+                        }
+                        const valA = Number(a[turnoverSortField]) || 0
+                        const valB = Number(b[turnoverSortField]) || 0
+                        return turnoverSortDir === 'asc' ? valA - valB : valB - valA
+                      })
+                      .map((t: any) => (
+                      <tr key={t.company_name} className="hover:bg-muted/20">
+                        <td className="px-4 py-2 font-bold">{t.company_name}</td>
+                        <td className="text-right px-2 py-2">{t.items_count}</td>
+                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(t.cost_of_goods_sold)}</td>
+                        <td className="text-right px-2 py-2 font-medium">{formatCurrency(t.avg_inventory_value)}</td>
+                        <td className="text-right px-2 py-2">
+                          <span className={cn("font-extrabold px-1.5 py-0.5 rounded-full text-[10px]",
+                            t.turnover_ratio >= 5 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                            : t.turnover_ratio >= 2 ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                            : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                          )}>
+                            {t.turnover_ratio}x
+                          </span>
+                        </td>
+                        <td className="text-right px-4 py-2 font-medium">
+                          {t.days_to_sell >= 999 ? '—' : `${t.days_to_sell} days`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-TAB: Returns Analysis */}
+          {stockSubTab === 'returns' && companyStockData?.returns_analysis && (
+            <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-border/50">
+                <h3 className="font-extrabold text-base flex items-center gap-2">
+                  <RotateCcw className="h-4 w-4 text-teal-500" /> Returns Analysis (Credit / Debit Notes)
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Stock impacted by sales returns (Credit Notes) and purchase returns (Debit Notes) •
+                  <span className="font-extrabold ml-1">Total: {formatCurrency(companyStockData.returns_analysis.total_return_value)}</span>
+                </p>
+              </div>
+              {companyStockData.returns_analysis.entries.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="bg-muted/50 text-muted-foreground">
+                        <th className="text-left px-4 py-2 font-bold">Type</th>
+                        <th className="text-right px-2 py-2 font-bold">Vouchers</th>
+                        <th className="text-right px-2 py-2 font-bold">Return In (Qty)</th>
+                        <th className="text-right px-2 py-2 font-bold">Return In (₹)</th>
+                        <th className="text-right px-2 py-2 font-bold">Return Out (Qty)</th>
+                        <th className="text-right px-4 py-2 font-bold">Return Out (₹)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/30">
+                      {companyStockData.returns_analysis.entries.map((entry: any) => (
+                        <tr key={entry.voucher_type} className="hover:bg-muted/20">
+                          <td className="px-4 py-2">
+                            <span className={cn("font-bold px-2 py-0.5 rounded-full text-[10px]",
+                              entry.parent_type === 'Credit Note' ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                              : "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                            )}>
+                              {entry.voucher_type}
+                            </span>
+                          </td>
+                          <td className="text-right px-2 py-2 font-bold">{entry.voucher_count}</td>
+                          <td className="text-right px-2 py-2">{entry.return_in_qty}</td>
+                          <td className="text-right px-2 py-2 font-medium">{formatCurrency(entry.return_in_value)}</td>
+                          <td className="text-right px-2 py-2">{entry.return_out_qty}</td>
+                          <td className="text-right px-4 py-2 font-medium">{formatCurrency(entry.return_out_value)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="px-5 py-8 text-center text-xs text-muted-foreground">
+                  <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-500" />
+                  <p className="font-bold">No returns recorded in this period</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
