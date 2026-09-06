@@ -9,12 +9,42 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.core.config import settings
+
+def check_is_admin(user: User) -> bool:
+    if not user:
+        return False
+    if user.role and user.role.name and user.role.name.lower() in {"admin", "owner", "superadmin"}:
+        return True
+    if getattr(user, "role_id", None) == 1:
+        return True
+    return False
+
+def check_order_editable(order: "TempOrder", user: User) -> bool:
+    # Admin can edit orders at any time
+    if check_is_admin(user):
+        return True
+    if order.status != "pending":
+        return False
+    if not order.created_at:
+        return True
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    created_utc = order.created_at.replace(tzinfo=None) if order.created_at.tzinfo else order.created_at
+    elapsed_seconds = (now_utc - created_utc).total_seconds()
+    return elapsed_seconds <= 1800  # 30 minutes
+
+def format_datetime_utc(dt: Optional[datetime]) -> Optional[str]:
+    if not dt:
+        return None
+    iso = dt.isoformat()
+    if not iso.endswith("Z") and "+" not in iso:
+        iso += "Z"
+    return iso
 
 # ─── Models ──────────────────────────────────────────────────────────────────
 
@@ -44,7 +74,7 @@ class TempOrderItem(Base):
     stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id"), nullable=False)
     qty = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
-    has_gst = Column(Boolean, default=True)
+    is_bill_required = Column(Boolean, default=True)
 
     order = relationship("TempOrder", back_populates="items")
     stock_item = relationship("MstStockItem", foreign_keys=[stock_item_id])
@@ -55,7 +85,16 @@ class OrderItemCreate(BaseModel):
     stock_item_id: int
     qty: float
     price: float
-    has_gst: bool
+    is_bill_required: Optional[bool] = None
+    has_gst: Optional[bool] = None
+
+    @property
+    def bill_required(self) -> bool:
+        if self.is_bill_required is not None:
+            return self.is_bill_required
+        if self.has_gst is not None:
+            return self.has_gst
+        return True
 
 class OrderCreateRequest(BaseModel):
     ledger_id: Optional[int] = None
@@ -115,7 +154,7 @@ async def create_order(
             stock_item_id=item.stock_item_id,
             qty=item.qty,
             price=item.price,
-            has_gst=item.has_gst,
+            is_bill_required=item.bill_required,
         )
         db.add(order_item)
 
@@ -147,8 +186,6 @@ async def list_orders(
         total = 0.0
         for item in o.items:
             subtotal = item.qty * item.price
-            if item.has_gst:
-                subtotal *= 1.18  # Simple 18% GST calculation
             total += subtotal
 
             items_list.append({
@@ -156,7 +193,8 @@ async def list_orders(
                 "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
                 "qty": item.qty,
                 "price": item.price,
-                "has_gst": item.has_gst,
+                "is_bill_required": item.is_bill_required,
+                "has_gst": item.is_bill_required,
             })
 
         output.append({
@@ -165,7 +203,7 @@ async def list_orders(
             "salesperson": o.user.username if o.user else "Salesperson",
             "customer_name": o.ledger.name if o.ledger else o.custom_customer_name or "Unknown Customer",
             "status": o.status,
-            "created_at": o.created_at.isoformat() if o.created_at else None,
+            "created_at": format_datetime_utc(o.created_at),
             "total": round(total, 2),
             "items": items_list,
         })
@@ -195,8 +233,6 @@ async def list_all_orders(
         total = 0.0
         for item in o.items:
             subtotal = item.qty * item.price
-            if item.has_gst:
-                subtotal *= 1.18
             total += subtotal
 
             items_list.append({
@@ -204,7 +240,8 @@ async def list_all_orders(
                 "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
                 "qty": item.qty,
                 "price": item.price,
-                "has_gst": item.has_gst,
+                "is_bill_required": item.is_bill_required,
+                "has_gst": item.is_bill_required,
             })
 
         output.append({
@@ -213,7 +250,7 @@ async def list_all_orders(
             "salesperson": o.user.username if o.user else "Salesperson",
             "customer_name": o.ledger.name if o.ledger else o.custom_customer_name or "Unknown Customer",
             "status": o.status,
-            "created_at": o.created_at.isoformat() if o.created_at else None,
+            "created_at": format_datetime_utc(o.created_at),
             "total": round(total, 2),
             "items": items_list,
         })
@@ -239,23 +276,19 @@ async def get_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    # Access control
-    if order.user_id != user.user_id and not user.role.name == "admin":
+    is_admin = check_is_admin(user)
+
+    # Access control: admin can view any order; regular salesperson only their own
+    if not is_admin and order.user_id != user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to view this order")
 
-    # Time check (30 minutes edit window)
-    is_editable = order.status == "pending"
-    if is_editable and not user.role.name == "admin":
-        elapsed_seconds = (datetime.now() - order.created_at).total_seconds()
-        if elapsed_seconds > 1800:  # 30 minutes
-            is_editable = False
+    # Time check (30 minutes edit window for regular salesperson; admin can edit anytime)
+    is_editable = check_order_editable(order, user)
 
     items_list = []
     total = 0.0
     for item in order.items:
         subtotal = item.qty * item.price
-        if item.has_gst:
-            subtotal *= 1.18
         total += subtotal
 
         items_list.append({
@@ -263,7 +296,8 @@ async def get_order(
             "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
             "qty": item.qty,
             "price": item.price,
-            "has_gst": item.has_gst,
+            "is_bill_required": item.is_bill_required,
+            "has_gst": item.is_bill_required,
         })
 
     return {
@@ -274,7 +308,7 @@ async def get_order(
         "custom_customer_name": order.custom_customer_name,
         "customer_name": order.ledger.name if order.ledger else order.custom_customer_name or "Unknown Customer",
         "status": order.status,
-        "created_at": order.created_at.isoformat() if order.created_at else None,
+        "created_at": format_datetime_utc(order.created_at),
         "total": round(total, 2),
         "items": items_list,
         "is_editable": is_editable,
@@ -301,16 +335,15 @@ async def edit_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    if order.user_id != user.user_id and not user.role.name == "admin":
+    is_admin = check_is_admin(user)
+
+    if not is_admin and order.user_id != user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to edit this order")
 
-    if order.status != "pending":
-        raise HTTPException(status_code=400, detail="Only pending orders can be edited")
-
-    if not user.role.name == "admin":
-        elapsed_seconds = (datetime.now() - order.created_at).total_seconds()
-        if elapsed_seconds > 1800:
-            raise HTTPException(status_code=400, detail="The 30-minute editing window has expired")
+    if not check_order_editable(order, user):
+        if order.status != "pending":
+            raise HTTPException(status_code=400, detail="Only pending orders can be edited")
+        raise HTTPException(status_code=400, detail="The 30-minute editing window has expired")
 
     if not req.ledger_id and not req.custom_customer_name:
         raise HTTPException(status_code=400, detail="Either ledger_id or custom_customer_name is required")
@@ -346,7 +379,7 @@ async def edit_order(
             stock_item_id=item.stock_item_id,
             qty=item.qty,
             price=item.price,
-            has_gst=item.has_gst,
+            is_bill_required=item.bill_required,
         )
         db.add(order_item)
 

@@ -25,7 +25,8 @@ type OrderItem = {
   stock_item_name: string
   qty: number
   price: number
-  has_gst: boolean
+  is_bill_required?: boolean
+  has_gst?: boolean
 }
 
 type Order = {
@@ -121,11 +122,13 @@ export default function TempOrdersPage() {
   }, [orders, statusFilter, salespersonFilter])
 
   const checkIsEditable = (order: Order) => {
+    if (permissions?.isAdmin) return true
     if (order.status !== 'pending') return false
-    if (permissions.isAdmin) return true
     
-    // time limit 30 minutes
-    const createdDate = new Date(order.created_at)
+    // time limit 30 minutes for non-admin
+    if (!order.created_at) return true
+    const dateStr = order.created_at.endsWith('Z') || order.created_at.includes('+') ? order.created_at : `${order.created_at}Z`
+    const createdDate = new Date(dateStr)
     const elapsedMinutes = (Date.now() - createdDate.getTime()) / (60 * 1000)
     return elapsedMinutes <= 30
   }
@@ -309,13 +312,18 @@ export default function TempOrdersPage() {
                       <div className="min-w-0">
                         <span className="font-bold text-foreground text-xs leading-tight block truncate">{item.stock_item_name}</span>
                         <span className="text-[10px] text-muted-foreground mt-1 block">
-                          Rate: {formatCurrency(item.price)} {item.has_gst && <span className="text-emerald-600 font-bold ml-1">+18% GST</span>}
+                          Rate: {formatCurrency(item.price)} •{' '}
+                          {(item.is_bill_required ?? item.has_gst) ? (
+                            <span className="text-emerald-600 dark:text-emerald-400 font-bold">With Bill</span>
+                          ) : (
+                            <span className="text-muted-foreground font-medium">Without Bill</span>
+                          )}
                         </span>
                       </div>
                       <div className="text-right shrink-0">
                         <span className="font-extrabold text-xs text-foreground block">Qty: {item.qty}</span>
                         <span className="font-black text-sm text-emerald-600 dark:text-emerald-400 mt-1 block font-mono">
-                          {formatCurrency(item.qty * item.price * (item.has_gst ? 1.18 : 1.0))}
+                          {formatCurrency(item.qty * item.price)}
                         </span>
                       </div>
                     </div>
@@ -326,7 +334,7 @@ export default function TempOrdersPage() {
               <div className="border-t border-border pt-4 flex justify-between items-center bg-muted/10 p-4 rounded-2xl border">
                 <div>
                   <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">Grand Total</span>
-                  <span className="text-[11px] text-muted-foreground">(Incl. of GST taxes)</span>
+                  <span className="text-[11px] text-muted-foreground">{expandedOrder.items.length} item{expandedOrder.items.length > 1 ? 's' : ''}</span>
                 </div>
                 <span className="text-xl font-black text-emerald-600 dark:text-emerald-400 font-mono">{formatCurrency(expandedOrder.total)}</span>
               </div>

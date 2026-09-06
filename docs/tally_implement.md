@@ -167,7 +167,7 @@ Accepts a simplified payload:
   "sales_ledger_id": 456,
   "voucher_date": "2026-07-26",
   "items": [
-    { "stock_item_id": 1, "godown_id": 1, "qty": 10, "rate": 500, "has_gst": true }
+    { "stock_item_id": 1, "godown_id": 1, "qty": 10, "rate": 500, "is_bill_required": true }
   ],
   "narration": "Invoice for July dispatch"
 }

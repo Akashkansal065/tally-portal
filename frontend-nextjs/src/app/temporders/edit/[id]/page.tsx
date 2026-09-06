@@ -25,7 +25,7 @@ interface CartItem {
   name: string
   qty: number
   price: number
-  has_gst: boolean
+  is_bill_required: boolean
 }
 
 type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
@@ -39,7 +39,7 @@ export default function EditOrderPage({ params }: EditProps) {
   const resolvedParams = use(params)
   const orderId = resolvedParams.id
 
-  const { user, token } = useAuth()
+  const { user, token, permissions } = useAuth()
   const router = useRouter()
   
   // Steps: 1 = Customer select, 2 = Add items, 3 = Summary & checkout
@@ -64,7 +64,7 @@ export default function EditOrderPage({ params }: EditProps) {
   const [selectedProduct, setSelectedProduct] = useState<StockItem | null>(null)
   const [qty, setQty] = useState<number>(1)
   const [price, setPrice] = useState<number | ''>('')
-  const [hasGst, setHasGst] = useState(true)
+  const [isBillRequired, setIsBillRequired] = useState(true)
   const [cart, setCart] = useState<CartItem[]>([])
   const [showProductDropdown, setShowProductDropdown] = useState(false)
   const productDropdownRef = useRef<HTMLDivElement>(null)
@@ -96,7 +96,7 @@ export default function EditOrderPage({ params }: EditProps) {
 
         const orderData = await orderRes.json()
         if (orderRes.ok && orderData) {
-          if (!orderData.is_editable) {
+          if (!orderData.is_editable && !permissions?.isAdmin) {
             alert('This order is no longer editable (30-minute limit exceeded or already completed).')
             router.push('/temporders')
             return
@@ -117,7 +117,7 @@ export default function EditOrderPage({ params }: EditProps) {
             name: it.stock_item_name,
             qty: it.qty,
             price: it.price,
-            has_gst: it.has_gst
+            is_bill_required: it.is_bill_required ?? it.has_gst ?? true
           })))
         } else {
           router.push('/temporders')
@@ -198,7 +198,7 @@ export default function EditOrderPage({ params }: EditProps) {
       name: selectedProduct.name,
       qty,
       price: Number(price),
-      has_gst: hasGst,
+      is_bill_required: isBillRequired,
     }
 
     setCart([...cart, newItem])
@@ -206,7 +206,7 @@ export default function EditOrderPage({ params }: EditProps) {
     setSelectedProduct(null)
     setQty(1)
     setPrice('')
-    setHasGst(true)
+    setIsBillRequired(true)
   }
 
   const handleRemoveItem = (cartItemId: string) => {
@@ -216,18 +216,12 @@ export default function EditOrderPage({ params }: EditProps) {
   // Calculate Cart Subtotals
   const totals = useMemo(() => {
     let subtotal = 0
-    let tax = 0
     cart.forEach(item => {
-      const amt = item.qty * item.price
-      subtotal += amt
-      if (item.has_gst) {
-        tax += amt * 0.18
-      }
+      subtotal += item.qty * item.price
     })
     return {
       subtotal,
-      tax,
-      total: subtotal + tax
+      total: subtotal
     }
   }, [cart])
 
@@ -248,7 +242,7 @@ export default function EditOrderPage({ params }: EditProps) {
           stock_item_id: item.stock_item_id,
           qty: item.qty,
           price: item.price,
-          has_gst: item.has_gst
+          is_bill_required: item.is_bill_required
         }))
       }
 
@@ -419,12 +413,17 @@ export default function EditOrderPage({ params }: EditProps) {
                       <div className="min-w-0">
                         <span className="font-bold text-foreground block truncate">{toTitleCase(item.name)}</span>
                         <span className="text-[10px] text-muted-foreground mt-0.5 block">
-                          {item.qty} Qty @ {formatCurrency(item.price)}/ea {item.has_gst && <span className="text-green-600 font-bold ml-1">+18% GST</span>}
+                          {item.qty} Qty @ {formatCurrency(item.price)}/ea •{' '}
+                          {item.is_bill_required ? (
+                            <span className="text-emerald-600 dark:text-emerald-400 font-bold">With Bill</span>
+                          ) : (
+                            <span className="text-muted-foreground font-medium">Without Bill</span>
+                          )}
                         </span>
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
                         <span className="font-black text-emerald-600 dark:text-emerald-400 font-mono">
-                          {formatCurrency(item.qty * item.price * (item.has_gst ? 1.18 : 1.0))}
+                          {formatCurrency(item.qty * item.price)}
                         </span>
                         <button type="button" onClick={() => handleRemoveItem(item.cartItemId)} className="text-destructive hover:bg-destructive/10 p-1.5 rounded-lg transition-colors cursor-pointer">
                           <Trash2 className="h-4 w-4" />
@@ -554,21 +553,48 @@ export default function EditOrderPage({ params }: EditProps) {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between border-t border-border/40 pt-3">
-                <div>
-                  <h4 className="text-xs font-bold text-foreground">Include 18% GST</h4>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">Calculates simple 18% IGST/CGST split</p>
+              <div className="space-y-2 border-t border-border/40 pt-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">
+                    Billing Type
+                  </label>
+                  <span className={cn(
+                    "text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all",
+                    isBillRequired 
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20" 
+                      : "bg-muted text-muted-foreground border-border"
+                  )}>
+                    {isBillRequired ? 'With Bill' : 'Without Bill'}
+                  </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setHasGst(!hasGst)}
-                  className={cn(
-                    'w-9 h-5 rounded-full transition-all relative',
-                    hasGst ? 'bg-emerald-500' : 'bg-muted border border-border'
-                  )}
-                >
-                  <div className={cn('w-4 h-4 rounded-full bg-white shadow absolute top-[2px] transition-all', hasGst ? 'right-[2px]' : 'left-[2px]')} />
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsBillRequired(true)}
+                    className={cn(
+                      "py-2.5 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]",
+                      isBillRequired
+                        ? "bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-500/20"
+                        : "bg-muted/40 border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                    )}
+                  >
+                    <CheckCircle2 className={cn("h-3.5 w-3.5", isBillRequired ? "text-white" : "opacity-0")} />
+                    With Bill
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsBillRequired(false)}
+                    className={cn(
+                      "py-2.5 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]",
+                      !isBillRequired
+                        ? "bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-500/20"
+                        : "bg-muted/40 border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                    )}
+                  >
+                    <CheckCircle2 className={cn("h-3.5 w-3.5", !isBillRequired ? "text-white" : "opacity-0")} />
+                    Without Bill
+                  </button>
+                </div>
               </div>
 
               <button
@@ -614,22 +640,19 @@ export default function EditOrderPage({ params }: EditProps) {
                 <div className="space-y-2 max-h-56 overflow-y-auto no-scrollbar">
                   {cart.map((item, idx) => (
                     <div key={idx} className="flex justify-between items-center text-xs">
-                      <span className="text-muted-foreground truncate max-w-[200px]">{toTitleCase(item.name)}</span>
+                      <div className="min-w-0 pr-2">
+                        <span className="text-foreground font-medium truncate block">{toTitleCase(item.name)}</span>
+                        <span className="text-[10px]">
+                          {item.is_bill_required ? (
+                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">With Bill</span>
+                          ) : (
+                            <span className="text-muted-foreground font-medium">Without Bill</span>
+                          )}
+                        </span>
+                      </div>
                       <span className="font-semibold shrink-0">{item.qty} × {formatCurrency(item.price)}</span>
                     </div>
                   ))}
-                </div>
-              </div>
-
-              {/* Tax Breakdowns */}
-              <div className="border-t border-border pt-3 space-y-1.5 text-xs text-muted-foreground">
-                <div className="flex justify-between">
-                  <span>Gross Subtotal</span>
-                  <span>{formatCurrency(totals.subtotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Taxes (GST 18%)</span>
-                  <span>{formatCurrency(totals.tax)}</span>
                 </div>
               </div>
 
@@ -637,7 +660,7 @@ export default function EditOrderPage({ params }: EditProps) {
               <div className="border-t border-border pt-3 flex justify-between items-center bg-muted/10 p-4 rounded-xl border">
                 <div>
                   <span className="text-xs font-bold text-foreground block">Grand Total</span>
-                  <span className="text-[10px] text-muted-foreground block">(Inclusive of Taxes)</span>
+                  <span className="text-[10px] text-muted-foreground block">{cart.length} item{cart.length > 1 ? 's' : ''}</span>
                 </div>
                 <span className="text-lg font-black text-emerald-600 dark:text-emerald-400 font-mono">{formatCurrency(totals.total)}</span>
               </div>
