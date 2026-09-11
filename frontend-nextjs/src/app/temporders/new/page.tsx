@@ -24,13 +24,45 @@ interface CartItem {
   cartItemId: string
   stock_item_id: number
   name: string
+  company_name?: string
   qty: number
   price: number
   is_bill_required: boolean
 }
 
 type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
-type StockItem = { item_id: number; name: string; closing_rate: number; parent?: string; part_number?: string; hsn_code?: string }
+type StockItem = {
+  item_id: number
+  name: string
+  closing_rate: number
+  group_name?: string
+  company_name?: string
+  parent?: string
+  part_number?: string
+  hsn_code?: string
+  uom?: string
+}
+
+const getCompanySuffix = (item: { group_name?: string; company_name?: string; parent?: string } | null | undefined): string => {
+  if (!item) return ''
+  const cName = (item.company_name || item.group_name || item.parent || '').trim()
+  if (!cName || cName.toLowerCase() === 'all' || cName.toLowerCase() === 'primary' || cName.toLowerCase() === 'others') {
+    return ''
+  }
+  return cName
+}
+
+const formatProductNameWithCompany = (name: string, company?: string): string => {
+  const c = (company || '').trim()
+  const titleName = toTitleCase(name)
+  if (!c || c.toLowerCase() === 'all' || c.toLowerCase() === 'primary' || c.toLowerCase() === 'others') {
+    return titleName
+  }
+  if (titleName.toLowerCase().includes(c.toLowerCase())) {
+    return titleName
+  }
+  return `${titleName} (${c})`
+}
 
 export default function NewOrderPage() {
   const { user, token } = useAuth()
@@ -111,11 +143,12 @@ export default function NewOrderPage() {
     if (productQuery.trim().length < 1) return []
     const q = productQuery.toLowerCase().trim()
     return cachedProducts.filter(p => {
-      const mapping = p.name ? getProductDetails(p.name, p.parent || '') : null
+      const company = getCompanySuffix(p)
+      const mapping = p.name ? getProductDetails(p.name, company || p.parent || '') : null
       const brandStr = mapping?.brand?.toLowerCase() || ''
       const subtitleStr = mapping?.subtitle?.toLowerCase() || ''
       const parentStr = p.parent?.toLowerCase() || ''
-      const groupStr = (p as any).group_name?.toLowerCase() || ''
+      const groupStr = company.toLowerCase()
       const nameStr = p.name ? p.name.toLowerCase() : ''
       const partStr = p.part_number ? p.part_number.toLowerCase() : ''
       const hsnStr = p.hsn_code ? p.hsn_code.toLowerCase() : ''
@@ -150,10 +183,12 @@ export default function NewOrderPage() {
     }
 
     setItemErrors({})
+    const company = getCompanySuffix(selectedProduct)
     const newItem: CartItem = {
       cartItemId: Math.random().toString(36).substring(2, 9),
       stock_item_id: selectedProduct.item_id,
       name: selectedProduct.name,
+      company_name: company,
       qty,
       price: Number(price),
       is_bill_required: isBillRequired,
@@ -361,7 +396,9 @@ export default function NewOrderPage() {
                   {cart.map((item, idx) => (
                     <div key={item.cartItemId} className="flex justify-between items-center gap-4 text-xs bg-muted/20 border border-border/40 p-3 rounded-xl">
                       <div className="min-w-0">
-                        <span className="font-bold text-foreground block truncate">{toTitleCase(item.name)}</span>
+                        <span className="font-bold text-foreground block truncate">
+                          {formatProductNameWithCompany(item.name, item.company_name)}
+                        </span>
                         <span className="text-[10px] text-muted-foreground mt-0.5 block">
                           {item.qty} Qty @ {formatCurrency(item.price)}/ea •{' '}
                           {item.is_bill_required ? (
@@ -421,22 +458,30 @@ export default function NewOrderPage() {
                       <p className="p-3 text-xs text-muted-foreground text-center">No products found</p>
                     ) : (
                       filteredProducts.map(product => {
-                        const mapping = product.name ? getProductDetails(product.name, product.parent || '') : null
+                        const company = getCompanySuffix(product)
+                        const mapping = product.name ? getProductDetails(product.name, company || product.parent || '') : null
+                        const displayTitle = formatProductNameWithCompany(product.name, company)
                         return (
                           <button
                             key={product.item_id}
                             type="button"
                             onClick={() => {
                               setSelectedProduct(product)
-                              setProductQuery(toTitleCase(product.name))
+                              setProductQuery(displayTitle)
                               setPrice('')
                               setShowProductDropdown(false)
                               setItemErrors(prev => ({ ...prev, product: undefined }))
                             }}
-                            className="w-full text-left p-3 hover:bg-muted text-xs text-foreground flex flex-col gap-0.5"
+                            className="w-full text-left p-3 hover:bg-muted text-xs text-foreground flex flex-col gap-0.5 cursor-pointer"
                           >
-                            <span className="font-semibold">{toTitleCase(product.name)}</span>
-                            {mapping && (
+                            <span className="font-semibold">{displayTitle}</span>
+                            {company ? (
+                              <span className="text-[10px] text-muted-foreground font-medium flex items-center gap-1.5">
+                                <span className="inline-block px-1.5 py-0.5 rounded bg-muted text-foreground/80 font-semibold">{company}</span>
+                                {product.uom && <span>• {product.uom}</span>}
+                                {mapping?.subtitle && mapping.subtitle !== product.name && <span>• {mapping.subtitle}</span>}
+                              </span>
+                            ) : mapping && (
                               <span className="text-[10px] text-muted-foreground font-medium">
                                 {mapping.brand} • {mapping.subtitle}
                               </span>
@@ -451,7 +496,7 @@ export default function NewOrderPage() {
                 {selectedProduct && (
                   <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 p-2.5 rounded-xl text-xs flex items-center gap-1.5 mt-2">
                     <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                    <span>Product: <strong>{toTitleCase(selectedProduct.name)}</strong></span>
+                    <span>Product: <strong>{formatProductNameWithCompany(selectedProduct.name, getCompanySuffix(selectedProduct))}</strong></span>
                   </div>
                 )}
               </div>
@@ -591,7 +636,9 @@ export default function NewOrderPage() {
                   {cart.map((item, idx) => (
                     <div key={idx} className="flex justify-between items-center text-xs">
                       <div className="min-w-0 pr-2">
-                        <span className="text-foreground font-medium truncate block">{toTitleCase(item.name)}</span>
+                        <span className="text-foreground font-medium truncate block">
+                          {formatProductNameWithCompany(item.name, item.company_name)}
+                        </span>
                         <span className="text-[10px]">
                           {item.is_bill_required ? (
                             <span className="text-emerald-600 dark:text-emerald-400 font-semibold">With Bill</span>

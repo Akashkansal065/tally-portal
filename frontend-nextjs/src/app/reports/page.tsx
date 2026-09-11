@@ -644,6 +644,47 @@ export default function ReportsPage() {
     }
   }, [productVouchers])
 
+  // Comprehensive lookup map for all company items so drilldown modal always has complete financial & stock stats
+  const allCompanyItemsMap = useMemo(() => {
+    const map = new Map<number, any>()
+    if (companyStockData?.companies && Array.isArray(companyStockData.companies)) {
+      for (const comp of companyStockData.companies) {
+        if (Array.isArray(comp.items)) {
+          for (const it of comp.items) {
+            if (it?.item_id) map.set(it.item_id, it)
+          }
+        }
+      }
+    }
+    return map
+  }, [companyStockData])
+
+  const openProductDetail = (item: any) => {
+    if (!item) return
+    const matched = item.item_id ? allCompanyItemsMap.get(item.item_id) : null
+    const merged = matched
+      ? {
+          ...matched,
+          ...item,
+          purchased_qty: (item.purchased_qty !== undefined && item.purchased_qty !== null && item.purchased_qty > 0) ? item.purchased_qty : (matched.purchased_qty ?? item.purchased_qty ?? 0),
+          purchased_value: (item.purchased_value !== undefined && item.purchased_value !== null && item.purchased_value > 0) ? item.purchased_value : (matched.purchased_value ?? item.purchased_value ?? 0),
+          pending_qty: (item.pending_qty !== undefined && item.pending_qty !== null && item.pending_qty > 0) ? item.pending_qty : (matched.pending_qty ?? item.pending_qty ?? 0),
+          pending_value: (item.pending_value !== undefined && item.pending_value !== null && item.pending_value > 0) ? item.pending_value : (matched.pending_value ?? item.pending_value ?? 0),
+          closing_qty: item.closing_qty ?? matched.closing_qty ?? 0,
+          closing_rate: item.closing_rate ?? matched.closing_rate ?? 0,
+          closing_value: item.closing_value ?? matched.closing_value ?? 0,
+          avg_purchase_rate: item.avg_purchase_rate || matched.avg_purchase_rate || item.avg_cost || matched.avg_cost || item.closing_rate || matched.closing_rate || 0,
+          avg_cost: item.avg_cost || matched.avg_cost || item.closing_rate || matched.closing_rate || 0,
+          opening_qty: item.opening_qty ?? matched.opening_qty ?? 0,
+        }
+      : item
+    setProductDetailItem(merged)
+    setProductVoucherSearch('')
+    setProductVoucherTypeFilter('All Vouchers')
+    setProductVoucherFlowFilter('All Flows')
+    setProductVoucherPeriodFilter('period')
+  }
+
   // Close modal on Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -2160,7 +2201,7 @@ export default function ReportsPage() {
                             {/* Progress bar: sold vs pending */}
                             <div className="mt-1.5 flex items-center gap-2">
                               <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${comp.sold_ratio}%` }} />
+                                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(100, Math.max(0, comp.sold_ratio))}%` }} />
                               </div>
                               <span className="text-[9px] text-muted-foreground font-bold shrink-0">{comp.sold_ratio}% sold</span>
                             </div>
@@ -2316,13 +2357,7 @@ export default function ReportsPage() {
                               {filteredAndSortedItems.map((item: any) => (
                                 <div
                                   key={item.item_id}
-                                  onClick={() => {
-                                    setProductDetailItem(item)
-                                    setProductVoucherSearch('')
-                                    setProductVoucherTypeFilter('All Vouchers')
-                                    setProductVoucherFlowFilter('All Flows')
-                                    setProductVoucherPeriodFilter('period')
-                                  }}
+                                  onClick={() => openProductDetail(item)}
                                   className="bg-card border border-border/80 hover:border-primary/50 active:scale-[0.99] rounded-xl p-3.5 space-y-2.5 transition-all cursor-pointer shadow-2xs group"
                                 >
                                   {/* Card Header: Product Name + GP% badge */}
@@ -2333,7 +2368,7 @@ export default function ReportsPage() {
                                         <ExternalLink className="h-3 w-3 opacity-40 group-hover:opacity-100 text-primary shrink-0 transition-opacity" />
                                       </div>
                                       <p className="text-xs text-muted-foreground mt-0.5">
-                                        {item.uom || 'PCS'} • Avg Cost: <strong className="text-foreground font-semibold">{formatCurrency(item.avg_cost)}</strong>
+                                        {item.uom || 'PCS'} • Avg Cost: <strong className="text-foreground font-semibold">{formatCurrency(item.avg_cost)}</strong>{item.opening_qty > 0 ? <span className="ml-1 text-[11px] text-muted-foreground/80">• Op: {item.opening_qty}</span> : null}
                                       </p>
                                     </div>
                                     <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full shrink-0",
@@ -2423,20 +2458,14 @@ export default function ReportsPage() {
                                     <div>
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          setProductDetailItem(item)
-                                          setProductVoucherSearch('')
-                                          setProductVoucherTypeFilter('All Vouchers')
-                                          setProductVoucherFlowFilter('All Flows')
-                                          setProductVoucherPeriodFilter('period')
-                                        }}
+                                        onClick={() => openProductDetail(item)}
                                         className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1.5 group/item cursor-pointer w-full"
                                         title="Click to view complete inward & outward transaction details"
                                       >
                                         <span className="group-hover/item:underline truncate">{item.name}</span>
                                         <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
                                       </button>
-                                      <p className="text-[9px] text-muted-foreground truncate">{item.uom} • Avg: {formatCurrency(item.avg_cost)}</p>
+                                      <p className="text-[9px] text-muted-foreground truncate">{item.uom} • Avg: {formatCurrency(item.avg_cost)}{item.opening_qty > 0 ? ` • Op: ${item.opening_qty}` : ''}</p>
                                     </div>
                                   ),
                                 },
@@ -2833,13 +2862,7 @@ export default function ReportsPage() {
                 renderCell: (item) => (
                   <button
                     type="button"
-                    onClick={() => {
-                      setProductDetailItem(item)
-                      setProductVoucherSearch('')
-                      setProductVoucherTypeFilter('All Vouchers')
-                      setProductVoucherFlowFilter('All Flows')
-                      setProductVoucherPeriodFilter('period')
-                    }}
+                    onClick={() => openProductDetail(item)}
                     className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
                     title="Click to view complete inward & outward transaction details"
                   >
@@ -3036,13 +3059,7 @@ export default function ReportsPage() {
                 renderCell: (item) => (
                   <button
                     type="button"
-                    onClick={() => {
-                      setProductDetailItem(item)
-                      setProductVoucherSearch('')
-                      setProductVoucherTypeFilter('All Vouchers')
-                      setProductVoucherFlowFilter('All Flows')
-                      setProductVoucherPeriodFilter('period')
-                    }}
+                    onClick={() => openProductDetail(item)}
                     className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
                     title="Click to view complete inward & outward transaction details"
                   >
@@ -3213,13 +3230,7 @@ export default function ReportsPage() {
                 renderCell: (item) => (
                   <button
                     type="button"
-                    onClick={() => {
-                      setProductDetailItem(item)
-                      setProductVoucherSearch('')
-                      setProductVoucherTypeFilter('All Vouchers')
-                      setProductVoucherFlowFilter('All Flows')
-                      setProductVoucherPeriodFilter('period')
-                    }}
+                    onClick={() => openProductDetail(item)}
                     className="text-left font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
                     title="Click to view complete inward & outward transaction details"
                   >
@@ -3693,13 +3704,7 @@ export default function ReportsPage() {
                       <div>
                         <button
                           type="button"
-                          onClick={() => {
-                            setProductDetailItem(item)
-                            setProductVoucherSearch('')
-                            setProductVoucherTypeFilter('All Vouchers')
-                            setProductVoucherFlowFilter('All Flows')
-                            setProductVoucherPeriodFilter('period')
-                          }}
+                          onClick={() => openProductDetail(item)}
                           className="text-left font-bold text-xs text-foreground hover:text-primary transition-colors flex items-center gap-1 group/item cursor-pointer"
                           title="Click to view complete inward & outward transaction details"
                         >
@@ -4497,7 +4502,13 @@ export default function ReportsPage() {
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
-                    <span>Avg Purchase Rate: <strong className="text-foreground">{formatCurrency(productDetailItem.avg_purchase_rate || productDetailItem.avg_cost || 0)}</strong></span>
+                    <span>Avg Purchase Rate: <strong className="text-foreground">
+                      {formatCurrency(
+                        productVoucherPeriodFilter === 'all' && voucherStats.inwardQty > 0
+                          ? voucherStats.inwardVal / voucherStats.inwardQty
+                          : (productDetailItem.avg_purchase_rate || productDetailItem.avg_cost || (productDetailItem.purchased_qty > 0 ? productDetailItem.purchased_value / productDetailItem.purchased_qty : 0) || (voucherStats.inwardQty > 0 ? voucherStats.inwardVal / voucherStats.inwardQty : 0) || productDetailItem.closing_rate || 0)
+                      )}
+                    </strong></span>
                     {productDetailItem.avg_selling_rate > 0 && (
                       <span>• Avg Selling Rate: <strong className="text-emerald-600 dark:text-emerald-400">{formatCurrency(productDetailItem.avg_selling_rate)}</strong></span>
                     )}
@@ -4525,47 +4536,119 @@ export default function ReportsPage() {
             </div>
 
             {/* Product Performance KPI Summary Strip */}
-            <div className="px-6 py-3 bg-muted/20 border-b border-border/70 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
-                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Purchased (Inward)</p>
-                <p className="text-sm font-extrabold text-foreground mt-0.5">
-                  {formatCurrency(productDetailItem.purchased_value || 0)}
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  {productDetailItem.purchased_qty || 0} {productDetailItem.uom || 'PCS'}
-                </p>
-              </div>
+            {(() => {
+              const isAllTime = productVoucherPeriodFilter === 'all'
+              const purchasedVal = isAllTime && voucherStats.inwardVal > 0 
+                ? voucherStats.inwardVal 
+                : (productDetailItem.purchased_value > 0 ? productDetailItem.purchased_value : (voucherStats.inwardVal || 0))
+              const purchasedQty = isAllTime && voucherStats.inwardQty > 0 
+                ? voucherStats.inwardQty 
+                : (productDetailItem.purchased_qty > 0 ? productDetailItem.purchased_qty : (voucherStats.inwardQty || 0))
+              const soldVal = isAllTime && voucherStats.outwardVal > 0 
+                ? voucherStats.outwardVal 
+                : (productDetailItem.sold_value > 0 ? productDetailItem.sold_value : (voucherStats.outwardVal || 0))
+              const soldQty = isAllTime && voucherStats.outwardQty > 0 
+                ? voucherStats.outwardQty 
+                : (productDetailItem.sold_qty > 0 ? productDetailItem.sold_qty : (voucherStats.outwardQty || 0))
 
-              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
-                <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Sold (Outward)</p>
-                <p className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400 mt-0.5">
-                  {formatCurrency(productDetailItem.sold_value || 0)}
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  {productDetailItem.sold_qty || 0} {productDetailItem.uom || 'PCS'}
-                </p>
-              </div>
+              const effectiveAvgRate = (purchasedQty > 0 && purchasedVal > 0)
+                ? (purchasedVal / purchasedQty)
+                : (productDetailItem.avg_purchase_rate || productDetailItem.avg_cost || (voucherStats.inwardQty > 0 ? voucherStats.inwardVal / voucherStats.inwardQty : 0) || productDetailItem.closing_rate || 0)
 
-              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
-                <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">Pending Stock</p>
-                <p className="text-sm font-extrabold text-amber-600 dark:text-amber-400 mt-0.5">
-                  {formatCurrency(productDetailItem.pending_value || 0)}
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  {productDetailItem.pending_qty || 0} {productDetailItem.uom || 'PCS'}
-                </p>
-              </div>
+              const closingQty = productDetailItem.closing_qty ?? productDetailItem.remaining_qty ?? 0
+              const closingVal = productDetailItem.closing_value ?? productDetailItem.remaining_value ?? 0
 
-              <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
-                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Realized Profit / GP%</p>
-                <p className={cn("text-sm font-extrabold mt-0.5", (productDetailItem.profit_on_sold || 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
-                  {formatCurrency(productDetailItem.profit_on_sold || 0)}
-                </p>
-                <p className="text-[10px] font-bold text-muted-foreground">
-                  Margin: <span className={cn((productDetailItem.gp_percent || 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>{productDetailItem.gp_percent || 0}%</span>
-                </p>
-              </div>
-            </div>
+              const pendingQty = isAllTime && voucherStats.inwardQty > 0
+                ? Math.max(0, voucherStats.inwardQty - voucherStats.outwardQty)
+                : (productDetailItem.pending_qty !== undefined && productDetailItem.pending_qty > 0
+                    ? productDetailItem.pending_qty
+                    : (closingQty > 0 ? closingQty : Math.max(0, purchasedQty - soldQty)))
+
+              const pendingVal = isAllTime && voucherStats.inwardVal > 0
+                ? Math.round(pendingQty * effectiveAvgRate * 100) / 100
+                : (productDetailItem.pending_value !== undefined && productDetailItem.pending_value > 0
+                    ? productDetailItem.pending_value
+                    : (closingVal > 0 ? closingVal : Math.round(pendingQty * effectiveAvgRate * 100) / 100))
+
+              const profitVal = isAllTime && voucherStats.outwardVal > 0
+                ? Math.round((soldVal - (soldQty * effectiveAvgRate)) * 100) / 100
+                : (productDetailItem.profit_on_sold || 0)
+              const gpPct = soldVal > 0 ? Math.round((profitVal / soldVal * 100) * 100) / 100 : (productDetailItem.gp_percent || 0)
+
+              return (
+                <div>
+                  <div className="px-6 py-3 bg-muted/20 border-b border-border/70 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                    <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                      <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Purchased (Inward)</p>
+                      <p className="text-sm font-extrabold text-foreground mt-0.5">
+                        {formatCurrency(purchasedVal)}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground flex items-center justify-between">
+                        <span>{purchasedQty.toLocaleString('en-IN', { maximumFractionDigits: 3 })} {productDetailItem.uom || 'PCS'}</span>
+                        {!isAllTime && purchasedQty === 0 && voucherStats.inwardQty > 0 && (
+                          <button
+                            onClick={() => setProductVoucherPeriodFilter('all')}
+                            className="text-primary hover:underline text-[9px] font-bold cursor-pointer"
+                          >
+                            All-Time: {voucherStats.inwardQty}
+                          </button>
+                        )}
+                      </p>
+                    </div>
+
+                    <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                      <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Sold (Outward)</p>
+                      <p className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                        {formatCurrency(soldVal)}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {soldQty.toLocaleString('en-IN', { maximumFractionDigits: 3 })} {productDetailItem.uom || 'PCS'}
+                      </p>
+                    </div>
+
+                    <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                      <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">
+                        {pendingQty === 0 && closingQty > 0 ? "Current Warehouse Stock" : "Pending Stock"}
+                      </p>
+                      <p className="text-sm font-extrabold text-amber-600 dark:text-amber-400 mt-0.5">
+                        {formatCurrency(pendingVal > 0 ? pendingVal : (closingVal > 0 ? closingVal : 0))}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {(pendingQty > 0 ? pendingQty : closingQty).toLocaleString('en-IN', { maximumFractionDigits: 3 })} {productDetailItem.uom || 'PCS'}
+                        {closingQty > 0 && pendingQty > 0 && pendingQty !== closingQty && (
+                          <span className="opacity-75"> (Godown: {closingQty})</span>
+                        )}
+                      </p>
+                    </div>
+
+                    <div className="bg-background/80 border border-border/60 rounded-xl p-2.5">
+                      <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Realized Profit / GP%</p>
+                      <p className={cn("text-sm font-extrabold mt-0.5", profitVal >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
+                        {formatCurrency(profitVal)}
+                      </p>
+                      <p className="text-[10px] font-bold text-muted-foreground">
+                        Margin: <span className={cn(gpPct >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>{gpPct}%</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Informative notice if 0 purchases in period */}
+                  {!isAllTime && purchasedQty === 0 && (
+                    <div className="px-6 py-2 bg-amber-500/10 border-b border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-[11px] font-medium">
+                        ℹ️ No inward purchases recorded in selected period ({fromDate} to {toDate}). Sales are fulfilled from existing warehouse stock.
+                      </span>
+                      <button
+                        onClick={() => setProductVoucherPeriodFilter('all')}
+                        className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-900 dark:text-amber-200 text-[11px] font-bold transition-colors cursor-pointer"
+                      >
+                        Switch to All-Time View
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
 
             {/* Filter Bar (Search, Flow, Type, Period toggle) */}
             <div className="px-6 py-3 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-background">
@@ -4725,11 +4808,45 @@ export default function ReportsPage() {
                           )}>
                             {isInward ? 'INWARD' : 'OUTWARD'}
                           </span>
-                          {v.rate > 0 && (
-                            <span className="text-[11px] font-semibold text-muted-foreground">
-                              @ {formatCurrency(v.rate)} / {productDetailItem.uom || 'unit'}
-                            </span>
-                          )}
+                          {(() => {
+                            const qty = Math.abs(Number(v.quantity || 0))
+                            const amt = Math.abs(Number(v.amount || 0))
+                            const gst = Number(v.gst_rate || 0)
+
+                            // Net effective rates (after discount) so price per piece matches total amount exactly
+                            const netExTax = v.rate && Math.abs(v.rate * qty - amt) < 1.0 
+                              ? v.rate 
+                              : (qty > 0 ? Math.round((amt / qty) * 100) / 100 : (v.rate || 0))
+                            const netInclTax = v.rate_incl_tax && Math.abs(v.rate_incl_tax - Math.round(netExTax * (1 + gst / 100) * 100) / 100) < 1.0
+                              ? v.rate_incl_tax
+                              : (gst > 0 ? Math.round(netExTax * (1 + gst / 100) * 100) / 100 : netExTax)
+
+                            const grossIncl = v.gross_rate_incl_tax || (v.rate_incl_tax > netInclTax ? v.rate_incl_tax : (v.gross_rate ? Math.round(v.gross_rate * (1 + gst / 100) * 100) / 100 : 0))
+                            const discPct = v.discount_percent || (grossIncl > netInclTax && grossIncl > 0 ? Math.round(((grossIncl - netInclTax) / grossIncl) * 100) : 0)
+
+                            return (netInclTax > 0 || netExTax > 0) ? (
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[11px] font-bold text-foreground">
+                                  @ {formatCurrency(netInclTax || netExTax)} / {productDetailItem.uom || 'unit'}
+                                </span>
+                                {netInclTax && netExTax && netInclTax !== netExTax && (
+                                  <span className="text-[10px] text-muted-foreground font-medium">
+                                    (ex-tax: {formatCurrency(netExTax)})
+                                  </span>
+                                )}
+                                {discPct > 0 && (
+                                  <span className="text-[9px] font-black bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/30 px-1.5 py-0.2 rounded uppercase tracking-wider">
+                                    {discPct}% OFF
+                                  </span>
+                                )}
+                                {grossIncl > 0 && grossIncl > netInclTax && (
+                                  <span className="text-[10px] text-muted-foreground/75 line-through">
+                                    {formatCurrency(grossIncl)}
+                                  </span>
+                                )}
+                              </div>
+                            ) : null
+                          })()}
                         </div>
 
                         <div className="text-right flex items-center gap-3">

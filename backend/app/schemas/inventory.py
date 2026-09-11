@@ -198,6 +198,7 @@ class StockItemResponse(StockItemCreate):
     item_id: int
     company_id: int
     group_name: Optional[str] = None
+    company_name: Optional[str] = None
     uom: Optional[str] = None
     
     closing_balance: Decimal = Decimal("0.000")

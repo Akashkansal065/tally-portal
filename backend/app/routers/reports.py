@@ -1389,6 +1389,7 @@ async def get_company_stock_performance(
             COALESCE(si.closing_qty, 0) AS closing_qty,
             COALESCE(si.closing_rate, 0) AS closing_rate,
             COALESCE(si.closing_value, 0) AS closing_value,
+            COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
             COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.quantity ELSE 0 END), 0) AS inward_qty,
             COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.amount ELSE 0 END), 0) AS inward_value,
             COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN se.quantity ELSE 0 END), 0) AS outward_qty,
@@ -1429,9 +1430,24 @@ async def get_company_stock_performance(
         total_avail_val = (op_qty * op_rate) + in_val
         avg_cost = total_avail_val / total_avail_qty if total_avail_qty > 0 else op_rate
 
+        # If item has no purchases/opening in the filtered period, fall back to master closing unit cost or closing rate
+        cl_unit_cost = float(r.closing_unit_cost or 0)
+        cl_rate = float(r.closing_rate or 0)
+        fallback_cost = cl_unit_cost if cl_unit_cost > 0 else (cl_rate if cl_rate > 0 else op_rate)
+        if avg_cost <= 0:
+            avg_cost = fallback_cost
+
         cost_of_sold = out_qty * avg_cost
         profit_on_sold = out_val - cost_of_sold
         gp_pct = (profit_on_sold / out_val * 100) if out_val > 0 else 0.0
+
+        inward_avg_rate = float(r.avg_purchase_rate or 0)
+        effective_purchase_rate = inward_avg_rate if inward_avg_rate > 0 else avg_cost
+
+        # Pending represents unsold purchases from this period: max(0, Purchased - Sold)
+        pending_qty = max(0.0, round(in_qty - out_qty, 3))
+        pending_rate = float(r.avg_purchase_rate) if float(r.avg_purchase_rate) > 0 else avg_cost
+        pending_val = round(pending_qty * pending_rate, 2)
 
         item_data = {
             "item_id": r.stock_item_id,
@@ -1440,14 +1456,16 @@ async def get_company_stock_performance(
             "company_name": cname,
             "opening_qty": round(op_qty, 3),
             "opening_value": round(op_qty * op_rate, 2),
+            "closing_qty": round(cl_qty, 3),
+            "closing_value": round(cl_val, 2),
             "purchased_qty": round(in_qty, 3),
             "purchased_value": round(in_val, 2),
-            "avg_purchase_rate": round(float(r.avg_purchase_rate), 2),
+            "avg_purchase_rate": round(effective_purchase_rate, 2),
             "sold_qty": round(out_qty, 3),
             "sold_value": round(out_val, 2),
             "avg_selling_rate": round(float(r.avg_selling_rate), 2),
-            "pending_qty": round(cl_qty, 3),
-            "pending_value": round(cl_val, 2),
+            "pending_qty": pending_qty,
+            "pending_value": pending_val,
             "cost_of_sold": round(cost_of_sold, 2),
             "profit_on_sold": round(profit_on_sold, 2),
             "gp_percent": round(gp_pct, 2),
@@ -1466,18 +1484,22 @@ async def get_company_stock_performance(
                 "sold_value": 0.0,
                 "pending_qty": 0.0,
                 "pending_value": 0.0,
+                "closing_qty": 0.0,
+                "closing_value": 0.0,
                 "cost_of_sold": 0.0,
                 "profit_on_sold": 0.0,
                 "items": [],
             }
         comp = companies_map[cname]
         comp["items_count"] += 1
-        comp["purchased_qty"] += total_avail_qty
-        comp["purchased_value"] += total_avail_val
+        comp["purchased_qty"] += in_qty
+        comp["purchased_value"] += in_val
         comp["sold_qty"] += out_qty
         comp["sold_value"] += out_val
-        comp["pending_qty"] += cl_qty
-        comp["pending_value"] += cl_val
+        comp["pending_qty"] += pending_qty
+        comp["pending_value"] += pending_val
+        comp["closing_qty"] += cl_qty
+        comp["closing_value"] += cl_val
         comp["cost_of_sold"] += cost_of_sold
         comp["profit_on_sold"] += profit_on_sold
         comp["items"].append(item_data)
@@ -1493,7 +1515,8 @@ async def get_company_stock_performance(
         )
         # Round numeric fields
         for k in ["purchased_qty", "purchased_value", "sold_qty", "sold_value",
-                   "pending_qty", "pending_value", "cost_of_sold", "profit_on_sold"]:
+                   "pending_qty", "pending_value", "closing_qty", "closing_value",
+                   "cost_of_sold", "profit_on_sold"]:
             comp[k] = round(comp[k], 2)
         companies_list.append(comp)
     companies_list.sort(key=lambda x: x["sold_value"], reverse=True)
@@ -1559,6 +1582,8 @@ async def get_company_stock_performance(
                COALESCE(sg.name, 'Others') AS company_name,
                COALESCE(u.symbol, 'PCS') AS uom,
                si.closing_qty, si.closing_value,
+               COALESCE(si.closing_rate, 0) AS closing_rate,
+               COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
                COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 AND v.voucher_date >= DATE_SUB(CURDATE(), INTERVAL :dead_days DAY) THEN se.quantity ELSE 0 END), 0) AS sold_in_period,
                MAX(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN v.voucher_date ELSE NULL END) AS last_sold_date
         FROM {ts}.stock_items si
@@ -1568,7 +1593,7 @@ async def get_company_stock_performance(
         LEFT JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
             AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
         WHERE si.company_id = :company_id AND si.closing_qty > 0
-        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_value
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_value, si.closing_rate
         HAVING sold_in_period = 0
         ORDER BY si.closing_value DESC
         LIMIT 50
@@ -1578,14 +1603,25 @@ async def get_company_stock_performance(
     total_dead_value = 0.0
     for r in dead_res.fetchall():
         val = float(r.closing_value or 0)
+        cl_q = float(r.closing_qty or 0)
+        cl_rate = float(r.closing_rate or 0)
+        cl_unit = float(r.closing_unit_cost or 0)
+        rate = cl_unit if cl_unit > 0 else cl_rate
         total_dead_value += val
         dead_stock.append({
             "item_id": r.stock_item_id,
             "name": r.item_name,
             "company_name": r.company_name,
             "uom": r.uom,
-            "closing_qty": round(float(r.closing_qty), 3),
+            "closing_qty": round(cl_q, 3),
+            "closing_rate": round(cl_rate, 2),
             "closing_value": round(val, 2),
+            "purchased_qty": 0.0,
+            "purchased_value": 0.0,
+            "pending_qty": round(cl_q, 3),
+            "pending_value": round(val, 2),
+            "avg_purchase_rate": round(rate, 2),
+            "avg_cost": round(rate, 2),
             "last_sold_date": str(r.last_sold_date) if r.last_sold_date else None,
             "days_threshold": dead_stock_days,
         })
@@ -1599,12 +1635,13 @@ async def get_company_stock_performance(
                COALESCE(u.symbol, 'PCS') AS uom,
                COALESCE(si.opening_qty, 0) AS opening_qty,
                COALESCE(si.opening_rate, 0) AS opening_rate,
-               COALESCE(AVG(CASE WHEN se.is_inward = 1 THEN se.rate END), 0) AS avg_purchase_rate,
-               COALESCE(AVG(CASE WHEN se.is_inward = 0 THEN se.rate END), 0) AS avg_selling_rate,
-               SUM(CASE WHEN se.is_inward = 1 THEN se.quantity ELSE 0 END) AS purchased_qty,
-               SUM(CASE WHEN se.is_inward = 1 THEN se.amount ELSE 0 END) AS purchased_value,
-               SUM(CASE WHEN se.is_inward = 0 THEN se.quantity ELSE 0 END) AS sold_qty,
-               SUM(CASE WHEN se.is_inward = 0 THEN se.amount ELSE 0 END) AS sold_value
+               si.closing_qty, si.closing_value,
+               COALESCE(si.closing_rate, 0) AS closing_rate,
+               COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
+               COALESCE(SUM(CASE WHEN se.is_inward = 1 THEN se.quantity ELSE 0 END), 0) AS purchased_qty,
+               COALESCE(SUM(CASE WHEN se.is_inward = 1 THEN se.amount ELSE 0 END), 0) AS purchased_value,
+               COALESCE(SUM(CASE WHEN se.is_inward = 0 THEN se.quantity ELSE 0 END), 0) AS sold_qty,
+               COALESCE(SUM(CASE WHEN se.is_inward = 0 THEN se.amount ELSE 0 END), 0) AS sold_value
         FROM {ts}.stock_items si
         JOIN {ts}.stock_entries se ON si.stock_item_id = se.stock_item_id
         JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
@@ -1613,44 +1650,74 @@ async def get_company_stock_performance(
         LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
         LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
         WHERE si.company_id = :company_id
-        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.opening_qty, si.opening_rate
-        HAVING sold_qty > 0 AND avg_selling_rate > 0 AND avg_purchase_rate > avg_selling_rate
-        ORDER BY (avg_purchase_rate - avg_selling_rate) * sold_qty DESC
-        LIMIT 30
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.opening_qty, si.opening_rate, si.closing_qty, si.closing_value, si.closing_rate
+        HAVING sold_qty > 0
     """)
     loss_res = await db.execute(loss_sql, params)
     loss_making = []
     for r in loss_res.fetchall():
-        buy_rate = float(r.avg_purchase_rate)
-        sell_rate = float(r.avg_selling_rate)
         s_qty = float(r.sold_qty)
         s_val = float(r.sold_value)
+        if s_qty <= 0 or s_val <= 0:
+            continue
 
-        # Weighted avg cost
+        # Weighted avg cost from opening + inward purchases
         op_q = float(r.opening_qty)
         op_r = float(r.opening_rate)
         in_q = float(r.purchased_qty)
         in_v = float(r.purchased_value)
         total_q = op_q + in_q
         total_v = (op_q * op_r) + in_v
-        avg_cost = total_v / total_q if total_q > 0 else buy_rate
+
+        cl_unit_cost = float(r.closing_unit_cost or 0)
+        cl_rate = float(r.closing_rate or 0)
+        fallback_cost = cl_unit_cost if cl_unit_cost > 0 else (cl_rate if cl_rate > 0 else op_r)
+        avg_cost = total_v / total_q if total_q > 0 else fallback_cost
+        if avg_cost <= 0:
+            avg_cost = fallback_cost
 
         cogs = s_qty * avg_cost
-        loss_amount = s_val - cogs
+        profit_on_sold = s_val - cogs
+        loss_amount = cogs - s_val
+
+        # STRICT FILTER: An item is ONLY loss-making if COGS exceeds sales revenue (actual loss)
+        if loss_amount <= 0.001 or profit_on_sold >= -0.001:
+            continue
+
+        effective_sell_rate = s_val / s_qty if s_qty > 0 else 0.0
+        effective_buy_rate = avg_cost
+        rate_diff = effective_buy_rate - effective_sell_rate
+
+        gp_pct = (profit_on_sold / s_val * 100) if s_val > 0 else 0.0
+        pending_qty = max(0.0, round(in_q - s_qty, 3))
+        pending_val = round(pending_qty * avg_cost, 2)
 
         loss_making.append({
             "item_id": r.stock_item_id,
             "name": r.item_name,
             "company_name": r.company_name,
             "uom": r.uom,
-            "avg_purchase_rate": round(buy_rate, 2),
-            "avg_selling_rate": round(sell_rate, 2),
-            "rate_difference": round(buy_rate - sell_rate, 2),
+            "purchased_qty": round(in_q, 3),
+            "purchased_value": round(in_v, 2),
             "sold_qty": round(s_qty, 3),
             "sold_value": round(s_val, 2),
+            "pending_qty": pending_qty,
+            "pending_value": pending_val,
+            "closing_qty": round(float(r.closing_qty or 0), 3),
+            "closing_rate": round(cl_rate, 2),
+            "closing_value": round(float(r.closing_value or 0), 2),
+            "avg_purchase_rate": round(effective_buy_rate, 2),
+            "avg_selling_rate": round(effective_sell_rate, 2),
+            "avg_cost": round(avg_cost, 2),
+            "rate_difference": round(rate_diff, 2),
             "cost_of_sold": round(cogs, 2),
             "loss_amount": round(loss_amount, 2),
+            "profit_on_sold": round(profit_on_sold, 2),
+            "gp_percent": round(gp_pct, 2),
         })
+
+    loss_making.sort(key=lambda x: x["loss_amount"], reverse=True)
+    loss_making = loss_making[:30]
 
     # -------------------------------------------------------------------
     # 5. Negative Stock Alerts
@@ -1659,14 +1726,15 @@ async def get_company_stock_performance(
         SELECT si.stock_item_id, si.name AS item_name,
                COALESCE(sg.name, 'Others') AS company_name,
                COALESCE(u.symbol, 'PCS') AS uom,
-               si.closing_qty, si.closing_value
+               si.closing_qty, si.closing_rate, si.closing_value
         FROM {ts}.stock_items si
         LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
         LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
         WHERE si.company_id = :company_id AND si.closing_qty < 0
         ORDER BY si.closing_qty ASC
+        LIMIT 30
     """)
-    neg_res = await db.execute(neg_sql, {"company_id": cid})
+    neg_res = await db.execute(neg_sql, params)
     negative_stock = [
         {
             "item_id": r.stock_item_id,
@@ -1674,6 +1742,7 @@ async def get_company_stock_performance(
             "company_name": r.company_name,
             "uom": r.uom,
             "closing_qty": round(float(r.closing_qty), 3),
+            "closing_rate": round(float(r.closing_rate or 0), 2),
             "closing_value": round(float(r.closing_value or 0), 2),
         }
         for r in neg_res.fetchall()
@@ -1687,10 +1756,14 @@ async def get_company_stock_performance(
                COALESCE(sg.name, 'Others') AS company_name,
                COALESCE(u.symbol, 'PCS') AS uom,
                si.closing_qty, si.closing_value,
+               COALESCE(si.closing_rate, 0) AS closing_rate,
+               COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
                SUM(CASE WHEN se.is_inward = 0 THEN se.quantity ELSE 0 END) AS sold_qty,
                SUM(CASE WHEN se.is_inward = 0 THEN se.amount ELSE 0 END) AS sold_value,
                SUM(CASE WHEN se.is_inward = 1 THEN se.quantity ELSE 0 END) AS purchased_qty,
                SUM(CASE WHEN se.is_inward = 1 THEN se.amount ELSE 0 END) AS purchased_value,
+               COALESCE(AVG(CASE WHEN se.is_inward = 1 THEN se.rate END), 0) AS avg_inward_rate,
+               COALESCE(AVG(CASE WHEN se.is_inward = 0 THEN se.rate END), 0) AS avg_selling_rate,
                COALESCE(si.opening_qty, 0) AS opening_qty,
                COALESCE(si.opening_rate, 0) AS opening_rate
         FROM {ts}.stock_items si
@@ -1701,7 +1774,7 @@ async def get_company_stock_performance(
         LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
         LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
         WHERE si.company_id = :company_id
-        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_value, si.opening_qty, si.opening_rate
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_rate, si.closing_value, si.opening_qty, si.opening_rate
         HAVING sold_qty > 0
         ORDER BY sold_qty DESC
         LIMIT 25
@@ -1718,19 +1791,39 @@ async def get_company_stock_performance(
         total_q = op_q + in_q
         total_v = (op_q * op_r) + in_v
         avg_cost = total_v / total_q if total_q > 0 else 0
+
+        cl_unit_cost = float(r.closing_unit_cost or 0)
+        cl_rate = float(r.closing_rate or 0)
+        fallback_cost = cl_unit_cost if cl_unit_cost > 0 else (cl_rate if cl_rate > 0 else op_r)
+        if avg_cost <= 0:
+            avg_cost = fallback_cost
+        buy_rate = float(r.avg_inward_rate or 0) if float(r.avg_inward_rate or 0) > 0 else avg_cost
+
         cogs = s_qty * avg_cost
         profit = s_val - cogs
         gp_pct = (profit / s_val * 100) if s_val > 0 else 0
+        pending_qty = max(0.0, round(in_q - s_qty, 3))
+        pending_val = round(pending_qty * avg_cost, 2)
 
         fast_movers.append({
             "item_id": r.stock_item_id,
             "name": r.item_name,
             "company_name": r.company_name,
             "uom": r.uom,
+            "purchased_qty": round(in_q, 3),
+            "purchased_value": round(in_v, 2),
             "sold_qty": round(s_qty, 3),
             "sold_value": round(s_val, 2),
+            "pending_qty": pending_qty,
+            "pending_value": pending_val,
             "remaining_qty": round(float(r.closing_qty), 3),
             "remaining_value": round(float(r.closing_value or 0), 2),
+            "closing_qty": round(float(r.closing_qty), 3),
+            "closing_rate": round(cl_rate, 2),
+            "closing_value": round(float(r.closing_value or 0), 2),
+            "avg_purchase_rate": round(buy_rate, 2),
+            "avg_selling_rate": round(float(r.avg_selling_rate or 0), 2),
+            "avg_cost": round(avg_cost, 2),
             "profit_on_sold": round(profit, 2),
             "gp_percent": round(gp_pct, 2),
         })
@@ -1740,7 +1833,7 @@ async def get_company_stock_performance(
     # -------------------------------------------------------------------
     turnover_data = []
     for comp in companies_list:
-        avg_inventory = comp["pending_value"]  # Current closing as proxy
+        avg_inventory = comp.get("closing_value", 0) if comp.get("closing_value", 0) > 0 else comp["pending_value"]
         cogs = comp["cost_of_sold"]
         turnover_ratio = round(cogs / avg_inventory, 2) if avg_inventory > 0 else 0
         # Days to sell = 365 / turnover ratio
@@ -1749,7 +1842,7 @@ async def get_company_stock_performance(
             "company_name": comp["company_name"],
             "items_count": comp["items_count"],
             "cost_of_goods_sold": comp["cost_of_sold"],
-            "avg_inventory_value": comp["pending_value"],
+            "avg_inventory_value": avg_inventory,
             "turnover_ratio": turnover_ratio,
             "days_to_sell": days_to_sell,
             "sold_ratio": comp["sold_ratio"],

@@ -174,7 +174,7 @@ async def list_orders(
     result = await db.execute(
         select(TempOrder)
         .where(TempOrder.user_id == user.user_id)
-        .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item), selectinload(TempOrder.ledger))
+        .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group), selectinload(TempOrder.ledger))
         .order_by(desc(TempOrder.created_at))
         .limit(100)
     )
@@ -188,9 +188,11 @@ async def list_orders(
             subtotal = item.qty * item.price
             total += subtotal
 
+            c_name = item.stock_item.group_name if (item.stock_item and item.stock_item.group_name not in ("All", " Primary")) else None
             items_list.append({
                 "stock_item_id": item.stock_item_id,
                 "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
+                "company_name": c_name,
                 "qty": item.qty,
                 "price": item.price,
                 "is_bill_required": item.is_bill_required,
@@ -221,7 +223,7 @@ async def list_all_orders(
 
     result = await db.execute(
         select(TempOrder)
-        .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item), selectinload(TempOrder.ledger))
+        .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group), selectinload(TempOrder.ledger))
         .order_by(desc(TempOrder.created_at))
         .limit(500)
     )
@@ -235,9 +237,11 @@ async def list_all_orders(
             subtotal = item.qty * item.price
             total += subtotal
 
+            c_name = item.stock_item.group_name if (item.stock_item and item.stock_item.group_name not in ("All", " Primary")) else None
             items_list.append({
                 "stock_item_id": item.stock_item_id,
                 "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
+                "company_name": c_name,
                 "qty": item.qty,
                 "price": item.price,
                 "is_bill_required": item.is_bill_required,
@@ -270,7 +274,7 @@ async def get_order(
     result = await db.execute(
         select(TempOrder)
         .where(TempOrder.id == order_id)
-        .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item), selectinload(TempOrder.ledger))
+        .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group), selectinload(TempOrder.ledger))
     )
     order = result.scalars().first()
     if not order:
@@ -291,9 +295,11 @@ async def get_order(
         subtotal = item.qty * item.price
         total += subtotal
 
+        c_name = item.stock_item.group_name if (item.stock_item and item.stock_item.group_name not in ("All", " Primary")) else None
         items_list.append({
             "stock_item_id": item.stock_item_id,
             "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
+            "company_name": c_name,
             "qty": item.qty,
             "price": item.price,
             "is_bill_required": item.is_bill_required,

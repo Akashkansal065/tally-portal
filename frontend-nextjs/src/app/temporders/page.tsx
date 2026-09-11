@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils'
 type OrderItem = {
   stock_item_id: number
   stock_item_name: string
+  company_name?: string
   qty: number
   price: number
   is_bill_required?: boolean
@@ -310,7 +311,9 @@ export default function TempOrdersPage() {
                   {expandedOrder.items.map((item, idx) => (
                     <div key={idx} className="flex justify-between items-start gap-4 text-sm bg-muted/20 border border-border/40 p-3 rounded-xl">
                       <div className="min-w-0">
-                        <span className="font-bold text-foreground text-xs leading-tight block truncate">{item.stock_item_name}</span>
+                        <span className="font-bold text-foreground text-xs leading-tight block truncate">
+                          {toTitleCase(item.stock_item_name)}{item.company_name ? ` (${item.company_name})` : ''}
+                        </span>
                         <span className="text-[10px] text-muted-foreground mt-1 block">
                           Rate: {formatCurrency(item.price)} •{' '}
                           {(item.is_bill_required ?? item.has_gst) ? (

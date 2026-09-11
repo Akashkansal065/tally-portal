@@ -803,6 +803,7 @@ async def create_stock_item(
         "shelf_life_days": res_item.shelf_life_days,
         "is_active": res_item.is_active,
         "group_name": res_item.group.name if res_item.group else None,
+        "company_name": res_item.group.name if res_item.group else None,
         "uom": res_item.unit.symbol if res_item.unit else None,
         "closing_balance": res_item.closing_qty,
         "closing_rate": res_item.closing_rate,
@@ -876,6 +877,7 @@ async def get_stock_item(
         "shelf_life_days": item.shelf_life_days,
         "is_active": item.is_active,
         "group_name": item.group.name if item.group else None,
+        "company_name": item.group.name if item.group else None,
         "uom": item.unit.symbol if item.unit else None,
         "closing_balance": item.closing_qty,
         "closing_rate": item.closing_rate,
@@ -1194,6 +1196,7 @@ async def get_stock_items(
             shelf_life_days=item.shelf_life_days,
             is_active=item.is_active,
             group_name=item.group_name,
+            company_name=item.group_name,
             uom=item.uom,
             closing_balance=item.closing_qty,
             closing_rate=item.closing_rate,
@@ -1236,30 +1239,37 @@ async def get_item_vouchers(
             se.stock_entry_id,
             se.quantity,
             se.amount,
+            se.rate AS entry_rate,
+            COALESCE(se.discount_percent, 0) AS discount_percent,
+            COALESCE(se.discount_amount, 0) AS discount_amount,
             se.is_inward,
+            COALESCE(si.gst_rate_percent, 0) AS gst_rate,
             v.voucher_id,
             v.voucher_number,
             v.voucher_date,
             v.reference_number,
             vt.name AS voucher_type,
-            COALESCE(party_sub.party_name, party_sub2.party_name, 'Cash Account') AS party_name
+            COALESCE(debtor_sub.party_name, cash_sub.party_name, 'Cash / Counter Sale') AS party_name
         FROM {settings.TALLY_DATABASE_NAME}.stock_entries se
+        JOIN {settings.TALLY_DATABASE_NAME}.stock_items si ON se.stock_item_id = si.stock_item_id
         JOIN {settings.TALLY_DATABASE_NAME}.vouchers v ON se.voucher_id = v.voucher_id
         JOIN {settings.TALLY_DATABASE_NAME}.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
         LEFT JOIN (
-            SELECT ve.voucher_id, MAX(le.name) AS party_name
+            SELECT ve.voucher_id, MIN(le.name) AS party_name
             FROM {settings.TALLY_DATABASE_NAME}.voucher_entries ve
             JOIN {settings.TALLY_DATABASE_NAME}.ledgers le ON ve.ledger_id = le.ledger_id
             JOIN {settings.TALLY_DATABASE_NAME}.account_groups ag ON le.group_id = ag.group_id
             WHERE ag.name IN ('Sundry Debtors', 'Sundry Creditors')
             GROUP BY ve.voucher_id
-        ) party_sub ON party_sub.voucher_id = v.voucher_id
+        ) debtor_sub ON debtor_sub.voucher_id = v.voucher_id
         LEFT JOIN (
-            SELECT ve.voucher_id, MAX(le.name) AS party_name
+            SELECT ve.voucher_id, MIN(le.name) AS party_name
             FROM {settings.TALLY_DATABASE_NAME}.voucher_entries ve
             JOIN {settings.TALLY_DATABASE_NAME}.ledgers le ON ve.ledger_id = le.ledger_id
+            JOIN {settings.TALLY_DATABASE_NAME}.account_groups ag ON le.group_id = ag.group_id
+            WHERE ag.name IN ('Cash-in-hand', 'Bank Accounts', 'Bank OD A/c', 'Bank OCC A/c')
             GROUP BY ve.voucher_id
-        ) party_sub2 ON party_sub2.voucher_id = v.voucher_id
+        ) cash_sub ON cash_sub.voucher_id = v.voucher_id
         WHERE se.stock_item_id = :item_id
           AND v.company_id = :company_id
           AND COALESCE(v.is_cancelled, FALSE) = FALSE
@@ -1270,22 +1280,53 @@ async def get_item_vouchers(
     result = await db.execute(sql, params)
     rows = result.fetchall()
 
-    return [
-        {
+    vouchers_list = []
+    for r in rows:
+        qty = float(r.quantity)
+        amt = float(r.amount)
+        gross_rate = round(float(r.entry_rate), 2) if r.entry_rate is not None and float(r.entry_rate) > 0 else (round(abs(amt / qty), 2) if qty != 0 else 0.0)
+        disc_pct = float(getattr(r, 'discount_percent', 0.0) or 0.0)
+        disc_amt = float(getattr(r, 'discount_amount', 0.0) or 0.0)
+        gst = float(r.gst_rate or 0.0)
+
+        # Net effective rate (after discount) matches amount / quantity
+        if qty != 0:
+            raw_net_rate = abs(amt / qty)
+            net_rate = round(raw_net_rate, 2)
+        elif disc_pct > 0:
+            raw_net_rate = gross_rate * (1.0 - (disc_pct / 100.0))
+            net_rate = round(raw_net_rate, 2)
+        else:
+            raw_net_rate = gross_rate
+            net_rate = gross_rate
+
+        net_rate_incl_tax = round(raw_net_rate * (1.0 + (gst / 100.0)), 2) if gst > 0 else net_rate
+        gross_rate_incl_tax = round(gross_rate * (1.0 + (gst / 100.0)), 2) if gst > 0 else gross_rate
+
+        # If disc_pct is 0 but net_rate is lower than gross_rate (e.g. lump sum discount), calculate effective discount %
+        if disc_pct <= 0 and gross_rate > 0 and net_rate < gross_rate:
+            disc_pct = round(((gross_rate - net_rate) / gross_rate) * 100.0, 2)
+
+        vouchers_list.append({
             "stock_entry_id": r.stock_entry_id,
-            "quantity": float(r.quantity),
-            "amount": float(r.amount),
-            "rate": round(abs(float(r.amount) / float(r.quantity)), 2) if float(r.quantity) != 0 else 0.0,
+            "quantity": qty,
+            "amount": amt,
+            "rate": net_rate,
+            "rate_incl_tax": net_rate_incl_tax,
+            "gross_rate": gross_rate,
+            "gross_rate_incl_tax": gross_rate_incl_tax,
+            "discount_percent": disc_pct,
+            "discount_amount": disc_amt,
+            "gst_rate": gst,
             "is_inward": bool(r.is_inward),
             "voucher_id": r.voucher_id,
             "voucher_number": r.voucher_number,
             "voucher_date": str(r.voucher_date),
             "reference_number": r.reference_number or "",
             "voucher_type": r.voucher_type,
-            "party_name": r.party_name or "—",
-        }
-        for r in rows
-    ]
+            "party_name": r.party_name or "Cash / Counter Sale",
+        })
+    return vouchers_list
 
 
 # --- Bill of Materials (BOM) ---
