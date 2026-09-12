@@ -90,7 +90,7 @@ export default function RootLayout({
             </PeriodProvider>
           </AuthProvider>
         </ThemeProvider>
-        <SpeedInsights />
+        {process.env.NODE_ENV === 'production' && <SpeedInsights />}
       </body>
     </html>
   )

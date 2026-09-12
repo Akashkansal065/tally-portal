@@ -11,6 +11,87 @@ type Props = {
   isInventoryVoucher: boolean
 }
 
+export function getPiecesPerUnit(itemName?: string, uom?: string): number {
+  const u = (uom || '').toUpperCase().trim()
+  const name = (itemName || '').toUpperCase()
+
+  // 1. DOZEN (DOZ, DOZEN, DZ)
+  if (u === 'DOZ' || u === 'DOZEN' || u === 'DZ' || name.includes('/DOZ') || name.includes('(DOZ') || name.includes(' PER DOZ')) {
+    return 12
+  }
+
+  // 2. Explicit "X PCS SET" or "SET OF X" in name regardless of UOM
+  const matchExplicitSet = name.match(/(\d+)\s*(?:PCS|PC|PIECE|PIECES)\s*SET\b/)
+  if (matchExplicitSet && parseInt(matchExplicitSet[1], 10) > 0) {
+    return parseInt(matchExplicitSet[1], 10)
+  }
+
+  const matchSetOf = name.match(/SET\s*(?:OF|-)\s*(\d+)/)
+  if (matchSetOf && parseInt(matchSetOf[1], 10) > 0) {
+    return parseInt(matchSetOf[1], 10)
+  }
+
+  // 3. SET (SET, SETS) or item name with SET
+  if (u === 'SET' || u === 'SETS' || name.endsWith(' SET') || name.includes(' SET ')) {
+    // Check for explicit "X PCS" or "X PC" in item name
+    const matchPcs = name.match(/(\d+)\s*(?:PCS|PC|PIECE|PIECES)\b/)
+    if (matchPcs && parseInt(matchPcs[1], 10) > 0) {
+      return parseInt(matchPcs[1], 10)
+    }
+
+    // Common crockery / tableware conventions
+    if (name.includes('GLASS')) return 6
+    if (name.includes('PLATE') || name.includes('BOWL') || name.includes('CUP') || name.includes('MUG SET')) return 6
+    if (name.includes('LINER') || name.includes('MODU STACK') || name.includes('FOOD FRESH')) return 3
+    if (name.includes('HANGER')) return 6
+    if (name.includes('SERVE SET')) return 3
+
+    return 1
+  }
+
+  // 4. BOX or PKT (pack/packet) if pieces specified in name
+  if (u === 'BOX' || u === 'PKT' || u === 'PACK') {
+    const matchPcs = name.match(/(\d+)\s*(?:PCS|PC)\b/)
+    if (matchPcs && parseInt(matchPcs[1], 10) > 0) {
+      return parseInt(matchPcs[1], 10)
+    }
+  }
+
+  return 1
+}
+
+export function getPriceDerivation(
+  rateInclTax: number,
+  discPercent: number,
+  piecesPerUnit: number,
+  uom?: string,
+  pricePerPc?: number,
+  totalPcs?: number,
+  qty?: number
+) {
+  const rateStr = `₹${rateInclTax.toLocaleString('en-IN', { minimumFractionDigits: rateInclTax % 1 === 0 ? 0 : 2, maximumFractionDigits: 2 })}`
+  const netRate = discPercent > 0 ? rateInclTax * (1 - discPercent / 100) : rateInclTax
+  const uomLower = (uom || 'unit').toLowerCase()
+
+  let derivationText: string | null = null
+
+  if (piecesPerUnit > 1 && discPercent > 0) {
+    derivationText = `(${rateStr} - ${discPercent}%) ÷ ${piecesPerUnit} pcs`
+  } else if (piecesPerUnit > 1) {
+    derivationText = `${rateStr} ÷ ${piecesPerUnit} pcs`
+  } else if (discPercent > 0) {
+    derivationText = `${rateStr} - ${discPercent}%`
+  }
+
+  const finalPrice = pricePerPc || (piecesPerUnit > 0 ? netRate / piecesPerUnit : netRate)
+  const totalCount = totalPcs || (qty ? qty * piecesPerUnit : piecesPerUnit)
+  const totalAmt = finalPrice * totalCount
+
+  const tooltipText = `Price with Tax: ₹${finalPrice.toFixed(2)}/pc${totalCount > 1 ? ` • Total: ₹${totalAmt.toFixed(2)} for ${totalCount} pcs` : ''} • Formula: ${rateStr}${discPercent > 0 ? ` - ${discPercent}% disc = ₹${netRate.toFixed(2)}` : ''}${piecesPerUnit > 1 ? ` ÷ ${piecesPerUnit} pcs/${uomLower}` : ''}`
+
+  return { derivationText, tooltipText }
+}
+
 export default function VoucherDetailsClient({ header, accounts, inventory, isInventoryVoucher }: Props) {
   const [searchQuery, setSearchQuery] = useState('')
   const [filterType, setFilterType] = useState('all') // all | items | accounts | discounted
@@ -38,7 +119,7 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
     if (sortBy !== 'default') {
       const [key, direction] = sortBy.split('-')
       const mult = direction === 'asc' ? 1 : -1
-      
+
       result.sort((a, b) => {
         if (key === 'name') {
           return (a.item || '').localeCompare(b.item || '') * mult
@@ -188,8 +269,23 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                 ? parseFloat(String(item.rateInclTax))
                 : (gstRate > 0 ? Math.round(rate * (1 + gstRate / 100) * 100) / 100 : rate)
               const hsnCode = item.gstHsnCode || item.gst_hsn_code || item.hsn_code || ''
-              const discPercent = parseFloat(String(item.discountAmount || item.discount_percent || '0'))
+              const discPercent = parseFloat(String(item.discount_percent ?? item.discountAmount ?? '0'))
               const amt = Math.abs(parseFloat(String(item.amount || '0')))
+
+              const piecesPerUnit = getPiecesPerUnit(item.item, item.uom)
+              const totalPcs = qty * piecesPerUnit
+              const baseRateInclTax = rateInclTax > 0 ? rateInclTax : (gstRate > 0 ? rate * (1 + gstRate / 100) : rate)
+              const netRateInclTax = discPercent > 0 ? baseRateInclTax * (1 - discPercent / 100) : baseRateInclTax
+              const pricePerPc = piecesPerUnit > 0 ? netRateInclTax / piecesPerUnit : netRateInclTax
+              const { derivationText, tooltipText } = getPriceDerivation(
+                baseRateInclTax,
+                discPercent,
+                piecesPerUnit,
+                item.uom,
+                pricePerPc,
+                totalPcs,
+                qty
+              )
 
               return (
                 <div key={`mob-inv-${idx}`} className="p-4 bg-muted/20 border border-border rounded flex flex-col gap-3 shadow-sm font-sans">
@@ -213,13 +309,26 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                       );
                     })()}
                   </div>
-                  
+
                   {/* Metrics Grid */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm mt-1">
                     {/* Qty & UOM */}
                     <div className="bg-card border border-border/50 p-2.5 rounded flex flex-col">
                       <span className="text-[10px] sm:text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Qty</span>
                       <span className="font-extrabold font-mono text-foreground text-sm sm:text-base mt-0.5">{qty.toLocaleString('en-IN')} {item.uom}</span>
+                    </div>
+
+                    {/* Price/Pc(Tax) */}
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded flex flex-col" title={tooltipText}>
+                      <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider">Price/Pc(Tax)</span>
+                      <span className="font-extrabold font-mono text-emerald-700 dark:text-emerald-400 text-sm sm:text-base mt-0.5">
+                        ₹{pricePerPc.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                      {derivationText && (
+                        <span className="text-[10px] text-emerald-700/85 dark:text-emerald-400/85 font-mono mt-0.5 font-medium">
+                          {derivationText}
+                        </span>
+                      )}
                     </div>
 
                     {/* HSN/SAC */}
@@ -301,10 +410,11 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                 <>
                   <th className="py-2 px-2 text-muted-foreground text-xs font-bold font-mono">HSN/SAC</th>
                   <th className="py-2 text-right px-2">Quantity</th>
-                  <th className="py-2 text-right px-2">Rate(Incl of Tax)</th>
                   <th className="py-2 text-right px-2">per</th>
+                  <th className="py-2 text-right px-2">Rate(Incl of Tax)</th>
                   <th className="py-2 text-right px-2">Rate</th>
                   <th className="py-2 text-right px-2">Disc %</th>
+                  <th className="py-2 text-right px-2 whitespace-nowrap">Price/Pc(Tax)</th>
                 </>
               )}
               <th className="py-2 text-right px-2">Amount</th>
@@ -313,13 +423,30 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
           <tbody className="divide-y divide-border/40">
             {/* Inventory Items (Stock) */}
             {processedInventory.map((item, idx) => {
+              const qty = Math.abs(parseFloat(String(item.quantity || '0')))
               const rate = parseFloat(String(item.rate || '0'))
               const gstRate = parseFloat(String(item.gstRate ?? item.gst_rate ?? '0'))
               const rateInclTax = item.rateInclTax !== undefined && item.rateInclTax !== null && parseFloat(String(item.rateInclTax)) > 0
                 ? parseFloat(String(item.rateInclTax))
                 : (gstRate > 0 ? Math.round(rate * (1 + gstRate / 100) * 100) / 100 : rate)
               const hsnCode = item.gstHsnCode || item.gst_hsn_code || item.hsn_code || ''
-              const discPercent = parseFloat(String(item.discountAmount || item.discount_percent || '0'))
+              const discPercent = parseFloat(String(item.discount_percent ?? item.discountAmount ?? '0'))
+              const amt = Math.abs(parseFloat(String(item.amount || '0')))
+
+              const piecesPerUnit = getPiecesPerUnit(item.item, item.uom)
+              const totalPcs = qty * piecesPerUnit
+              const baseRateInclTax = rateInclTax > 0 ? rateInclTax : (gstRate > 0 ? rate * (1 + gstRate / 100) : rate)
+              const netRateInclTax = discPercent > 0 ? baseRateInclTax * (1 - discPercent / 100) : baseRateInclTax
+              const pricePerPc = piecesPerUnit > 0 ? netRateInclTax / piecesPerUnit : netRateInclTax
+              const { derivationText, tooltipText } = getPriceDerivation(
+                baseRateInclTax,
+                discPercent,
+                piecesPerUnit,
+                item.uom,
+                pricePerPc,
+                totalPcs,
+                qty
+              )
 
               return (
                 <tr key={`inv-${idx}`} className="align-top hover:bg-muted/30 transition-colors">
@@ -344,20 +471,33 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                     {hsnCode}
                   </td>
                   <td className="py-2 text-right px-2 font-mono">
-                    {Math.abs(parseFloat(String(item.quantity || '0'))).toLocaleString('en-IN', { maximumFractionDigits: 4 })}
+                    {qty.toLocaleString('en-IN', { maximumFractionDigits: 4 })}
                   </td>
+                  <td className="py-2 text-right px-2 text-muted-foreground">{item.uom || ''}</td>
                   <td className="py-2 text-right px-2 font-mono font-bold text-foreground">
                     {rateInclTax > 0 ? rateInclTax.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ''}
                   </td>
-                  <td className="py-2 text-right px-2 text-muted-foreground">{item.uom || ''}</td>
                   <td className="py-2 text-right px-2 font-mono">
                     {rate.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                   </td>
                   <td className="py-2 text-right px-2 font-mono">
                     {discPercent > 0 ? `${discPercent}%` : ''}
                   </td>
+                  <td
+                    className="py-2 text-right px-2 font-mono"
+                    title={tooltipText}
+                  >
+                    <div className="font-bold text-foreground">
+                      {pricePerPc > 0 ? pricePerPc.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-'}
+                    </div>
+                    {derivationText && (
+                      <div className="text-[10px] text-muted-foreground font-sans font-medium whitespace-nowrap mt-0.5">
+                        {derivationText}
+                      </div>
+                    )}
+                  </td>
                   <td className="py-2 text-right px-2 font-mono font-bold tabular-nums">
-                    {Math.abs(parseFloat(String(item.amount || '0'))).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                    {amt.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                   </td>
                 </tr>
               )
@@ -390,6 +530,8 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                       (-){discRate}
                     </td>
                     <td className="py-2 px-2"></td>
+                    <td className="py-2 px-2"></td>
+                    <td className="py-2 px-2"></td>
                     <td className="py-2 text-right px-2 font-mono tabular-nums font-bold text-foreground">
                       (-){Math.abs(amt).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                     </td>
@@ -404,7 +546,7 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
 
               return (
                 <tr key={`acc-${idx}`} className="hover:bg-muted/30 transition-colors">
-                  <td className="py-2 px-2 italic text-muted-foreground" colSpan={isInventoryVoucher ? 6 : 1}>
+                  <td className="py-2 px-2 italic text-muted-foreground" colSpan={isInventoryVoucher ? 8 : 1}>
                     <span className="text-foreground not-italic font-medium">
                       {isDebit ? 'Dr ' : 'To '}
                     </span>
