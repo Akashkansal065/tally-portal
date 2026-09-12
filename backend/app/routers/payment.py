@@ -162,7 +162,8 @@ def _build_dunning_message(
     bills: List[Any],
     vpa: str,
     dunning_level: str,
-    bucket_name: Optional[str] = None
+    bucket_name: Optional[str] = None,
+    aging_summary: Optional[dict] = None
 ) -> tuple[str, str]:
     params = {
         "pa": vpa,
@@ -179,7 +180,7 @@ def _build_dunning_message(
     elif dunning_level == "FORMAL":
         header = "*OUTSTANDING PAYMENT REMINDER*"
 
-    bucket_desc = f" ({bucket_name} overdue)" if bucket_name and bucket_name.upper() not in ["ALL", "OVERDUE"] else ""
+    bucket_desc = f" ({bucket_name} Days Overdue)" if bucket_name and bucket_name.upper() not in ["ALL", "OVERDUE"] else ""
     lines = [
         f"{header} — *{company_name}*",
         "",
@@ -187,17 +188,49 @@ def _build_dunning_message(
         f"Hope you are doing well.",
         "",
         f"This is a reminder that you have a pending balance of *₹{total_due:,.2f}*{bucket_desc} across *{len(bills)} bill(s)*.",
+    ]
+
+    # Include date-based bucket aging breakdown when available
+    if aging_summary:
+        breakdown_items = []
+        if aging_summary.get("90_plus", 0) > 0:
+            breakdown_items.append(f"• *90+ Days:* ₹{aging_summary['90_plus']:,.2f}")
+        if aging_summary.get("61_90", 0) > 0:
+            breakdown_items.append(f"• *61–90 Days:* ₹{aging_summary['61_90']:,.2f}")
+        if aging_summary.get("31_60", 0) > 0:
+            breakdown_items.append(f"• *31–60 Days:* ₹{aging_summary['31_60']:,.2f}")
+        if aging_summary.get("1_30", 0) > 0:
+            breakdown_items.append(f"• *1–30 Days:* ₹{aging_summary['1_30']:,.2f}")
+        if aging_summary.get("current", 0) > 0:
+            breakdown_items.append(f"• *Current (Not Due):* ₹{aging_summary['current']:,.2f}")
+
+        if breakdown_items:
+            lines.extend([
+                "",
+                "*Aging Breakdown by Date:*",
+                *breakdown_items
+            ])
+
+    lines.extend([
         "",
         "*Itemized Invoices:*"
-    ]
+    ])
 
     for b in bills[:5]:
         amt = float(getattr(b, "outstanding_amount", None) or (getattr(b, "bill_amount", 0) - getattr(b, "settled_amount", 0)))
         b_ref = getattr(b, "bill_reference", None) or f"#{getattr(b, 'bill_id', '')}"
         due_val = getattr(b, "due_date", None)
         bill_val = getattr(b, "bill_date", None)
-        d_str = f"Due: {due_val}" if due_val else (f"Dated: {bill_val}" if bill_val else "")
-        lines.append(f"• *{b_ref}* ({d_str}): ₹{amt:,.2f}")
+        days = getattr(b, "days_overdue", 0)
+        overdue_tag = f" ({days}d overdue)" if days > 0 else " (Current)"
+        
+        date_parts = []
+        if bill_val:
+            date_parts.append(f"Date: {bill_val}")
+        if due_val:
+            date_parts.append(f"Due: {due_val}")
+        d_str = f" ({' | '.join(date_parts)})" if date_parts else ""
+        lines.append(f"• *{b_ref}*{d_str}{overdue_tag}: ₹{amt:,.2f}")
 
     if len(bills) > 5:
         lines.append(f"• ... and {len(bills) - 5} more invoice(s)")
@@ -218,6 +251,7 @@ def _build_dunning_message(
 
 @router.get("/aging/dashboard", response_model=AgingDashboardResponse)
 async def get_aging_dashboard(
+    party_ledger_id: Optional[int] = None,
     user: User = Depends(require_permission("payments", "read")),
     db: AsyncSession = Depends(get_db)
 ):
@@ -261,7 +295,12 @@ async def get_aging_dashboard(
     if not debtor_group_ids:
         debtor_group_ids = {0}
 
-    # 3. Query all debtors with net balance strictly from voucher entries (Debits - Credits)
+    # 3. Query all debtors with opening balance + voucher entries (Debits - Credits)
+    party_filter = "AND l.ledger_id = :target_party_id" if party_ledger_id else ""
+    params = {"comp_id": user.company_id}
+    if party_ledger_id:
+        params["target_party_id"] = party_ledger_id
+
     group_ids_str = ",".join(str(gid) for gid in debtor_group_ids)
     debtors_q = await db.execute(text(f"""
         SELECT 
@@ -271,14 +310,16 @@ async def get_aging_dashboard(
             l.phone,
             l.email,
             l.credit_period_days,
+            COALESCE(l.opening_balance, 0) as opening_balance,
+            COALESCE(l.opening_balance_type, 'Dr') as opening_balance_type,
             COALESCE(SUM(e.debit_amount), 0) as total_debit,
             COALESCE(SUM(e.credit_amount), 0) as total_credit
         FROM tally_sync.ledgers l
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
         LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-        WHERE l.company_id = :comp_id AND l.group_id IN ({group_ids_str})
-        GROUP BY l.ledger_id, l.name, l.mobile, l.phone, l.email, l.credit_period_days
-    """), {"comp_id": user.company_id})
+        WHERE l.company_id = :comp_id AND l.group_id IN ({group_ids_str}) {party_filter}
+        GROUP BY l.ledger_id, l.name, l.mobile, l.phone, l.email, l.credit_period_days, l.opening_balance, l.opening_balance_type
+    """), params)
     debtors = debtors_q.all()
 
     today = date.today()
@@ -293,7 +334,9 @@ async def get_aging_dashboard(
     bucket_90_plus = 0.0
 
     for d in debtors:
-        net_bal = float(d.total_debit) - float(d.total_credit)
+        op_bal = float(d.opening_balance or 0.0)
+        op_sign = -1.0 if (d.opening_balance_type or "Dr").strip().lower() == "cr" else 1.0
+        net_bal = (op_bal * op_sign) + float(d.total_debit) - float(d.total_credit)
         
         # If customer has settled or has advance credit balance, no debt to collect
         if net_bal <= 0.01:
@@ -478,7 +521,7 @@ async def generate_whatsapp_reminder(
         company_upi = company.features.get("upi_id") or company.features.get("upi_vpa")
     vpa = company_upi or settings.DEFAULT_UPI_VPA or ""
 
-    aging_data = await get_aging_dashboard(user=user, db=db)
+    aging_data = await get_aging_dashboard(party_ledger_id=req.party_ledger_id, user=user, db=db)
     cust = next((c for c in aging_data.customers if c.party_ledger_id == req.party_ledger_id), None)
     if not cust:
         # Fallback in case party is not found in debtor aging
@@ -501,8 +544,8 @@ async def generate_whatsapp_reminder(
         target_bills = [b for b in cust.bills if 30 < b.days_overdue <= 60]
         total_due = cust.days_31_60 or sum(b.outstanding_amount for b in target_bills)
     elif bucket_filter in ["0-30", "0-30 DAYS", "1-30", "1-30 DAYS"]:
-        target_bills = [b for b in cust.bills if b.days_overdue <= 30]
-        total_due = (cust.current_not_due + cust.days_1_30) or sum(b.outstanding_amount for b in target_bills)
+        target_bills = [b for b in cust.bills if 0 < b.days_overdue <= 30]
+        total_due = cust.days_1_30 or sum(b.outstanding_amount for b in target_bills)
     elif bucket_filter == "OVERDUE":
         target_bills = [b for b in cust.bills if b.days_overdue > 0]
         total_due = sum(b.outstanding_amount for b in target_bills)
@@ -515,6 +558,13 @@ async def generate_whatsapp_reminder(
         total_due = cust.total_outstanding
 
     dunning = req.dunning_level.upper() if req.dunning_level != "auto" else cust.dunning_level
+    aging_summary = {
+        "current": cust.current_not_due,
+        "1_30": cust.days_1_30,
+        "31_60": cust.days_31_60,
+        "61_90": cust.days_61_90,
+        "90_plus": cust.days_90_plus,
+    }
     msg_text, upi_uri = _build_dunning_message(
         cust.party_name,
         company_name,
@@ -522,7 +572,8 @@ async def generate_whatsapp_reminder(
         bills,
         vpa,
         dunning,
-        bucket_name=bucket_filter if bucket_filter != "ALL" else None
+        bucket_name=bucket_filter if bucket_filter not in ["ALL", "OVERDUE"] else None,
+        aging_summary=aging_summary if bucket_filter in ["ALL", "OVERDUE"] else None
     )
 
     raw_phone = cust.phone or ""
@@ -583,7 +634,22 @@ async def send_bulk_reminders(
             )
         )
         bills = party_bills_res.scalars().all()
-        msg_text, upi_uri = _build_dunning_message(c.party_name, aging_data.merchant_name, c.total_outstanding, bills, aging_data.upi_vpa, c.dunning_level)
+        c_aging_summary = {
+            "current": c.current_not_due,
+            "1_30": c.days_1_30,
+            "31_60": c.days_31_60,
+            "61_90": c.days_61_90,
+            "90_plus": c.days_90_plus,
+        }
+        msg_text, upi_uri = _build_dunning_message(
+            c.party_name,
+            aging_data.merchant_name,
+            c.total_outstanding,
+            bills,
+            aging_data.upi_vpa,
+            c.dunning_level,
+            aging_summary=c_aging_summary
+        )
         
         raw_phone = c.phone or ""
         clean_phone = "".join(filter(str.isdigit, raw_phone))

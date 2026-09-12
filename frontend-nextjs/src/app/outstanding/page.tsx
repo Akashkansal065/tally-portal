@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, Fragment } from 'react'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate } from '@/lib/utils'
@@ -99,6 +99,163 @@ interface ReminderPreview {
   upi_vpa: string
 }
 
+function buildClientReminderPreview(
+  cust: CustomerAgingSummary,
+  merchantName: string,
+  upiVpa: string,
+  tone: string = 'auto',
+  bucket: string = 'ALL'
+): ReminderPreview {
+  const dunningLevel = tone === 'auto' ? cust.dunning_level : tone.toUpperCase()
+
+  let targetBills = cust.bills || []
+  let totalDue = cust.total_outstanding || 0
+
+  const bFilter = bucket.toUpperCase().trim()
+  if (bFilter === '90+' || bFilter === '90') {
+    targetBills = (cust.bills || []).filter((b) => b.days_overdue > 90)
+    totalDue = cust.days_90_plus || targetBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bFilter === '61-90') {
+    targetBills = (cust.bills || []).filter((b) => b.days_overdue > 60 && b.days_overdue <= 90)
+    totalDue = cust.days_61_90 || targetBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bFilter === '31-60') {
+    targetBills = (cust.bills || []).filter((b) => b.days_overdue > 30 && b.days_overdue <= 60)
+    totalDue = cust.days_31_60 || targetBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bFilter === '0-30' || bFilter === '1-30') {
+    targetBills = (cust.bills || []).filter((b) => b.days_overdue > 0 && b.days_overdue <= 30)
+    totalDue = cust.days_1_30 || targetBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bFilter === 'OVERDUE') {
+    targetBills = (cust.bills || []).filter((b) => b.days_overdue > 0)
+    totalDue = targetBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  }
+
+  const bills = targetBills.length > 0 ? targetBills : (cust.bills || [])
+  if (targetBills.length === 0) totalDue = cust.total_outstanding || 0
+
+  const roundedDue = Math.round(totalDue * 100) / 100
+  const formattedDue = totalDue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  const params = new URLSearchParams({
+    pa: upiVpa || '',
+    pn: merchantName || 'Merchant',
+    am: roundedDue.toFixed(2),
+    cu: 'INR',
+    tn: `Bill Due ${cust.party_name.slice(0, 15)}`
+  })
+  const upiUri = `upi://pay?${params.toString()}`
+
+  let header = '*PAYMENT REMINDER*'
+  if (dunningLevel === 'URGENT') {
+    header = '*[URGENT] OVERDUE PAYMENT NOTICE*'
+  } else if (dunningLevel === 'FORMAL') {
+    header = '*OUTSTANDING PAYMENT REMINDER*'
+  }
+
+  const bucketDesc = (bFilter !== 'ALL' && bFilter !== 'OVERDUE') ? ` (${bucket} Days Overdue)` : ''
+  const lines: string[] = [
+    `${header} — *${merchantName}*`,
+    '',
+    `Dear *${cust.party_name}*,`,
+    'Hope you are doing well.',
+    '',
+    `This is a reminder that you have a pending balance of *₹${formattedDue}*${bucketDesc} across *${bills.length} bill(s)*.`
+  ]
+
+  if (bFilter === 'ALL' || bFilter === 'OVERDUE') {
+    const breakdownLines: string[] = []
+    if (cust.days_90_plus > 0) breakdownLines.push(`• *90+ Days:* ₹${cust.days_90_plus.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+    if (cust.days_61_90 > 0) breakdownLines.push(`• *61–90 Days:* ₹${cust.days_61_90.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+    if (cust.days_31_60 > 0) breakdownLines.push(`• *31–60 Days:* ₹${cust.days_31_60.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+    if (cust.days_1_30 > 0) breakdownLines.push(`• *1–30 Days:* ₹${cust.days_1_30.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+    if (cust.current_not_due > 0) breakdownLines.push(`• *Current (Not Due):* ₹${cust.current_not_due.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+
+    if (breakdownLines.length > 0) {
+      lines.push('', '*Aging Breakdown by Date:*', ...breakdownLines)
+    }
+  }
+
+  lines.push('', '*Itemized Invoices:*')
+  for (const b of bills.slice(0, 5)) {
+    const amt = b.outstanding_amount ?? (b.bill_amount - b.settled_amount)
+    const bRef = b.bill_reference || `#${b.bill_id}`
+    const dateParts: string[] = []
+    if (b.bill_date) dateParts.push(`Date: ${b.bill_date}`)
+    if (b.due_date) dateParts.push(`Due: ${b.due_date}`)
+    const dStr = dateParts.length > 0 ? ` (${dateParts.join(' | ')})` : ''
+    const overdueTag = b.days_overdue > 0 ? ` (${b.days_overdue}d overdue)` : ' (Current)'
+    lines.push(`• *${bRef}*${dStr}${overdueTag}: ₹${amt.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+  }
+
+  if (bills.length > 5) {
+    lines.push(`• ... and ${bills.length - 5} more invoice(s)`)
+  }
+
+  lines.push(
+    '',
+    '*Instant Direct UPI Payment:*',
+    `UPI ID: *${upiVpa}*`,
+    `Direct Link: ${upiUri}`,
+    '',
+    'Kindly clear this at your earliest convenience. If payment has already been made, please reply with the UTR number.',
+    '',
+    'Warm regards,',
+    `*${merchantName}*`
+  )
+
+  const messageText = lines.join('\n')
+  const rawPhone = cust.phone || ''
+  const cleanPhone = rawPhone.replace(/\D/g, '')
+  const fullPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone
+  const whatsappUrl = fullPhone 
+    ? `https://wa.me/${fullPhone}?text=${encodeURIComponent(messageText)}`
+    : `https://wa.me/?text=${encodeURIComponent(messageText)}`
+
+  return {
+    party_ledger_id: cust.party_ledger_id,
+    party_name: cust.party_name,
+    phone: cust.phone,
+    email: cust.email,
+    total_due: roundedDue,
+    overdue_bills_count: bills.length,
+    dunning_level: dunningLevel,
+    message_text: messageText,
+    whatsapp_url: whatsappUrl,
+    upi_uri: upiUri,
+    upi_vpa: upiVpa
+  }
+}
+
+function getCustomerBucketData(cust: CustomerAgingSummary, bucket: string) {
+  const displayBills = (cust.bills || []).filter((b) => {
+    if (bucket === 'ALL') return true
+    if (bucket === 'OVERDUE') return b.days_overdue > 0
+    if (bucket === '0-30' || bucket === '1-30') return b.days_overdue > 0 && b.days_overdue <= 30
+    if (bucket === '31-60') return b.days_overdue > 30 && b.days_overdue <= 60
+    if (bucket === '61-90') return b.days_overdue > 60 && b.days_overdue <= 90
+    if (bucket === '90+') return b.days_overdue > 90
+    return true
+  })
+
+  let bucketAmount = cust.total_outstanding
+  if (bucket === '90+') {
+    bucketAmount = cust.days_90_plus || displayBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bucket === '61-90') {
+    bucketAmount = cust.days_61_90 || displayBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bucket === '31-60') {
+    bucketAmount = cust.days_31_60 || displayBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bucket === '0-30' || bucket === '1-30') {
+    bucketAmount = cust.days_1_30 || displayBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  } else if (bucket === 'OVERDUE') {
+    bucketAmount = (cust.total_outstanding - cust.current_not_due) || displayBills.reduce((s, b) => s + b.outstanding_amount, 0)
+  }
+
+  return {
+    displayBills,
+    bucketAmount,
+    billsCount: displayBills.length
+  }
+}
+
 export default function DebtorsAgingPage() {
   const { token, user } = useAuth()
   const [data, setData] = useState<AgingDashboardData | null>(null)
@@ -113,10 +270,10 @@ export default function DebtorsAgingPage() {
 
   // Reminder Modal State
   const [reminderModalOpen, setReminderModalOpen] = useState(false)
-  const [previewData, setPreviewData] = useState<ReminderPreview | null>(null)
-  const [isGeneratingReminder, setIsGeneratingReminder] = useState(false)
   const [selectedDunningLevel, setSelectedDunningLevel] = useState<string>('auto')
   const [reminderBucket, setReminderBucket] = useState<string>('ALL')
+  const [previewData, setPreviewData] = useState<ReminderPreview | null>(null)
+  const [isGeneratingReminder, setIsGeneratingReminder] = useState(false)
   const [isCopied, setIsCopied] = useState(false)
 
   // Bulk Reminders Modal State
@@ -144,11 +301,14 @@ export default function DebtorsAgingPage() {
       const res = await fetch(`${API_BASE}/payment/aging/dashboard`, {
         headers: authHeaders(token)
       })
-      if (!res.ok) {
-        throw new Error('Failed to load debtors aging report')
-      }
+      if (!res.ok) throw new Error('Failed to fetch aging dashboard')
       const json: AgingDashboardData = await res.json()
-      setData(json)
+      setData({
+        kpis: json.kpis,
+        customers: json.customers,
+        upi_vpa: json.upi_vpa,
+        merchant_name: json.merchant_name || 'Merchant'
+      })
     } catch (err: any) {
       setError(err.message || 'Error fetching aging data')
     } finally {
@@ -181,10 +341,27 @@ export default function DebtorsAgingPage() {
   }
 
   const handleOpenReminder = async (partyId: number, level: string = 'auto', bucket: string = selectedBucket) => {
-    if (!token) return
-    setIsGeneratingReminder(true)
     setSelectedDunningLevel(level)
     setReminderBucket(bucket)
+
+    // 1. Instant client-side generation (0ms latency, zero wait)
+    const cust = data?.customers.find((c) => c.party_ledger_id === partyId)
+    if (cust) {
+      const preview = buildClientReminderPreview(
+        cust,
+        data?.merchant_name || 'Sneh Distributors',
+        data?.upi_vpa || '',
+        level,
+        bucket
+      )
+      setPreviewData(preview)
+      setReminderModalOpen(true)
+      return
+    }
+
+    // 2. Fallback to API if customer data not found in local state
+    if (!token) return
+    setIsGeneratingReminder(true)
     try {
       const res = await fetch(`${API_BASE}/payment/reminders/generate-whatsapp`, {
         method: 'POST',
@@ -493,6 +670,7 @@ export default function DebtorsAgingPage() {
                 {filteredCustomers.map((cust) => {
                   const isExpanded = expandedPartyIds.has(cust.party_ledger_id)
                   const total = cust.total_outstanding || 1
+                  const { displayBills, bucketAmount, billsCount } = getCustomerBucketData(cust, selectedBucket)
 
                   return (
                     <div key={cust.party_ledger_id} className="p-4 space-y-3 bg-card hover:bg-muted/20 transition-colors">
@@ -541,15 +719,31 @@ export default function DebtorsAgingPage() {
                       {/* Financial Metrics Summary */}
                       <div className="grid grid-cols-2 gap-2 p-2.5 rounded-xl bg-muted/40 border border-border/60">
                         <div>
-                          <span className="text-[10px] uppercase font-bold text-muted-foreground block">Total Due</span>
-                          <span className="text-base font-black font-mono text-foreground">
-                            {formatCurrency(cust.total_outstanding)}
+                          <span className="text-[10px] uppercase font-bold text-muted-foreground block">
+                            {selectedBucket !== 'ALL' ? `${selectedBucket}d Due` : 'Total Due'}
                           </span>
+                          <span className="text-base font-black font-mono text-foreground">
+                            {formatCurrency(selectedBucket !== 'ALL' ? bucketAmount : cust.total_outstanding)}
+                          </span>
+                          {selectedBucket !== 'ALL' && (
+                            <span className="text-[10px] text-muted-foreground block font-mono">
+                              Total: {formatCurrency(cust.total_outstanding)}
+                            </span>
+                          )}
                         </div>
                         <div className="text-right">
-                          <span className="text-[10px] uppercase font-bold text-muted-foreground block">Open Bills</span>
+                          <span className="text-[10px] uppercase font-bold text-muted-foreground block">
+                            {selectedBucket !== 'ALL' ? `Bills (${selectedBucket}d)` : 'Open Bills'}
+                          </span>
                           <span className="text-xs font-bold font-mono text-foreground">
-                            {cust.open_bills_count} bills
+                            {selectedBucket !== 'ALL' ? (
+                              <>
+                                <span className="font-black text-foreground">{billsCount}</span>
+                                <span className="text-muted-foreground font-normal"> of {cust.open_bills_count}</span>
+                              </>
+                            ) : (
+                              `${cust.open_bills_count} bills`
+                            )}
                           </span>
                         </div>
                       </div>
@@ -603,7 +797,7 @@ export default function DebtorsAgingPage() {
                           className="flex-1 py-2 px-3 rounded-xl border border-border bg-background hover:bg-muted text-xs font-bold text-foreground flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                         >
                           <FileText className="w-3.5 h-3.5 text-muted-foreground" />
-                          <span>{isExpanded ? 'Hide Bills' : `View Bills (${cust.bills.length})`}</span>
+                          <span>{isExpanded ? 'Hide Bills' : `View Bills (${billsCount}${selectedBucket !== 'ALL' ? ` of ${cust.bills.length}` : ''})`}</span>
                           {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                         </button>
                         <button
@@ -616,48 +810,36 @@ export default function DebtorsAgingPage() {
                       </div>
 
                       {/* Mobile Bill Details Dropdown */}
-                      {isExpanded && (() => {
-                        const displayBills = cust.bills.filter((b) => {
-                          if (selectedBucket === 'ALL') return true
-                          if (selectedBucket === 'OVERDUE') return b.days_overdue > 0
-                          if (selectedBucket === '0-30') return b.days_overdue <= 30
-                          if (selectedBucket === '31-60') return b.days_overdue > 30 && b.days_overdue <= 60
-                          if (selectedBucket === '61-90') return b.days_overdue > 60 && b.days_overdue <= 90
-                          if (selectedBucket === '90+') return b.days_overdue > 90
-                          return true
-                        })
-
-                        return (
-                          <div className="pt-2 border-t border-border space-y-2 animate-in fade-in">
-                            <div className="flex items-center justify-between">
-                              <h5 className="text-[11px] font-extrabold uppercase text-muted-foreground">
-                                Itemized Bills ({displayBills.length}{selectedBucket !== 'ALL' ? ` of ${cust.bills.length}` : ''})
-                              </h5>
-                              {selectedBucket !== 'ALL' && (
-                                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                                  {selectedBucket}
-                                </span>
-                              )}
-                            </div>
-                            {displayBills.map((bill) => (
-                              <div key={bill.bill_id} className="p-2.5 bg-muted/40 rounded-xl border border-border/60 space-y-1 text-xs">
-                                <div className="flex justify-between items-center">
-                                  <span className="font-mono font-bold text-foreground">{bill.bill_reference}</span>
-                                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                                    {formatCurrency(bill.outstanding_amount)}
-                                  </span>
-                                </div>
-                                <div className="flex justify-between items-center text-[10px] text-muted-foreground">
-                                  <span>Date: {formatDate(bill.bill_date)}</span>
-                                  <span className={cn("font-bold font-mono", bill.days_overdue > 0 ? "text-rose-600" : "text-emerald-600")}>
-                                    {bill.days_overdue > 0 ? `${bill.days_overdue}d Overdue` : 'Current'}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
+                      {isExpanded && (
+                        <div className="pt-2 border-t border-border space-y-2 animate-in fade-in">
+                          <div className="flex items-center justify-between">
+                            <h5 className="text-[11px] font-extrabold uppercase text-muted-foreground">
+                              Itemized Bills ({billsCount}{selectedBucket !== 'ALL' ? ` of ${cust.bills.length}` : ''})
+                            </h5>
+                            {selectedBucket !== 'ALL' && (
+                              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                {selectedBucket} ({formatCurrency(bucketAmount)})
+                              </span>
+                            )}
                           </div>
-                        )
-                      })()}
+                          {displayBills.map((bill) => (
+                            <div key={bill.bill_id} className="p-2.5 bg-muted/40 rounded-xl border border-border/60 space-y-1 text-xs">
+                              <div className="flex justify-between items-center">
+                                <span className="font-mono font-bold text-foreground">{bill.bill_reference}</span>
+                                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                  {formatCurrency(bill.outstanding_amount)}
+                                </span>
+                              </div>
+                              <div className="flex justify-between items-center text-[10px] text-muted-foreground">
+                                <span>Date: {formatDate(bill.bill_date)}</span>
+                                <span className={cn("font-bold font-mono", bill.days_overdue > 0 ? "text-rose-600" : "text-emerald-600")}>
+                                  {bill.days_overdue > 0 ? `${bill.days_overdue}d Overdue` : 'Current'}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -670,9 +852,28 @@ export default function DebtorsAgingPage() {
                     party_name: { label: 'Customer / Party Name', align: 'left', width: 'w-72' },
                     dunning_state: { label: 'Dunning State', align: 'left', width: 'w-36' },
                     aging_breakdown: { label: 'Aging Breakdown', align: 'left', width: 'w-52' },
-                    open_bills: { label: 'Open Bills', align: 'center', width: 'w-28' },
-                    total_outstanding: { label: 'Total Outstanding', align: 'right', width: 'w-36' },
+                    open_bills: {
+                      label: selectedBucket !== 'ALL' ? `Open Bills (${selectedBucket}d)` : 'Open Bills',
+                      align: 'center',
+                      width: 'w-36'
+                    },
+                    total_outstanding: {
+                      label: selectedBucket !== 'ALL' ? `Bucket Due (${selectedBucket}d)` : 'Total Outstanding',
+                      align: 'right',
+                      width: 'w-40'
+                    },
                     quick_reminder: { label: 'Quick Reminder', align: 'right', width: 'w-44' },
+                  }
+
+                  const billColDefs: Record<string, { label: string; align?: 'left' | 'center' | 'right' }> = {
+                    bill_reference: { label: 'Invoice / Bill Ref', align: 'left' },
+                    bill_date: { label: 'Bill Date', align: 'left' },
+                    due_date: { label: 'Due Date', align: 'left' },
+                    days_overdue: { label: 'Days Overdue', align: 'left' },
+                    bill_amount: { label: 'Bill Amount', align: 'right' },
+                    settled: { label: 'Settled', align: 'right' },
+                    balance_due: { label: 'Balance Due', align: 'right' },
+                    action: { label: 'Action', align: 'right' },
                   }
 
                   return (
@@ -700,147 +901,319 @@ export default function DebtorsAgingPage() {
                         {filteredCustomers.map((cust) => {
                           const isExpanded = expandedPartyIds.has(cust.party_ledger_id)
                           const total = cust.total_outstanding || 1
+                          const { displayBills, bucketAmount, billsCount } = getCustomerBucketData(cust, selectedBucket)
 
                           return (
-                            <tr key={cust.party_ledger_id} className="group hover:bg-muted/30 transition-colors">
-                              <td className="py-3.5 px-4 text-center">
-                                <button
-                                  onClick={() => toggleExpand(cust.party_ledger_id)}
-                                  className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                                  title="Expand bill breakdown"
-                                >
-                                  {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                                </button>
-                              </td>
+                            <Fragment key={cust.party_ledger_id}>
+                              <tr className={cn("group hover:bg-muted/30 transition-colors", isExpanded && "bg-muted/15")}>
+                                <td className="py-3.5 px-4 text-center">
+                                  <button
+                                    onClick={() => toggleExpand(cust.party_ledger_id)}
+                                    className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                                    title={isExpanded ? "Collapse bill breakdown" : "Expand bill breakdown"}
+                                  >
+                                    {isExpanded ? <ChevronUp className="w-4 h-4 text-emerald-600" /> : <ChevronDown className="w-4 h-4" />}
+                                  </button>
+                                </td>
 
-                              {outstandingCustomersCols.columns.map((colId) => {
-                                switch (colId) {
-                                  case 'party_name':
-                                    return (
-                                      <td key="party_name" className="py-3.5 px-4">
-                                        <div className="font-extrabold text-xs text-foreground flex items-center gap-2">
-                                          <Link
-                                            href={`/ledgers/${cust.party_ledger_id}`}
-                                            className="hover:text-emerald-600 transition-colors hover:underline"
-                                          >
-                                            {cust.party_name}
-                                          </Link>
-                                        </div>
-                                        <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1">
-                                          {cust.phone && (
-                                            <span className="flex items-center gap-1 font-mono">
-                                              <PhoneCall className="w-3 h-3 text-muted-foreground" />
-                                              {cust.phone}
+                                {outstandingCustomersCols.columns.map((colId) => {
+                                  switch (colId) {
+                                    case 'party_name':
+                                      return (
+                                        <td key="party_name" className="py-3.5 px-4">
+                                          <div className="font-extrabold text-xs text-foreground flex items-center gap-2">
+                                            <Link
+                                              href={`/ledgers/${cust.party_ledger_id}`}
+                                              className="hover:text-emerald-600 transition-colors hover:underline"
+                                            >
+                                              {cust.party_name}
+                                            </Link>
+                                          </div>
+                                          <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-1">
+                                            {cust.phone && (
+                                              <span className="flex items-center gap-1 font-mono">
+                                                <PhoneCall className="w-3 h-3 text-muted-foreground" />
+                                                {cust.phone}
+                                              </span>
+                                            )}
+                                            <span className="font-medium">Credit: {cust.credit_period_days} Days</span>
+                                          </div>
+                                        </td>
+                                      )
+                                    case 'dunning_state':
+                                      return (
+                                        <td key="dunning_state" className="py-3.5 px-4">
+                                          {cust.dunning_level === 'URGENT' ? (
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
+                                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                                              URGENT (61d+)
+                                            </span>
+                                          ) : cust.dunning_level === 'FORMAL' ? (
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                              FORMAL (31-60d)
+                                            </span>
+                                          ) : cust.dunning_level === 'GENTLE' ? (
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                                              GENTLE (1-30d)
+                                            </span>
+                                          ) : (
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                              CURRENT (On Time)
                                             </span>
                                           )}
-                                          <span className="font-medium">Credit: {cust.credit_period_days} Days</span>
-                                        </div>
-                                      </td>
-                                    )
-                                  case 'dunning_state':
-                                    return (
-                                      <td key="dunning_state" className="py-3.5 px-4">
-                                        {cust.dunning_level === 'URGENT' ? (
-                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20">
-                                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
-                                            URGENT (61d+)
-                                          </span>
-                                        ) : cust.dunning_level === 'FORMAL' ? (
-                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                                            FORMAL (31-60d)
-                                          </span>
-                                        ) : cust.dunning_level === 'GENTLE' ? (
-                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-blue-500/10 text-blue-600 border border-blue-500/20">
-                                            GENTLE (1-30d)
-                                          </span>
-                                        ) : (
-                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                                            CURRENT (On Time)
-                                          </span>
-                                        )}
-                                      </td>
-                                    )
-                                  case 'aging_breakdown':
-                                    return (
-                                      <td key="aging_breakdown" className="py-3.5 px-4">
-                                        {/* Segmented Multi-color Aging Progress Bar */}
-                                        <div className="w-full bg-muted/60 h-2 rounded-full overflow-hidden flex shadow-2xs">
-                                          {cust.current_not_due > 0 && (
-                                            <div
-                                              style={{ width: `${(cust.current_not_due / total) * 100}%` }}
-                                              className="bg-emerald-500 h-full"
-                                              title={`Current: ₹${cust.current_not_due.toLocaleString()}`}
-                                            />
-                                          )}
-                                          {cust.days_1_30 > 0 && (
-                                            <div
-                                              style={{ width: `${(cust.days_1_30 / total) * 100}%` }}
-                                              className="bg-blue-500 h-full"
-                                              title={`1-30 Days: ₹${cust.days_1_30.toLocaleString()}`}
-                                            />
-                                          )}
-                                          {cust.days_31_60 > 0 && (
-                                            <div
-                                              style={{ width: `${(cust.days_31_60 / total) * 100}%` }}
-                                              className="bg-amber-500 h-full"
-                                              title={`31-60 Days: ₹${cust.days_31_60.toLocaleString()}`}
-                                            />
-                                          )}
-                                          {cust.days_61_90 > 0 && (
-                                            <div
-                                              style={{ width: `${(cust.days_61_90 / total) * 100}%` }}
-                                              className="bg-orange-500 h-full"
-                                              title={`61-90 Days: ₹${cust.days_61_90.toLocaleString()}`}
-                                            />
-                                          )}
-                                          {cust.days_90_plus > 0 && (
-                                            <div
-                                              style={{ width: `${(cust.days_90_plus / total) * 100}%` }}
-                                              className="bg-rose-500 h-full"
-                                              title={`90+ Days: ₹${cust.days_90_plus.toLocaleString()}`}
-                                            />
-                                          )}
-                                        </div>
-                                        <div className="flex justify-between items-center text-[10px] text-muted-foreground mt-1 font-mono">
-                                          <span>0d</span>
-                                          {cust.days_90_plus > 0 && <span className="text-rose-600 font-bold">90d+ : ₹{cust.days_90_plus.toLocaleString()}</span>}
-                                        </div>
-                                      </td>
-                                    )
-                                  case 'open_bills':
-                                    return (
-                                      <td key="open_bills" className="py-3.5 px-4 text-center font-mono font-bold">
-                                        <span className="px-2 py-0.5 rounded-md bg-muted text-foreground text-xs">
-                                          {cust.open_bills_count}
-                                        </span>
-                                      </td>
-                                    )
-                                  case 'total_outstanding':
-                                    return (
-                                      <td key="total_outstanding" className="py-3.5 px-4 text-right font-mono font-black text-sm text-foreground">
-                                        {formatCurrency(cust.total_outstanding)}
-                                      </td>
-                                    )
-                                  case 'quick_reminder':
-                                    return (
-                                      <td key="quick_reminder" className="py-3.5 px-5 text-right whitespace-nowrap">
-                                        <div className="flex items-center justify-end gap-2">
+                                        </td>
+                                      )
+                                    case 'aging_breakdown':
+                                      return (
+                                        <td key="aging_breakdown" className="py-3.5 px-4">
+                                          {/* Segmented Multi-color Aging Progress Bar */}
+                                          <div className="w-full bg-muted/60 h-2 rounded-full overflow-hidden flex shadow-2xs">
+                                            {cust.current_not_due > 0 && (
+                                              <div
+                                                style={{ width: `${(cust.current_not_due / total) * 100}%` }}
+                                                className="bg-emerald-500 h-full"
+                                                title={`Current: ₹${cust.current_not_due.toLocaleString()}`}
+                                              />
+                                            )}
+                                            {cust.days_1_30 > 0 && (
+                                              <div
+                                                style={{ width: `${(cust.days_1_30 / total) * 100}%` }}
+                                                className="bg-blue-500 h-full"
+                                                title={`1-30 Days: ₹${cust.days_1_30.toLocaleString()}`}
+                                              />
+                                            )}
+                                            {cust.days_31_60 > 0 && (
+                                              <div
+                                                style={{ width: `${(cust.days_31_60 / total) * 100}%` }}
+                                                className="bg-amber-500 h-full"
+                                                title={`31-60 Days: ₹${cust.days_31_60.toLocaleString()}`}
+                                              />
+                                            )}
+                                            {cust.days_61_90 > 0 && (
+                                              <div
+                                                style={{ width: `${(cust.days_61_90 / total) * 100}%` }}
+                                                className="bg-orange-500 h-full"
+                                                title={`61-90 Days: ₹${cust.days_61_90.toLocaleString()}`}
+                                              />
+                                            )}
+                                            {cust.days_90_plus > 0 && (
+                                              <div
+                                                style={{ width: `${(cust.days_90_plus / total) * 100}%` }}
+                                                className="bg-rose-500 h-full"
+                                                title={`90+ Days: ₹${cust.days_90_plus.toLocaleString()}`}
+                                              />
+                                            )}
+                                          </div>
+                                          <div className="flex justify-between items-center text-[10px] text-muted-foreground mt-1 font-mono">
+                                            <span>0d</span>
+                                            {cust.days_90_plus > 0 && <span className="text-rose-600 font-bold">90d+ : ₹{cust.days_90_plus.toLocaleString()}</span>}
+                                          </div>
+                                        </td>
+                                      )
+                                    case 'open_bills':
+                                      return (
+                                        <td key="open_bills" className="py-3.5 px-4 text-center font-mono font-bold">
                                           <button
-                                            onClick={() => handleOpenReminder(cust.party_ledger_id, 'auto')}
-                                            className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                                            title="Generate WhatsApp Dunning Message with Direct UPI link"
+                                            onClick={() => toggleExpand(cust.party_ledger_id)}
+                                            className={cn(
+                                              "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer border active:scale-95",
+                                              selectedBucket !== 'ALL'
+                                                ? "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/20"
+                                                : "bg-muted hover:bg-muted/80 text-foreground border-border/40 hover:border-emerald-500/30"
+                                            )}
+                                            title={
+                                              selectedBucket !== 'ALL'
+                                                ? `${billsCount} bill(s) in ${selectedBucket} bucket (Click to view breakdown, Total: ${cust.open_bills_count})`
+                                                : "Click to view bill breakdown"
+                                            }
                                           >
-                                            <MessageCircle className="w-3.5 h-3.5" />
-                                            <span>WhatsApp</span>
+                                            <span>
+                                              {selectedBucket !== 'ALL' ? `${billsCount} of ${cust.open_bills_count}` : cust.open_bills_count}
+                                            </span>
+                                            {isExpanded ? <ChevronUp className="w-3 h-3 text-emerald-600" /> : <ChevronDown className="w-3 h-3 text-muted-foreground" />}
+                                          </button>
+                                        </td>
+                                      )
+                                    case 'total_outstanding':
+                                      return (
+                                        <td key="total_outstanding" className="py-3.5 px-4 text-right font-mono">
+                                          {selectedBucket !== 'ALL' ? (
+                                            <div>
+                                              <div className="font-black text-sm text-foreground">
+                                                {formatCurrency(bucketAmount)}
+                                              </div>
+                                              <div className="text-[10px] text-muted-foreground font-normal">
+                                                Total: {formatCurrency(cust.total_outstanding)}
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="font-black text-sm text-foreground">
+                                              {formatCurrency(cust.total_outstanding)}
+                                            </div>
+                                          )}
+                                        </td>
+                                      )
+                                    case 'quick_reminder':
+                                      return (
+                                        <td key="quick_reminder" className="py-3.5 px-5 text-right whitespace-nowrap">
+                                          <div className="flex items-center justify-end gap-2">
+                                            <button
+                                              onClick={() => handleOpenReminder(cust.party_ledger_id, 'auto')}
+                                              className="h-8 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 border border-emerald-500/20 transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                                              title="Generate WhatsApp Dunning Message with Direct UPI link"
+                                            >
+                                              <MessageCircle className="w-3.5 h-3.5" />
+                                              <span>WhatsApp</span>
+                                            </button>
+                                          </div>
+                                        </td>
+                                      )
+                                    default:
+                                      return null
+                                  }
+                                })}
+                              </tr>
+
+                              {/* INLINE EXPANDED BILL DETAILS ROW */}
+                              {isExpanded && (
+                                <tr className="bg-muted/10 border-b border-border/80">
+                                  <td colSpan={outstandingCustomersCols.columns.length + 1} className="p-3 sm:p-4 bg-muted/5">
+                                    <div className="bg-card border border-emerald-500/30 rounded-2xl p-4 sm:p-5 shadow-sm space-y-3 animate-in fade-in duration-150">
+                                      <div className="flex items-center justify-between border-b border-border/80 pb-3">
+                                        <div className="flex items-center gap-2">
+                                          <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                                          <h4 className="font-extrabold text-xs sm:text-sm text-foreground leading-tight flex items-center gap-2 flex-wrap">
+                                            <span>
+                                              Bill-by-Bill Breakdown for <span className="text-emerald-600 underline">{cust.party_name}</span> ({billsCount}{selectedBucket !== 'ALL' ? ` of ${cust.bills.length}` : ''} Invoices)
+                                            </span>
+                                            {selectedBucket !== 'ALL' && (
+                                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
+                                                {selectedBucket} Bucket ({formatCurrency(bucketAmount)})
+                                              </span>
+                                            )}
+                                          </h4>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                          <ResetColumnsButton {...outstandingBillsCols} />
+                                          <button
+                                            onClick={() => toggleExpand(cust.party_ledger_id)}
+                                            className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+                                            title="Close bill breakdown"
+                                          >
+                                            <X className="w-4 h-4" />
                                           </button>
                                         </div>
-                                      </td>
-                                    )
-                                  default:
-                                    return null
-                                }
-                              })}
-                            </tr>
+                                      </div>
+
+                                      {displayBills.length === 0 ? (
+                                        <div className="text-center py-6 text-muted-foreground text-xs font-mono">
+                                          No bills found for the selected bucket filter.
+                                        </div>
+                                      ) : (
+                                        <div className="overflow-x-auto">
+                                          <table className="w-full text-left text-xs border-collapse min-w-[700px]">
+                                            <thead>
+                                              <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-bold text-[11px]">
+                                                {outstandingBillsCols.columns.map((colId) => {
+                                                  const def = billColDefs[colId]
+                                                  if (!def) return null
+                                                  return (
+                                                    <DraggableTh
+                                                      key={colId}
+                                                      id={colId}
+                                                      label={def.label}
+                                                      align={def.align}
+                                                      reorderProps={outstandingBillsCols}
+                                                      className="py-2.5 px-4"
+                                                    />
+                                                  )
+                                                })}
+                                              </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-border/60">
+                                              {displayBills.map((bill) => (
+                                                <tr key={bill.bill_id} className="hover:bg-muted/30">
+                                                  {outstandingBillsCols.columns.map((colId) => {
+                                                    switch (colId) {
+                                                      case 'bill_reference':
+                                                        return (
+                                                          <td key="bill_reference" className="py-3 px-4 font-mono font-bold text-foreground">
+                                                            {bill.bill_reference}
+                                                          </td>
+                                                        )
+                                                      case 'bill_date':
+                                                        return (
+                                                          <td key="bill_date" className="py-3 px-4 font-mono text-muted-foreground">
+                                                            {bill.bill_date ? formatDate(bill.bill_date) : '—'}
+                                                          </td>
+                                                        )
+                                                      case 'due_date':
+                                                        return (
+                                                          <td key="due_date" className="py-3 px-4 font-mono text-muted-foreground">
+                                                            {bill.due_date ? formatDate(bill.due_date) : '—'}
+                                                          </td>
+                                                        )
+                                                      case 'days_overdue':
+                                                        return (
+                                                          <td key="days_overdue" className="py-3 px-4">
+                                                            {bill.days_overdue > 0 ? (
+                                                              <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20 font-mono">
+                                                                {bill.days_overdue} Days Overdue
+                                                              </span>
+                                                            ) : (
+                                                              <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                                                Current
+                                                              </span>
+                                                            )}
+                                                          </td>
+                                                        )
+                                                      case 'bill_amount':
+                                                        return (
+                                                          <td key="bill_amount" className="py-3 px-4 text-right font-mono">
+                                                            {formatCurrency(bill.bill_amount)}
+                                                          </td>
+                                                        )
+                                                      case 'settled':
+                                                        return (
+                                                          <td key="settled" className="py-3 px-4 text-right font-mono text-muted-foreground">
+                                                            {formatCurrency(bill.settled_amount)}
+                                                          </td>
+                                                        )
+                                                      case 'balance_due':
+                                                        return (
+                                                          <td key="balance_due" className="py-3 px-4 text-right font-mono font-black text-rose-600 dark:text-rose-400">
+                                                            {formatCurrency(bill.outstanding_amount)}
+                                                          </td>
+                                                        )
+                                                      case 'action':
+                                                        return (
+                                                          <td key="action" className="py-3 px-4 text-right">
+                                                            {bill.voucher_id && (
+                                                              <Link
+                                                                href={`/vouchers/${bill.voucher_id}`}
+                                                                className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-muted hover:bg-muted/80 text-foreground transition-all inline-flex items-center gap-1"
+                                                              >
+                                                                <span>View</span>
+                                                                <ExternalLink className="w-3 h-3" />
+                                                              </Link>
+                                                            )}
+                                                          </td>
+                                                        )
+                                                      default:
+                                                        return null
+                                                    }
+                                                  })}
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
                           )
                         })}
                       </tbody>
@@ -851,368 +1224,186 @@ export default function DebtorsAgingPage() {
             </>
           )}
         </div>
-
-        {/* Expanded Bill Details Drawer / View */}
-        {Array.from(expandedPartyIds).map((partyId) => {
-          const cust = data?.customers.find((c) => c.party_ledger_id === partyId)
-          if (!cust) return null
-
-          const displayBills = cust.bills.filter((b) => {
-            if (selectedBucket === 'ALL') return true
-            if (selectedBucket === 'OVERDUE') return b.days_overdue > 0
-            if (selectedBucket === '0-30') return b.days_overdue <= 30
-            if (selectedBucket === '31-60') return b.days_overdue > 30 && b.days_overdue <= 60
-            if (selectedBucket === '61-90') return b.days_overdue > 60 && b.days_overdue <= 90
-            if (selectedBucket === '90+') return b.days_overdue > 90
-            return true
-          })
-
-          return (
-            <div
-              key={partyId}
-              className="bg-card border border-emerald-500/30 rounded-2xl p-4 sm:p-5 shadow-md space-y-4 animate-in fade-in zoom-in-98 duration-200"
-            >
-              <div className="flex items-center justify-between border-b border-border/80 pb-3">
-                <div className="flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <h4 className="font-extrabold text-xs sm:text-sm text-foreground leading-tight flex items-center gap-2 flex-wrap">
-                    <span>
-                      Bill-by-Bill Breakdown for <span className="text-emerald-600 underline">{cust.party_name}</span> ({displayBills.length}{selectedBucket !== 'ALL' ? ` of ${cust.bills.length}` : ''} Invoices)
-                    </span>
-                    {selectedBucket !== 'ALL' && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                        {selectedBucket} Bucket
-                      </span>
-                    )}
-                  </h4>
-                </div>
-                <div className="flex items-center gap-2">
-                  <ResetColumnsButton {...outstandingBillsCols} />
-                  <button
-                    onClick={() => toggleExpand(partyId)}
-                    className="p-1 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Mobile Invoice Card View (< 768px) */}
-              <div className="block md:hidden space-y-2.5">
-                {displayBills.map((bill) => (
-                  <div
-                    key={bill.bill_id}
-                    className="p-3 bg-muted/40 rounded-xl border border-border/70 space-y-2 text-xs"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <span className="font-mono font-bold text-foreground text-xs">{bill.bill_reference}</span>
-                        <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
-                          <span>Dated: {bill.bill_date ? formatDate(bill.bill_date) : '—'}</span>
-                          {bill.due_date && <span>Due: {formatDate(bill.due_date)}</span>}
-                        </div>
-                      </div>
-                      <div>
-                        {bill.days_overdue > 0 ? (
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20 font-mono">
-                            {bill.days_overdue}d Overdue
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                            Current
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-1 py-1.5 px-2 rounded-lg bg-background/50 border border-border/40 font-mono text-[11px]">
-                      <div>
-                        <span className="text-[9px] uppercase font-bold text-muted-foreground block">Bill Amt</span>
-                        <span>{formatCurrency(bill.bill_amount)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] uppercase font-bold text-muted-foreground block">Settled</span>
-                        <span className="text-muted-foreground">{formatCurrency(bill.settled_amount)}</span>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-[9px] uppercase font-bold text-rose-600 block">Due</span>
-                        <span className="font-black text-rose-600">{formatCurrency(bill.outstanding_amount)}</span>
-                      </div>
-                    </div>
-
-                    {bill.voucher_id && (
-                      <div className="flex justify-end pt-1">
-                        <Link
-                          href={`/vouchers/${bill.voucher_id}`}
-                          className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 hover:underline"
-                        >
-                          <span>View Voucher</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Desktop Table View (>= 768px) */}
-              <div className="hidden md:block overflow-x-auto">
-                {(() => {
-                  const billColDefs: Record<string, { label: string; align?: 'left' | 'center' | 'right' }> = {
-                    bill_reference: { label: 'Invoice / Bill Ref', align: 'left' },
-                    bill_date: { label: 'Bill Date', align: 'left' },
-                    due_date: { label: 'Due Date', align: 'left' },
-                    days_overdue: { label: 'Days Overdue', align: 'left' },
-                    bill_amount: { label: 'Bill Amount', align: 'right' },
-                    settled: { label: 'Settled', align: 'right' },
-                    balance_due: { label: 'Balance Due', align: 'right' },
-                    action: { label: 'Action', align: 'right' },
-                  }
-
-                  return (
-                    <table className="w-full text-left text-xs border-collapse min-w-[700px]">
-                      <thead>
-                        <tr className="border-b border-border/80 bg-muted/40 text-muted-foreground font-bold text-[11px]">
-                          {outstandingBillsCols.columns.map((colId) => {
-                            const def = billColDefs[colId]
-                            if (!def) return null
-                            return (
-                              <DraggableTh
-                                key={colId}
-                                id={colId}
-                                label={def.label}
-                                align={def.align}
-                                reorderProps={outstandingBillsCols}
-                                className="py-2.5 px-4"
-                              />
-                            )
-                          })}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border/60">
-                        {displayBills.map((bill) => (
-                          <tr key={bill.bill_id} className="hover:bg-muted/30">
-                            {outstandingBillsCols.columns.map((colId) => {
-                              switch (colId) {
-                                case 'bill_reference':
-                                  return (
-                                    <td key="bill_reference" className="py-3 px-4 font-mono font-bold text-foreground">
-                                      {bill.bill_reference}
-                                    </td>
-                                  )
-                                case 'bill_date':
-                                  return (
-                                    <td key="bill_date" className="py-3 px-4 font-mono text-muted-foreground">
-                                      {bill.bill_date ? formatDate(bill.bill_date) : '—'}
-                                    </td>
-                                  )
-                                case 'due_date':
-                                  return (
-                                    <td key="due_date" className="py-3 px-4 font-mono text-muted-foreground">
-                                      {bill.due_date ? formatDate(bill.due_date) : '—'}
-                                    </td>
-                                  )
-                                case 'days_overdue':
-                                  return (
-                                    <td key="days_overdue" className="py-3 px-4">
-                                      {bill.days_overdue > 0 ? (
-                                        <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-rose-500/10 text-rose-600 border border-rose-500/20 font-mono">
-                                          {bill.days_overdue} Days Overdue
-                                        </span>
-                                      ) : (
-                                        <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                                          Current
-                                        </span>
-                                      )}
-                                    </td>
-                                  )
-                                case 'bill_amount':
-                                  return (
-                                    <td key="bill_amount" className="py-3 px-4 text-right font-mono">
-                                      {formatCurrency(bill.bill_amount)}
-                                    </td>
-                                  )
-                                case 'settled':
-                                  return (
-                                    <td key="settled" className="py-3 px-4 text-right font-mono text-muted-foreground">
-                                      {formatCurrency(bill.settled_amount)}
-                                    </td>
-                                  )
-                                case 'balance_due':
-                                  return (
-                                    <td key="balance_due" className="py-3 px-4 text-right font-mono font-black text-rose-600 dark:text-rose-400">
-                                      {formatCurrency(bill.outstanding_amount)}
-                                    </td>
-                                  )
-                                case 'action':
-                                  return (
-                                    <td key="action" className="py-3 px-4 text-right">
-                                      {bill.voucher_id && (
-                                        <Link
-                                          href={`/vouchers/${bill.voucher_id}`}
-                                          className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-muted hover:bg-muted/80 text-foreground transition-all inline-flex items-center gap-1"
-                                        >
-                                          <span>View</span>
-                                          <ExternalLink className="w-3 h-3" />
-                                        </Link>
-                                      )}
-                                    </td>
-                                  )
-                                default:
-                                  return null
-                              }
-                            })}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )
-                })()}
-              </div>
-            </div>
-          )
-        })}
       </div>
 
       {/* WhatsApp Reminder Preview Modal */}
-      {reminderModalOpen && previewData && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 text-foreground animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold border border-emerald-500/20">
-                  <MessageCircle className="w-5 h-5" />
+      {reminderModalOpen && previewData && (() => {
+        const selectedCustomer = data?.customers.find((c) => c.party_ledger_id === previewData.party_ledger_id)
+        return (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-card border border-border rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 text-foreground animate-in fade-in zoom-in-95 duration-200">
+              <div className="flex items-center justify-between border-b border-border pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold border border-emerald-500/20">
+                    <MessageCircle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base text-foreground leading-snug">
+                      WhatsApp Payment Reminder
+                    </h3>
+                    <span className="text-xs text-muted-foreground">
+                      For: <strong className="text-foreground">{previewData.party_name}</strong>
+                    </span>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="font-extrabold text-base text-foreground leading-snug">
-                    WhatsApp Payment Reminder
-                  </h3>
-                  <span className="text-xs text-muted-foreground">
-                    For: <strong className="text-foreground">{previewData.party_name}</strong>
+                <button
+                  onClick={() => setReminderModalOpen(false)}
+                  className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Date-Based Aging Scope Selector */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                    Select Date / Aging Scope
+                  </label>
+                  <span className="text-[10px] text-muted-foreground font-mono">
+                    {reminderBucket === 'ALL' ? 'All Dates (Full Breakdown)' : `${reminderBucket} Days Overdue`}
                   </span>
                 </div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                  {[
+                    {
+                      id: 'ALL',
+                      label: 'All Dates',
+                      badge: selectedCustomer ? formatCurrency(selectedCustomer.total_outstanding) : null,
+                    },
+                    {
+                      id: '0-30',
+                      label: '0–30 Days',
+                      badge: selectedCustomer?.days_1_30 ? formatCurrency(selectedCustomer.days_1_30) : null,
+                      disabled: !selectedCustomer?.days_1_30,
+                    },
+                    {
+                      id: '31-60',
+                      label: '31–60 Days',
+                      badge: selectedCustomer?.days_31_60 ? formatCurrency(selectedCustomer.days_31_60) : null,
+                      disabled: !selectedCustomer?.days_31_60,
+                    },
+                    {
+                      id: '61-90',
+                      label: '61–90 Days',
+                      badge: selectedCustomer?.days_61_90 ? formatCurrency(selectedCustomer.days_61_90) : null,
+                      disabled: !selectedCustomer?.days_61_90,
+                    },
+                    {
+                      id: '90+',
+                      label: '90+ Days',
+                      badge: selectedCustomer?.days_90_plus ? formatCurrency(selectedCustomer.days_90_plus) : null,
+                      disabled: !selectedCustomer?.days_90_plus,
+                    },
+                  ].map((scope) => {
+                    const isActive = reminderBucket === scope.id
+                    return (
+                      <button
+                        key={scope.id}
+                        type="button"
+                        disabled={scope.disabled}
+                        onClick={() => handleOpenReminder(previewData.party_ledger_id, selectedDunningLevel, scope.id)}
+                        className={cn(
+                          "py-2 px-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer flex flex-col items-center justify-center gap-0.5 text-center",
+                          scope.disabled && "opacity-35 cursor-not-allowed hover:bg-transparent",
+                          isActive
+                            ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                            : "bg-muted/40 text-muted-foreground border-border hover:bg-muted hover:text-foreground"
+                        )}
+                      >
+                        <span className="text-[11px] leading-tight">{scope.label}</span>
+                        {scope.badge && (
+                          <span className={cn("text-[9px] font-mono leading-tight", isActive ? "text-emerald-100 font-bold" : "text-foreground font-black")}>
+                            {scope.badge}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
-              <button
-                onClick={() => setReminderModalOpen(false)}
-                className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
-            {/* Reminder Scope Selector */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
+              {/* Dunning Severity Selector */}
+              <div className="space-y-1.5">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                  Reminder Scope
+                  Select Dunning Notice Tone
                 </label>
-                <span className="text-[10px] text-muted-foreground font-mono">
-                  {reminderBucket === 'ALL' ? 'All Invoices' : `${reminderBucket} Bucket`}
-                </span>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'gentle', label: 'Gentle Notice' },
+                    { id: 'formal', label: 'Formal Reminder' },
+                    { id: 'urgent', label: 'Urgent Overdue' }
+                  ].map((lvl) => (
+                    <button
+                      key={lvl.id}
+                      onClick={() => handleOpenReminder(previewData.party_ledger_id, lvl.id, reminderBucket)}
+                      className={cn(
+                        "py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer",
+                        selectedDunningLevel === lvl.id
+                          ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
+                          : "bg-muted/40 text-muted-foreground border-border hover:bg-muted hover:text-foreground"
+                      )}
+                    >
+                      {lvl.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+
+              {/* Message Preview Box */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                    Live Message Preview
+                  </label>
+                  <span className="text-[11px] font-mono text-emerald-600 font-bold">
+                    Total Due: {formatCurrency(previewData.total_due)}
+                  </span>
+                </div>
+                <div className="bg-muted/50 border border-border rounded-2xl p-4 font-mono text-xs text-foreground whitespace-pre-wrap max-h-56 overflow-y-auto leading-relaxed shadow-inner">
+                  {previewData.message_text}
+                </div>
+              </div>
+
+              {/* Direct UPI VPA Banner */}
+              {previewData.upi_vpa && (
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <CreditCard className="w-4 h-4 text-emerald-600" />
+                    <span className="text-muted-foreground">Configured Direct UPI:</span>
+                    <span className="font-mono font-bold text-emerald-600">{previewData.upi_vpa}</span>
+                  </div>
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-600 px-2 py-0.5 rounded-full font-bold">
+                    0% PG Fees
+                  </span>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => handleOpenReminder(previewData.party_ledger_id, selectedDunningLevel, selectedBucket !== 'ALL' ? selectedBucket : 'OVERDUE')}
-                  className={cn(
-                    "py-2 px-3 rounded-xl text-xs font-bold transition-all border cursor-pointer text-center",
-                    reminderBucket !== 'ALL'
-                      ? "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 shadow-xs"
-                      : "bg-muted/40 text-muted-foreground border-border hover:bg-muted"
-                  )}
+                  onClick={handleCopyMessage}
+                  className="flex-1 py-3 px-4 rounded-xl border border-border bg-background hover:bg-muted text-xs font-bold text-foreground transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs active:scale-95"
                 >
-                  <span>🎯 {selectedBucket !== 'ALL' ? selectedBucket : 'Overdue'} Bucket Only</span>
+                  {isCopied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+                  <span>{isCopied ? 'Copied to Clipboard!' : 'Copy Text'}</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => handleOpenReminder(previewData.party_ledger_id, selectedDunningLevel, 'ALL')}
-                  className={cn(
-                    "py-2 px-3 rounded-xl text-xs font-bold transition-all border cursor-pointer text-center",
-                    reminderBucket === 'ALL'
-                      ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
-                      : "bg-muted/40 text-muted-foreground border-border hover:bg-muted"
-                  )}
+
+                <a
+                  href={previewData.whatsapp_url || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-95"
                 >
-                  <span>📑 All Outstanding Bills</span>
-                </button>
+                  <MessageCircle className="w-4 h-4" />
+                  <span>Open WhatsApp</span>
+                </a>
               </div>
-            </div>
-
-            {/* Dunning Severity Selector */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                Select Dunning Notice Tone
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'gentle', label: 'Gentle Notice' },
-                  { id: 'formal', label: 'Formal Reminder' },
-                  { id: 'urgent', label: 'Urgent Overdue' }
-                ].map((lvl) => (
-                  <button
-                    key={lvl.id}
-                    onClick={() => handleOpenReminder(previewData.party_ledger_id, lvl.id, reminderBucket)}
-                    className={cn(
-                      "py-2 rounded-xl text-xs font-bold transition-all border cursor-pointer",
-                      selectedDunningLevel === lvl.id
-                        ? "bg-emerald-600 text-white border-emerald-600 shadow-xs"
-                        : "bg-muted/40 text-muted-foreground border-border hover:bg-muted hover:text-foreground"
-                    )}
-                  >
-                    {lvl.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Message Preview Box */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                  Live Message Preview
-                </label>
-                <span className="text-[11px] font-mono text-emerald-600 font-bold">
-                  Total Due: {formatCurrency(previewData.total_due)}
-                </span>
-              </div>
-              <div className="bg-muted/50 border border-border rounded-2xl p-4 font-mono text-xs text-foreground whitespace-pre-wrap max-h-56 overflow-y-auto leading-relaxed shadow-inner">
-                {previewData.message_text}
-              </div>
-            </div>
-
-            {/* Direct UPI VPA Banner */}
-            <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-center justify-between text-xs">
-              <div className="flex items-center gap-2">
-                <CreditCard className="w-4 h-4 text-emerald-600" />
-                <span className="text-muted-foreground">Configured Direct UPI:</span>
-                <strong className="font-mono text-emerald-600">{previewData.upi_vpa}</strong>
-              </div>
-              <span className="text-[10px] text-emerald-600 font-bold">0% PG Fees</span>
-            </div>
-
-            {/* Actions */}
-            <div className="pt-2 flex items-center gap-3">
-              <button
-                onClick={handleCopyMessage}
-                className="flex-1 py-3 px-4 rounded-xl border border-border bg-muted/60 hover:bg-muted text-foreground text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
-              >
-                {isCopied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-                <span>{isCopied ? 'Copied to Clipboard!' : 'Copy Text'}</span>
-              </button>
-
-              <a
-                href={previewData.whatsapp_url || '#'}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex-1 py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-95"
-              >
-                <MessageCircle className="w-4 h-4" />
-                <span>Open WhatsApp</span>
-              </a>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Bulk Reminders Modal */}
       {bulkModalOpen && (
