@@ -1,11 +1,12 @@
 'use client'
 
 import { useEffect, useState, useMemo } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
 import { stampPhoto } from '@/lib/photo-stamping'
-import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X } from 'lucide-react'
+import { queueOfflineCheckIn, getPendingCheckIns, syncPendingCheckIns, OfflineCheckIn } from '@/lib/offline-storage'
+import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type RecentVisit = {
@@ -20,20 +21,34 @@ type RecentVisit = {
   photoUrl: string | null
 }
 
-type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
+type ShopOption = {
+  key: string
+  ledger_id?: number | null
+  profile_id?: number | null
+  name: string
+  locality?: string
+  source: 'tally' | 'field_profile'
+}
 
 export default function CheckInPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
-  const [ledgers, setLedgers] = useState<Ledger[]>([])
+  const searchParams = useSearchParams()
+
+  const [shops, setShops] = useState<ShopOption[]>([])
   const [recentVisits, setRecentVisits] = useState<RecentVisit[]>([])
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [success, setSuccess] = useState('')
   const [error, setError] = useState('')
 
+  // Offline queue state
+  const [pendingCheckIns, setPendingCheckIns] = useState<OfflineCheckIn[]>([])
+  const [syncingOffline, setSyncingOffline] = useState(false)
+
   // Form state
   const [selectedLedger, setSelectedLedger] = useState('')
+  const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
   const [customShop, setCustomShop] = useState('')
@@ -47,11 +62,51 @@ export default function CheckInPage() {
   const [previewPhoto, setPreviewPhoto] = useState<RecentVisit | null>(null)
   const [expandedProofId, setExpandedProofId] = useState<number | null>(null)
 
+  // Pre-fill from query params (e.g. from Customer Directory or Route Planner)
   useEffect(() => {
-    if (selectedLedger === '') {
+    const qLedger = searchParams.get('ledger_id')
+    const qProfile = searchParams.get('profile_id')
+    const qName = searchParams.get('name')
+
+    if (qLedger) {
+      setSelectedLedger(qLedger)
+      setSelectedProfileId(null)
+      if (qName) setSearchQuery(qName)
+    } else if (qProfile) {
+      setSelectedProfileId(parseInt(qProfile))
+      setSelectedLedger('')
+      if (qName) {
+        setSearchQuery(qName)
+        setCustomShop(qName)
+      }
+    }
+  }, [searchParams])
+
+  useEffect(() => {
+    if (selectedLedger === '' && !selectedProfileId) {
       setSearchQuery('')
     }
-  }, [selectedLedger])
+  }, [selectedLedger, selectedProfileId])
+
+  // Monitor offline queue & online synchronization
+  useEffect(() => {
+    setPendingCheckIns(getPendingCheckIns())
+
+    const handleOnline = async () => {
+      if (token) {
+        setSyncingOffline(true)
+        const res = await syncPendingCheckIns(API_BASE, authHeaders, token)
+        if (res.synced > 0) {
+          setSuccess(`✓ Synced ${res.synced} offline check-in(s) successfully!`)
+        }
+        setPendingCheckIns(getPendingCheckIns())
+        setSyncingOffline(false)
+      }
+    }
+
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
+  }, [token])
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
@@ -63,24 +118,33 @@ export default function CheckInPage() {
       if (cachedShops) {
         const parsed = JSON.parse(cachedShops)
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setLedgers(parsed)
+          setShops(parsed)
           setLoading(false)
         }
       }
     } catch (e) {}
 
+    // Fetch unified customers list to support both Tally Debtors & Field Profiles
     Promise.all([
-      fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.ok ? r.json() : []),
-      fetch(`${API_BASE}/visits/recent`, { headers: authHeaders(token) }).then(r => r.ok ? r.json() : []).catch(() => []),
-    ]).then(([ls, vs]) => {
-      const customers = Array.isArray(ls)
-        ? ls.filter((l: any) => l.is_customer || (l.group_name || '').toLowerCase().includes('debtor') || (l.group_name || '').toLowerCase().includes('customer'))
-        : []
-      const finalLedgers = customers.length > 0 ? customers : (Array.isArray(ls) ? ls : [])
-      setLedgers(finalLedgers)
-      if (finalLedgers.length > 0) {
+      fetch(`${API_BASE}/customers`, { headers: authHeaders(token) })
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null),
+      fetch(`${API_BASE}/visits/recent`, { headers: authHeaders(token) })
+        .then(r => r.ok ? r.json() : [])
+        .catch(() => []),
+    ]).then(([custData, vs]) => {
+      if (custData && Array.isArray(custData.customers)) {
+        const mappedShops: ShopOption[] = custData.customers.map((c: any) => ({
+          key: c.key,
+          ledger_id: c.ledger_id,
+          profile_id: c.profile_id,
+          name: c.name,
+          locality: c.locality,
+          source: c.source,
+        }))
+        setShops(mappedShops)
         try {
-          localStorage.setItem('mytally_cached_customer_shops', JSON.stringify(finalLedgers))
+          localStorage.setItem('mytally_cached_customer_shops', JSON.stringify(mappedShops))
         } catch (e) {}
       }
       setRecentVisits(Array.isArray(vs) ? vs : (vs?.data ?? []))
@@ -110,47 +174,122 @@ export default function CheckInPage() {
     }
   }
 
+  const handleManualSync = async () => {
+    if (!token) return
+    setSyncingOffline(true)
+    const res = await syncPendingCheckIns(API_BASE, authHeaders, token)
+    setPendingCheckIns(getPendingCheckIns())
+    setSyncingOffline(false)
+    if (res.synced > 0) {
+      setSuccess(`✓ Synced ${res.synced} offline check-in(s)!`)
+    } else if (res.failed > 0) {
+      setError(`Failed to sync ${res.failed} check-in(s). Check internet connection.`)
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedLedger && !customShop) { setError('Select a shop or enter custom shop name.'); return }
-    if (!photo) { setError('Please capture a watermarked photo first.'); return }
+    if (!selectedLedger && !selectedProfileId && !customShop) {
+      setError('Select a shop or enter custom shop name.')
+      return
+    }
+    if (!photo) {
+      setError('Please capture a watermarked photo first.')
+      return
+    }
 
     setSubmitting(true)
     setError('')
     setSuccess('')
 
+    const payload = {
+      ledger_id: selectedLedger ? parseInt(selectedLedger) : null,
+      customer_profile_id: selectedProfileId || null,
+      custom_shop_name: customShop || searchQuery || null,
+      latitude: coords?.lat || 0,
+      longitude: coords?.lng || 0,
+      comments,
+      photo_base64: photo,
+    }
+
+    // Check if offline
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      queueOfflineCheckIn({
+        ...payload,
+        shop_name: searchQuery || customShop || 'Customer Shop',
+      })
+      setPendingCheckIns(getPendingCheckIns())
+      setSuccess('✓ You are offline. Check-in saved locally and will auto-sync when network returns!')
+      setSelectedLedger('')
+      setSelectedProfileId(null)
+      setCustomShop('')
+      setComments('')
+      setPhoto(null)
+      setCoords(null)
+      setGpsStatus('idle')
+      setSubmitting(false)
+      return
+    }
+
     try {
       const res = await fetch(`${API_BASE}/visits/check-in`, {
         method: 'POST',
-        headers: authHeaders(token),
-        body: JSON.stringify({
-          ledger_id: selectedLedger ? parseInt(selectedLedger) : null,
-          custom_shop_name: customShop || null,
-          latitude: coords?.lat || null,
-          longitude: coords?.lng || null,
-          comments,
-          photo_base64: photo,
-        }),
+        headers: {
+          ...authHeaders(token),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
-      setSuccess('✓ Check-in recorded successfully!')
-      setSelectedLedger(''); setCustomShop(''); setComments(''); setPhoto(null); setCoords(null); setGpsStatus('idle')
+      const data = await res.json()
       
-      // Refresh recent
+      if (data.location_established) {
+        setSuccess('✓ Check-in recorded! Master GPS location established & verified for this shop.')
+      } else {
+        setSuccess('✓ Check-in recorded successfully!')
+      }
+
+      setSelectedLedger('')
+      setSelectedProfileId(null)
+      setCustomShop('')
+      setComments('')
+      setPhoto(null)
+      setCoords(null)
+      setGpsStatus('idle')
+      
+      // Refresh recent visits
       const vs = await fetch(`${API_BASE}/visits/recent`, { headers: authHeaders(token) }).then(r => r.json()).catch(() => [])
       setRecentVisits(Array.isArray(vs) ? vs : (vs?.data ?? []))
     } catch (err: any) {
-      setError(err.message || 'Failed to check-in')
+      // If network error, offer offline queue fallback
+      if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError'))) {
+        queueOfflineCheckIn({
+          ...payload,
+          shop_name: searchQuery || customShop || 'Customer Shop',
+        })
+        setPendingCheckIns(getPendingCheckIns())
+        setSuccess('✓ Network unavailable. Check-in queued locally and will auto-sync when online!')
+        setSelectedLedger('')
+        setSelectedProfileId(null)
+        setCustomShop('')
+        setComments('')
+        setPhoto(null)
+        setCoords(null)
+        setGpsStatus('idle')
+      } else {
+        setError(err.message || 'Failed to record check-in')
+      }
     } finally {
       setSubmitting(false)
     }
   }
 
-  const filteredLedgers = useMemo(() => {
-    return ledgers.filter(l =>
-      l.name.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredShops = useMemo(() => {
+    return shops.filter(s =>
+      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (s.locality && s.locality.toLowerCase().includes(searchQuery.toLowerCase()))
     ).slice(0, 50)
-  }, [searchQuery, ledgers])
+  }, [searchQuery, shops])
 
   return (
     <div className="flex flex-col h-full bg-background font-sans">
@@ -163,13 +302,31 @@ export default function CheckInPage() {
           <p className="text-[11px] text-muted-foreground mt-0.5">Capture salesperson customer location verification</p>
         </div>
 
+        {pendingCheckIns.length > 0 && (
+          <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 font-semibold">
+              <CloudOff className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>{pendingCheckIns.length} check-in(s) queued offline</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleManualSync}
+              disabled={syncingOffline}
+              className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-colors"
+            >
+              <RefreshCw className={cn("w-3 h-3", syncingOffline && "animate-spin")} />
+              <span>{syncingOffline ? 'Syncing...' : 'Sync Now'}</span>
+            </button>
+          </div>
+        )}
+
         {success && <div className="p-3.5 rounded-2xl bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">{success}</div>}
         {error && <div className="p-3.5 rounded-2xl bg-destructive/10 text-destructive text-xs font-bold">{error}</div>}
 
         <form onSubmit={handleSubmit} className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
           {/* Shop selection */}
           <div className="relative">
-            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Registered Customer Ledger</label>
+            <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Customer Shop / Outlet</label>
             <input
               type="text"
               placeholder="Search customer shop name..."
@@ -179,6 +336,7 @@ export default function CheckInPage() {
                 setIsOpen(true)
                 if (e.target.value === '') {
                   setSelectedLedger('')
+                  setSelectedProfileId(null)
                 }
               }}
               onFocus={() => setIsOpen(true)}
@@ -188,21 +346,35 @@ export default function CheckInPage() {
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
                 <div className="absolute left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-popover border border-border rounded-xl shadow-lg z-50 divide-y divide-border/50">
-                  {filteredLedgers.length === 0 ? (
+                  {filteredShops.length === 0 ? (
                     <div className="p-3.5 text-xs text-muted-foreground text-center">No customers found</div>
                   ) : (
-                    filteredLedgers.map(l => (
+                    filteredShops.map(s => (
                       <button
-                        key={l.ledger_id}
+                        key={s.key}
                         type="button"
                         onClick={() => {
-                          setSelectedLedger(String(l.ledger_id))
-                          setSearchQuery(toTitleCase(l.name))
+                          if (s.ledger_id) {
+                            setSelectedLedger(String(s.ledger_id))
+                            setSelectedProfileId(null)
+                          } else if (s.profile_id) {
+                            setSelectedProfileId(s.profile_id)
+                            setSelectedLedger('')
+                          }
+                          setSearchQuery(toTitleCase(s.name))
                           setIsOpen(false)
                         }}
-                        className="w-full text-left px-4 py-3.5 text-xs font-bold hover:bg-muted text-foreground transition-colors"
+                        className="w-full text-left px-4 py-3 text-xs font-bold hover:bg-muted text-foreground transition-colors flex items-center justify-between"
                       >
-                        {toTitleCase(l.name)}
+                        <div>
+                          <span>{toTitleCase(s.name)}</span>
+                          {s.locality && (
+                            <span className="block text-[10px] text-muted-foreground font-normal">{s.locality}</span>
+                          )}
+                        </div>
+                        {s.source === 'field_profile' ? (
+                          <span className="text-[10px] font-semibold text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded">Field Lead</span>
+                        ) : null}
                       </button>
                     ))
                   )}
@@ -210,7 +382,7 @@ export default function CheckInPage() {
               </>
             )}
 
-            {selectedLedger && (
+            {(selectedLedger || selectedProfileId) && (
               <div className="bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400 p-2.5 rounded-xl text-xs flex items-center gap-1.5 mt-2">
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                 <span>Selected: <strong>{searchQuery}</strong></span>

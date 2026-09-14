@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Date, Boolean, DateTime, ForeignKey, Enum, Numeric, Text, TEXT, JSON
+from sqlalchemy import Column, Integer, BigInteger, String, Date, Boolean, DateTime, ForeignKey, Enum, Numeric, Text, TEXT, JSON, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -876,3 +876,147 @@ class SerialNumber(Base):
     purchase_voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="SET NULL"), nullable=True)
     sale_voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="SET NULL"), nullable=True)
     warranty_expiry = Column(Date, nullable=True)
+
+
+class CustomerProfile(Base):
+    __tablename__ = "customer_profiles"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id", ondelete="SET NULL"), nullable=True, index=True)
+    
+    # Standalone customer details (used if ledger_id is null or as custom override)
+    custom_name = Column(String(255), nullable=True)
+    contact_person = Column(String(150), nullable=True)
+    phone = Column(String(50), nullable=True)
+    whatsapp_number = Column(String(50), nullable=True)
+    email = Column(String(150), nullable=True)
+    
+    # Established Master Coordinates
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    location_verified = Column(Boolean, default=False)
+    location_verified_at = Column(DateTime, nullable=True)
+    
+    # Categorization & Beats
+    locality = Column(String(200), nullable=True, index=True)
+    city = Column(String(100), nullable=True, index=True)
+    state = Column(String(100), nullable=True)
+    pincode = Column(String(20), nullable=True)
+    address = Column(Text, nullable=True)
+    route_name = Column(String(100), nullable=True, index=True)
+    shop_type = Column(String(50), nullable=True)
+    tags = Column(String(500), nullable=True)
+    priority = Column(String(20), default="medium")
+    visit_frequency = Column(String(20), default="weekly")
+    
+    # Media & Notes
+    customer_photo_url = Column(Text, nullable=True)
+    shop_photo_url = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    
+    # Tracking
+    last_visit_at = Column(DateTime, nullable=True)
+    total_visits = Column(Integer, default=0)
+    created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    company = relationship("Company", foreign_keys=[company_id])
+    user = relationship("User", foreign_keys=[created_by])
+    ledger = relationship("MstLedger", foreign_keys=[ledger_id])
+    location_logs = relationship("CustomerLocationLog", back_populates="customer_profile", cascade="all, delete-orphan")
+    photos = relationship("CustomerPhoto", back_populates="customer_profile", cascade="all, delete-orphan")
+    owners = relationship("CustomerOwner", back_populates="customer_profile", cascade="all, delete-orphan", order_by="CustomerOwner.is_primary.desc(), CustomerOwner.id.asc()")
+
+
+class CustomerLocationLog(Base):
+    __tablename__ = "customer_location_logs"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_profile_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.customer_profiles.id", ondelete="CASCADE"), nullable=True, index=True)
+    ledger_id = Column(Integer, nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
+    
+    # Captured GPS coordinates
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    accuracy_meters = Column(Float, nullable=True)
+    
+    # Distance comparison against shop's established location
+    distance_from_base_meters = Column(Float, nullable=True)
+    verification_status = Column(String(50), default="UNVERIFIED")
+    # Status values: "ESTABLISHED_BASE", "VERIFIED_ON_SITE", "NEARBY", "MISMATCH_FAR", "NO_BASE_COORDINATE"
+    
+    source = Column(String(50), default="check_in")
+    # "check_in", "manual_tag", "admin_override"
+    
+    visit_id = Column(Integer, nullable=True)
+    notes = Column(String(500), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    # Relationships
+    company = relationship("Company", foreign_keys=[company_id])
+    user = relationship("User", foreign_keys=[user_id])
+    customer_profile = relationship("CustomerProfile", back_populates="location_logs", foreign_keys=[customer_profile_id])
+
+
+class CustomerPhoto(Base):
+    __tablename__ = "customer_photos"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_profile_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.customer_profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    ledger_id = Column(Integer, nullable=True, index=True)
+
+    photo_type = Column(String(50), default="shop_front")
+    # "customer_owner", "shop_front", "shop_inside", "shop_board", "visiting_card", "qr_code", "other"
+
+    imagekit_file_id = Column(String(255), nullable=True)
+    imagekit_url = Column(Text, nullable=False)
+    imagekit_thumbnail_url = Column(Text, nullable=True)
+    imagekit_file_path = Column(String(500), nullable=True)
+
+    caption = Column(String(255), nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    is_primary = Column(Boolean, default=False)
+
+    uploaded_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    # Relationships
+    company = relationship("Company", foreign_keys=[company_id])
+    user = relationship("User", foreign_keys=[uploaded_by])
+    customer_profile = relationship("CustomerProfile", back_populates="photos", foreign_keys=[customer_profile_id])
+
+
+class CustomerOwner(Base):
+    __tablename__ = "customer_owners"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_profile_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.customer_profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(150), nullable=False)
+    designation = Column(String(100), default="Owner / Partner")  # e.g., "Primary Owner", "Partner", "Co-Owner", "Managing Partner", "Key Contact / Manager"
+    phone = Column(String(50), nullable=True)
+    whatsapp_number = Column(String(50), nullable=True)
+    email = Column(String(150), nullable=True)
+    photo_url = Column(Text, nullable=True)
+    imagekit_file_id = Column(String(255), nullable=True)
+    is_primary = Column(Boolean, default=False)
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    company = relationship("Company", foreign_keys=[company_id])
+    customer_profile = relationship("CustomerProfile", back_populates="owners", foreign_keys=[customer_profile_id])

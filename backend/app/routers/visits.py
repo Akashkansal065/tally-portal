@@ -41,6 +41,7 @@ class SalesVisit(Base):
 
 class CheckInRequest(BaseModel):
     ledger_id: Optional[int] = None
+    customer_profile_id: Optional[int] = None
     custom_shop_name: Optional[str] = None
     latitude: float
     longitude: float
@@ -71,23 +72,186 @@ async def check_in(
     user: User = Depends(require_permission("visits", "create")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Record a GPS shop check-in."""
-    photo_url = req.photo_base64 if req.photo_base64 else None
-
+    """
+    Record a GPS shop check-in and audit distance against customer location.
+    - Automatically captures & verifies GPS coordinates on customer profile if missing or unverified.
+    - Seamlessly pipes check-in photo into ImageKit and CustomerPhoto gallery.
+    """
     visit = SalesVisit(
         user_id=user.user_id,
         ledger_id=req.ledger_id,
         custom_shop_name=req.custom_shop_name[:256] if req.custom_shop_name else None,
         latitude=req.latitude,
         longitude=req.longitude,
-        photo_url=photo_url,
+        photo_url=None,
         comments=req.comments[:1024] if req.comments else None,
         status="check-in",
     )
     db.add(visit)
+    await db.flush()
+
+    # Location audit & Customer Profile synchronization
+    from app.models.portal_core import CustomerProfile, CustomerLocationLog, CustomerPhoto
+    from app.services.geo_service import evaluate_checkin_proximity
+    from app.services.imagekit_service import upload_customer_photo
+    import time
+
+    dist_meters = None
+    verification_status = "NO_BASE_COORDINATE"
+    profile = None
+    location_established = False
+
+    # 1. Resolve Customer Profile
+    if req.customer_profile_id:
+        profile_res = await db.execute(
+            select(CustomerProfile).where(
+                CustomerProfile.company_id == user.company_id,
+                CustomerProfile.id == req.customer_profile_id
+            )
+        )
+        profile = profile_res.scalars().first()
+    elif req.ledger_id:
+        profile_res = await db.execute(
+            select(CustomerProfile).where(
+                CustomerProfile.company_id == user.company_id,
+                CustomerProfile.ledger_id == req.ledger_id
+            )
+        )
+        profile = profile_res.scalars().first()
+    elif req.custom_shop_name:
+        profile_res = await db.execute(
+            select(CustomerProfile).where(
+                CustomerProfile.company_id == user.company_id,
+                CustomerProfile.custom_name == req.custom_shop_name
+            )
+        )
+        profile = profile_res.scalars().first()
+
+    # 2. Auto-capture GPS & Verification
+    if profile:
+        # Keep visit linked with profile's ledger if present
+        if profile.ledger_id and not visit.ledger_id:
+            visit.ledger_id = profile.ledger_id
+        if not visit.custom_shop_name and profile.custom_name:
+            visit.custom_shop_name = profile.custom_name
+
+        if profile.latitude is not None and profile.longitude is not None:
+            dist_meters, verification_status = evaluate_checkin_proximity(
+                req.latitude, req.longitude, profile.latitude, profile.longitude
+            )
+            # If coordinates were not previously verified, verify them now upon successful on-site check-in
+            if not profile.location_verified:
+                profile.location_verified = True
+                profile.location_verified_at = func.now()
+        else:
+            # Auto-establish and verify master GPS coordinates for this shop
+            profile.latitude = req.latitude
+            profile.longitude = req.longitude
+            profile.location_verified = True
+            profile.location_verified_at = func.now()
+            dist_meters = 0.0
+            verification_status = "ESTABLISHED_BASE"
+            location_established = True
+        
+        profile.last_visit_at = func.now()
+        profile.total_visits = (profile.total_visits or 0) + 1
+    else:
+        # Create new customer profile in portal database (Zero Tally accounting impact)
+        profile = CustomerProfile(
+            company_id=user.company_id,
+            ledger_id=req.ledger_id,
+            custom_name=req.custom_shop_name,
+            latitude=req.latitude,
+            longitude=req.longitude,
+            location_verified=True,
+            location_verified_at=func.now(),
+            total_visits=1,
+            last_visit_at=func.now(),
+            created_by=user.user_id,
+        )
+        db.add(profile)
+        await db.flush()
+        dist_meters = 0.0
+        verification_status = "ESTABLISHED_BASE"
+        location_established = True
+
+    # 3. Customer Photo Gallery via Check-In Photo (ImageKit Pipeline)
+    if req.photo_base64:
+        try:
+            folder = (
+                f"/customers/ledger_{profile.ledger_id}/visits"
+                if profile and profile.ledger_id
+                else (f"/customers/profile_{profile.id}/visits" if profile else "/customers/visits")
+            )
+            file_name = f"checkin_{visit.id}_{int(time.time())}.jpg"
+            caption = req.comments[:255] if req.comments else f"Visit check-in by {user.username}"
+
+            ik_res = upload_customer_photo(
+                file_base64=req.photo_base64,
+                file_name=file_name,
+                folder=folder,
+                tags=["visit_checkin", f"user_{user.user_id}", f"visit_{visit.id}"]
+            )
+            if ik_res and ik_res.get("url"):
+                visit.photo_url = ik_res["url"]
+                if profile:
+                    photo_entry = CustomerPhoto(
+                        company_id=user.company_id,
+                        customer_profile_id=profile.id,
+                        ledger_id=profile.ledger_id,
+                        photo_type="visit_checkin",
+                        imagekit_file_id=ik_res.get("file_id"),
+                        imagekit_url=ik_res["url"],
+                        imagekit_thumbnail_url=ik_res.get("thumbnail_url") or ik_res["url"],
+                        imagekit_file_path=ik_res.get("file_path"),
+                        caption=caption,
+                        latitude=req.latitude,
+                        longitude=req.longitude,
+                        is_primary=False,
+                        uploaded_by=user.user_id,
+                    )
+                    db.add(photo_entry)
+            else:
+                # Fallback to base64 if ImageKit upload returned empty
+                visit.photo_url = req.photo_base64
+        except Exception as img_err:
+            print(f"Warning: ImageKit upload failed for check-in #{visit.id}: {img_err}")
+            visit.photo_url = req.photo_base64
+
+    # 4. Create immutable location audit log entry
+    loc_log = CustomerLocationLog(
+        company_id=user.company_id,
+        customer_profile_id=profile.id if profile else None,
+        ledger_id=visit.ledger_id,
+        user_id=user.user_id,
+        latitude=req.latitude,
+        longitude=req.longitude,
+        distance_from_base_meters=dist_meters,
+        verification_status=verification_status,
+        source="check_in",
+        visit_id=visit.id,
+        notes=f"Check-in by user #{user.user_id} ({user.username})"
+    )
+    db.add(loc_log)
+
     await db.commit()
     await db.refresh(visit)
-    return {"success": True, "id": visit.id, "message": "Check-in recorded successfully"}
+
+    return {
+        "success": True,
+        "id": visit.id,
+        "customer_profile_id": profile.id if profile else None,
+        "verification_status": verification_status,
+        "distance_from_base_meters": dist_meters,
+        "location_established": location_established,
+        "location_verified": profile.location_verified if profile else True,
+        "photo_url": visit.photo_url,
+        "message": (
+            "Check-in recorded! Master GPS location established & verified for this shop."
+            if location_established
+            else "Check-in recorded successfully"
+        )
+    }
 
 
 @router.get("/recent")

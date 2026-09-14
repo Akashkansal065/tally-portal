@@ -25,7 +25,8 @@ import {
   Edit3,
   Filter,
   RefreshCw,
-  Check
+  Check,
+  Users
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -204,6 +205,15 @@ export default function DashboardPage() {
       color: 'text-primary',
       bgColor: 'bg-primary/10 border-primary/20',
       show: permissions.showLedger,
+    },
+    {
+      href: '/customers',
+      label: 'Customer Directory',
+      description: 'Filter shops by locality, navigate with Google Maps & audit visits',
+      icon: Users,
+      color: 'text-violet-600',
+      bgColor: 'bg-violet-500/10 border-violet-500/20',
+      show: permissions.showLedger || permissions.showCheckIn || permissions.showSalesLedgers,
     },
     {
       href: '/stocks',

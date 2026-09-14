@@ -46,6 +46,8 @@ import {
   Warehouse,
   Scale,
   Tag,
+  Users,
+  History,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useState, useEffect } from 'react'
@@ -423,9 +425,15 @@ export function GlobalHeader() {
                 </CollapsibleMenu>
               )}
 
-              {permissions.showCheckIn && (
-                <CollapsibleMenu label="Utilities" icon={MapPin}>
-                  <DrawerLink href="/check-in" icon={MapPin} label="Check-In" onClick={() => setDrawerOpen(false)} />
+              {(permissions.showCheckIn || permissions.showLedger || permissions.showSalesLedgers) && (
+                <CollapsibleMenu label="Field Operations" icon={MapPin} defaultOpen={true}>
+                  <DrawerLink href="/customers" icon={Users} label="Customer Directory" onClick={() => setDrawerOpen(false)} />
+                  {permissions.showCheckIn && (
+                    <>
+                      <DrawerLink href="/check-in" icon={MapPin} label="Shop Check-In" onClick={() => setDrawerOpen(false)} />
+                      <DrawerLink href="/check-in/history" icon={History} label="Visit Log & Audits" onClick={() => setDrawerOpen(false)} />
+                    </>
+                  )}
                 </CollapsibleMenu>
               )}
 

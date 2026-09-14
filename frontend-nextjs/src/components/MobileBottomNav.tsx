@@ -17,6 +17,7 @@ import {
   Clock,
   BarChart3,
   FileSpreadsheet,
+  Users,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -40,8 +41,16 @@ export function MobileBottomNav() {
     permissions.showReceipts ||
     permissions.showPayments
 
+  const hasCustomersAccess =
+    permissions.showLedger ||
+    permissions.showCheckIn ||
+    permissions.showSalesLedgers
+
   const tabs: NavTab[] = [
     { href: '/', label: 'Home', icon: Home },
+    ...(hasCustomersAccess
+      ? [{ href: '/customers', label: 'Customers', icon: Users }]
+      : []),
     ...(hasVouchersAccess
       ? [{ href: '/vouchers', label: 'Vouchers', icon: FileText }]
       : []),
