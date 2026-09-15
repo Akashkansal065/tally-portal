@@ -50,6 +50,7 @@ interface AdminUserPermissionsModalProps {
   isPending: boolean;
   availableLedgerGroups: string[];
   availableStockGroups: string[];
+  availableRoles?: { role_id: number; name: string; description?: string }[];
   onRoleChange: (userId: number, role: string) => void;
   onPermissionToggle: (userId: number, field: "showLedger" | "showStocks" | "showReports" | "showOrders" | "showCheckIn" | "showSalesLedgers" | "showPurchaseLedgers" | "showReceipts" | "showPayments" | "showExpenses" | "showAttendance" | "showGst", value: boolean) => void;
   onScopeChange: (userId: number, field: "ledgerScope" | "stockScope", value: string) => void;
@@ -107,6 +108,7 @@ export function AdminUserPermissionsModal({
   isPending,
   availableLedgerGroups,
   availableStockGroups,
+  availableRoles = [],
   onRoleChange,
   onPermissionToggle,
   onScopeChange,
@@ -181,13 +183,23 @@ export function AdminUserPermissionsModal({
             <div className="flex items-center justify-between gap-4 border-t pt-3">
               <Label className="text-sm font-semibold">User Role</Label>
               <select
-                value={user.role === "admin" ? "admin" : "sales"}
+                value={user.role.toLowerCase()}
                 onChange={(e) => onRoleChange(user.id, e.target.value)}
                 disabled={isPending}
-                className="bg-background border border-input text-foreground text-sm rounded-md px-2.5 py-1.5 focus:ring-1 focus:ring-primary focus:outline-none w-[120px] font-medium"
+                className="bg-background border border-input text-foreground text-sm rounded-md px-2.5 py-1.5 focus:ring-1 focus:ring-primary focus:outline-none min-w-[140px] font-medium capitalize"
               >
-                <option value="sales">Sales</option>
-                <option value="admin">Admin</option>
+                {availableRoles.length > 0 ? (
+                  availableRoles.map((r) => (
+                    <option key={r.role_id} value={r.name.toLowerCase()}>
+                      {r.name}
+                    </option>
+                  ))
+                ) : (
+                  <>
+                    <option value="sales">Sales</option>
+                    <option value="admin">Admin</option>
+                  </>
+                )}
               </select>
             </div>
           </div>

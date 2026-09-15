@@ -844,11 +844,12 @@ async def update_customer_profile(
 ):
     """
     Update extended customer profile fields (locality, city, route, tags, notes, contact).
-    target_id can be 'ledger_123' or 'profile_456'.
+    target_id can be 'tally_123', 'ledger_123', or 'profile_456'.
     """
+    clean_id = str(target_id).strip()
     profile = None
-    if target_id.startswith("ledger_"):
-        lid = int(target_id.replace("ledger_", ""))
+    if clean_id.startswith("tally_") or clean_id.startswith("ledger_"):
+        lid = int(clean_id.replace("tally_", "").replace("ledger_", ""))
         res = await db.execute(
             select(CustomerProfile).where(
                 CustomerProfile.company_id == user.company_id,
@@ -863,8 +864,8 @@ async def update_customer_profile(
                 created_by=user.user_id
             )
             db.add(profile)
-    elif target_id.startswith("profile_"):
-        pid = int(target_id.replace("profile_", ""))
+    elif clean_id.startswith("profile_"):
+        pid = int(clean_id.replace("profile_", ""))
         res = await db.execute(
             select(CustomerProfile).where(
                 CustomerProfile.company_id == user.company_id,
@@ -875,7 +876,7 @@ async def update_customer_profile(
     else:
         # Fallback treat as integer ledger_id or profile_id
         try:
-            val = int(target_id)
+            val = int(clean_id)
             res = await db.execute(
                 select(CustomerProfile).where(
                     CustomerProfile.company_id == user.company_id,
@@ -942,8 +943,9 @@ async def link_customer_to_ledger(
 
     # 1. Resolve customer profile
     profile = None
-    if target_id.startswith("profile_"):
-        pid = int(target_id.replace("profile_", ""))
+    clean_id = str(target_id).strip()
+    if clean_id.startswith("profile_"):
+        pid = int(clean_id.replace("profile_", ""))
         res = await db.execute(
             select(CustomerProfile).where(
                 CustomerProfile.company_id == user.company_id,
@@ -951,14 +953,14 @@ async def link_customer_to_ledger(
             )
         )
         profile = res.scalars().first()
-    elif target_id.startswith("ledger_"):
+    elif clean_id.startswith("tally_") or clean_id.startswith("ledger_"):
         raise HTTPException(
             status_code=400,
             detail="Cannot link an already mapped Tally customer."
         )
     else:
         try:
-            pid = int(target_id)
+            pid = int(clean_id)
             res = await db.execute(
                 select(CustomerProfile).where(
                     CustomerProfile.company_id == user.company_id,
@@ -1053,10 +1055,11 @@ async def tag_customer_location(
     Manually tag / calibrate master GPS coordinate for a customer shop.
     Records an audit log entry in customer_location_logs.
     """
+    clean_id = str(target_id).strip()
     profile = None
     ledger_id = None
-    if target_id.startswith("ledger_"):
-        ledger_id = int(target_id.replace("ledger_", ""))
+    if clean_id.startswith("tally_") or clean_id.startswith("ledger_"):
+        ledger_id = int(clean_id.replace("tally_", "").replace("ledger_", ""))
         res = await db.execute(
             select(CustomerProfile).where(
                 CustomerProfile.company_id == user.company_id,
@@ -1072,8 +1075,8 @@ async def tag_customer_location(
             )
             db.add(profile)
             await db.flush()
-    elif target_id.startswith("profile_"):
-        pid = int(target_id.replace("profile_", ""))
+    elif clean_id.startswith("profile_"):
+        pid = int(clean_id.replace("profile_", ""))
         res = await db.execute(
             select(CustomerProfile).where(
                 CustomerProfile.company_id == user.company_id,
@@ -1085,7 +1088,7 @@ async def tag_customer_location(
             ledger_id = profile.ledger_id
     else:
         try:
-            val = int(target_id)
+            val = int(clean_id)
             res = await db.execute(
                 select(CustomerProfile).where(
                     CustomerProfile.company_id == user.company_id,
@@ -1146,11 +1149,12 @@ async def get_customer_location_history(
     Get full history of GPS taggings and check-ins for this shop over time.
     Audits whether salespeople checked in near the actual shop location.
     """
+    clean_id = str(target_id).strip()
     profile_id = None
     ledger_id = None
 
-    if target_id.startswith("ledger_"):
-        ledger_id = int(target_id.replace("ledger_", ""))
+    if clean_id.startswith("tally_") or clean_id.startswith("ledger_"):
+        ledger_id = int(clean_id.replace("tally_", "").replace("ledger_", ""))
         p_res = await db.execute(
             select(CustomerProfile).where(
                 CustomerProfile.company_id == user.company_id,
@@ -1160,11 +1164,11 @@ async def get_customer_location_history(
         p = p_res.scalars().first()
         if p:
             profile_id = p.id
-    elif target_id.startswith("profile_"):
-        profile_id = int(target_id.replace("profile_", ""))
+    elif clean_id.startswith("profile_"):
+        profile_id = int(clean_id.replace("profile_", ""))
     else:
         try:
-            val = int(target_id)
+            val = int(clean_id)
             profile_id = val
         except ValueError:
             pass

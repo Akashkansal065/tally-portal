@@ -35,9 +35,11 @@ import {
   Search,
   Activity,
   ArrowUpRight,
+  ShieldCheck,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
+import { RolesManagement } from '@/components/admin/RolesManagement'
 import rolesConfig from '@/lib/roles.json'
 
 type UserItem = {
@@ -144,7 +146,7 @@ export default function AdminPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
   
-  const [tab, setTab] = useState<'users' | 'sync' | 'logs' | 'visits' | 'einvoice' | 'cache'>('users')
+  const [tab, setTab] = useState<'users' | 'roles' | 'sync' | 'logs' | 'visits' | 'einvoice' | 'cache'>('users')
   const [users, setUsers] = useState<UserItem[]>([])
   const [logs, setLogs] = useState<AuditLog[]>([])
   const [visits, setVisits] = useState<VisitLog[]>([])
@@ -605,7 +607,7 @@ export default function AdminPage() {
     if (!permissions.isAdmin) return
     setLoading(true)
     try {
-      if (tab === 'users') {
+      if (tab === 'users' || tab === 'roles') {
         const [uRes, rRes, cRes, mRes, sgRes, lgRes] = await Promise.all([
           fetch(`${API_BASE}/admin/users`, { headers: authHeaders(token) }),
           fetch(`${API_BASE}/admin/roles`, { headers: authHeaders(token) }),
@@ -672,9 +674,17 @@ export default function AdminPage() {
         headers: authHeaders(token),
         body: JSON.stringify({ role: newRole }),
       })
-      if (!res.ok) throw new Error('Failed to update role')
-      setUsers(prev => prev.map(u => u.user_id === userId ? { ...u, role_name: newRole.charAt(0).toUpperCase() + newRole.slice(1) } : u))
-      setPermissionsModalUser(prev => prev && prev.user_id === userId ? { ...prev, role_name: newRole.charAt(0).toUpperCase() + newRole.slice(1) } : prev)
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to update role')
+      }
+      const roleMatch = roles.find(r => r.name.toLowerCase() === newRole.toLowerCase() || String(r.role_id) === String(newRole))
+      const displayRole = roleMatch ? roleMatch.name : (newRole.charAt(0).toUpperCase() + newRole.slice(1))
+      const newRoleId = roleMatch ? roleMatch.role_id : undefined
+
+      setUsers(prev => prev.map(u => u.user_id === userId ? { ...u, role_id: newRoleId ?? u.role_id, role_name: displayRole } : u))
+      setPermissionsModalUser(prev => prev && prev.user_id === userId ? { ...prev, role_id: newRoleId ?? prev.role_id, role_name: displayRole } : prev)
+      fetchData()
     } catch (e: any) {
       alert(e.message)
     }
@@ -1088,6 +1098,15 @@ const handleSavePermissions = async () => {
             <UserIcon className="h-4 w-4" /> User Directory
           </button>
           <button
+            onClick={() => setTab('roles')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'roles' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <ShieldCheck className="h-4 w-4" /> Roles & Permissions
+          </button>
+          <button
             onClick={() => setTab('sync')}
             className={cn(
               'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
@@ -1222,6 +1241,12 @@ const handleSavePermissions = async () => {
                 ))}
               </div>
             </div>
+          ) : tab === 'roles' ? (
+            <RolesManagement
+              roles={roles}
+              onRolesChange={setRoles}
+              token={token}
+            />
           ) : tab === 'sync' ? (
             <div className="space-y-6">
               {/* Top Sync Health Metrics Cards */}
@@ -2667,6 +2692,7 @@ const handleSavePermissions = async () => {
           isPending={false}
           availableLedgerGroups={availableLedgerGroups}
           availableStockGroups={availableStockGroups}
+          availableRoles={roles}
           onRoleChange={handleRoleChange}
           onPermissionToggle={handlePermissionToggle}
           onScopeChange={handleScopeChange}

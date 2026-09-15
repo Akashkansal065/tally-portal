@@ -37,6 +37,19 @@ export default function LoginPage() {
   }, [user, isLoading, router])
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const qToken = params.get('token')
+      const qEmail = params.get('email')
+      if (qToken && qEmail) {
+        login(qToken, qEmail).then(() => {
+          router.replace('/admin')
+        })
+      }
+    }
+  }, [login, router])
+
+  useEffect(() => {
     let isMounted = true
     const checkBootstrap = async () => {
       try {

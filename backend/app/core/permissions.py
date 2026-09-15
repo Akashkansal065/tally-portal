@@ -108,7 +108,7 @@ async def get_effective_permission(
         return effective
 
     # Admin role gets full access to everything
-    if user.role and user.role.name.lower() == "admin":
+    if user.role and user.role.name.lower() in ("admin", "superadmin", "owner"):
         return {
             "can_create": True,
             "can_read": True,
@@ -165,7 +165,26 @@ async def get_user_permission_toggles(
 ) -> dict:
     """
     Returns the UI visibility toggles dynamically resolved for a given user.
+    Admin unconditionally gets full access to all features.
     """
+    # Unconditional full access bypass for Admin
+    if role_name and role_name.lower() in ("admin", "superadmin", "owner"):
+        return {
+            "showLedger": True,
+            "showSalesLedgers": True,
+            "showPurchaseLedgers": True,
+            "showReceipts": True,
+            "showPayments": True,
+            "showExpenses": True,
+            "showAttendance": True,
+            "showStocks": True,
+            "showReports": True,
+            "showOrders": True,
+            "showCheckIn": True,
+            "showGst": True,
+            "isAdmin": True
+        }
+
     toggles = {
         "showLedger": False,
         "showSalesLedgers": False,
@@ -178,12 +197,13 @@ async def get_user_permission_toggles(
         "showReports": False,
         "showOrders": False,
         "showCheckIn": False,
-        "showGst": False
+        "showGst": False,
+        "isAdmin": False
     }
 
-        
     # Mapping of module codes to toggles
     mapping = {
+        "ledgers": "showLedger",
         "ledger_customer": "showSalesLedgers",
         "ledger_supplier": "showPurchaseLedgers",
         "vouchers": "showReceipts",
@@ -207,7 +227,7 @@ async def get_user_permission_toggles(
         m_code = mod_code.lower()
         if m_code in mapping:
             toggle_key = mapping[m_code]
-            toggles[toggle_key] = perm.can_read
+            toggles[toggle_key] = bool(perm.can_read)
 
     # 2. Fetch user overrides joined with Module
     override_q = await db.execute(
@@ -220,10 +240,11 @@ async def get_user_permission_toggles(
         if m_code in mapping:
             toggle_key = mapping[m_code]
             if override.can_read is not None:
-                toggles[toggle_key] = override.can_read
+                toggles[toggle_key] = bool(override.can_read)
                 
     # 3. Derive showLedger
     toggles["showLedger"] = (
+        toggles.get("showLedger", False) or
         toggles["showSalesLedgers"] or 
         toggles["showPurchaseLedgers"]
     )
