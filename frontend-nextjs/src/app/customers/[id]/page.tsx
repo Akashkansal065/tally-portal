@@ -896,31 +896,132 @@ export default function CustomerProfilePage() {
     stopOwnerCamera()
   }
 
-  // Filtered Photos List
-  const filteredPhotos = useMemo(() => {
-    if (!customer?.photos) return []
-    if (photoFilter === 'all') return customer.photos
-    return customer.photos.filter((p) => p.photo_type === photoFilter)
-  }, [customer?.photos, photoFilter])
+  // Comprehensive list of all photos for this customer (gallery photos + primary owner photo if not already included)
+  const allCustomerPhotos = useMemo(() => {
+    const list: CustomerPhotoItem[] = customer?.photos ? [...customer.photos] : []
+    // If there is an owner photo that is not in customer.photos list, include it at the start
+    if (customer?.customer_photo_url && !list.some(p => p.imagekit_url === customer.customer_photo_url)) {
+      list.unshift({
+        id: -999,
+        photo_type: 'customer_owner',
+        imagekit_url: customer.customer_photo_url,
+        imagekit_thumbnail_url: customer.customer_photo_url,
+        imagekit_file_path: null,
+        caption: `Owner Portrait: ${customer.contact_person || customer.name}`,
+        latitude: customer.latitude,
+        longitude: customer.longitude,
+        is_primary: true,
+        uploaded_by_name: customer.contact_person || 'Owner',
+        created_at: null,
+      })
+    }
+    // Also include any owner/partner photos from customer.owners if not already in list
+    if (customer?.owners) {
+      for (const ow of customer.owners) {
+        if (ow.photo_url && !list.some(p => p.imagekit_url === ow.photo_url)) {
+          list.push({
+            id: -(ow.id || 100),
+            photo_type: 'customer_owner',
+            imagekit_url: ow.photo_url,
+            imagekit_thumbnail_url: ow.photo_url,
+            imagekit_file_path: null,
+            caption: `Partner Portrait: ${ow.name} (${ow.designation || 'Partner'})`,
+            latitude: customer.latitude,
+            longitude: customer.longitude,
+            is_primary: ow.is_primary,
+            uploaded_by_name: ow.name,
+            created_at: ow.created_at,
+          })
+        }
+      }
+    }
+    return list
+  }, [customer?.photos, customer?.customer_photo_url, customer?.owners, customer?.name, customer?.contact_person, customer?.latitude, customer?.longitude])
 
-  // Photo Navigation Handlers
+  // Filtered Photos List for gallery tab view
+  const filteredPhotos = useMemo(() => {
+    if (photoFilter === 'all') return allCustomerPhotos
+    return allCustomerPhotos.filter((p) => p.photo_type === photoFilter)
+  }, [allCustomerPhotos, photoFilter])
+
+  // Photos actively browsable in the lightbox
+  const activeLightboxPhotos = useMemo(() => {
+    if (filteredPhotos.some(p => p.id === lightboxPhoto?.id || p.imagekit_url === lightboxPhoto?.imagekit_url)) {
+      return filteredPhotos
+    }
+    return allCustomerPhotos
+  }, [filteredPhotos, allCustomerPhotos, lightboxPhoto])
+
+  const currentLightboxIndex = useMemo(() => {
+    if (!lightboxPhoto) return -1
+    return activeLightboxPhotos.findIndex(p => p.id === lightboxPhoto.id || p.imagekit_url === lightboxPhoto.imagekit_url)
+  }, [activeLightboxPhotos, lightboxPhoto])
+
+  // Photo Navigation Handlers (supports looping)
   const handlePrevPhoto = (e?: React.MouseEvent) => {
     e?.stopPropagation()
-    if (!lightboxPhoto) return
-    const idx = filteredPhotos.findIndex(p => p.id === lightboxPhoto.id)
+    if (!lightboxPhoto || activeLightboxPhotos.length <= 1) return
+    const idx = currentLightboxIndex
     if (idx > 0) {
-      setLightboxPhoto(filteredPhotos[idx - 1])
+      setLightboxPhoto(activeLightboxPhotos[idx - 1])
+    } else {
+      setLightboxPhoto(activeLightboxPhotos[activeLightboxPhotos.length - 1])
     }
   }
 
   const handleNextPhoto = (e?: React.MouseEvent) => {
     e?.stopPropagation()
-    if (!lightboxPhoto) return
-    const idx = filteredPhotos.findIndex(p => p.id === lightboxPhoto.id)
-    if (idx !== -1 && idx < filteredPhotos.length - 1) {
-      setLightboxPhoto(filteredPhotos[idx + 1])
+    if (!lightboxPhoto || activeLightboxPhotos.length <= 1) return
+    const idx = currentLightboxIndex
+    if (idx !== -1 && idx < activeLightboxPhotos.length - 1) {
+      setLightboxPhoto(activeLightboxPhotos[idx + 1])
+    } else {
+      setLightboxPhoto(activeLightboxPhotos[0])
     }
   }
+
+  // Open lightbox starting from owner photo with all photos available to scroll
+  const handleOpenOwnerPhoto = (targetUrl?: string) => {
+    if (!customer) return
+    setPhotoFilter('all')
+    const urlToFind = targetUrl || customer.customer_photo_url
+
+    if (urlToFind) {
+      const match = allCustomerPhotos.find(p => p.imagekit_url === urlToFind)
+      if (match) {
+        setLightboxPhoto(match)
+        return
+      }
+    }
+
+    const ownerPhotoMatch = allCustomerPhotos.find(p => p.photo_type === 'customer_owner')
+    if (ownerPhotoMatch) {
+      setLightboxPhoto(ownerPhotoMatch)
+      return
+    }
+
+    if (allCustomerPhotos.length > 0) {
+      setLightboxPhoto(allCustomerPhotos[0])
+    }
+  }
+
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (!lightboxPhoto) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        handlePrevPhoto()
+      } else if (e.key === 'ArrowRight') {
+        handleNextPhoto()
+      } else if (e.key === 'Escape') {
+        setLightboxPhoto(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [lightboxPhoto, currentLightboxIndex, activeLightboxPhotos])
 
   const [touchStart, setTouchStart] = useState<number | null>(null)
   const [touchEnd, setTouchEnd] = useState<number | null>(null)
@@ -1085,24 +1186,9 @@ export default function CustomerProfilePage() {
               {/* Customer / Owner Portrait with 1-Tap Upload Overlay */}
               <div className="relative group flex-shrink-0">
                 <div 
-                  className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden border-2 border-border shadow-md bg-muted flex items-center justify-center cursor-pointer relative"
-                  onClick={() => {
-                    if (customer.customer_photo_url) {
-                      setLightboxPhoto({
-                        id: 0,
-                        photo_type: 'customer_owner',
-                        imagekit_url: customer.customer_photo_url,
-                        imagekit_thumbnail_url: customer.customer_photo_url,
-                        imagekit_file_path: null,
-                        caption: `Owner Portrait: ${customer.name}`,
-                        latitude: customer.latitude,
-                        longitude: customer.longitude,
-                        is_primary: true,
-                        uploaded_by_name: '',
-                        created_at: null,
-                      })
-                    }
-                  }}
+                  className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden border-2 border-border shadow-md bg-muted flex items-center justify-center cursor-pointer relative hover:ring-2 hover:ring-primary/50 transition-all group"
+                  onClick={() => handleOpenOwnerPhoto()}
+                  title="Click to view and scroll all customer photos"
                 >
                   {customer.customer_photo_url ? (
                     <>
@@ -1111,9 +1197,17 @@ export default function CustomerProfilePage() {
                         alt={customer.contact_person || customer.name}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
-                      <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none text-white">
-                         <Maximize2 className="w-6 h-6" />
+                      <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center pointer-events-none text-white text-center p-1">
+                        <Maximize2 className="w-5 h-5 mb-0.5" />
+                        <span className="text-[10px] font-bold">View Photos</span>
                       </div>
+                      {/* Photo Count badge showing total scrollable photos */}
+                      {allCustomerPhotos.length > 1 && (
+                        <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-black/75 backdrop-blur-xs text-white text-[10px] font-extrabold flex items-center gap-1 shadow-sm pointer-events-none">
+                          <ImageIcon className="w-2.5 h-2.5" />
+                          <span>{allCustomerPhotos.length}</span>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <div className="flex flex-col items-center justify-center text-muted-foreground p-2 text-center">
@@ -1509,36 +1603,50 @@ export default function CustomerProfilePage() {
         )}
 
         {/* ─── 360° VIEW NAVIGATION TABS ─── */}
-        <div className="flex items-center gap-2 border-b border-border pb-1 overflow-x-auto no-scrollbar">
+        <div className="grid grid-cols-4 sm:flex sm:items-center gap-1 sm:gap-2 p-1 bg-muted/60 dark:bg-muted/30 sm:bg-transparent sm:p-0 rounded-2xl sm:rounded-none border sm:border-0 sm:border-b border-border/80 sm:border-border sm:pb-1 shadow-2xs sm:shadow-none">
+          {/* Tab 1: Store & Partners */}
           <button
             type="button"
             onClick={() => setMainTab('overview')}
             className={cn(
-              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0',
               mainTab === 'overview'
                 ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
             )}
           >
-            <Store className="w-4 h-4" />
-            <span>Store & Partners</span>
+            <Store className="w-4 h-4 shrink-0" />
+            <span className="sm:hidden truncate">Store</span>
+            <span className="hidden sm:inline whitespace-nowrap">Store & Partners</span>
           </button>
 
+          {/* Tab 2: Ledger Statement */}
           <button
             type="button"
             onClick={() => setMainTab('statement')}
             className={cn(
-              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
               mainTab === 'statement'
                 ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
             )}
           >
-            <Receipt className="w-4 h-4" />
-            <span>Ledger Statement</span>
+            <div className="flex items-center gap-1">
+              <Receipt className="w-4 h-4 shrink-0" />
+              {customer.recent_vouchers && customer.recent_vouchers.length > 0 && (
+                <span className={cn(
+                  'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
+                  mainTab === 'statement' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                )}>
+                  {customer.recent_vouchers.length}
+                </span>
+              )}
+            </div>
+            <span className="sm:hidden truncate">Ledger</span>
+            <span className="hidden sm:inline whitespace-nowrap">Ledger Statement</span>
             {customer.recent_vouchers && customer.recent_vouchers.length > 0 && (
               <span className={cn(
-                'px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
                 mainTab === 'statement' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
               )}>
                 {customer.recent_vouchers.length}
@@ -1546,21 +1654,33 @@ export default function CustomerProfilePage() {
             )}
           </button>
 
+          {/* Tab 3: Order History */}
           <button
             type="button"
             onClick={() => setMainTab('orders')}
             className={cn(
-              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
               mainTab === 'orders'
                 ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
             )}
           >
-            <ShoppingCart className="w-4 h-4" />
-            <span>Order History</span>
+            <div className="flex items-center gap-1">
+              <ShoppingCart className="w-4 h-4 shrink-0" />
+              {customer.recent_orders && customer.recent_orders.length > 0 && (
+                <span className={cn(
+                  'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
+                  mainTab === 'orders' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                )}>
+                  {customer.recent_orders.length}
+                </span>
+              )}
+            </div>
+            <span className="sm:hidden truncate">Orders</span>
+            <span className="hidden sm:inline whitespace-nowrap">Order History</span>
             {customer.recent_orders && customer.recent_orders.length > 0 && (
               <span className={cn(
-                'px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
                 mainTab === 'orders' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
               )}>
                 {customer.recent_orders.length}
@@ -1568,21 +1688,33 @@ export default function CustomerProfilePage() {
             )}
           </button>
 
+          {/* Tab 4: Field Visits */}
           <button
             type="button"
             onClick={() => setMainTab('visits')}
             className={cn(
-              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
               mainTab === 'visits'
                 ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
             )}
           >
-            <Clock className="w-4 h-4" />
-            <span>Field Visits</span>
+            <div className="flex items-center gap-1">
+              <Clock className="w-4 h-4 shrink-0" />
+              {customer.visits && customer.visits.length > 0 && (
+                <span className={cn(
+                  'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
+                  mainTab === 'visits' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                )}>
+                  {customer.visits.length}
+                </span>
+              )}
+            </div>
+            <span className="sm:hidden truncate">Visits</span>
+            <span className="hidden sm:inline whitespace-nowrap">Field Visits</span>
             {customer.visits && customer.visits.length > 0 && (
               <span className={cn(
-                'px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
                 mainTab === 'visits' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
               )}>
                 {customer.visits.length}
@@ -1884,7 +2016,11 @@ export default function CustomerProfilePage() {
                       <div className="flex items-start gap-3.5">
                         {/* Owner Avatar with 1-Tap Camera */}
                         <div className="relative group/avatar flex-shrink-0">
-                          <div className="w-13 h-13 sm:w-14 sm:h-14 rounded-2xl overflow-hidden border border-border bg-muted flex items-center justify-center shadow-sm">
+                          <div 
+                            className="w-13 h-13 sm:w-14 sm:h-14 rounded-2xl overflow-hidden border border-border bg-muted flex items-center justify-center shadow-sm cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all"
+                            onClick={() => owner.photo_url && handleOpenOwnerPhoto(owner.photo_url)}
+                            title={owner.photo_url ? "Click to view and scroll all customer photos" : undefined}
+                          >
                             {owner.photo_url ? (
                               <img src={owner.photo_url} alt={owner.name} className="w-full h-full object-cover" />
                             ) : (
@@ -2768,28 +2904,35 @@ export default function CustomerProfilePage() {
           >
             {/* Top Lightbox Bar */}
             <div className="w-full flex items-center justify-between text-white text-xs px-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-bold text-sm">
                   {photoTypeLabels[lightboxPhoto.photo_type]?.label || lightboxPhoto.photo_type}
                 </span>
+                {activeLightboxPhotos.length > 1 && (
+                  <span className="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-extrabold text-white">
+                    {currentLightboxIndex !== -1 ? currentLightboxIndex + 1 : 1} of {activeLightboxPhotos.length}
+                  </span>
+                )}
                 {lightboxPhoto.uploaded_by_name && (
-                  <span className="opacity-75">by {lightboxPhoto.uploaded_by_name}</span>
+                  <span className="opacity-75 hidden sm:inline">by {lightboxPhoto.uploaded_by_name}</span>
                 )}
                 {lightboxPhoto.created_at && (
-                  <span className="opacity-60 text-[11px]">
+                  <span className="opacity-60 text-[11px] hidden sm:inline">
                     • {new Date(lightboxPhoto.created_at).toLocaleDateString()}
                   </span>
                 )}
               </div>
 
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleDeletePhoto(lightboxPhoto.id)}
-                  className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white transition-colors"
-                  title="Delete Photo"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {lightboxPhoto.id > 0 && (
+                  <button
+                    onClick={() => handleDeletePhoto(lightboxPhoto.id)}
+                    className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white transition-colors"
+                    title="Delete Photo"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
                 <a
                   href={lightboxPhoto.imagekit_url}
                   target="_blank"
@@ -2802,15 +2945,16 @@ export default function CustomerProfilePage() {
                 <button
                   onClick={() => setLightboxPhoto(null)}
                   className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors"
+                  title="Close viewer (Esc)"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            {/* Lightbox Image */}
+            {/* Lightbox Image Container */}
             <div 
-              className="relative w-full max-h-[80vh] flex items-center justify-center overflow-hidden rounded-2xl bg-black/50 border border-white/10 shadow-2xl group"
+              className="relative w-full max-h-[70vh] flex items-center justify-center overflow-hidden rounded-2xl bg-black/50 border border-white/10 shadow-2xl group select-none"
               onTouchStart={onTouchStart}
               onTouchMove={onTouchMove}
               onTouchEnd={onTouchEnd}
@@ -2818,39 +2962,79 @@ export default function CustomerProfilePage() {
               <img
                 src={lightboxPhoto.imagekit_url}
                 alt={lightboxPhoto.caption || 'Photo'}
-                className="max-h-[80vh] max-w-full object-contain rounded-2xl"
+                className="max-h-[70vh] max-w-full object-contain rounded-2xl"
               />
               
-              {/* Previous Button */}
-              {filteredPhotos.findIndex(p => p.id === lightboxPhoto.id) > 0 && (
+              {/* Previous Button (Visible & Loopable) */}
+              {activeLightboxPhotos.length > 1 && (
                 <button
                   type="button"
                   onClick={handlePrevPhoto}
-                  className="absolute left-2 md:left-4 p-2 md:p-3 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-all shadow-lg flex items-center justify-center active:scale-95 z-10"
-                  title="Previous Photo"
+                  className="absolute left-2 md:left-4 p-2.5 md:p-3.5 rounded-full bg-black/60 hover:bg-black/90 text-white backdrop-blur-md transition-all shadow-xl flex items-center justify-center active:scale-90 z-20 border border-white/20"
+                  title="Previous Photo (Left Arrow)"
                 >
-                  <ChevronLeft className="w-5 h-5 md:w-8 md:h-8" />
+                  <ChevronLeft className="w-5 h-5 md:w-7 md:h-7" />
                 </button>
               )}
               
-              {/* Next Button */}
-              {filteredPhotos.findIndex(p => p.id === lightboxPhoto.id) !== -1 && filteredPhotos.findIndex(p => p.id === lightboxPhoto.id) < filteredPhotos.length - 1 && (
+              {/* Next Button (Visible & Loopable) */}
+              {activeLightboxPhotos.length > 1 && (
                 <button
                   type="button"
                   onClick={handleNextPhoto}
-                  className="absolute right-2 md:right-4 p-2 md:p-3 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-all shadow-lg flex items-center justify-center active:scale-95 z-10"
-                  title="Next Photo"
+                  className="absolute right-2 md:right-4 p-2.5 md:p-3.5 rounded-full bg-black/60 hover:bg-black/90 text-white backdrop-blur-md transition-all shadow-xl flex items-center justify-center active:scale-90 z-20 border border-white/20"
+                  title="Next Photo (Right Arrow)"
                 >
-                  <ChevronRight className="w-5 h-5 md:w-8 md:h-8" />
+                  <ChevronRight className="w-5 h-5 md:w-7 md:h-7" />
                 </button>
               )}
             </div>
 
             {/* Caption & Metadata Footer */}
             {lightboxPhoto.caption && (
-              <p className="text-white/90 text-sm text-center px-4 font-medium">
+              <p className="text-white/90 text-xs sm:text-sm text-center px-4 font-medium">
                 {lightboxPhoto.caption}
               </p>
+            )}
+
+            {/* Thumbnail Carousel Strip to Scroll & Jump Across All Photos */}
+            {activeLightboxPhotos.length > 1 && (
+              <div className="w-full flex flex-col items-center gap-1 pt-1">
+                <div className="flex items-center gap-2 overflow-x-auto max-w-full px-4 py-1 no-scrollbar scroll-smooth">
+                  {activeLightboxPhotos.map((p, pIdx) => {
+                    const isActive = p.id === lightboxPhoto.id || p.imagekit_url === lightboxPhoto.imagekit_url
+                    return (
+                      <button
+                        key={p.id ? `thumb-${p.id}` : `thumb-idx-${pIdx}`}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setLightboxPhoto(p)
+                        }}
+                        className={cn(
+                          'relative w-12 h-12 sm:w-14 sm:h-14 rounded-xl overflow-hidden border-2 transition-all flex-shrink-0 cursor-pointer',
+                          isActive
+                            ? 'border-primary ring-2 ring-primary/60 scale-105 shadow-md opacity-100'
+                            : 'border-white/25 opacity-50 hover:opacity-90 hover:scale-100'
+                        )}
+                        title={p.caption || photoTypeLabels[p.photo_type]?.label || `Photo ${pIdx + 1}`}
+                      >
+                        <img
+                          src={p.imagekit_thumbnail_url || p.imagekit_url}
+                          alt=""
+                          className="w-full h-full object-cover"
+                        />
+                        {isActive && (
+                          <div className="absolute inset-0 border-2 border-primary rounded-xl pointer-events-none" />
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+                <span className="text-[10px] text-white/60 font-medium">
+                  Swipe or tap thumbnail to scroll other photos ({activeLightboxPhotos.length} total)
+                </span>
+              </div>
             )}
           </div>
         </div>

@@ -1688,12 +1688,20 @@ export default function CustomersPage() {
                     {customers.map((cust) => (
                       <tr
                         key={cust.key}
-                        className="hover:bg-muted/40 transition-colors group"
+                        onClick={(e) => {
+                          const target = e.target as HTMLElement | null
+                          if (target && target.closest('button, a, input, select, textarea')) {
+                            return
+                          }
+                          router.push(`/customers/${cust.key}`)
+                        }}
+                        className="hover:bg-muted/40 transition-colors group cursor-pointer"
                       >
                         {/* 1. Customer & Shop */}
                         <td className="w-[26%] py-3 px-3.5 align-top break-words whitespace-normal">
                           <Link
                             href={`/customers/${cust.key}`}
+                            onClick={(e) => e.stopPropagation()}
                             className="font-bold text-sm text-foreground group-hover:text-primary transition-colors hover:underline break-words whitespace-normal block"
                           >
                             {cust.name}
@@ -1748,52 +1756,61 @@ export default function CustomersPage() {
 
                         {/* 3. Contact */}
                         <td className="w-[14%] py-3 px-3.5 align-top break-words whitespace-normal">
-                          <div className="flex items-center gap-1.5 flex-wrap">
+                          <div className="space-y-1">
                             {(cust.phone || cust.mobile) ? (
                               <a
                                 href={`tel:${cust.phone || cust.mobile}`}
-                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs font-medium transition-colors break-all"
-                                title="Call customer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center gap-1 text-xs text-foreground hover:text-primary font-medium transition-colors"
                               >
-                                <Phone className="w-3 h-3 text-primary shrink-0" />
+                                <Phone className="w-3.5 h-3.5 text-primary shrink-0" />
                                 <span>{cust.phone || cust.mobile}</span>
                               </a>
                             ) : (
                               <span className="text-muted-foreground italic text-[11px]">No phone</span>
                             )}
                             {cust.whatsapp_number && (
-                              <a
-                                href={`https://wa.me/${cust.whatsapp_number.replace(/\D/g, '')}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="p-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors shrink-0"
-                                title="WhatsApp"
-                              >
-                                <MessageCircle className="w-3.5 h-3.5" />
-                              </a>
+                              <div>
+                                <a
+                                  href={`https://wa.me/${cust.whatsapp_number.replace(/\D/g, '')}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="inline-flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 font-medium transition-colors"
+                                >
+                                  <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                                  <span>WhatsApp</span>
+                                </a>
+                              </div>
                             )}
                           </div>
                         </td>
 
-                        {/* 4. GPS & Verification */}
+                        {/* 4. GPS Status */}
                         <td className="w-[16%] py-3 px-3.5 align-top break-words whitespace-normal">
-                          <div className="space-y-1 break-words whitespace-normal">
+                          <div className="space-y-1">
                             <div>{renderVerificationBadge(cust)}</div>
                             {cust.has_location ? (
                               <button
-                                onClick={() => handleOpenTag(cust)}
-                                className="text-[10px] text-muted-foreground hover:text-primary transition-colors flex items-center gap-1 break-all"
-                                title="Recalibrate shop coordinates"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenTag(cust)
+                                }}
+                                className="text-[11px] text-muted-foreground hover:text-primary transition-colors flex items-center gap-1 break-words whitespace-normal"
+                                title="Click to recalibrate shop coordinates"
                               >
-                                <Compass className="w-2.5 h-2.5 shrink-0" />
+                                <Compass className="w-3 h-3 shrink-0" />
                                 <span>{cust.latitude?.toFixed(4)}, {cust.longitude?.toFixed(4)}</span>
                               </button>
                             ) : (
                               <button
-                                onClick={() => handleOpenTag(cust)}
-                                className="text-[10px] text-amber-600 hover:text-amber-700 font-semibold flex items-center gap-1"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenTag(cust)
+                                }}
+                                className="text-[11px] text-amber-600 hover:text-amber-700 font-semibold flex items-center gap-1"
                               >
-                                <Plus className="w-2.5 h-2.5 shrink-0" />
+                                <Plus className="w-3 h-3 shrink-0" />
                                 <span>Tag GPS</span>
                               </button>
                             )}
@@ -1807,6 +1824,7 @@ export default function CustomersPage() {
                               href={cust.maps_url}
                               target="_blank"
                               rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
                               className={cn(
                                 'inline-flex items-center gap-1 p-1.5 rounded-lg text-xs font-bold transition-all shadow-sm shrink-0',
                                 cust.has_location
@@ -1821,6 +1839,7 @@ export default function CustomersPage() {
 
                             <Link
                               href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
+                              onClick={(e) => e.stopPropagation()}
                               className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors text-xs font-semibold shrink-0"
                               title="1-Tap Check-In at this shop"
                             >
@@ -1829,7 +1848,10 @@ export default function CustomersPage() {
                             </Link>
 
                             <button
-                              onClick={() => handleOpenHistory(cust)}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleOpenHistory(cust)
+                              }}
                               className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                               title="View GPS check-in audit history"
                             >
@@ -1838,6 +1860,7 @@ export default function CustomersPage() {
 
                             <Link
                               href={`/customers/${cust.key}`}
+                              onClick={(e) => e.stopPropagation()}
                               className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                               title="View full customer profile & photos"
                             >
@@ -1845,7 +1868,10 @@ export default function CustomersPage() {
                             </Link>
 
                             <button
-                              onClick={() => handleOpenEdit(cust)}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleOpenEdit(cust)
+                              }}
                               className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                               title="Edit locality, contact, or notes"
                             >
@@ -1855,7 +1881,10 @@ export default function CustomersPage() {
                             {/* Link to Tally Ledger (Admin only, unmapped customers only) */}
                             {isAdmin && !cust.ledger_id && (
                               <button
-                                onClick={() => handleOpenLinkLedger(cust)}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleOpenLinkLedger(cust)
+                                }}
                                 className="p-1.5 xl:px-2 xl:py-1.5 rounded-lg border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition-colors flex items-center gap-1 text-xs font-semibold shrink-0"
                                 title="Admin Only: Link this shop to a Tally Ledger"
                               >
@@ -1867,7 +1896,10 @@ export default function CustomersPage() {
                             {/* Delete Wrong Tagging (Only for unmapped leads) */}
                             {!cust.ledger_id && (
                               <button
-                                onClick={() => setCustomerToDelete(cust)}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setCustomerToDelete(cust)
+                                }}
                                 className="p-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 transition-colors shrink-0"
                                 title="Delete wrongly tagged customer lead"
                               >
@@ -1885,12 +1917,23 @@ export default function CustomersPage() {
               {/* Mobile Compact List Rows */}
               <div className="md:hidden divide-y divide-border">
                 {customers.map((cust) => (
-                  <div key={cust.key} className="p-3.5 space-y-2 hover:bg-muted/50 transition-colors even:bg-primary/5 dark:even:bg-primary/10">
+                  <div
+                    key={cust.key}
+                    onClick={(e) => {
+                      const target = e.target as HTMLElement | null
+                      if (target && target.closest('button, a, input, select, textarea')) {
+                        return
+                      }
+                      router.push(`/customers/${cust.key}`)
+                    }}
+                    className="p-3.5 space-y-2 hover:bg-muted/50 transition-colors even:bg-primary/5 dark:even:bg-primary/10 cursor-pointer select-none"
+                  >
                     {/* Top Row: Shop Name + Distance */}
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <Link
                           href={`/customers/${cust.key}`}
+                          onClick={(e) => e.stopPropagation()}
                           className="font-bold text-sm text-foreground hover:text-primary transition-colors line-clamp-1 flex items-center gap-1.5"
                         >
                           <span>{cust.name}</span>
@@ -1947,6 +1990,7 @@ export default function CustomersPage() {
                         {(cust.phone || cust.mobile) && (
                           <a
                             href={`tel:${cust.phone || cust.mobile}`}
+                            onClick={(e) => e.stopPropagation()}
                             className="p-1.5 rounded-lg bg-muted text-foreground hover:bg-muted/80"
                             title="Call"
                           >
@@ -1958,6 +2002,7 @@ export default function CustomersPage() {
                             href={`https://wa.me/${cust.whatsapp_number.replace(/\D/g, '')}`}
                             target="_blank"
                             rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
                             className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
                             title="WhatsApp"
                           >
@@ -1968,6 +2013,7 @@ export default function CustomersPage() {
                           href={cust.maps_url}
                           target="_blank"
                           rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-bold"
                         >
                           <Navigation className="w-3 h-3" />
@@ -1975,6 +2021,7 @@ export default function CustomersPage() {
                         </a>
                         <Link
                           href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
+                          onClick={(e) => e.stopPropagation()}
                           className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 text-xs font-bold"
                           title="1-Tap Check In"
                         >
@@ -1983,20 +2030,27 @@ export default function CustomersPage() {
                         </Link>
                         <Link
                           href={`/customers/${cust.key}`}
+                          onClick={(e) => e.stopPropagation()}
                           className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-primary hover:bg-muted/50 transition-colors"
                           title="View 360° Profile & Photos"
                         >
                           <UserIcon className="w-3.5 h-3.5" />
                         </Link>
                         <button
-                          onClick={() => handleOpenHistory(cust)}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleOpenHistory(cust)
+                          }}
                           className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground"
                           title="View GPS history"
                         >
                           <History className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => handleOpenEdit(cust)}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleOpenEdit(cust)
+                          }}
                           className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground"
                           title="Edit details"
                         >
@@ -2006,7 +2060,10 @@ export default function CustomersPage() {
                         {/* Link to Tally Ledger (Admin only, unmapped customers only) */}
                         {isAdmin && !cust.ledger_id && (
                           <button
-                            onClick={() => handleOpenLinkLedger(cust)}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleOpenLinkLedger(cust)
+                            }}
                             className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-xs font-semibold"
                             title="Admin Only: Link this shop to a Tally Ledger"
                           >
@@ -2018,7 +2075,10 @@ export default function CustomersPage() {
                         {/* Delete Wrong Tagging (Only for unmapped leads) */}
                         {!cust.ledger_id && (
                           <button
-                            onClick={() => setCustomerToDelete(cust)}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setCustomerToDelete(cust)
+                            }}
                             className="p-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 transition-colors"
                             title="Delete wrongly tagged customer lead"
                           >
@@ -2135,8 +2195,15 @@ export default function CustomersPage() {
                   {routeStops.map((cust, idx) => (
                     <div
                       key={cust.key}
+                      onClick={(e) => {
+                        const target = e.target as HTMLElement | null
+                        if (target && target.closest('button, a, input, select, textarea')) {
+                          return
+                        }
+                        router.push(`/customers/${cust.key}`)
+                      }}
                       className={cn(
-                        'bg-card border rounded-2xl p-4 sm:p-5 shadow-sm transition-all hover:shadow-md relative overflow-hidden group',
+                        'bg-card border rounded-2xl p-4 sm:p-5 shadow-sm transition-all hover:shadow-md relative overflow-hidden group cursor-pointer',
                         cust.visit_recency_category === 'today'
                           ? 'border-emerald-500/30 bg-emerald-500/[0.02]'
                           : 'border-border hover:border-primary/40'
@@ -2159,6 +2226,7 @@ export default function CustomersPage() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <Link
                                 href={`/customers/${cust.key}`}
+                                onClick={(e) => e.stopPropagation()}
                                 className="font-bold text-base text-foreground hover:text-primary transition-colors hover:underline"
                               >
                                 {cust.name}
@@ -2214,6 +2282,7 @@ export default function CustomersPage() {
                             href={cust.maps_url}
                             target="_blank"
                             rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
                             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-primary text-primary-foreground text-xs font-bold shadow-sm hover:bg-primary/90 transition-all"
                           >
                             <Navigation className="w-3.5 h-3.5" />
@@ -2223,6 +2292,7 @@ export default function CustomersPage() {
                           {/* 1-Tap Check In */}
                           <Link
                             href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
+                            onClick={(e) => e.stopPropagation()}
                             className={cn(
                               'inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border shadow-sm transition-all',
                               cust.visit_recency_category === 'today'
@@ -2238,6 +2308,7 @@ export default function CustomersPage() {
                           {(cust.phone || cust.mobile) && (
                             <a
                               href={`tel:${cust.phone || cust.mobile}`}
+                              onClick={(e) => e.stopPropagation()}
                               className="p-2 rounded-xl border border-border hover:bg-muted text-foreground transition-colors"
                               title="Call"
                             >
@@ -2251,6 +2322,7 @@ export default function CustomersPage() {
                               href={`https://wa.me/${cust.whatsapp_number.replace(/\D/g, '')}`}
                               target="_blank"
                               rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
                               className="p-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 transition-colors"
                               title="WhatsApp"
                             >
@@ -2261,6 +2333,7 @@ export default function CustomersPage() {
                           {/* Profile */}
                           <Link
                             href={`/customers/${cust.key}`}
+                            onClick={(e) => e.stopPropagation()}
                             className="p-2 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
                             title="View Full Profile"
                           >
@@ -2279,7 +2352,14 @@ export default function CustomersPage() {
               {customers.map((cust) => (
                 <div
                   key={cust.key}
-                  className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group hover:border-primary/40 relative overflow-hidden"
+                  onClick={(e) => {
+                    const target = e.target as HTMLElement | null
+                    if (target && target.closest('button, a, input, select, textarea')) {
+                      return
+                    }
+                    router.push(`/customers/${cust.key}`)
+                  }}
+                  className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group hover:border-primary/40 relative overflow-hidden cursor-pointer"
                 >
                   {/* Top Bar: Shop Name + Distance */}
                   <div>
@@ -2287,6 +2367,7 @@ export default function CustomersPage() {
                       <div>
                         <Link
                           href={`/customers/${cust.key}`}
+                          onClick={(e) => e.stopPropagation()}
                           className="font-bold text-base sm:text-lg text-foreground hover:text-primary transition-colors line-clamp-1 block"
                         >
                           {cust.name}
@@ -2345,6 +2426,7 @@ export default function CustomersPage() {
                       {(cust.phone || cust.mobile) ? (
                         <a
                           href={`tel:${cust.phone || cust.mobile}`}
+                          onClick={(e) => e.stopPropagation()}
                           className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs font-medium transition-colors"
                         >
                           <Phone className="w-3.5 h-3.5 text-primary" />
@@ -2359,6 +2441,7 @@ export default function CustomersPage() {
                           href={`https://wa.me/${cust.whatsapp_number.replace(/\D/g, '')}`}
                           target="_blank"
                           rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 text-xs font-semibold transition-colors"
                         >
                           <MessageCircle className="w-3.5 h-3.5" />
@@ -2373,7 +2456,10 @@ export default function CustomersPage() {
 
                       {cust.has_location ? (
                         <button
-                          onClick={() => handleOpenTag(cust)}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleOpenTag(cust)
+                          }}
                           className="text-[11px] text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
                           title="Click to recalibrate shop coordinates"
                         >
@@ -2382,7 +2468,10 @@ export default function CustomersPage() {
                         </button>
                       ) : (
                         <button
-                          onClick={() => handleOpenTag(cust)}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleOpenTag(cust)
+                          }}
                           className="text-[11px] text-amber-600 hover:text-amber-700 font-semibold flex items-center gap-1"
                         >
                           <Plus className="w-3 h-3" />
@@ -2399,6 +2488,7 @@ export default function CustomersPage() {
                       href={cust.maps_url}
                       target="_blank"
                       rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
                       className={cn(
                         'flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition-all shadow-sm flex-1',
                         cust.has_location
@@ -2414,6 +2504,7 @@ export default function CustomersPage() {
                     {/* 1-Tap Check-In */}
                     <Link
                       href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="p-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors flex items-center justify-center"
                       title="1-Tap Check In at this shop"
                     >
@@ -2423,6 +2514,7 @@ export default function CustomersPage() {
                     {/* View Profile */}
                     <Link
                       href={`/customers/${cust.key}`}
+                      onClick={(e) => e.stopPropagation()}
                       className="p-2 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
                       title="View 360° Profile & Photos"
                     >
@@ -2431,7 +2523,10 @@ export default function CustomersPage() {
 
                     {/* Location Audit History button */}
                     <button
-                      onClick={() => handleOpenHistory(cust)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleOpenHistory(cust)
+                      }}
                       className="p-2 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                       title="View GPS check-in audit history"
                     >
@@ -2440,7 +2535,10 @@ export default function CustomersPage() {
 
                     {/* Edit Profile button */}
                     <button
-                      onClick={() => handleOpenEdit(cust)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleOpenEdit(cust)
+                      }}
                       className="p-2 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                       title="Edit locality, contact, or notes"
                     >
@@ -2450,7 +2548,10 @@ export default function CustomersPage() {
                     {/* Link to Tally Ledger (Admin only, unmapped customers only) */}
                     {isAdmin && !cust.ledger_id && (
                       <button
-                        onClick={() => handleOpenLinkLedger(cust)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleOpenLinkLedger(cust)
+                        }}
                         className="p-2 rounded-xl border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition-colors flex items-center gap-1 text-xs font-semibold"
                         title="Admin Only: Link this shop to a Tally Ledger"
                       >
@@ -2462,7 +2563,10 @@ export default function CustomersPage() {
                     {/* Delete Wrong Tagging (Only for unmapped leads) */}
                     {!cust.ledger_id && (
                       <button
-                        onClick={() => setCustomerToDelete(cust)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setCustomerToDelete(cust)
+                        }}
                         className="p-2 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 transition-colors flex items-center justify-center"
                         title="Delete wrongly tagged customer lead"
                       >

@@ -2142,23 +2142,52 @@ async def get_customer_owners(
     owners_res = await db.execute(owners_stmt)
     owners = owners_res.scalars().all()
 
-    return {
-        "owners": [
-            {
-                "id": o.id,
-                "name": o.name,
-                "designation": o.designation or "Owner / Partner",
-                "phone": o.phone or "",
-                "whatsapp_number": o.whatsapp_number or "",
-                "email": o.email or "",
-                "photo_url": o.photo_url,
-                "is_primary": o.is_primary,
-                "notes": o.notes or "",
-                "created_at": o.created_at.isoformat() if o.created_at else None,
-            }
-            for o in owners
-        ]
-    }
+    owners_list = [
+        {
+            "id": o.id,
+            "name": o.name,
+            "designation": o.designation or "Owner / Partner",
+            "phone": o.phone or "",
+            "whatsapp_number": o.whatsapp_number or "",
+            "email": o.email or "",
+            "photo_url": o.photo_url,
+            "is_primary": o.is_primary,
+            "notes": o.notes or "",
+            "created_at": o.created_at.isoformat() if o.created_at else None,
+        }
+        for o in owners
+    ]
+
+    # Fallback virtual owner if customer_owners table is empty
+    if not owners_list:
+        ledger = None
+        if profile.ledger_id:
+            l_res = await db.execute(
+                select(MstLedger).where(
+                    MstLedger.company_id == user.company_id,
+                    MstLedger.ledger_id == profile.ledger_id
+                )
+            )
+            ledger = l_res.scalars().first()
+
+        fallback_name = (profile.contact_person if profile and profile.contact_person else None) or (ledger.contact_person if ledger and ledger.contact_person else None) or (ledger.name if ledger else "Primary Owner")
+        fallback_phone = (profile.phone if profile and profile.phone else None) or (ledger.phone if ledger and ledger.phone else None) or (ledger.mobile if ledger and ledger.mobile else "")
+        fallback_wa = (profile.whatsapp_number if profile and profile.whatsapp_number else None) or fallback_phone
+        owners_list.append({
+            "id": None,
+            "name": fallback_name,
+            "designation": "Primary Owner",
+            "phone": fallback_phone,
+            "whatsapp_number": fallback_wa,
+            "email": (profile.email if profile and profile.email else (ledger.email if ledger else "")) or "",
+            "photo_url": profile.customer_photo_url if profile else None,
+            "imagekit_file_id": None,
+            "is_primary": True,
+            "notes": "",
+            "created_at": None,
+        })
+
+    return {"owners": owners_list}
 
 
 @router.post("/{target_id}/owners")
@@ -2174,7 +2203,7 @@ async def add_customer_owner(
 
     profile = await resolve_customer_profile_for_target(target_id, user.company_id, user.user_id, db)
 
-    # Check existing owners count
+    # Check existing owners count in customer_owners table
     existing_cnt_res = await db.execute(
         select(func.count(CustomerOwner.id)).where(
             CustomerOwner.company_id == user.company_id,
@@ -2183,9 +2212,48 @@ async def add_customer_owner(
     )
     existing_count = existing_cnt_res.scalar() or 0
 
-    is_primary = req.is_primary
+    # Auto-Materialization: If customer_owners has 0 rows, check if there was an existing
+    # contact person from the Tally ledger or profile so adding an additional partner doesn't erase them!
+    if existing_count == 0:
+        ledger = None
+        if profile.ledger_id:
+            l_res = await db.execute(
+                select(MstLedger).where(
+                    MstLedger.company_id == user.company_id,
+                    MstLedger.ledger_id == profile.ledger_id
+                )
+            )
+            ledger = l_res.scalars().first()
+
+        existing_name = (profile.contact_person if profile and profile.contact_person else None) or (ledger.contact_person if ledger and ledger.contact_person else None)
+        # Only materialize if the existing contact person is different from the one being added
+        if existing_name and existing_name.strip().lower() != req.name.strip().lower():
+            existing_phone = (profile.phone if profile and profile.phone else None) or (ledger.phone if ledger and ledger.phone else None) or (ledger.mobile if ledger and ledger.mobile else None)
+            existing_wa = (profile.whatsapp_number if profile and profile.whatsapp_number else None) or existing_phone
+            existing_email = (profile.email if profile and profile.email else (ledger.email if ledger else None))
+            existing_photo = profile.customer_photo_url if profile else None
+
+            prior_owner = CustomerOwner(
+                company_id=user.company_id,
+                customer_profile_id=profile.id,
+                name=existing_name.strip(),
+                designation="Owner / Partner",
+                phone=existing_phone.strip() if existing_phone else None,
+                whatsapp_number=existing_wa.strip() if existing_wa else None,
+                email=existing_email.strip() if existing_email else None,
+                photo_url=existing_photo,
+                is_primary=not req.is_primary,
+                notes="Migrated from shop primary contact"
+            )
+            db.add(prior_owner)
+            await db.flush()
+            existing_count = 1
+
+    # Determine is_primary for the newly added owner
     if existing_count == 0:
         is_primary = True
+    else:
+        is_primary = req.is_primary
 
     if is_primary:
         # Demote existing owners
@@ -2278,18 +2346,19 @@ async def update_customer_owner(
     if req.notes is not None:
         owner.notes = req.notes.strip() if req.notes else None
 
-    if req.is_primary is True:
-        # Demote others
-        await db.execute(
-            update(CustomerOwner)
-            .where(
-                CustomerOwner.company_id == user.company_id,
-                CustomerOwner.customer_profile_id == profile.id,
-                CustomerOwner.id != owner.id
+    if req.is_primary is True or owner.is_primary:
+        if req.is_primary is True:
+            # Demote others
+            await db.execute(
+                update(CustomerOwner)
+                .where(
+                    CustomerOwner.company_id == user.company_id,
+                    CustomerOwner.customer_profile_id == profile.id,
+                    CustomerOwner.id != owner.id
+                )
+                .values(is_primary=False)
             )
-            .values(is_primary=False)
-        )
-        owner.is_primary = True
+            owner.is_primary = True
         # Sync profile contact fields
         profile.contact_person = owner.name
         if owner.phone:
