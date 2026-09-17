@@ -193,6 +193,22 @@ async def punch_attendance(
         )
         db.add(attendance)
         await db.commit()
+        await db.refresh(attendance)
+
+        # Notify admins of punch in
+        from app.routers.notifications import notify_admins
+        await notify_admins(
+            db=db,
+            company_id=user.company_id,
+            type="attendance",
+            title="Attendance: Clock-In",
+            message=f"{user.username} clocked in",
+            reference_id=str(attendance.id),
+            reference_type="attendance",
+            exclude_user_id=user.user_id,
+            auto_commit=True,
+        )
+
         return {"success": True, "message": "Clocked in successfully"}
     else:
         # Check checkout session
@@ -211,7 +227,23 @@ async def punch_attendance(
         latest.check_out_device_fingerprint = req.deviceFingerprint
         
         await db.commit()
+
+        # Notify admins of punch out
+        from app.routers.notifications import notify_admins
+        await notify_admins(
+            db=db,
+            company_id=user.company_id,
+            type="attendance",
+            title="Attendance: Clock-Out",
+            message=f"{user.username} clocked out",
+            reference_id=str(latest.id),
+            reference_type="attendance",
+            exclude_user_id=user.user_id,
+            auto_commit=True,
+        )
+
         return {"success": True, "message": "Clocked out successfully"}
+
 
 @router.get("/history")
 async def get_attendance_history(

@@ -234,8 +234,61 @@ async def check_in(
     )
     db.add(loc_log)
 
+    # 5. Auto-mark matching stop in today's active beat plan
+    try:
+        from app.models.portal_core import BeatPlan, BeatPlanStop
+        today_date = datetime.now().date()
+        stop_conds = []
+        if visit.ledger_id:
+            stop_conds.append(BeatPlanStop.ledger_id == visit.ledger_id)
+        if profile and profile.id:
+            stop_conds.append(BeatPlanStop.customer_profile_id == profile.id)
+        if visit.custom_shop_name:
+            stop_conds.append(BeatPlanStop.shop_name == visit.custom_shop_name)
+
+        if stop_conds:
+            beat_stop_stmt = (
+                select(BeatPlanStop)
+                .join(BeatPlan, BeatPlan.id == BeatPlanStop.beat_plan_id)
+                .where(
+                    BeatPlan.company_id == user.company_id,
+                    BeatPlan.user_id == user.user_id,
+                    BeatPlan.plan_date == today_date,
+                    BeatPlanStop.status == "pending",
+                    or_(*stop_conds)
+                )
+            )
+            stop_res = await db.execute(beat_stop_stmt)
+            active_stop = stop_res.scalars().first()
+            if active_stop:
+                active_stop.status = "visited"
+                active_stop.visit_id = visit.id
+                active_stop.visited_at = func.now()
+                # Update plan status to in_progress if it was assigned
+                plan_res = await db.execute(select(BeatPlan).where(BeatPlan.id == active_stop.beat_plan_id))
+                bp = plan_res.scalars().first()
+                if bp and bp.status == "assigned":
+                    bp.status = "in_progress"
+    except Exception as bp_err:
+        print(f"Warning: Could not auto-update beat plan stop: {bp_err}")
+
     await db.commit()
     await db.refresh(visit)
+
+    # Notify admins
+    from app.routers.notifications import notify_admins
+    shop_title = visit.custom_shop_name or (profile.custom_name if profile else None) or (f"Ledger #{visit.ledger_id}" if visit.ledger_id else "a customer")
+    await notify_admins(
+        db=db,
+        company_id=user.company_id,
+        type="check_in",
+        title="New Check-In",
+        message=f"{user.username} checked in at {shop_title}",
+        reference_id=str(visit.id),
+        reference_type="visit",
+        exclude_user_id=user.user_id,
+        auto_commit=True,
+    )
 
     return {
         "success": True,

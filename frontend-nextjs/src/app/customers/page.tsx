@@ -874,48 +874,48 @@ export default function CustomersPage() {
 
     if (status === 'VERIFIED_ON_SITE') {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-          <ShieldCheck className="w-3.5 h-3.5" />
-          Verified On-Site ({dist !== null ? `${Math.round(dist)}m` : '0m'})
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 whitespace-normal break-words">
+          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+          <span>Verified On-Site ({dist !== null ? `${Math.round(dist)}m` : '0m'})</span>
         </span>
       )
     }
     if (status === 'NEARBY') {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/10 text-amber-600 border border-amber-500/20">
-          <MapPin className="w-3.5 h-3.5" />
-          Nearby Market ({dist !== null ? `${Math.round(dist)}m` : ''})
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-amber-500/10 text-amber-600 border border-amber-500/20 whitespace-normal break-words">
+          <MapPin className="w-3.5 h-3.5 shrink-0" />
+          <span>Nearby Market ({dist !== null ? `${Math.round(dist)}m` : ''})</span>
         </span>
       )
     }
     if (status === 'MISMATCH_FAR') {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-rose-500/10 text-rose-600 border border-rose-500/20">
-          <AlertTriangle className="w-3.5 h-3.5" />
-          Location Mismatch ({dist !== null ? `${(dist / 1000).toFixed(1)}km` : ''})
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-rose-500/10 text-rose-600 border border-rose-500/20 whitespace-normal break-words">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          <span>Location Mismatch ({dist !== null ? `${(dist / 1000).toFixed(1)}km` : ''})</span>
         </span>
       )
     }
     if (status === 'ESTABLISHED_BASE') {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-500/10 text-blue-600 border border-blue-500/20">
-          <MapPin className="w-3.5 h-3.5" />
-          Base Location Established
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-blue-500/10 text-blue-600 border border-blue-500/20 whitespace-normal break-words">
+          <MapPin className="w-3.5 h-3.5 shrink-0" />
+          <span>Base Location Established</span>
         </span>
       )
     }
     if (!cust.has_location) {
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-muted text-muted-foreground">
-          <AlertTriangle className="w-3 h-3 text-amber-500" />
-          Needs GPS Tag
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-muted text-muted-foreground whitespace-normal break-words">
+          <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+          <span>Needs GPS Tag</span>
         </span>
       )
     }
     return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-muted text-muted-foreground">
-        <Clock className="w-3 h-3" />
-        No Check-in Log
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-muted text-muted-foreground whitespace-normal break-words">
+        <Clock className="w-3 h-3 shrink-0" />
+        <span>No Check-in Log</span>
       </span>
     )
   }
@@ -1688,45 +1688,45 @@ export default function CustomersPage() {
             /* ─── LIST VIEW (Table on Desktop, Compact Row Cards on Mobile) ─── */
             <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
               {/* Desktop Table View */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-left text-xs">
+              <div className="hidden md:block w-full overflow-x-auto">
+                <table className="w-full table-fixed text-left text-xs">
                   <thead className="bg-muted/60 text-muted-foreground border-b border-border font-semibold uppercase tracking-wider text-[11px]">
                     <tr>
                       <th
                         onClick={handleToggleNameSort}
-                        className="py-3.5 px-4 cursor-pointer hover:text-foreground transition-colors group select-none"
+                        className="w-[26%] py-3.5 px-3.5 cursor-pointer hover:text-foreground transition-colors group select-none"
                         title="Click to toggle Name sort"
                       >
                         <div className="flex items-center gap-1.5">
                           <span>Customer & Shop</span>
                           {sortBy === 'name_asc' ? (
-                            <ArrowUp className="w-3.5 h-3.5 text-primary" />
+                            <ArrowUp className="w-3.5 h-3.5 text-primary shrink-0" />
                           ) : sortBy === 'name_desc' ? (
-                            <ArrowDown className="w-3.5 h-3.5 text-primary" />
+                            <ArrowDown className="w-3.5 h-3.5 text-primary shrink-0" />
                           ) : (
-                            <ArrowUpDown className="w-3 h-3 opacity-40 group-hover:opacity-100" />
+                            <ArrowUpDown className="w-3 h-3 opacity-40 group-hover:opacity-100 shrink-0" />
                           )}
                         </div>
                       </th>
-                      <th className="py-3.5 px-4">Locality & Address</th>
-                      <th className="py-3.5 px-4">Contact</th>
+                      <th className="w-[24%] py-3.5 px-3.5">Locality & Address</th>
+                      <th className="w-[14%] py-3.5 px-3.5">Contact</th>
                       <th
                         onClick={() => handleSortChange(sortBy === 'nearest' ? 'missing_gps' : 'nearest')}
-                        className="py-3.5 px-4 cursor-pointer hover:text-foreground transition-colors group select-none"
+                        className="w-[16%] py-3.5 px-3.5 cursor-pointer hover:text-foreground transition-colors group select-none"
                         title="Click to sort by Nearest / Needs GPS"
                       >
                         <div className="flex items-center gap-1.5">
                           <span>GPS & Verification</span>
                           {sortBy === 'nearest' ? (
-                            <Compass className="w-3.5 h-3.5 text-emerald-600" />
+                            <Compass className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                           ) : sortBy === 'missing_gps' ? (
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                           ) : (
-                            <ArrowUpDown className="w-3 h-3 opacity-40 group-hover:opacity-100" />
+                            <ArrowUpDown className="w-3 h-3 opacity-40 group-hover:opacity-100 shrink-0" />
                           )}
                         </div>
                       </th>
-                      <th className="py-3.5 px-4 text-right">Actions</th>
+                      <th className="w-[20%] py-3.5 px-3.5 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -1736,10 +1736,10 @@ export default function CustomersPage() {
                         className="hover:bg-muted/40 transition-colors group"
                       >
                         {/* 1. Customer & Shop */}
-                        <td className="py-3 px-4">
+                        <td className="w-[26%] py-3 px-3.5 align-top break-words whitespace-normal">
                           <Link
                             href={`/customers/${cust.key}`}
-                            className="font-bold text-sm text-foreground group-hover:text-primary transition-colors hover:underline block"
+                            className="font-bold text-sm text-foreground group-hover:text-primary transition-colors hover:underline break-words whitespace-normal block"
                           >
                             {cust.name}
                           </Link>
@@ -1748,14 +1748,14 @@ export default function CustomersPage() {
                             {renderRecencyBadge(cust)}
                           </div>
                           {Boolean(cust.contact_person || (cust.owners_count && cust.owners_count > 0)) ? (
-                            <div className="text-muted-foreground text-[11px] mt-1 flex items-center gap-1.5 flex-wrap">
+                            <div className="text-muted-foreground text-[11px] mt-1 flex items-center gap-1.5 flex-wrap break-words whitespace-normal">
                               <span>Attn: <span className="text-foreground font-medium">{cust.contact_person || cust.owners?.[0]?.name}</span></span>
                               {cust.owners_count && cust.owners_count > 1 ? (
                                 <span
                                   className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold text-[10px]"
                                   title={cust.owners?.map(o => `${o.name} (${o.designation || 'Owner'})`).join(', ')}
                                 >
-                                  <Users className="w-2.5 h-2.5" />
+                                  <Users className="w-2.5 h-2.5 shrink-0" />
                                   +{cust.owners_count - 1} partner{cust.owners_count - 1 > 1 ? 's' : ''}
                                 </span>
                               ) : null}
@@ -1763,19 +1763,19 @@ export default function CustomersPage() {
                           ) : null}
                           {cust.distance_from_me_meters !== null && (
                             <div className="text-emerald-600 font-semibold text-[11px] mt-0.5 flex items-center gap-1">
-                              <Compass className="w-3 h-3" />
+                              <Compass className="w-3 h-3 shrink-0" />
                               <span>{(cust.distance_from_me_meters / 1000).toFixed(1)} km away</span>
                             </div>
                           )}
                         </td>
 
                         {/* 2. Locality & Address */}
-                        <td className="py-3 px-4 max-w-xs">
+                        <td className="w-[24%] py-3 px-3.5 align-top break-words whitespace-normal">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             {cust.locality ? (
                               <span className="inline-flex items-center gap-1 font-semibold text-foreground bg-muted px-2 py-0.5 rounded-md text-[11px]">
-                                <MapPin className="w-3 h-3 text-primary" />
-                                {cust.locality}
+                                <MapPin className="w-3 h-3 text-primary shrink-0" />
+                                <span>{cust.locality}</span>
                               </span>
                             ) : (
                               <span className="text-muted-foreground italic text-[11px]">No locality</span>
@@ -1785,22 +1785,22 @@ export default function CustomersPage() {
                             )}
                           </div>
                           {cust.address && (
-                            <p className="text-muted-foreground text-[11px] truncate mt-1 max-w-[240px]" title={cust.address}>
+                            <p className="text-muted-foreground text-[11px] mt-1 break-words whitespace-normal leading-relaxed" title={cust.address}>
                               {cust.address}
                             </p>
                           )}
                         </td>
 
                         {/* 3. Contact */}
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
+                        <td className="w-[14%] py-3 px-3.5 align-top break-words whitespace-normal">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             {(cust.phone || cust.mobile) ? (
                               <a
                                 href={`tel:${cust.phone || cust.mobile}`}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs font-medium transition-colors"
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-xs font-medium transition-colors break-all"
                                 title="Call customer"
                               >
-                                <Phone className="w-3 h-3 text-primary" />
+                                <Phone className="w-3 h-3 text-primary shrink-0" />
                                 <span>{cust.phone || cust.mobile}</span>
                               </a>
                             ) : (
@@ -1811,7 +1811,7 @@ export default function CustomersPage() {
                                 href={`https://wa.me/${cust.whatsapp_number.replace(/\D/g, '')}`}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="p-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors"
+                                className="p-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors shrink-0"
                                 title="WhatsApp"
                               >
                                 <MessageCircle className="w-3.5 h-3.5" />
@@ -1820,17 +1820,17 @@ export default function CustomersPage() {
                           </div>
                         </td>
 
-                        {/* 5. GPS & Verification */}
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <div className="space-y-1">
+                        {/* 4. GPS & Verification */}
+                        <td className="w-[16%] py-3 px-3.5 align-top break-words whitespace-normal">
+                          <div className="space-y-1 break-words whitespace-normal">
                             <div>{renderVerificationBadge(cust)}</div>
                             {cust.has_location ? (
                               <button
                                 onClick={() => handleOpenTag(cust)}
-                                className="text-[10px] text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
+                                className="text-[10px] text-muted-foreground hover:text-primary transition-colors flex items-center gap-1 break-all"
                                 title="Recalibrate shop coordinates"
                               >
-                                <Compass className="w-2.5 h-2.5" />
+                                <Compass className="w-2.5 h-2.5 shrink-0" />
                                 <span>{cust.latitude?.toFixed(4)}, {cust.longitude?.toFixed(4)}</span>
                               </button>
                             ) : (
@@ -1838,36 +1838,35 @@ export default function CustomersPage() {
                                 onClick={() => handleOpenTag(cust)}
                                 className="text-[10px] text-amber-600 hover:text-amber-700 font-semibold flex items-center gap-1"
                               >
-                                <Plus className="w-2.5 h-2.5" />
+                                <Plus className="w-2.5 h-2.5 shrink-0" />
                                 <span>Tag GPS</span>
                               </button>
                             )}
                           </div>
                         </td>
 
-                        {/* 6. Actions */}
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1.5">
+                        {/* 5. Actions */}
+                        <td className="w-[20%] py-3 px-3.5 align-top text-right">
+                          <div className="flex items-center justify-end gap-1 flex-wrap">
                             <a
                               href={cust.maps_url}
                               target="_blank"
                               rel="noopener noreferrer"
                               className={cn(
-                                'inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm',
+                                'inline-flex items-center gap-1 p-1.5 rounded-lg text-xs font-bold transition-all shadow-sm shrink-0',
                                 cust.has_location
                                   ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                                   : 'bg-muted text-muted-foreground hover:bg-muted/80'
                               )}
-                              title="Open Google Maps"
+                              title={cust.has_location ? 'Open directions in Google Maps' : 'Search on Google Maps'}
                             >
-                              <Navigation className="w-3 h-3" />
-                              <span>{cust.has_location ? 'Navigate' : 'Search'}</span>
-                              <ExternalLink className="w-2.5 h-2.5 opacity-70" />
+                              <Navigation className="w-3.5 h-3.5" />
+                              <span className="hidden 2xl:inline">{cust.has_location ? 'Navigate' : 'Search'}</span>
                             </a>
 
                             <Link
                               href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors text-xs font-semibold"
+                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors text-xs font-semibold shrink-0"
                               title="1-Tap Check-In at this shop"
                             >
                               <CheckCircle2 className="w-3.5 h-3.5" />
@@ -1876,7 +1875,7 @@ export default function CustomersPage() {
 
                             <button
                               onClick={() => handleOpenHistory(cust)}
-                              className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                              className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                               title="View GPS check-in audit history"
                             >
                               <History className="w-3.5 h-3.5" />
@@ -1884,7 +1883,7 @@ export default function CustomersPage() {
 
                             <Link
                               href={`/customers/${cust.key}`}
-                              className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                              className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                               title="View full customer profile & photos"
                             >
                               <UserIcon className="w-3.5 h-3.5" />
@@ -1892,7 +1891,7 @@ export default function CustomersPage() {
 
                             <button
                               onClick={() => handleOpenEdit(cust)}
-                              className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                              className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                               title="Edit locality, contact, or notes"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
@@ -1902,11 +1901,11 @@ export default function CustomersPage() {
                             {isAdmin && !cust.ledger_id && (
                               <button
                                 onClick={() => handleOpenLinkLedger(cust)}
-                                className="px-2 py-1.5 rounded-lg border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition-colors flex items-center gap-1 text-xs font-semibold"
+                                className="p-1.5 xl:px-2 xl:py-1.5 rounded-lg border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary transition-colors flex items-center gap-1 text-xs font-semibold shrink-0"
                                 title="Admin Only: Link this shop to a Tally Ledger"
                               >
                                 <Link2 className="w-3.5 h-3.5" />
-                                <span className="hidden xl:inline">Link Ledger</span>
+                                <span className="hidden 2xl:inline">Link Ledger</span>
                               </button>
                             )}
 
@@ -1914,7 +1913,7 @@ export default function CustomersPage() {
                             {!cust.ledger_id && (
                               <button
                                 onClick={() => setCustomerToDelete(cust)}
-                                className="p-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 transition-colors"
+                                className="p-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 transition-colors shrink-0"
                                 title="Delete wrongly tagged customer lead"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -1931,7 +1930,7 @@ export default function CustomersPage() {
               {/* Mobile Compact List Rows */}
               <div className="md:hidden divide-y divide-border">
                 {customers.map((cust) => (
-                  <div key={cust.key} className="p-3.5 space-y-2 hover:bg-muted/30 transition-colors">
+                  <div key={cust.key} className="p-3.5 space-y-2 hover:bg-muted/50 transition-colors even:bg-primary/5 dark:even:bg-primary/10">
                     {/* Top Row: Shop Name + Distance */}
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -1986,10 +1985,10 @@ export default function CustomersPage() {
                     </div>
 
                     {/* Bottom Row: Verification Badge + Actions */}
-                    <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border/50">
+                    <div className="flex flex-col gap-2 pt-2 border-t border-border/50">
                       <div>{renderVerificationBadge(cust)}</div>
 
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
                         {(cust.phone || cust.mobile) && (
                           <a
                             href={`tel:${cust.phone || cust.mobile}`}
@@ -2053,7 +2052,7 @@ export default function CustomersPage() {
                         {isAdmin && !cust.ledger_id && (
                           <button
                             onClick={() => handleOpenLinkLedger(cust)}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-primary/40 bg-primary/10 text-primary text-xs font-semibold"
+                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-xs font-semibold"
                             title="Admin Only: Link this shop to a Tally Ledger"
                           >
                             <Link2 className="w-3.5 h-3.5" />
@@ -2754,6 +2753,7 @@ export default function CustomersPage() {
                   <label className="font-semibold block mb-1">Locality / Market Area</label>
                   <input
                     type="text"
+                    list="global-localities-list"
                     value={addForm.locality}
                     onChange={(e) => setAddForm({ ...addForm, locality: e.target.value })}
                     placeholder="e.g. Sadar Bazaar, Chandni Chowk"
@@ -2764,6 +2764,7 @@ export default function CustomersPage() {
                   <label className="font-semibold block mb-1">City</label>
                   <input
                     type="text"
+                    list="global-cities-list"
                     value={addForm.city}
                     onChange={(e) => setAddForm({ ...addForm, city: e.target.value })}
                     placeholder="e.g. Delhi, Gurgaon"
@@ -2777,6 +2778,7 @@ export default function CustomersPage() {
                   <label className="font-semibold block mb-1">Route / Sales Beat</label>
                   <input
                     type="text"
+                    list="global-routes-list"
                     value={addForm.route_name}
                     onChange={(e) => setAddForm({ ...addForm, route_name: e.target.value })}
                     placeholder="e.g. Monday Route, Beat 1"
@@ -2977,6 +2979,7 @@ export default function CustomersPage() {
                   <label className="font-semibold block mb-1">Locality</label>
                   <input
                     type="text"
+                    list="global-localities-list"
                     value={editForm.locality}
                     onChange={(e) => setEditForm({ ...editForm, locality: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
@@ -2986,6 +2989,7 @@ export default function CustomersPage() {
                   <label className="font-semibold block mb-1">City</label>
                   <input
                     type="text"
+                    list="global-cities-list"
                     value={editForm.city}
                     onChange={(e) => setEditForm({ ...editForm, city: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
@@ -2998,6 +3002,7 @@ export default function CustomersPage() {
                   <label className="font-semibold block mb-1">Route / Sales Beat</label>
                   <input
                     type="text"
+                    list="global-routes-list"
                     value={editForm.route_name}
                     onChange={(e) => setEditForm({ ...editForm, route_name: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
@@ -3543,6 +3548,22 @@ export default function CustomersPage() {
           </div>
         </div>
       )}
+      {/* Global Datalists for Form Autocomplete */}
+      <datalist id="global-localities-list">
+        {localitiesList.map(loc => (
+          <option key={loc.name} value={loc.name} />
+        ))}
+      </datalist>
+      <datalist id="global-cities-list">
+        {citiesList.map(city => (
+          <option key={city.name} value={city.name} />
+        ))}
+      </datalist>
+      <datalist id="global-routes-list">
+        {routesList.map(r => (
+          <option key={r} value={r} />
+        ))}
+      </datalist>
     </div>
   )
 }

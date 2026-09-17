@@ -872,8 +872,10 @@ async def get_ledger_statement(
         addr = parts[0]
         mobile_val = parts[1]
 
-    from datetime import datetime
+    from datetime import datetime, date, timedelta
     from sqlalchemy import text
+    from app.models.portal_core import Company
+
     parsed_from_date = None
     if from_date:
         try:
@@ -881,8 +883,29 @@ async def get_ledger_statement(
         except Exception:
             parsed_from_date = None
 
+    # Determine the financial year anchor date (default 2026-04-01)
+    comp_stmt = select(Company).where(Company.company_id == user.company_id)
+    comp_res = await db.execute(comp_stmt)
+    comp_obj = comp_res.scalars().first()
+    if comp_obj and comp_obj.financial_year_end:
+        fy_anchor_date = comp_obj.financial_year_end + timedelta(days=1)
+    else:
+        fy_anchor_date = date(2026, 4, 1)
+
     # Calculate Individual Party Opening Balance as of from_date
     base_net = (float(ledger.opening_balance) if ledger.opening_balance_type == 'Cr' else -float(ledger.opening_balance)) if ledger.opening_balance else 0.0
+    
+    # Any vouchers before the FY anchor date (e.g. 2026-04-01) are already baked into ledger.opening_balance
+    pre_fy_stmt = text("""
+        SELECT SUM(COALESCE(a.credit_amount, 0) - COALESCE(a.debit_amount, 0)) as pre_fy_net
+        FROM tally_sync.voucher_entries a
+        JOIN tally_sync.vouchers v ON a.voucher_id = v.voucher_id
+        WHERE a.ledger_id = :l_id AND v.voucher_date < :anchor_dt
+    """)
+    pre_fy_res = await db.execute(pre_fy_stmt, {"l_id": ledger_id, "anchor_dt": fy_anchor_date})
+    pre_fy_val = float(pre_fy_res.scalar() or 0.0)
+    true_base_net = base_net - pre_fy_val
+
     if parsed_from_date:
         prior_stmt = text("""
             SELECT SUM(COALESCE(a.credit_amount, 0) - COALESCE(a.debit_amount, 0)) as prior_net
@@ -892,7 +915,7 @@ async def get_ledger_statement(
         """)
         prior_res = await db.execute(prior_stmt, {"l_id": ledger_id, "f_dt": parsed_from_date})
         prior_val = float(prior_res.scalar() or 0.0)
-        net_op = base_net + prior_val
+        net_op = true_base_net + prior_val
         ind_op_bal = abs(net_op)
         ind_op_type = "Cr" if net_op >= 0 else "Dr"
     else:
@@ -911,7 +934,9 @@ async def get_ledger_statement(
                     l.ledger_id,
                     (CASE 
                         WHEN g.name IN ('Sales Accounts', 'Purchase Accounts', 'Direct Expenses', 'Indirect Expenses', 'Direct Incomes', 'Indirect Incomes') THEN 0
-                        ELSE (CASE WHEN l.opening_balance_type = 'Cr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END) + COALESCE(SUM(CASE WHEN v.voucher_date < :f_dt THEN (COALESCE(a.credit_amount, 0) - COALESCE(a.debit_amount, 0)) ELSE 0 END), 0)
+                        ELSE (CASE WHEN l.opening_balance_type = 'Cr' THEN COALESCE(l.opening_balance, 0) ELSE -COALESCE(l.opening_balance, 0) END)
+                             - COALESCE((SELECT SUM(COALESCE(ve2.credit_amount, 0) - COALESCE(ve2.debit_amount, 0)) FROM tally_sync.voucher_entries ve2 JOIN tally_sync.vouchers v2 ON ve2.voucher_id = v2.voucher_id WHERE ve2.ledger_id = l.ledger_id AND v2.voucher_date < :anchor_dt), 0)
+                             + COALESCE(SUM(CASE WHEN v.voucher_date < :f_dt THEN (COALESCE(a.credit_amount, 0) - COALESCE(a.debit_amount, 0)) ELSE 0 END), 0)
                      END) as net_bal
                 FROM tally_sync.ledgers l
                 LEFT JOIN tally_sync.account_groups g ON l.group_id = g.group_id
@@ -921,7 +946,7 @@ async def get_ledger_statement(
                 GROUP BY l.ledger_id, l.opening_balance, l.opening_balance_type, g.name
             ) sub
         """)
-        tot_op_res = await db.execute(tot_op_stmt, {"comp_id": user.company_id, "f_dt": parsed_from_date})
+        tot_op_res = await db.execute(tot_op_stmt, {"comp_id": user.company_id, "anchor_dt": fy_anchor_date, "f_dt": parsed_from_date})
     else:
         tot_op_stmt = text("""
             SELECT 

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate } from '@/lib/utils'
-import { MapPin, History, ArrowLeft, RefreshCw, Calendar, Search, User as UserIcon, X } from 'lucide-react'
+import { MapPin, History, ArrowLeft, RefreshCw, Calendar, CalendarCheck, Search, User as UserIcon, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type VisitLog = {
@@ -143,15 +143,24 @@ export default function CheckInHistoryPage() {
         </div>
 
         {/* Navigation Switch Tabs */}
-        <div className="flex bg-muted/50 p-1 rounded-xl border border-border max-w-xs">
+        <div className="flex bg-muted/50 p-1 rounded-xl border border-border max-w-sm sm:max-w-md">
+          <Link
+            href="/planner"
+            className="flex-1 py-2 text-center text-xs font-bold rounded-lg text-muted-foreground hover:text-foreground transition-all flex items-center justify-center gap-1.5"
+          >
+            <CalendarCheck className="w-3.5 h-3.5" />
+            <span>Daily Planner</span>
+          </Link>
           <Link
             href="/check-in"
-            className="flex-1 py-2 text-center text-xs font-bold rounded-lg text-muted-foreground hover:text-foreground transition-all"
+            className="flex-1 py-2 text-center text-xs font-bold rounded-lg text-muted-foreground hover:text-foreground transition-all flex items-center justify-center gap-1.5"
           >
-            New Check-In
+            <MapPin className="w-3.5 h-3.5" />
+            <span>Check-In</span>
           </Link>
-          <div className="flex-1 py-2 text-center text-xs font-bold rounded-lg bg-background text-foreground shadow-sm border border-border">
-            Visit History
+          <div className="flex-1 py-2 text-center text-xs font-bold rounded-lg bg-background text-foreground shadow-sm border border-border flex items-center justify-center gap-1.5">
+            <History className="w-3.5 h-3.5" />
+            <span>Visit History</span>
           </div>
         </div>
 

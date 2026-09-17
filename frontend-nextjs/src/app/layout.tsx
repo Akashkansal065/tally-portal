@@ -9,6 +9,7 @@ import { MobileBottomNav } from '@/components/MobileBottomNav'
 import { PwaRegister } from '@/components/PwaRegister'
 import { DatePickerInitializer } from '@/components/DatePickerInitializer'
 import { MobileInstallPrompt } from '@/components/MobileInstallPrompt'
+import { SessionRestorer } from '@/components/SessionRestorer'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
@@ -74,6 +75,7 @@ export default function RootLayout({
               <PwaRegister />
               <DatePickerInitializer />
               <MobileInstallPrompt />
+              <SessionRestorer />
               {/* Top Header */}
               <GlobalHeader />
 

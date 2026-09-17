@@ -48,6 +48,8 @@ import {
   Tag,
   Users,
   History,
+  Bell,
+  CheckCheck,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useState, useEffect } from 'react'
@@ -90,6 +92,103 @@ export function GlobalHeader() {
     const interval = setInterval(fetchSyncHealth, 15000)
     return () => clearInterval(interval)
   }, [token])
+
+  // Notification States
+  const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0)
+  const [showNotifications, setShowNotifications] = useState<boolean>(false)
+  const [notifications, setNotifications] = useState<any[]>([])
+  const [loadingNotifications, setLoadingNotifications] = useState<boolean>(false)
+
+  const fetchUnreadCount = async () => {
+    if (!token) return
+    try {
+      const res = await fetch(`${API_BASE}/notifications/unread-count`, {
+        headers: authHeaders(token),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setUnreadNotifCount(data.count || 0)
+      }
+    } catch (e) {
+      // silent fail
+    }
+  }
+
+  const fetchNotifications = async () => {
+    if (!token) return
+    setLoadingNotifications(true)
+    try {
+      const res = await fetch(`${API_BASE}/notifications?limit=40`, {
+        headers: authHeaders(token),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setNotifications(data)
+      }
+    } catch (e) {
+      console.error('Failed to fetch notifications:', e)
+    } finally {
+      setLoadingNotifications(false)
+    }
+  }
+
+  const markAllAsRead = async () => {
+    if (!token) return
+    try {
+      const res = await fetch(`${API_BASE}/notifications/read-all`, {
+        method: 'PATCH',
+        headers: authHeaders(token),
+      })
+      if (res.ok) {
+        setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })))
+        setUnreadNotifCount(0)
+      }
+    } catch (e) {
+      console.error('Failed to mark all as read:', e)
+    }
+  }
+
+  const handleNotificationClick = async (notif: any) => {
+    if (!notif.is_read) {
+      try {
+        await fetch(`${API_BASE}/notifications/${notif.id}/read`, {
+          method: 'PATCH',
+          headers: authHeaders(token),
+        })
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notif.id ? { ...n, is_read: true } : n))
+        )
+        setUnreadNotifCount((prev) => Math.max(0, prev - 1))
+      } catch (e) {
+        console.error('Failed to mark notification as read:', e)
+      }
+    }
+    setShowNotifications(false)
+
+    // Navigate to relevant route
+    if (notif.type === 'check_in') {
+      router.push('/customers')
+    } else if (notif.type?.startsWith('order')) {
+      router.push('/temporders')
+    } else if (notif.type?.startsWith('expense')) {
+      router.push('/expenses')
+    } else if (notif.type === 'attendance') {
+      if (isAdmin) {
+        router.push('/admin?tab=attendance')
+      } else {
+        router.push('/attendance')
+      }
+    } else if (notif.type?.startsWith('payment')) {
+      router.push('/payments')
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return
+    fetchUnreadCount()
+    const interval = setInterval(fetchUnreadCount, 30000)
+    return () => clearInterval(interval)
+  }, [token, user?.company_id])
 
   const [formData, setFormData] = useState({
     name: '',
@@ -306,8 +405,114 @@ export function GlobalHeader() {
                 <span>Info</span>
               </button>
             )}
+            {/* Notification Bell & Dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => {
+                  const nextState = !showNotifications
+                  setShowNotifications(nextState)
+                  if (nextState) {
+                    fetchNotifications()
+                  }
+                }}
+                className="p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer relative"
+                aria-label="Notifications"
+                title="Notifications"
+              >
+                <Bell className="h-5 w-5" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute top-1 right-1 flex items-center justify-center min-w-[17px] h-[17px] px-1 bg-rose-500 text-white font-black text-[10px] rounded-full border-2 border-emerald-500 dark:border-emerald-600 shadow-sm animate-pulse">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Notification Dropdown Panel */}
+              {showNotifications && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowNotifications(false)}
+                  />
+                  <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden text-foreground animate-in fade-in slide-in-from-top-2 duration-150">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/40">
+                      <div className="flex items-center gap-2">
+                        <span className="font-extrabold text-sm text-foreground">Notifications</span>
+                        {unreadNotifCount > 0 && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary/10 text-primary">
+                            {unreadNotifCount} new
+                          </span>
+                        )}
+                      </div>
+                      {unreadNotifCount > 0 && (
+                        <button
+                          onClick={markAllAsRead}
+                          className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+                        >
+                          <CheckCheck className="w-3.5 h-3.5" />
+                          Mark all read
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="max-h-[380px] overflow-y-auto divide-y divide-border/40">
+                      {loadingNotifications ? (
+                        <div className="p-8 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                          <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                          <span className="text-xs">Loading notifications...</span>
+                        </div>
+                      ) : notifications.length === 0 ? (
+                        <div className="p-8 text-center flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                          <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
+                            <Bell className="w-5 h-5 text-muted-foreground/60" />
+                          </div>
+                          <span className="text-xs font-semibold text-foreground">No notifications yet</span>
+                          <span className="text-[11px] text-muted-foreground">You're all caught up!</span>
+                        </div>
+                      ) : (
+                        notifications.map((notif) => (
+                          <div
+                            key={notif.id}
+                            onClick={() => handleNotificationClick(notif)}
+                            className={cn(
+                              "p-3 flex items-start gap-3 hover:bg-muted/60 transition-colors cursor-pointer text-left relative",
+                              !notif.is_read && "bg-primary/5 font-medium"
+                            )}
+                          >
+                            <div className={cn(
+                              "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5",
+                              getNotifIconBg(notif.type)
+                            )}>
+                              {getNotifIcon(notif.type)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-1">
+                                <h4 className={cn("text-xs truncate", !notif.is_read ? "font-bold text-foreground" : "font-semibold text-foreground/80")}>
+                                  {notif.title}
+                                </h4>
+                                <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                                  {formatTimeAgo(notif.created_at)}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-snug">
+                                {notif.message}
+                              </p>
+                            </div>
+                            {!notif.is_read && (
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 mt-1.5" />
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
             <button
               onClick={toggle}
+
               className="p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer"
               aria-label="Toggle theme"
             >
@@ -430,6 +635,7 @@ export function GlobalHeader() {
                   <DrawerLink href="/customers" icon={Users} label="Customer Directory" onClick={() => setDrawerOpen(false)} />
                   {permissions.showCheckIn && (
                     <>
+                      <DrawerLink href="/planner" icon={Calendar} label="Daily Beat Planner" onClick={() => setDrawerOpen(false)} />
                       <DrawerLink href="/check-in" icon={MapPin} label="Shop Check-In" onClick={() => setDrawerOpen(false)} />
                       <DrawerLink href="/check-in/history" icon={History} label="Visit Log & Audits" onClick={() => setDrawerOpen(false)} />
                     </>
@@ -872,3 +1078,63 @@ function DrawerLink({
     </Link>
   )
 }
+
+function formatTimeAgo(dateStr?: string) {
+  if (!dateStr) return ''
+  try {
+    const now = new Date().getTime()
+    const d = new Date(dateStr.endsWith('Z') || dateStr.includes('+') ? dateStr : dateStr + 'Z').getTime()
+    const diffSec = Math.max(0, Math.floor((now - d) / 1000))
+    if (diffSec < 60) return 'just now'
+    const diffMin = Math.floor(diffSec / 60)
+    if (diffMin < 60) return `${diffMin}m ago`
+    const diffHours = Math.floor(diffMin / 60)
+    if (diffHours < 24) return `${diffHours}h ago`
+    const diffDays = Math.floor(diffHours / 24)
+    if (diffDays < 7) return `${diffDays}d ago`
+    return new Date(dateStr).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
+  } catch (e) {
+    return ''
+  }
+}
+
+function getNotifIcon(type: string) {
+  switch (type) {
+    case 'check_in':
+      return <MapPin className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+    case 'order_created':
+    case 'order_status':
+      return <ShoppingCart className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+    case 'expense_created':
+    case 'expense_status':
+      return <Wallet className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+    case 'attendance':
+      return <Clock className="w-4 h-4 text-purple-600 dark:text-purple-400" />
+    case 'payment_created':
+    case 'payment_status':
+      return <IndianRupee className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+    default:
+      return <Bell className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+  }
+}
+
+function getNotifIconBg(type: string) {
+  switch (type) {
+    case 'check_in':
+      return 'bg-emerald-500/15'
+    case 'order_created':
+    case 'order_status':
+      return 'bg-sky-500/15'
+    case 'expense_created':
+    case 'expense_status':
+      return 'bg-amber-500/15'
+    case 'attendance':
+      return 'bg-purple-500/15'
+    case 'payment_created':
+    case 'payment_status':
+      return 'bg-emerald-500/15'
+    default:
+      return 'bg-muted'
+  }
+}
+

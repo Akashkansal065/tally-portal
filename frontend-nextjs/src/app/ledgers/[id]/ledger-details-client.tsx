@@ -37,7 +37,7 @@ export default function LedgerDetailsClient({ ledgerInfo, transactions }: Props)
   const [filterVoucherType, setFilterVoucherType] = useState('all')
   const [filterFlow, setFilterFlow] = useState('all') // all | debit | credit
   const [sortBy, setSortBy] = useState('date-desc') // date-desc | date-asc | amount-desc | amount-asc
-  
+
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 10
 
@@ -140,24 +140,43 @@ export default function LedgerDetailsClient({ ledgerInfo, transactions }: Props)
 
   // Period Opening & Closing Balances calculation based on selected date range
   const periodSummary = useMemo(() => {
+    // 1. Base opening balance in Tally is as of FY start (2026-04-01)
     const baseOpBal = ledgerInfo?.opening_balance || 0
     const isDr = ledgerInfo?.opening_balance_type === 'Dr'
-    const periodOpNet = isDr ? -baseOpBal : baseOpBal // negative = Dr, positive = Cr
+    const fyOpNet = isDr ? -baseOpBal : baseOpBal // negative = Dr, positive = Cr
 
+    // Check if transactions array contains pre-FY vouchers (before 2026-04-01) that were rolled into fyOpNet
+    const fyAnchor = '2026-04-01'
+    let preFyNet = 0
+    if (transactions) {
+      transactions.forEach(t => {
+        if (!t.date) return
+        const d = t.date.split('T')[0]
+        if (d < fyAnchor) {
+          preFyNet += parseFloat(t.amount || '0') // negative = Dr, positive = Cr
+        }
+      })
+    }
+    // True base balance before all recorded transactions in the database
+    const trueBaseBeforeAll = fyOpNet - preFyNet
+
+    const startStr = startDate || ''
+    const endStr = endDate || ''
+
+    // Calculate prior transactions before the selected startDate
+    let priorNet = 0
     let totalPeriodDebit = 0
     let totalPeriodCredit = 0
-
-    const startMs = startDate ? new Date(startDate).setHours(0, 0, 0, 0) : -Infinity
-    const endMs = endDate ? new Date(endDate).setHours(23, 59, 59, 999) : Infinity
 
     if (transactions) {
       transactions.forEach(t => {
         if (!t.date) return
-        const tMs = new Date(t.date).getTime()
+        const d = t.date.split('T')[0]
         const amt = parseFloat(t.amount || '0') // negative = Dr, positive = Cr
-        
-        // Vouchers within date range contribute to Period Debits / Credits
-        if (tMs >= startMs && tMs <= endMs) {
+
+        if (startStr && d < startStr) {
+          priorNet += amt
+        } else if (!endStr || d <= endStr) {
           if (amt < 0) {
             totalPeriodDebit += Math.abs(amt)
           } else {
@@ -167,15 +186,16 @@ export default function LedgerDetailsClient({ ledgerInfo, transactions }: Props)
       })
     }
 
+    const periodOpNet = trueBaseBeforeAll + priorNet
     const periodClosingNet = periodOpNet + (totalPeriodCredit - totalPeriodDebit)
 
     return {
       opBal: Math.abs(periodOpNet),
-      opType: periodOpNet < 0 ? 'Dr' : 'Cr',
+      opType: Math.abs(periodOpNet) < 0.005 ? 'Dr' : (periodOpNet < 0 ? 'Dr' : 'Cr'),
       totalDebit: totalPeriodDebit,
       totalCredit: totalPeriodCredit,
       clBal: Math.abs(periodClosingNet),
-      clType: periodClosingNet < 0 ? 'Dr' : 'Cr'
+      clType: Math.abs(periodClosingNet) < 0.005 ? 'Dr' : (periodClosingNet < 0 ? 'Dr' : 'Cr')
     }
   }, [ledgerInfo, transactions, startDate, endDate])
 
@@ -437,10 +457,10 @@ export default function LedgerDetailsClient({ ledgerInfo, transactions }: Props)
                   <td className="py-2.5 px-2 font-mono tabular-nums">
                     {txn.date
                       ? new Date(txn.date).toLocaleDateString('en-IN', {
-                          day: '2-digit',
-                          month: 'short',
-                          year: 'numeric',
-                        })
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                      })
                       : 'N/A'}
                   </td>
                   <td className="py-2.5 px-2">

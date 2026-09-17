@@ -94,7 +94,23 @@ async def create_expense(
     db.add(expense)
     await db.commit()
     await db.refresh(expense)
+
+    # Notify admins of submitted expense
+    from app.routers.notifications import notify_admins
+    await notify_admins(
+        db=db,
+        company_id=user.company_id,
+        type="expense_created",
+        title="New Expense Submitted",
+        message=f"{user.username} submitted an expense of ₹{float(expense.amount):,.2f} ({expense.category})",
+        reference_id=str(expense.id),
+        reference_type="expense",
+        exclude_user_id=user.user_id,
+        auto_commit=True,
+    )
+
     return {"success": True, "id": expense.id, "message": "Expense submitted successfully"}
+
 
 
 @router.get("")
@@ -154,4 +170,20 @@ async def approve_expense(
     if req.reason:
         expense.cancel_reason = req.reason[:1024]
     await db.commit()
+
+    # Notify expense creator (salesperson)
+    from app.routers.notifications import notify_user
+    await notify_user(
+        db=db,
+        company_id=current_user.company_id,
+        user_id=expense.user_id,
+        type="expense_status",
+        title=f"Expense #{expense.id} {expense.status.title()}",
+        message=f"Your expense #{expense.id} for ₹{float(expense.amount):,.2f} has been {expense.status}." + (f" Reason: {req.reason}" if req.reason else ""),
+        reference_id=str(expense.id),
+        reference_type="expense",
+        auto_commit=True,
+    )
+
     return {"success": True, "status": expense.status}
+

@@ -6,7 +6,8 @@ import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
 import { stampPhoto } from '@/lib/photo-stamping'
 import { queueOfflineCheckIn, getPendingCheckIns, syncPendingCheckIns, OfflineCheckIn } from '@/lib/offline-storage'
-import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw } from 'lucide-react'
+import Link from 'next/link'
+import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw, History, CalendarCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type RecentVisit = {
@@ -300,6 +301,28 @@ export default function CheckInPage() {
             <MapPin className="h-5.5 w-5.5 text-rose-500" /> Shop Check-In
           </h1>
           <p className="text-[11px] text-muted-foreground mt-0.5">Capture salesperson customer location verification</p>
+        </div>
+
+        {/* Navigation Switch Tabs */}
+        <div className="flex bg-muted/50 p-1 rounded-xl border border-border max-w-sm sm:max-w-md">
+          <Link
+            href="/planner"
+            className="flex-1 py-2 text-center text-xs font-bold rounded-lg text-muted-foreground hover:text-foreground transition-all flex items-center justify-center gap-1.5"
+          >
+            <CalendarCheck className="w-3.5 h-3.5" />
+            <span>Daily Planner</span>
+          </Link>
+          <div className="flex-1 py-2 text-center text-xs font-bold rounded-lg bg-background text-foreground shadow-sm border border-border flex items-center justify-center gap-1.5">
+            <MapPin className="w-3.5 h-3.5 text-rose-500" />
+            <span>Check-In</span>
+          </div>
+          <Link
+            href="/check-in/history"
+            className="flex-1 py-2 text-center text-xs font-bold rounded-lg text-muted-foreground hover:text-foreground transition-all flex items-center justify-center gap-1.5"
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>Visit History</span>
+          </Link>
         </div>
 
         {pendingCheckIns.length > 0 && (

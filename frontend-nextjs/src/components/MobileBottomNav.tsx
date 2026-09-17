@@ -11,6 +11,7 @@ import {
   Layers,
   ShoppingCart,
   IndianRupee,
+  CalendarCheck,
   MapPin,
   History,
   Wallet,
@@ -68,6 +69,7 @@ export function MobileBottomNav() {
       : []),
     ...(permissions.showCheckIn
       ? [
+          { href: '/planner', label: 'Planner', icon: CalendarCheck },
           { href: '/check-in', label: 'Check-In', icon: MapPin },
           { href: '/check-in/history', label: 'Visit Log', icon: History }
         ]

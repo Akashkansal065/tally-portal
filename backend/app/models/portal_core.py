@@ -1020,3 +1020,71 @@ class CustomerOwner(Base):
     # Relationships
     company = relationship("Company", foreign_keys=[company_id])
     customer_profile = relationship("CustomerProfile", back_populates="owners", foreign_keys=[customer_profile_id])
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    type = Column(String(50), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    reference_id = Column(String(100), nullable=True)
+    reference_type = Column(String(50), nullable=True)
+    is_read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+
+    # Relationships
+    company = relationship("Company", foreign_keys=[company_id])
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class BeatPlan(Base):
+    __tablename__ = "beat_plans"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    plan_date = Column(Date, nullable=False, index=True)
+    route_name = Column(String(100), nullable=False)
+    locality = Column(String(200), nullable=True)
+    notes = Column(Text, nullable=True)
+    status = Column(String(32), default="assigned")  # assigned, in_progress, completed, cancelled
+    created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    company = relationship("Company", foreign_keys=[company_id])
+    user = relationship("User", foreign_keys=[user_id])
+    creator = relationship("User", foreign_keys=[created_by])
+    stops = relationship("BeatPlanStop", back_populates="beat_plan", cascade="all, delete-orphan", order_by="BeatPlanStop.sequence_order.asc()")
+
+
+class BeatPlanStop(Base):
+    __tablename__ = "beat_plan_stops"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    beat_plan_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.beat_plans.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_key = Column(String(100), nullable=False, index=True)
+    customer_profile_id = Column(Integer, nullable=True)
+    ledger_id = Column(Integer, nullable=True, index=True)
+    shop_name = Column(String(255), nullable=False)
+    locality = Column(String(200), nullable=True)
+    address = Column(Text, nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    sequence_order = Column(Integer, nullable=False, default=1)
+    status = Column(String(32), default="pending")  # pending, visited, skipped
+    visit_id = Column(Integer, nullable=True)
+    visited_at = Column(DateTime, nullable=True)
+    skip_reason = Column(String(255), nullable=True)
+    notes = Column(String(500), nullable=True)
+
+    # Relationships
+    beat_plan = relationship("BeatPlan", back_populates="stops", foreign_keys=[beat_plan_id])

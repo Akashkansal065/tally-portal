@@ -4,7 +4,11 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
+import { usePeriod } from '@/context/PeriodContext'
 import { API_BASE, authHeaders, cn } from '@/lib/utils'
+import Cropper from 'react-easy-crop'
+import { getCroppedImg } from '@/lib/cropImage'
+import LedgerDetailsClient from '@/app/ledgers/[id]/ledger-details-client'
 import {
   Users,
   MapPin,
@@ -26,6 +30,7 @@ import {
   Edit2,
   Tag,
   ChevronLeft,
+  ChevronRight,
   Loader2,
   Info,
   Link2,
@@ -43,8 +48,55 @@ import {
   Check,
   UserPlus,
   Crown,
-  Mail
+  Mail,
+  Receipt,
+  FileText,
+  IndianRupee,
+  Share2,
+  ShoppingCart,
+  ArrowDownRight,
+  ArrowUpRight
 } from 'lucide-react'
+
+export interface FinancialSummary {
+  closing_balance: number
+  raw_balance: number
+  balance_type: 'Dr' | 'Cr'
+  opening_balance: number
+  opening_type: string
+  total_billed_debit: number
+  total_collected_credit: number
+}
+
+export interface RecentVoucherItem {
+  id: number
+  date: string | null
+  voucher_type: string
+  voucher_number: string
+  amount: number
+  type: 'Dr' | 'Cr'
+  narration: string
+  running_balance?: number
+  running_type?: string
+}
+
+export interface RecentOrderItem {
+  id: number
+  created_at: string | null
+  status: string
+  total_items: number
+  total_amount: number
+  comments: string | null
+}
+
+export interface RecentPaymentItem {
+  id: number
+  created_at: string | null
+  amount: number
+  payment_mode: string
+  status: string
+  notes: string | null
+}
 
 interface OwnerItem {
   id: number | null
@@ -140,6 +192,10 @@ interface CustomerDetail {
   photos: CustomerPhotoItem[]
   owners: OwnerItem[]
   visits: VisitItem[]
+  financial_summary?: FinancialSummary | null
+  recent_vouchers?: RecentVoucherItem[]
+  recent_orders?: RecentOrderItem[]
+  recent_payments?: RecentPaymentItem[]
   tally_details?: {
     ledger_id: number
     name: string
@@ -168,6 +224,41 @@ export default function CustomerProfilePage() {
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
 
+  // 360° View Main Tabs: overview | statement | orders | visits
+  const [mainTab, setMainTab] = useState<'overview' | 'statement' | 'orders' | 'visits'>('overview')
+
+  // WhatsApp Statement Sharing Handler
+  const handleShareStatement = () => {
+    if (!customer) return
+    const phone = (customer.whatsapp_number || customer.mobile || customer.phone || '').replace(/\D/g, '')
+    const bal = Math.abs(customer.financial_summary?.closing_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })
+    const balType = customer.financial_summary?.balance_type || 'Dr'
+    const billed = (customer.financial_summary?.total_billed_debit || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })
+    const collected = (customer.financial_summary?.total_collected_credit || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })
+
+    let text = `*Account Statement — Sneh Distributors*\n`
+    text += `Customer: *${customer.name}*\n`
+    if (customer.ledger_id) text += `Ledger Account: #${customer.ledger_id}\n`
+    text += `━━━━━━━━━━━━━━━━━━━━━\n`
+    text += `*Outstanding Balance:* ₹${bal} (${balType})\n`
+    text += `Total Billed: ₹${billed}\n`
+    text += `Total Paid: ₹${collected}\n`
+    text += `━━━━━━━━━━━━━━━━━━━━━\n`
+
+    if (customer.recent_vouchers && customer.recent_vouchers.length > 0) {
+      text += `*Recent Transactions:*\n`
+      customer.recent_vouchers.slice(0, 3).forEach((v) => {
+        text += `• ${v.date ? new Date(v.date).toLocaleDateString('en-IN') : 'Recent'}: ${v.voucher_type} (${v.voucher_number}) — ₹${v.amount.toLocaleString('en-IN')} (${v.type})\n`
+      })
+      text += `━━━━━━━━━━━━━━━━━━━━━\n`
+    }
+
+    text += `Please arrange payment at your earliest convenience.\nThank you for your business!`
+
+    const url = `https://wa.me/91${phone}?text=${encodeURIComponent(text)}`
+    window.open(url, '_blank')
+  }
+
   // Gallery Filter State
   const [photoFilter, setPhotoFilter] = useState<string>('all')
   const [lightboxPhoto, setLightboxPhoto] = useState<CustomerPhotoItem | null>(null)
@@ -182,8 +273,55 @@ export default function CustomerProfilePage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
 
+  // Crop State
+  const [crop, setCrop] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [rotation, setRotation] = useState(0)
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null)
+  const [isCropping, setIsCropping] = useState(false)
+
   // Edit Modal State
   const [showEditModal, setShowEditModal] = useState(false)
+  const [filterOptions, setFilterOptions] = useState<{ localities: any[], cities: any[], routes: string[] } | null>(null)
+
+  useEffect(() => {
+    if (showEditModal && !filterOptions && token) {
+      fetch(`${API_BASE}/customers/localities`, { headers: authHeaders(token) })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => { if (data) setFilterOptions(data) })
+        .catch(err => console.error('Failed to load filter options', err))
+    }
+  }, [showEditModal, filterOptions, token])
+
+  // Full Ledger Statement State
+  const { startDate, endDate } = usePeriod()
+  const [ledgerInfo, setLedgerInfo] = useState<any>(null)
+  const [transactions, setTransactions] = useState<any[]>([])
+  const [loadingLedger, setLoadingLedger] = useState(false)
+
+  // Fetch full ledger statement when on statement tab
+  useEffect(() => {
+    if (mainTab === 'statement' && customer?.ledger_id && token) {
+      setLoadingLedger(true)
+      let url = `${API_BASE}/ledgers/${customer.ledger_id}/statement`
+      const q: string[] = []
+      if (startDate) q.push(`from_date=${startDate}`)
+      if (endDate) q.push(`to_date=${endDate}`)
+      if (q.length > 0) url += `?${q.join('&')}`
+
+      fetch(url, { headers: authHeaders(token) })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data && data.success) {
+            setLedgerInfo(data.ledgerInfo)
+            setTransactions(data.transactions)
+          }
+        })
+        .catch(console.error)
+        .finally(() => setLoadingLedger(false))
+    }
+  }, [mainTab, customer?.ledger_id, token, startDate, endDate])
+
   const [editForm, setEditForm] = useState({
     contact_person: '',
     phone: '',
@@ -313,6 +451,7 @@ export default function CustomerProfilePage() {
     const reader = new FileReader()
     reader.onload = (event) => {
       setUploadBase64(event.target?.result as string)
+      setIsCropping(true)
     }
     reader.readAsDataURL(file)
 
@@ -764,6 +903,49 @@ export default function CustomerProfilePage() {
     return customer.photos.filter((p) => p.photo_type === photoFilter)
   }, [customer?.photos, photoFilter])
 
+  // Photo Navigation Handlers
+  const handlePrevPhoto = (e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    if (!lightboxPhoto) return
+    const idx = filteredPhotos.findIndex(p => p.id === lightboxPhoto.id)
+    if (idx > 0) {
+      setLightboxPhoto(filteredPhotos[idx - 1])
+    }
+  }
+
+  const handleNextPhoto = (e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    if (!lightboxPhoto) return
+    const idx = filteredPhotos.findIndex(p => p.id === lightboxPhoto.id)
+    if (idx !== -1 && idx < filteredPhotos.length - 1) {
+      setLightboxPhoto(filteredPhotos[idx + 1])
+    }
+  }
+
+  const [touchStart, setTouchStart] = useState<number | null>(null)
+  const [touchEnd, setTouchEnd] = useState<number | null>(null)
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    setTouchEnd(null)
+    setTouchStart(e.targetTouches[0].clientX)
+  }
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    setTouchEnd(e.targetTouches[0].clientX)
+  }
+
+  const onTouchEnd = () => {
+    if (!touchStart || !touchEnd) return
+    const distance = touchStart - touchEnd
+    const minSwipeDistance = 50
+    if (distance > minSwipeDistance) {
+      handleNextPhoto()
+    }
+    if (distance < -minSwipeDistance) {
+      handlePrevPhoto()
+    }
+  }
+
   // Photo Type Labels
   const photoTypeLabels: Record<string, { label: string; icon: any; color: string }> = {
     customer_owner: { label: 'Owner Portrait', icon: UserIcon, color: 'text-violet-500 bg-violet-500/10 border-violet-500/20' },
@@ -902,13 +1084,37 @@ export default function CustomerProfilePage() {
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
               {/* Customer / Owner Portrait with 1-Tap Upload Overlay */}
               <div className="relative group flex-shrink-0">
-                <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden border-2 border-border shadow-md bg-muted flex items-center justify-center">
+                <div 
+                  className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl overflow-hidden border-2 border-border shadow-md bg-muted flex items-center justify-center cursor-pointer relative"
+                  onClick={() => {
+                    if (customer.customer_photo_url) {
+                      setLightboxPhoto({
+                        id: 0,
+                        photo_type: 'customer_owner',
+                        imagekit_url: customer.customer_photo_url,
+                        imagekit_thumbnail_url: customer.customer_photo_url,
+                        imagekit_file_path: null,
+                        caption: `Owner Portrait: ${customer.name}`,
+                        latitude: customer.latitude,
+                        longitude: customer.longitude,
+                        is_primary: true,
+                        uploaded_by_name: '',
+                        created_at: null,
+                      })
+                    }
+                  }}
+                >
                   {customer.customer_photo_url ? (
-                    <img
-                      src={customer.customer_photo_url}
-                      alt={customer.contact_person || customer.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    />
+                    <>
+                      <img
+                        src={customer.customer_photo_url}
+                        alt={customer.contact_person || customer.name}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                      <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none text-white">
+                         <Maximize2 className="w-6 h-6" />
+                      </div>
+                    </>
                   ) : (
                     <div className="flex flex-col items-center justify-center text-muted-foreground p-2 text-center">
                       <UserIcon className="w-10 h-10 opacity-40 mb-1" />
@@ -917,17 +1123,17 @@ export default function CustomerProfilePage() {
                   )}
                 </div>
 
-                {/* Quick Camera Overlay */}
+                {/* Quick Camera Overlay / Edit Button */}
                 <button
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation()
                     setUploadType('customer_owner')
                     setShowUploadModal(true)
                   }}
-                  className="absolute inset-0 bg-black/60 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white text-xs font-semibold gap-1"
+                  className="absolute -bottom-2 -right-2 bg-primary text-primary-foreground p-2 rounded-full shadow-lg border-2 border-background hover:bg-primary/90 transition-colors z-10"
                   title="Upload / Change Owner Photo"
                 >
-                  <Camera className="w-5 h-5 text-primary-foreground" />
-                  <span>Update</span>
+                  <Camera className="w-4 h-4" />
                 </button>
               </div>
 
@@ -1182,8 +1388,212 @@ export default function CustomerProfilePage() {
           </div>
         )}
 
-        {/* ─── TWO-COLUMN MAIN CONTENT ─── */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* ─── FINANCIAL 360° METRICS BAR ─── */}
+        {customer.financial_summary && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Outstanding Balance */}
+            <div className="bg-card border border-border rounded-3xl p-5 shadow-sm relative overflow-hidden flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Outstanding Balance</span>
+                <span className={cn(
+                  'px-2 py-0.5 rounded-full text-[11px] font-extrabold uppercase',
+                  customer.financial_summary.balance_type === 'Dr'
+                    ? 'bg-rose-500/10 text-rose-600 border border-rose-500/20'
+                    : 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+                )}>
+                  {customer.financial_summary.balance_type}
+                </span>
+              </div>
+              <div className="my-2">
+                <div className="text-2xl sm:text-3xl font-black tracking-tight text-foreground flex items-baseline gap-1">
+                  <span className="text-lg font-bold text-muted-foreground">₹</span>
+                  <span>{Math.abs(customer.financial_summary.closing_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {customer.financial_summary.balance_type === 'Dr' ? 'Receivable from customer' : 'Advance / Credit balance'}
+                </p>
+              </div>
+              <div className="pt-2 border-t border-border/60 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleShareStatement}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors shadow-sm"
+                  title="Send account statement via WhatsApp"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>Share Statement</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMainTab('statement')}
+                  className="inline-flex items-center justify-center p-1.5 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                  title="View Ledger Statement"
+                >
+                  <Receipt className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Total Billed (Sales Debit) */}
+            <div className="bg-card border border-border rounded-3xl p-5 shadow-sm relative overflow-hidden flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Total Billed</span>
+                <div className="p-1.5 rounded-xl bg-blue-500/10 text-blue-600">
+                  <ArrowUpRight className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="my-2">
+                <div className="text-2xl sm:text-3xl font-black tracking-tight text-foreground flex items-baseline gap-1">
+                  <span className="text-lg font-bold text-muted-foreground">₹</span>
+                  <span>{(customer.financial_summary.total_billed_debit || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Gross debits / sales invoices</p>
+              </div>
+              <div className="pt-2 border-t border-border/60 flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>Opening: ₹{(customer.financial_summary.opening_balance || 0).toLocaleString('en-IN')} {customer.financial_summary.opening_type}</span>
+              </div>
+            </div>
+
+            {/* Total Collected (Receipts Credit) */}
+            <div className="bg-card border border-border rounded-3xl p-5 shadow-sm relative overflow-hidden flex flex-col justify-between">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Total Collected</span>
+                <div className="p-1.5 rounded-xl bg-emerald-500/10 text-emerald-600">
+                  <ArrowDownRight className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="my-2">
+                <div className="text-2xl sm:text-3xl font-black tracking-tight text-emerald-600 dark:text-emerald-400 flex items-baseline gap-1">
+                  <span className="text-lg font-bold text-muted-foreground">₹</span>
+                  <span>{(customer.financial_summary.total_collected_credit || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Total payments cleared</p>
+              </div>
+              <div className="pt-2 border-t border-border/60 flex items-center justify-between text-[11px]">
+                <span className="text-muted-foreground">Collection Ratio:</span>
+                <span className="font-bold text-foreground">
+                  {customer.financial_summary.total_billed_debit > 0
+                    ? `${Math.min(100, Math.round((customer.financial_summary.total_collected_credit / customer.financial_summary.total_billed_debit) * 100))}%`
+                    : '100%'}
+                </span>
+              </div>
+            </div>
+
+            {/* Commercial Desk / Quick Actions */}
+            <div className="bg-gradient-to-br from-primary/5 via-card to-primary/10 border border-primary/20 rounded-3xl p-5 shadow-sm flex flex-col justify-between">
+              <div>
+                <span className="text-xs font-bold text-primary uppercase tracking-wider">Commercial Desk</span>
+                <h4 className="text-base font-extrabold text-foreground mt-1">Actions & Orders</h4>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Direct billing and order placement for this account.
+                </p>
+              </div>
+              <div className="pt-3 flex flex-col gap-2">
+                <Link
+                  href={`/orders/new?customer_id=${customer.profile_id}${customer.ledger_id ? `&ledger_id=${customer.ledger_id}` : ''}`}
+                  className="w-full inline-flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold shadow-sm transition-colors"
+                >
+                  <ShoppingCart className="w-3.5 h-3.5" />
+                  <span>Create New Order</span>
+                </Link>
+                <Link
+                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                  className="w-full inline-flex items-center justify-center gap-2 py-2 px-3 rounded-xl border border-border bg-background hover:bg-muted text-foreground text-xs font-bold transition-colors"
+                >
+                  <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Check-In & Record Visit</span>
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ─── 360° VIEW NAVIGATION TABS ─── */}
+        <div className="flex items-center gap-2 border-b border-border pb-1 overflow-x-auto no-scrollbar">
+          <button
+            type="button"
+            onClick={() => setMainTab('overview')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              mainTab === 'overview'
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+            )}
+          >
+            <Store className="w-4 h-4" />
+            <span>Store & Partners</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMainTab('statement')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              mainTab === 'statement'
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+            )}
+          >
+            <Receipt className="w-4 h-4" />
+            <span>Ledger Statement</span>
+            {customer.recent_vouchers && customer.recent_vouchers.length > 0 && (
+              <span className={cn(
+                'px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                mainTab === 'statement' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
+              )}>
+                {customer.recent_vouchers.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMainTab('orders')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              mainTab === 'orders'
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+            )}
+          >
+            <ShoppingCart className="w-4 h-4" />
+            <span>Order History</span>
+            {customer.recent_orders && customer.recent_orders.length > 0 && (
+              <span className={cn(
+                'px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                mainTab === 'orders' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
+              )}>
+                {customer.recent_orders.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMainTab('visits')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm transition-all whitespace-nowrap',
+              mainTab === 'visits'
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'
+            )}
+          >
+            <Clock className="w-4 h-4" />
+            <span>Field Visits</span>
+            {customer.visits && customer.visits.length > 0 && (
+              <span className={cn(
+                'px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                mainTab === 'visits' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
+              )}>
+                {customer.visits.length}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* ─── TAB 1: STORE & PARTNERS (OVERVIEW) ─── */}
+        {mainTab === 'overview' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* ════════ LEFT COLUMN (Photos & Visits) ════════ */}
           <div className="lg:col-span-7 space-y-6">
             {/* 📸 Photos Showcase Card */}
@@ -1282,15 +1692,15 @@ export default function CustomerProfilePage() {
                           />
 
                           {/* Hover Lightbox Indicator */}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white pointer-events-none">
                             <Maximize2 className="w-6 h-6" />
                           </div>
 
                           {/* Top Category Badge */}
-                          <div className="absolute top-2 left-2 z-10">
-                            <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase backdrop-blur-md border shadow-sm', badge.color)}>
-                              <IconComponent className="w-2.5 h-2.5" />
-                              <span>{badge.label}</span>
+                          <div className="absolute top-2 left-2 z-10 max-w-[70%]">
+                            <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase backdrop-blur-md border shadow-sm truncate', badge.color)}>
+                              <IconComponent className="w-2.5 h-2.5 shrink-0" />
+                              <span className="truncate">{badge.label}</span>
                             </span>
                           </div>
 
@@ -1302,6 +1712,20 @@ export default function CustomerProfilePage() {
                               </span>
                             </div>
                           )}
+
+                          {/* Delete Button (Visible on Mobile) */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleDeletePhoto(photo.id)
+                            }}
+                            className="absolute bottom-2 right-2 z-20 p-1.5 rounded-lg bg-black/70 hover:bg-rose-600 text-white shadow-md backdrop-blur-sm transition-all opacity-90 hover:opacity-100 active:scale-95 flex items-center justify-center"
+                            title="Delete photo"
+                            aria-label="Delete photo"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
 
                         {/* Bottom Info Bar */}
@@ -1312,7 +1736,7 @@ export default function CustomerProfilePage() {
                             </p>
                           )}
                           <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                            <span>{photo.uploaded_by_name}</span>
+                            <span className="truncate max-w-[90px]">{photo.uploaded_by_name}</span>
                             {photo.latitude && photo.longitude && (
                               <span className="inline-flex items-center gap-0.5 text-emerald-600 font-medium" title="Geotagged on-site">
                                 <Compass className="w-3 h-3" />
@@ -1321,18 +1745,6 @@ export default function CustomerProfilePage() {
                             )}
                           </div>
                         </div>
-
-                        {/* Delete Button */}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleDeletePhoto(photo.id)
-                          }}
-                          className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/70 text-white/80 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                          title="Delete photo from ImageKit"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
                       </div>
                     )
                   })}
@@ -1829,6 +2241,286 @@ export default function CustomerProfilePage() {
             </div>
           </div>
         </div>
+        )}
+
+        {/* ─── TAB 2: LEDGER STATEMENT ─── */}
+        {mainTab === 'statement' && (
+          <div className="bg-card border border-border rounded-3xl p-6 sm:p-8 shadow-sm space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
+              <div className="flex items-center gap-3">
+                <div className="p-3 rounded-2xl bg-primary/10 text-primary">
+                  <Receipt className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-extrabold text-foreground">Account Ledger Statement</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Live ERP transactions, sales invoices, receipts, and running balance
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleShareStatement}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-colors"
+                >
+                  <Share2 className="w-4 h-4" />
+                  <span>Share on WhatsApp</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fetchCustomer(true)}
+                  className="p-2 rounded-xl border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                  title="Refresh statement"
+                >
+                  <RefreshCw className={cn('w-4 h-4', refreshing && 'animate-spin text-primary')} />
+                </button>
+              </div>
+            </div>
+
+            {!customer.ledger_id ? (
+              <div className="py-16 text-center border-2 border-dashed border-border rounded-2xl p-6">
+                <Receipt className="w-12 h-12 mx-auto opacity-30 mb-2 text-muted-foreground" />
+                <h3 className="font-bold text-base text-foreground">No Accounting Transactions Found</h3>
+                <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                  This customer has not been linked to a Tally ledger. Link to view financial statements.
+                </p>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={handleOpenLinkModal}
+                    className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold text-xs hover:bg-primary/90 transition-colors shadow-sm"
+                  >
+                    <Link2 className="w-4 h-4" />
+                    <span>Link to Tally Ledger</span>
+                  </button>
+                )}
+              </div>
+            ) : loadingLedger ? (
+              <div className="py-16 flex justify-center">
+                <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+              </div>
+            ) : ledgerInfo ? (
+              <div className="pt-2">
+                <LedgerDetailsClient ledgerInfo={ledgerInfo} transactions={transactions} />
+              </div>
+            ) : (
+              <div className="py-16 text-center text-muted-foreground">
+                Failed to load ledger statement.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── TAB 3: ORDER HISTORY ─── */}
+        {mainTab === 'orders' && (
+          <div className="bg-card border border-border rounded-3xl p-6 sm:p-8 shadow-sm space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
+              <div className="flex items-center gap-3">
+                <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-600">
+                  <ShoppingCart className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-extrabold text-foreground">Customer Orders History</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Portal sales orders taken by field representatives
+                  </p>
+                </div>
+              </div>
+
+              <Link
+                href={`/orders/new?customer_id=${customer.profile_id}${customer.ledger_id ? `&ledger_id=${customer.ledger_id}` : ''}`}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-xs shadow-sm transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Create New Order</span>
+              </Link>
+            </div>
+
+            {(!customer.recent_orders || customer.recent_orders.length === 0) ? (
+              <div className="py-16 text-center border-2 border-dashed border-border rounded-2xl p-6">
+                <ShoppingCart className="w-12 h-12 mx-auto opacity-30 mb-2 text-muted-foreground" />
+                <h3 className="font-bold text-base text-foreground">No Portal Orders Placed Yet</h3>
+                <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                  Sales orders booked by field agents during shop visits will appear here with live sync status.
+                </p>
+                <Link
+                  href={`/orders/new?customer_id=${customer.profile_id}${customer.ledger_id ? `&ledger_id=${customer.ledger_id}` : ''}`}
+                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold text-xs hover:bg-primary/90 transition-colors shadow-sm"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Place First Order</span>
+                </Link>
+              </div>
+            ) : (
+              <div className="border border-border rounded-2xl overflow-hidden shadow-xs">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-muted/60 border-b border-border text-muted-foreground font-bold uppercase tracking-wider text-[10px]">
+                        <th className="p-3.5 pl-4">Order ID</th>
+                        <th className="p-3.5">Date</th>
+                        <th className="p-3.5">Status</th>
+                        <th className="p-3.5 text-center">Items</th>
+                        <th className="p-3.5 text-right pr-4">Total Value</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {customer.recent_orders.map((ord) => (
+                        <tr key={ord.id} className="hover:bg-muted/40 transition-colors">
+                          <td className="p-3.5 pl-4 font-mono font-bold text-primary">
+                            #{ord.id}
+                          </td>
+                          <td className="p-3.5 text-muted-foreground whitespace-nowrap">
+                            {ord.created_at ? new Date(ord.created_at).toLocaleDateString('en-IN', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                            }) : '—'}
+                          </td>
+                          <td className="p-3.5 whitespace-nowrap">
+                            <span className={cn(
+                              'px-2.5 py-0.5 rounded-full text-[11px] font-extrabold uppercase',
+                              ord.status?.toLowerCase() === 'delivered'
+                                ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20'
+                                : ord.status?.toLowerCase() === 'confirmed'
+                                ? 'bg-blue-500/10 text-blue-600 border border-blue-500/20'
+                                : 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                            )}>
+                              {ord.status || 'Pending'}
+                            </span>
+                          </td>
+                          <td className="p-3.5 text-center font-bold text-foreground">
+                            {ord.total_items} items
+                          </td>
+                          <td className="p-3.5 pr-4 text-right font-mono font-black text-foreground">
+                            ₹{(ord.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── TAB 4: FIELD VISITS TIMELINE ─── */}
+        {mainTab === 'visits' && (
+          <div className="bg-card border border-border rounded-3xl p-6 sm:p-8 shadow-sm space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
+              <div className="flex items-center gap-3">
+                <div className="p-3 rounded-2xl bg-emerald-500/10 text-emerald-600">
+                  <Clock className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-extrabold text-foreground">Field Visit History & GPS Audit</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Chronological audit trail of sales visits, geo-tagging, and shop verification
+                  </p>
+                </div>
+              </div>
+
+              <Link
+                href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-colors"
+              >
+                <MapPin className="w-4 h-4" />
+                <span>+ Record New Visit</span>
+              </Link>
+            </div>
+
+            {(!customer.visits || customer.visits.length === 0) ? (
+              <div className="py-16 text-center border-2 border-dashed border-border rounded-2xl p-6">
+                <MapPin className="w-12 h-12 mx-auto opacity-30 mb-2 text-muted-foreground" />
+                <h3 className="font-bold text-base text-foreground">No Visit Logs Recorded</h3>
+                <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                  Every time a sales executive checks in at this customer location via GPS, the visit details will be recorded here.
+                </p>
+                <Link
+                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold text-xs hover:bg-primary/90 transition-colors shadow-sm"
+                >
+                  <MapPin className="w-4 h-4" />
+                  <span>Check In Now</span>
+                </Link>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {customer.visits.map((v) => (
+                  <div
+                    key={v.id}
+                    className="p-5 rounded-2xl border border-border bg-muted/20 hover:bg-muted/40 transition-colors space-y-3"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/60 pb-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-xs">
+                          {(v.salesperson || 'S')[0]}
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-foreground">{v.salesperson || 'Sales Representative'}</h4>
+                          <span className="text-[11px] text-muted-foreground">
+                            {v.created_at ? new Date(v.created_at).toLocaleString('en-IN', {
+                              dateStyle: 'medium',
+                              timeStyle: 'short',
+                            }) : '—'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                          {v.status || 'Verified Visit'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {v.comments && (
+                      <div className="p-3 rounded-xl bg-card border border-border/70 text-xs text-foreground">
+                        <p>{v.comments}</p>
+                      </div>
+                    )}
+
+                    {v.latitude && v.longitude && (
+                      <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5 text-primary" />
+                        <span>GPS: {v.latitude.toFixed(5)}, {v.longitude.toFixed(5)}</span>
+                      </div>
+                    )}
+
+                    {v.photo_url && (
+                      <div className="pt-2">
+                        <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider block mb-2">
+                          Visit Photo Snap
+                        </span>
+                        <img
+                          src={v.photo_url}
+                          alt="Visit snap"
+                          className="w-20 h-20 rounded-xl object-cover border border-border cursor-pointer hover:scale-105 transition-transform"
+                          onClick={() => setLightboxPhoto({
+                            id: v.id,
+                            photo_type: 'visit_checkin',
+                            imagekit_url: v.photo_url!,
+                            imagekit_thumbnail_url: v.photo_url!,
+                            imagekit_file_path: null,
+                            caption: `Visit by ${v.salesperson}`,
+                            latitude: v.latitude,
+                            longitude: v.longitude,
+                            is_primary: false,
+                            uploaded_by_name: v.salesperson,
+                            created_at: v.created_at,
+                          })}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ─── MODAL: Upload Customer / Shop Photo to ImageKit ─── */}
@@ -1879,17 +2571,104 @@ export default function CustomerProfilePage() {
                 <label className="font-semibold block mb-1.5 text-foreground">Capture or Choose Photo</label>
 
                 {uploadBase64 ? (
-                  <div className="relative rounded-2xl overflow-hidden border border-border aspect-video bg-muted flex items-center justify-center">
-                    <img src={uploadBase64} alt="Preview" className="w-full h-full object-contain" />
-                    <button
-                      type="button"
-                      onClick={() => setUploadBase64('')}
-                      className="absolute top-2 right-2 p-1.5 rounded-xl bg-black/70 text-white hover:bg-black"
-                      title="Clear photo"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
+                  isCropping ? (
+                    <div className="relative rounded-2xl overflow-hidden border border-border aspect-square sm:aspect-video bg-black flex flex-col items-center justify-center">
+                      <div className="relative w-full h-full flex-1 min-h-[250px]">
+                        <Cropper
+                          image={uploadBase64}
+                          crop={crop}
+                          zoom={zoom}
+                          rotation={rotation}
+                          aspect={uploadType === 'customer_owner' ? 1 : 4/3}
+                          onCropChange={setCrop}
+                          onRotationChange={setRotation}
+                          onCropComplete={(croppedArea, croppedAreaPixels) => setCroppedAreaPixels(croppedAreaPixels)}
+                          onZoomChange={setZoom}
+                        />
+                      </div>
+                      <div className="w-full bg-background p-3 flex flex-col gap-3">
+                        <div className="flex items-center gap-4">
+                           <span className="text-xs font-semibold whitespace-nowrap">Zoom</span>
+                           <input
+                             type="range"
+                             value={zoom}
+                             min={1}
+                             max={3}
+                             step={0.1}
+                             aria-labelledby="Zoom"
+                             onChange={(e) => setZoom(Number(e.target.value))}
+                             className="w-full"
+                           />
+                        </div>
+                        <div className="flex items-center gap-4">
+                           <span className="text-xs font-semibold whitespace-nowrap">Rotate</span>
+                           <input
+                             type="range"
+                             value={rotation}
+                             min={0}
+                             max={360}
+                             step={1}
+                             aria-labelledby="Rotation"
+                             onChange={(e) => setRotation(Number(e.target.value))}
+                             className="w-full"
+                           />
+                        </div>
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUploadBase64('')
+                              setIsCropping(false)
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-muted text-foreground text-xs font-semibold"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const croppedImage = await getCroppedImg(uploadBase64, croppedAreaPixels, rotation)
+                                setUploadBase64(croppedImage)
+                                setIsCropping(false)
+                              } catch (e) {
+                                console.error(e)
+                              }
+                            }}
+                            className="px-4 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-bold shadow-sm"
+                          >
+                            Save Crop
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="relative rounded-2xl overflow-hidden border border-border aspect-video bg-muted flex items-center justify-center group">
+                      <img src={uploadBase64} alt="Preview" className="w-full h-full object-contain" />
+                      
+                      <div className="absolute top-2 right-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setIsCropping(true)}
+                          className="p-1.5 rounded-xl bg-black/70 text-white hover:bg-black opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Crop Image"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                             setUploadBase64('')
+                             setIsCropping(false)
+                          }}
+                          className="p-1.5 rounded-xl bg-black/70 text-white hover:bg-black"
+                          title="Clear photo"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )
                 ) : (
                   <div className="grid grid-cols-2 gap-3">
                     <button
@@ -2004,6 +2783,13 @@ export default function CustomerProfilePage() {
               </div>
 
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleDeletePhoto(lightboxPhoto.id)}
+                  className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white transition-colors"
+                  title="Delete Photo"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
                 <a
                   href={lightboxPhoto.imagekit_url}
                   target="_blank"
@@ -2023,12 +2809,41 @@ export default function CustomerProfilePage() {
             </div>
 
             {/* Lightbox Image */}
-            <div className="w-full max-h-[80vh] flex items-center justify-center overflow-hidden rounded-2xl bg-black/50 border border-white/10 shadow-2xl">
+            <div 
+              className="relative w-full max-h-[80vh] flex items-center justify-center overflow-hidden rounded-2xl bg-black/50 border border-white/10 shadow-2xl group"
+              onTouchStart={onTouchStart}
+              onTouchMove={onTouchMove}
+              onTouchEnd={onTouchEnd}
+            >
               <img
                 src={lightboxPhoto.imagekit_url}
                 alt={lightboxPhoto.caption || 'Photo'}
                 className="max-h-[80vh] max-w-full object-contain rounded-2xl"
               />
+              
+              {/* Previous Button */}
+              {filteredPhotos.findIndex(p => p.id === lightboxPhoto.id) > 0 && (
+                <button
+                  type="button"
+                  onClick={handlePrevPhoto}
+                  className="absolute left-2 md:left-4 p-2 md:p-3 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-all shadow-lg flex items-center justify-center active:scale-95 z-10"
+                  title="Previous Photo"
+                >
+                  <ChevronLeft className="w-5 h-5 md:w-8 md:h-8" />
+                </button>
+              )}
+              
+              {/* Next Button */}
+              {filteredPhotos.findIndex(p => p.id === lightboxPhoto.id) !== -1 && filteredPhotos.findIndex(p => p.id === lightboxPhoto.id) < filteredPhotos.length - 1 && (
+                <button
+                  type="button"
+                  onClick={handleNextPhoto}
+                  className="absolute right-2 md:right-4 p-2 md:p-3 rounded-full bg-black/50 hover:bg-black/80 text-white backdrop-blur-sm opacity-60 sm:opacity-0 sm:group-hover:opacity-100 transition-all shadow-lg flex items-center justify-center active:scale-95 z-10"
+                  title="Next Photo"
+                >
+                  <ChevronRight className="w-5 h-5 md:w-8 md:h-8" />
+                </button>
+              )}
             </div>
 
             {/* Caption & Metadata Footer */}
@@ -2120,19 +2935,35 @@ export default function CustomerProfilePage() {
                   <label className="font-semibold block mb-1">Locality / Area</label>
                   <input
                     type="text"
+                    list="localities-list"
                     value={editForm.locality}
                     onChange={(e) => setEditForm({ ...editForm, locality: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
+                  {filterOptions && (
+                    <datalist id="localities-list">
+                      {filterOptions.localities.map(loc => (
+                        <option key={loc.name} value={loc.name} />
+                      ))}
+                    </datalist>
+                  )}
                 </div>
                 <div>
                   <label className="font-semibold block mb-1">City</label>
                   <input
                     type="text"
+                    list="cities-list"
                     value={editForm.city}
                     onChange={(e) => setEditForm({ ...editForm, city: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
+                  {filterOptions && (
+                    <datalist id="cities-list">
+                      {filterOptions.cities.map(city => (
+                        <option key={city.name} value={city.name} />
+                      ))}
+                    </datalist>
+                  )}
                 </div>
               </div>
 
@@ -2141,10 +2972,18 @@ export default function CustomerProfilePage() {
                   <label className="font-semibold block mb-1">Sales Route / Beat</label>
                   <input
                     type="text"
+                    list="routes-list"
                     value={editForm.route_name}
                     onChange={(e) => setEditForm({ ...editForm, route_name: e.target.value })}
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
+                  {filterOptions && (
+                    <datalist id="routes-list">
+                      {filterOptions.routes.map(r => (
+                        <option key={r} value={r} />
+                      ))}
+                    </datalist>
+                  )}
                 </div>
                 <div>
                   <label className="font-semibold block mb-1">Visit Schedule</label>

@@ -1477,6 +1477,157 @@ async def get_customer_profile_detail(
         now=now
     )
 
+    # ── Financial Ledger Statement & Vouchers ──
+    financial_summary = None
+    recent_vouchers = []
+
+    if ledger:
+        op_bal = float(ledger.opening_balance or 0)
+        op_type = ledger.opening_balance_type or "Dr"
+        
+        # Opening balance in Tally is as of FY start (2026-04-01).
+        # Any vouchers dated before 2026-04-01 are already included in ledger.opening_balance.
+        fy_anchor_date = datetime.strptime("2026-04-01", "%Y-%m-%d").date()
+        base_net = (float(ledger.opening_balance) if op_type == 'Cr' else -float(ledger.opening_balance)) if ledger.opening_balance else 0.0
+
+        pre_fy_stmt = select(
+            func.sum(TrnAccounting.credit_amount - TrnAccounting.debit_amount)
+        ).join(TrnVoucher, TrnVoucher.voucher_id == TrnAccounting.voucher_id).where(
+            TrnAccounting.ledger_id == ledger.ledger_id,
+            TrnVoucher.voucher_date < fy_anchor_date,
+            TrnVoucher.is_cancelled == False
+        )
+        pre_fy_res = await db.execute(pre_fy_stmt)
+        pre_fy_val = float(pre_fy_res.scalar() or 0.0)
+        true_base_net = base_net - pre_fy_val
+
+        total_dr = 0.0
+        total_cr = 0.0
+
+        try:
+            bal_stmt = (
+                select(
+                    func.sum(TrnAccounting.debit_amount).label("total_dr"),
+                    func.sum(TrnAccounting.credit_amount).label("total_cr")
+                )
+                .join(TrnVoucher, TrnVoucher.voucher_id == TrnAccounting.voucher_id)
+                .where(
+                    TrnAccounting.ledger_id == ledger.ledger_id,
+                    TrnVoucher.is_cancelled == False
+                )
+            )
+            bal_res = await db.execute(bal_stmt)
+            b_row = bal_res.first()
+            if b_row:
+                total_dr = float(b_row.total_dr or 0)
+                total_cr = float(b_row.total_cr or 0)
+        except Exception:
+            pass
+
+        # Net balance across all recorded transactions (positive = Dr, negative = Cr)
+        net_bal = -true_base_net + (total_dr - total_cr)
+
+        financial_summary = {
+            "closing_balance": round(abs(net_bal), 2),
+            "raw_balance": round(net_bal, 2),
+            "balance_type": "Dr" if net_bal >= 0 else "Cr",
+            "opening_balance": round(op_bal, 2),
+            "opening_balance_type": op_type,
+            "total_billed_debit": round(total_dr, 2),
+            "total_collected_credit": round(total_cr, 2),
+        }
+
+        try:
+            v_detail_stmt = (
+                select(TrnVoucher, TrnAccounting)
+                .join(TrnAccounting, TrnAccounting.voucher_id == TrnVoucher.voucher_id)
+                .options(selectinload(TrnVoucher.voucher_type))
+                .where(
+                    TrnAccounting.ledger_id == ledger.ledger_id,
+                    TrnVoucher.company_id == user.company_id,
+                    TrnVoucher.is_cancelled == False
+                )
+                .order_by(desc(TrnVoucher.voucher_date), desc(TrnVoucher.voucher_id))
+                .limit(15)
+            )
+            v_detail_res = await db.execute(v_detail_stmt)
+            for v_item, acc_item in v_detail_res.all():
+                vt_name = v_item.voucher_type.name if (v_item.voucher_type and hasattr(v_item.voucher_type, 'name')) else str(v_item.voucher_type_id or "Voucher")
+                dr_val = float(acc_item.debit_amount or 0)
+                cr_val = float(acc_item.credit_amount or 0)
+                recent_vouchers.append({
+                    "voucher_id": v_item.voucher_id,
+                    "date": v_item.voucher_date.isoformat() if v_item.voucher_date else None,
+                    "voucher_type": vt_name,
+                    "voucher_number": v_item.voucher_number or f"#{v_item.voucher_id}",
+                    "debit": round(dr_val, 2),
+                    "credit": round(cr_val, 2),
+                    "amount": round(dr_val if dr_val > 0 else cr_val, 2),
+                    "type": "Dr" if dr_val > 0 else "Cr",
+                    "narration": v_item.narration or getattr(acc_item, 'entry_narration', '') or ""
+                })
+        except Exception as v_err:
+            print(f"Warning: Could not fetch vouchers for customer statement: {v_err}")
+
+    # ── Recent Portal Orders ──
+    recent_orders = []
+    try:
+        from app.routers.orders import TempOrder
+        o_conds = []
+        if ledger:
+            o_conds.append(TempOrder.ledger_id == ledger.ledger_id)
+        if name:
+            o_conds.append(TempOrder.custom_customer_name == name)
+        if o_conds:
+            o_stmt = (
+                select(TempOrder)
+                .options(selectinload(TempOrder.items), selectinload(TempOrder.user))
+                .where(or_(*o_conds))
+                .order_by(desc(TempOrder.created_at))
+                .limit(10)
+            )
+            o_res = await db.execute(o_stmt)
+            for o in o_res.scalars().all():
+                items_cnt = sum(it.quantity or 0 for it in o.items) if o.items else 0
+                amt = sum(float(it.quantity or 0) * float(it.price or 0) for it in o.items) if o.items else 0.0
+                recent_orders.append({
+                    "id": o.id,
+                    "status": o.status,
+                    "items_count": items_cnt,
+                    "total_amount": round(amt, 2),
+                    "created_by": o.user.username if o.user else "Salesperson",
+                    "created_at": o.created_at.isoformat() if o.created_at else None
+                })
+    except Exception as ord_err:
+        print(f"Warning: Could not fetch orders for customer: {ord_err}")
+
+    # ── Recent Shop Payments ──
+    recent_payments = []
+    try:
+        from app.models.portal_core import ShopPayment
+        if ledger:
+            p_stmt = (
+                select(ShopPayment)
+                .options(selectinload(ShopPayment.user))
+                .where(ShopPayment.ledger_id == ledger.ledger_id)
+                .order_by(desc(ShopPayment.created_at))
+                .limit(10)
+            )
+            p_res = await db.execute(p_stmt)
+            for p in p_res.scalars().all():
+                recent_payments.append({
+                    "id": p.id,
+                    "amount": float(p.amount or 0),
+                    "payment_mode": p.payment_mode,
+                    "cheque_date": p.cheque_date.isoformat() if p.cheque_date else None,
+                    "status": p.status,
+                    "comments": p.comments,
+                    "collected_by": p.user.username if p.user else "Staff",
+                    "created_at": p.created_at.isoformat() if p.created_at else None
+                })
+    except Exception as pay_err:
+        print(f"Warning: Could not fetch payments for customer: {pay_err}")
+
     return {
         "key": f"tally_{ledger.ledger_id}" if ledger else f"profile_{profile.id}",
         "source": "tally" if ledger else "field_profile",
@@ -1517,6 +1668,10 @@ async def get_customer_profile_detail(
         "owners": owners_list,
         "photos": photos,
         "visits": visits,
+        "financial_summary": financial_summary,
+        "recent_vouchers": recent_vouchers,
+        "recent_orders": recent_orders,
+        "recent_payments": recent_payments,
         "tally_details": {
             "ledger_id": ledger.ledger_id,
             "name": ledger.name,

@@ -159,6 +159,22 @@ async def create_order(
         db.add(order_item)
 
     await db.commit()
+
+    # Notify admins of new temp order
+    from app.routers.notifications import notify_admins
+    cust_name = req.custom_customer_name or (ledger.name if req.ledger_id and 'ledger' in locals() and ledger else "Customer")
+    await notify_admins(
+        db=db,
+        company_id=user.company_id,
+        type="order_created",
+        title="New Order Created",
+        message=f"{user.username} placed order #{order.id} for {cust_name}",
+        reference_id=str(order.id),
+        reference_type="order",
+        exclude_user_id=user.user_id,
+        auto_commit=True,
+    )
+
     return {"success": True, "id": order.id, "message": "Order created successfully"}
 
 
@@ -415,4 +431,21 @@ async def update_order_status(
 
     order.status = req.status
     await db.commit()
+
+    # Notify order creator (salesperson)
+    from app.routers.notifications import notify_user
+    status_label = "approved" if req.status == "done" else ("rejected" if req.status == "cancelled" else req.status)
+    await notify_user(
+        db=db,
+        company_id=user.company_id,
+        user_id=order.user_id,
+        type="order_status",
+        title=f"Order #{order.id} {status_label.title()}",
+        message=f"Your order #{order.id} has been {status_label}.",
+        reference_id=str(order.id),
+        reference_type="order",
+        auto_commit=True,
+    )
+
     return {"success": True, "status": order.status}
+
