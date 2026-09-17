@@ -228,9 +228,10 @@ export async function stampPhoto(file: File): Promise<StampingResult> {
             hour: '2-digit',
             minute: '2-digit',
             hour12: true,
+            timeZone: 'Asia/Kolkata'
           }
           const dateStr = new Intl.DateTimeFormat('en-IN', dateOptions).format(new Date())
-          ctx.fillText(`${dateStr} GMT+05:30`, textX, textY)
+          ctx.fillText(`${dateStr} IST`, textX, textY)
 
           // GPS camera logo watermark
           ctx.fillStyle = 'rgba(255, 255, 255, 0.45)'
@@ -256,9 +257,10 @@ export async function stampPhoto(file: File): Promise<StampingResult> {
             hour: '2-digit',
             minute: '2-digit',
             hour12: true,
+            timeZone: 'Asia/Kolkata'
           }
           const dateStr = new Intl.DateTimeFormat('en-IN', dateOptions).format(new Date())
-          ctx.fillText(`📅 Stamped: ${dateStr} GMT+05:30`, textX, textY)
+          ctx.fillText(`📅 Stamped: ${dateStr} IST`, textX, textY)
 
           ctx.fillStyle = 'rgba(255, 255, 255, 0.45)'
           ctx.font = 'bold 9px sans-serif'

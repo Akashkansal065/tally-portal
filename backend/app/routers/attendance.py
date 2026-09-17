@@ -7,6 +7,7 @@ from sqlalchemy.sql import func
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 import base64
 import urllib.request
 import urllib.parse
@@ -16,6 +17,19 @@ from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.portal_core import User, Role
 from app.core.config import settings
+
+IST = ZoneInfo("Asia/Kolkata")
+
+def get_ist_now() -> datetime:
+    """Returns the current datetime in Indian Standard Time (naive for MySQL storage)"""
+    return datetime.now(IST).replace(tzinfo=None)
+
+def to_ist_iso(dt: Optional[datetime]) -> Optional[str]:
+    """Returns ISO 8601 string with explicit IST +05:30 offset for frontend consumers"""
+    if not dt:
+        return None
+    return f"{dt.strftime('%Y-%m-%dT%H:%M:%S')}+05:30"
+
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 
@@ -109,7 +123,7 @@ async def get_today_attendance(
         return {"success": True, "attendance": {
             "id": latest.id,
             "userId": latest.user_id,
-            "checkInTime": latest.check_in_time.isoformat() if latest.check_in_time else None,
+            "checkInTime": to_ist_iso(latest.check_in_time),
             "checkOutTime": None,
             "checkInLatitude": latest.check_in_latitude,
             "checkInLongitude": latest.check_in_longitude,
@@ -125,14 +139,14 @@ async def get_today_attendance(
             "checkOutDeviceFingerprint": latest.check_out_device_fingerprint,
         }}
         
-    # If latest session is completed, only return it if it was checked in today
-    now = datetime.now()
-    if latest.check_in_time.date() == now.date():
+    # If latest session is completed, only return it if it was checked in today (in IST)
+    now_ist = get_ist_now()
+    if latest.check_in_time.date() == now_ist.date():
         return {"success": True, "attendance": {
             "id": latest.id,
             "userId": latest.user_id,
-            "checkInTime": latest.check_in_time.isoformat() if latest.check_in_time else None,
-            "checkOutTime": latest.check_out_time.isoformat() if latest.check_out_time else None,
+            "checkInTime": to_ist_iso(latest.check_in_time),
+            "checkOutTime": to_ist_iso(latest.check_out_time),
             "checkInLatitude": latest.check_in_latitude,
             "checkInLongitude": latest.check_in_longitude,
             "checkOutLatitude": latest.check_out_latitude,
@@ -169,21 +183,23 @@ async def punch_attendance(
         
     ip_address = request.headers.get("x-forwarded-for") or request.client.host or "unknown"
     sanitized_comments = req.comments[:1024] if req.comments else None
+    now_ist = get_ist_now()
+    formatted_ist = now_ist.strftime("%I:%M %p")
     
     if req.type == "in":
-        # Check if already clocked in (either active session or already checkin today)
+        # Check if already clocked in (either active session or already checkin today in IST)
         stmt = select(Attendance).where(Attendance.user_id == user.user_id).order_by(desc(Attendance.check_in_time)).limit(1)
         res = await db.execute(stmt)
         latest = res.scalars().first()
         if latest:
             if latest.check_out_time is None:
                 raise HTTPException(status_code=400, detail="You are already clocked in. Please clock out first.")
-            if latest.check_in_time.date() == datetime.now().date():
+            if latest.check_in_time.date() == now_ist.date():
                 raise HTTPException(status_code=400, detail="You have already completed your shift today.")
             
         attendance = Attendance(
             user_id=user.user_id,
-            check_in_time=datetime.now(),
+            check_in_time=now_ist,
             check_in_latitude=str(req.latitude),
             check_in_longitude=str(req.longitude),
             check_in_photo_url=photo_url,
@@ -202,7 +218,7 @@ async def punch_attendance(
             company_id=user.company_id,
             type="attendance",
             title="Attendance: Clock-In",
-            message=f"{user.username} clocked in",
+            message=f"{user.username} clocked in at {formatted_ist} (IST)",
             reference_id=str(attendance.id),
             reference_type="attendance",
             exclude_user_id=user.user_id,
@@ -218,7 +234,7 @@ async def punch_attendance(
         if not latest or latest.check_out_time is not None:
             raise HTTPException(status_code=400, detail="You do not have any active clocked-in session to clock out of.")
             
-        latest.check_out_time = datetime.now()
+        latest.check_out_time = now_ist
         latest.check_out_latitude = str(req.latitude)
         latest.check_out_longitude = str(req.longitude)
         latest.check_out_photo_url = photo_url
@@ -235,7 +251,7 @@ async def punch_attendance(
             company_id=user.company_id,
             type="attendance",
             title="Attendance: Clock-Out",
-            message=f"{user.username} clocked out",
+            message=f"{user.username} clocked out at {formatted_ist} (IST)",
             reference_id=str(latest.id),
             reference_type="attendance",
             exclude_user_id=user.user_id,
@@ -261,8 +277,8 @@ async def get_attendance_history(
             {
                 "id": h.id,
                 "userId": h.user_id,
-                "checkInTime": h.check_in_time.isoformat() if h.check_in_time else None,
-                "checkOutTime": h.check_out_time.isoformat() if h.check_out_time else None,
+                "checkInTime": to_ist_iso(h.check_in_time),
+                "checkOutTime": to_ist_iso(h.check_out_time),
                 "checkInLatitude": h.check_in_latitude,
                 "checkInLongitude": h.check_in_longitude,
                 "checkOutLatitude": h.check_out_latitude,
@@ -292,17 +308,10 @@ async def get_team_attendance_for_admin(
     if not role or role.name != "Admin":
         raise HTTPException(status_code=403, detail="Unauthorized")
         
-    target_date = datetime.strptime(dateStr, "%Y-%m-%d").date() if dateStr else datetime.now().date()
+    target_date = datetime.strptime(dateStr, "%Y-%m-%d").date() if dateStr else get_ist_now().date()
     
-    # Get all users with dataentry/sales role (or non-admin users)
-    # Get role id for admin to exclude
-    admin_role_q = await db.execute(select(Role).where(Role.name == "Admin"))
-    admin_role = admin_role_q.scalars().first()
-    
-    users_stmt = select(User).where(User.company_id == user.company_id)
-    if admin_role:
-        users_stmt = users_stmt.where(User.role_id != admin_role.role_id)
-        
+    # Get all users in the company
+    users_stmt = select(User).where(User.company_id == user.company_id).order_by(User.username)
     res_users = await db.execute(users_stmt)
     all_users = res_users.scalars().all()
     
@@ -331,8 +340,8 @@ async def get_team_attendance_for_admin(
             "attendance": {
                 "id": rec.id,
                 "userId": rec.user_id,
-                "checkInTime": rec.check_in_time.isoformat() if rec.check_in_time else None,
-                "checkOutTime": rec.check_out_time.isoformat() if rec.check_out_time else None,
+                "checkInTime": to_ist_iso(rec.check_in_time) if rec else None,
+                "checkOutTime": to_ist_iso(rec.check_out_time) if rec else None,
                 "checkInLatitude": rec.check_in_latitude,
                 "checkInLongitude": rec.check_in_longitude,
                 "checkOutLatitude": rec.check_out_latitude,
@@ -378,8 +387,8 @@ async def get_full_team_attendance_history(
                 "id": h.id,
                 "userId": h.user_id,
                 "username": h.user.username if h.user else "Unknown",
-                "checkInTime": h.check_in_time.isoformat() if h.check_in_time else None,
-                "checkOutTime": h.check_out_time.isoformat() if h.check_out_time else None,
+                "checkInTime": to_ist_iso(h.check_in_time),
+                "checkOutTime": to_ist_iso(h.check_out_time),
                 "checkInLatitude": h.check_in_latitude,
                 "checkInLongitude": h.check_in_longitude,
                 "checkOutLatitude": h.check_out_latitude,

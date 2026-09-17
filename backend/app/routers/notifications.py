@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import desc, func, update
+from sqlalchemy import desc, func, update, delete
 
 from app.core.database import get_db
 from app.core.permissions import get_current_user
@@ -176,29 +176,6 @@ async def get_unread_count(
     return {"count": count}
 
 
-@router.patch("/{notification_id}/read")
-async def mark_as_read(
-    notification_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Mark a single notification as read.
-    """
-    stmt = select(Notification).where(
-        Notification.id == notification_id,
-        Notification.user_id == current_user.user_id,
-    )
-    res = await db.execute(stmt)
-    notif = res.scalars().first()
-    if not notif:
-        raise HTTPException(status_code=404, detail="Notification not found")
-
-    notif.is_read = True
-    await db.commit()
-    return {"success": True, "id": notification_id, "is_read": True}
-
-
 @router.patch("/read-all")
 async def mark_all_as_read(
     current_user: User = Depends(get_current_user),
@@ -219,3 +196,71 @@ async def mark_all_as_read(
     result = await db.execute(stmt)
     await db.commit()
     return {"success": True, "updated": result.rowcount}
+
+
+@router.delete("/clear-all")
+async def clear_all_notifications(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Clear/delete all notifications for the current user in active company.
+    """
+    stmt = (
+        delete(Notification)
+        .where(
+            Notification.user_id == current_user.user_id,
+            Notification.company_id == current_user.company_id,
+        )
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    return {"success": True, "deleted": result.rowcount}
+
+
+@router.patch("/{notification_id}/read")
+async def mark_as_read(
+    notification_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Mark a single notification as read for current user.
+    """
+    stmt = select(Notification).where(
+        Notification.id == notification_id,
+        Notification.user_id == current_user.user_id,
+        Notification.company_id == current_user.company_id,
+    )
+    res = await db.execute(stmt)
+    notif = res.scalars().first()
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    notif.is_read = True
+    await db.commit()
+    return {"success": True, "id": notification_id, "is_read": True}
+
+
+@router.delete("/{notification_id}")
+async def delete_notification(
+    notification_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Delete a single notification for the current user.
+    """
+    stmt = (
+        delete(Notification)
+        .where(
+            Notification.id == notification_id,
+            Notification.user_id == current_user.user_id,
+            Notification.company_id == current_user.company_id,
+        )
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"success": True, "id": notification_id}

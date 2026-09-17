@@ -19,7 +19,8 @@ import {
   CheckCircle,
   XCircle,
   FileText,
-  LogOut
+  LogOut,
+  ExternalLink
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -116,6 +117,15 @@ export default function AttendancePage() {
     return () => clearInterval(timer)
   }, [])
 
+  const parseTimeMs = (isoString: string | null): number => {
+    if (!isoString) return 0
+    let normalized = isoString
+    if (!normalized.includes('Z') && !normalized.includes('+') && !normalized.match(/-\d\d:\d\d$/)) {
+      normalized += '+05:30'
+    }
+    return new Date(normalized).getTime()
+  }
+
   // Calculate elapsed time
   useEffect(() => {
     if (!todayAttendance || todayAttendance.checkOutTime) {
@@ -124,12 +134,12 @@ export default function AttendancePage() {
     }
 
     const interval = setInterval(() => {
-      const checkIn = new Date(todayAttendance.checkInTime).getTime()
+      const checkIn = parseTimeMs(todayAttendance.checkInTime)
       const diff = Date.now() - checkIn
       
-      const hrs = Math.floor(diff / 3600000)
-      const mins = Math.floor((diff % 3600000) / 60000)
-      const secs = Math.floor((diff % 60000) / 1000)
+      const hrs = Math.max(0, Math.floor(diff / 3600000))
+      const mins = Math.max(0, Math.floor((diff % 3600000) / 60000))
+      const secs = Math.max(0, Math.floor((diff % 60000) / 1000))
       
       const pad = (n: number) => String(n).padStart(2, '0')
       setElapsedTime(`${pad(hrs)}:${pad(mins)}:${pad(secs)}`)
@@ -247,16 +257,21 @@ export default function AttendancePage() {
 
   const formatTimeStr = (isoString: string | null) => {
     if (!isoString) return '--:--'
-    return new Date(isoString).toLocaleTimeString('en-IN', {
+    let normalized = isoString
+    if (!normalized.includes('Z') && !normalized.includes('+') && !normalized.match(/-\d\d:\d\d$/)) {
+      normalized += '+05:30'
+    }
+    return new Date(normalized).toLocaleTimeString('en-IN', {
       hour: '2-digit',
       minute: '2-digit',
-      hour12: true
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
     })
   }
 
   const getWorkingDuration = (inTime: string, outTime: string | null) => {
     if (!outTime) return 'In Progress'
-    const diff = new Date(outTime).getTime() - new Date(inTime).getTime()
+    const diff = parseTimeMs(outTime) - parseTimeMs(inTime)
     const hrs = Math.floor(diff / 3600000)
     const mins = Math.floor((diff % 3600000) / 60000)
     return `${hrs}h ${mins}m`
@@ -286,7 +301,7 @@ export default function AttendancePage() {
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-sky-500 animate-pulse" />
             <span className="text-xs font-bold text-foreground">
-              {currentTime ? currentTime.toLocaleTimeString('en-IN', { hour12: true }) : '--:--:--'}
+              {currentTime ? currentTime.toLocaleTimeString('en-IN', { hour12: true, timeZone: 'Asia/Kolkata' }) : '--:--:--'} (IST)
             </span>
           </div>
         </div>
@@ -349,7 +364,22 @@ export default function AttendancePage() {
                   <div className="bg-sky-500/5 border border-sky-500/10 rounded-xl p-4 flex flex-col items-center justify-center gap-1.5">
                     <span className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">Active Working Duration</span>
                     <span className="text-3xl font-black text-sky-600 tracking-tight">{elapsedTime}</span>
-                    <span className="text-[10px] text-muted-foreground mt-1">Clocked in at {formatTimeStr(todayAttendance.checkInTime)}</span>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
+                      <span className="text-[10px] text-muted-foreground">Clocked in at {formatTimeStr(todayAttendance.checkInTime)}</span>
+                      {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
+                        <a
+                          href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-700 hover:underline bg-sky-500/10 px-2 py-0.5 rounded-md"
+                          title="Open punch-in location in Google Maps"
+                        >
+                          <MapPin className="h-2.5 w-2.5" />
+                          <span>View Map</span>
+                          <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                        </a>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -358,6 +388,34 @@ export default function AttendancePage() {
                     <span className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">Shift Completed</span>
                     <span className="text-sm font-bold text-emerald-600">You clocked out at {formatTimeStr(todayAttendance.checkOutTime)}</span>
                     <span className="text-[10px] text-muted-foreground">Total worked: {getWorkingDuration(todayAttendance.checkInTime, todayAttendance.checkOutTime)}</span>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
+                      {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
+                        <a
+                          href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-700 hover:underline bg-sky-500/10 px-2 py-0.5 rounded-md"
+                          title="Open punch-in location in Google Maps"
+                        >
+                          <MapPin className="h-2.5 w-2.5 text-sky-500" />
+                          <span>Punch-In Map</span>
+                          <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                        </a>
+                      )}
+                      {todayAttendance.checkOutLatitude && todayAttendance.checkOutLongitude && (
+                        <a
+                          href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkOutLatitude},${todayAttendance.checkOutLongitude}`)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 hover:text-emerald-700 hover:underline bg-emerald-500/10 px-2 py-0.5 rounded-md"
+                          title="Open punch-out location in Google Maps"
+                        >
+                          <MapPin className="h-2.5 w-2.5 text-emerald-500" />
+                          <span>Punch-Out Map</span>
+                          <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                        </a>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -467,6 +525,21 @@ export default function AttendancePage() {
                           <span>In: {formatTimeStr(item.checkInTime)}</span>
                           <span>Out: {formatTimeStr(item.checkOutTime)}</span>
                         </div>
+                        {item.checkInLatitude && item.checkInLongitude && (
+                          <div className="mt-1 flex items-center justify-between text-[10px]">
+                            <a
+                              href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkInLatitude},${item.checkInLongitude}`)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sky-600 dark:text-sky-400 hover:underline inline-flex items-center gap-1 font-medium"
+                              title="Open GPS location in Google Maps"
+                            >
+                              <MapPin className="h-2.5 w-2.5 text-sky-500" />
+                              <span>{item.checkInLatitude.substring(0, 7)}, {item.checkInLongitude.substring(0, 7)}</span>
+                              <ExternalLink className="h-2.5 w-2.5 opacity-60" />
+                            </a>
+                          </div>
+                        )}
                         {item.checkInComments && (
                           <p className="text-[10px] italic text-muted-foreground/80 mt-1 border-t pt-1 border-border/50">
                             Remarks: {item.checkInComments}
@@ -558,7 +631,8 @@ export default function AttendancePage() {
                         <th className="p-4">Salesperson</th>
                         <th className="p-4">Punch In</th>
                         <th className="p-4">Punch Out</th>
-                        <th className="p-4">GPS Address</th>
+                        <th className="p-4">GPS In</th>
+                        <th className="p-4">GPS Out</th>
                         <th className="p-4">Duration</th>
                         <th className="p-4 text-center">Status</th>
                       </tr>
@@ -566,7 +640,7 @@ export default function AttendancePage() {
                     <tbody className="divide-y divide-border/60 text-xs">
                       {filteredTeamToday.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-muted-foreground">No records matched</td>
+                          <td colSpan={7} className="p-8 text-center text-muted-foreground">No records matched</td>
                         </tr>
                       ) : (
                         filteredTeamToday.map(item => (
@@ -574,16 +648,51 @@ export default function AttendancePage() {
                             <td className="p-4 font-bold text-foreground">{item.username}</td>
                             <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}</td>
                             <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}</td>
-                            <td className="p-4 text-muted-foreground max-w-[200px] truncate" title={item.attendance?.checkInPhotoUrl || ''}>
-                              {item.attendance ? (
-                                <span className="flex items-center gap-1">
-                                  <MapPin className="h-3 w-3 text-sky-500" />
-                                  <span>{item.attendance.checkInLatitude?.substring(0, 7)}, {item.attendance.checkInLongitude?.substring(0, 7)}</span>
-                                </span>
+                            
+                            {/* GPS In */}
+                            <td className="p-4 text-muted-foreground">
+                              {item.attendance && item.attendance.checkInLatitude && item.attendance.checkInLongitude ? (
+                                <a
+                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkInLatitude},${item.attendance.checkInLongitude}`)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                  title="Open Punch-In location in Google Maps"
+                                >
+                                  <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                  <span>{item.attendance.checkInLatitude.substring(0, 8)}, {item.attendance.checkInLongitude.substring(0, 8)}</span>
+                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                </a>
+                              ) : item.attendance ? (
+                                <span className="text-muted-foreground/60 italic text-[11px]">GPS Unavailable</span>
                               ) : (
-                                <span className="text-muted-foreground/60 italic">Not Checked In</span>
+                                <span className="text-muted-foreground/40 italic text-[11px]">Not Checked In</span>
                               )}
                             </td>
+
+                            {/* GPS Out */}
+                            <td className="p-4 text-muted-foreground">
+                              {item.attendance && item.attendance.checkOutLatitude && item.attendance.checkOutLongitude ? (
+                                <a
+                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkOutLatitude},${item.attendance.checkOutLongitude}`)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                  title="Open Punch-Out location in Google Maps"
+                                >
+                                  <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                  <span>{item.attendance.checkOutLatitude.substring(0, 8)}, {item.attendance.checkOutLongitude.substring(0, 8)}</span>
+                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                </a>
+                              ) : item.attendance && !item.attendance.checkOutTime ? (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
+                                  In Progress
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground/40">--</span>
+                              )}
+                            </td>
+
                             <td className="p-4 font-semibold text-foreground">
                               {item.attendance ? getWorkingDuration(item.attendance.checkInTime, item.attendance.checkOutTime) : '--'}
                             </td>
@@ -616,14 +725,15 @@ export default function AttendancePage() {
                         <th className="p-4">Username</th>
                         <th className="p-4">In Time</th>
                         <th className="p-4">Out Time</th>
-                        <th className="p-4">GPS In Coords</th>
+                        <th className="p-4">GPS In</th>
+                        <th className="p-4">GPS Out</th>
                         <th className="p-4">Working hours</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border/60 text-xs">
                       {filteredTeamHistory.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-muted-foreground">No records in selected date range</td>
+                          <td colSpan={7} className="p-8 text-center text-muted-foreground">No records in selected date range</td>
                         </tr>
                       ) : (
                         filteredTeamHistory.map(item => (
@@ -632,12 +742,45 @@ export default function AttendancePage() {
                             <td className="p-4 font-semibold text-foreground">{item.username}</td>
                             <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkInTime)}</td>
                             <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkOutTime)}</td>
+                            
+                            {/* GPS In */}
                             <td className="p-4 text-muted-foreground">
-                              <span className="flex items-center gap-1">
-                                <MapPin className="h-3.5 w-3.5 text-sky-500" />
-                                <span>{item.checkInLatitude?.substring(0, 8)}, {item.checkInLongitude?.substring(0, 8)}</span>
-                              </span>
+                              {item.checkInLatitude && item.checkInLongitude ? (
+                                <a
+                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkInLatitude},${item.checkInLongitude}`)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                  title="Open Punch-In location in Google Maps"
+                                >
+                                  <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                  <span>{item.checkInLatitude.substring(0, 8)}, {item.checkInLongitude.substring(0, 8)}</span>
+                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                </a>
+                              ) : (
+                                <span className="text-muted-foreground/50">--</span>
+                              )}
                             </td>
+
+                            {/* GPS Out */}
+                            <td className="p-4 text-muted-foreground">
+                              {item.checkOutLatitude && item.checkOutLongitude ? (
+                                <a
+                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkOutLatitude},${item.checkOutLongitude}`)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                  title="Open Punch-Out location in Google Maps"
+                                >
+                                  <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                  <span>{item.checkOutLatitude.substring(0, 8)}, {item.checkOutLongitude.substring(0, 8)}</span>
+                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                </a>
+                              ) : (
+                                <span className="text-muted-foreground/50">--</span>
+                              )}
+                            </td>
+
                             <td className="p-4 font-bold text-foreground">{getWorkingDuration(item.checkInTime, item.checkOutTime)}</td>
                           </tr>
                         ))

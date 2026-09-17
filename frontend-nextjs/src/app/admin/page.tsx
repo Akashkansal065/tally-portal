@@ -153,6 +153,17 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false)
   const [alertsEnabled, setAlertsEnabled] = useState(true)
 
+  // Listen to ?tab= query parameter for direct notification links
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search)
+      const tabParam = p.get('tab')
+      if (tabParam && ['users', 'roles', 'sync', 'logs', 'visits', 'einvoice', 'cache'].includes(tabParam)) {
+        setTab(tabParam as any)
+      }
+    }
+  }, [])
+
   // Cache Management states
   const [cacheStats, setCacheStats] = useState<{
     total_entries: number

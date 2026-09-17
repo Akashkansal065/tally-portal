@@ -50,6 +50,8 @@ import {
   History,
   Bell,
   CheckCheck,
+  Check,
+  Trash2,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useState, useEffect } from 'react'
@@ -98,6 +100,7 @@ export function GlobalHeader() {
   const [showNotifications, setShowNotifications] = useState<boolean>(false)
   const [notifications, setNotifications] = useState<any[]>([])
   const [loadingNotifications, setLoadingNotifications] = useState<boolean>(false)
+  const [clearingNotifications, setClearingNotifications] = useState<boolean>(false)
 
   const fetchUnreadCount = async () => {
     if (!token) return
@@ -118,7 +121,7 @@ export function GlobalHeader() {
     if (!token) return
     setLoadingNotifications(true)
     try {
-      const res = await fetch(`${API_BASE}/notifications?limit=40`, {
+      const res = await fetch(`${API_BASE}/notifications?limit=50`, {
         headers: authHeaders(token),
       })
       if (res.ok) {
@@ -132,7 +135,8 @@ export function GlobalHeader() {
     }
   }
 
-  const markAllAsRead = async () => {
+  const markAllAsRead = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
     if (!token) return
     try {
       const res = await fetch(`${API_BASE}/notifications/read-all`, {
@@ -145,6 +149,65 @@ export function GlobalHeader() {
       }
     } catch (e) {
       console.error('Failed to mark all as read:', e)
+    }
+  }
+
+  const markAsRead = async (notifId: number, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    if (!token) return
+    try {
+      const res = await fetch(`${API_BASE}/notifications/${notifId}/read`, {
+        method: 'PATCH',
+        headers: authHeaders(token),
+      })
+      if (res.ok) {
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notifId ? { ...n, is_read: true } : n))
+        )
+        setUnreadNotifCount((prev) => Math.max(0, prev - 1))
+      }
+    } catch (e) {
+      console.error('Failed to mark notification as read:', e)
+    }
+  }
+
+  const clearAllNotifications = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    if (!token) return
+    if (!confirm('Are you sure you want to clear all notifications?')) return
+    setClearingNotifications(true)
+    try {
+      const res = await fetch(`${API_BASE}/notifications/clear-all`, {
+        method: 'DELETE',
+        headers: authHeaders(token),
+      })
+      if (res.ok) {
+        setNotifications([])
+        setUnreadNotifCount(0)
+      }
+    } catch (e) {
+      console.error('Failed to clear all notifications:', e)
+    } finally {
+      setClearingNotifications(false)
+    }
+  }
+
+  const deleteNotification = async (notifId: number, isRead: boolean, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    if (!token) return
+    try {
+      const res = await fetch(`${API_BASE}/notifications/${notifId}`, {
+        method: 'DELETE',
+        headers: authHeaders(token),
+      })
+      if (res.ok) {
+        setNotifications((prev) => prev.filter((n) => n.id !== notifId))
+        if (!isRead) {
+          setUnreadNotifCount((prev) => Math.max(0, prev - 1))
+        }
+      }
+    } catch (e) {
+      console.error('Failed to delete notification:', e)
     }
   }
 
@@ -165,21 +228,33 @@ export function GlobalHeader() {
     }
     setShowNotifications(false)
 
-    // Navigate to relevant route
-    if (notif.type === 'check_in') {
-      router.push('/customers')
-    } else if (notif.type?.startsWith('order')) {
-      router.push('/temporders')
-    } else if (notif.type?.startsWith('expense')) {
-      router.push('/expenses')
-    } else if (notif.type === 'attendance') {
+    // Contextual redirection to destination screen
+    if (notif.type === 'check_in' || notif.reference_type === 'visit') {
       if (isAdmin) {
-        router.push('/admin?tab=attendance')
+        router.push('/admin?tab=visits')
       } else {
-        router.push('/attendance')
+        router.push('/check-in/history')
       }
-    } else if (notif.type?.startsWith('payment')) {
+    } else if (notif.type?.startsWith('order') || notif.reference_type === 'order') {
+      router.push('/temporders')
+    } else if (notif.type?.startsWith('expense') || notif.reference_type === 'expense') {
+      router.push('/expenses')
+    } else if (notif.type === 'attendance' || notif.reference_type === 'attendance') {
+      router.push('/attendance')
+    } else if (notif.type?.startsWith('payment') || notif.reference_type === 'payment') {
       router.push('/payments')
+    } else if (
+      notif.type === 'customer' ||
+      notif.reference_type === 'customer' ||
+      notif.reference_type === 'customer_profile'
+    ) {
+      if (notif.reference_id) {
+        router.push(`/customers/${notif.reference_id}`)
+      } else {
+        router.push('/customers')
+      }
+    } else {
+      router.push('/')
     }
   }
 
@@ -436,23 +511,41 @@ export function GlobalHeader() {
                   />
                   <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden text-foreground animate-in fade-in slide-in-from-top-2 duration-150">
                     <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/40">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
                         <span className="font-extrabold text-sm text-foreground">Notifications</span>
-                        {unreadNotifCount > 0 && (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary/10 text-primary">
+                        {unreadNotifCount > 0 ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary/10 text-primary shrink-0">
                             {unreadNotifCount} new
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-muted text-muted-foreground shrink-0">
+                            {notifications.length}
                           </span>
                         )}
                       </div>
-                      {unreadNotifCount > 0 && (
-                        <button
-                          onClick={markAllAsRead}
-                          className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
-                        >
-                          <CheckCheck className="w-3.5 h-3.5" />
-                          Mark all read
-                        </button>
-                      )}
+                      <div className="flex items-center gap-2.5 shrink-0">
+                        {unreadNotifCount > 0 && (
+                          <button
+                            onClick={markAllAsRead}
+                            className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
+                            title="Mark all notifications as read"
+                          >
+                            <CheckCheck className="w-3.5 h-3.5" />
+                            <span>Read all</span>
+                          </button>
+                        )}
+                        {notifications.length > 0 && (
+                          <button
+                            onClick={clearAllNotifications}
+                            disabled={clearingNotifications}
+                            className="flex items-center gap-1 text-[11px] font-semibold text-rose-500 hover:text-rose-600 dark:text-rose-400 hover:underline cursor-pointer disabled:opacity-50"
+                            title="Clear all notifications"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Clear all</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div className="max-h-[380px] overflow-y-auto divide-y divide-border/40">
@@ -475,32 +568,50 @@ export function GlobalHeader() {
                             key={notif.id}
                             onClick={() => handleNotificationClick(notif)}
                             className={cn(
-                              "p-3 flex items-start gap-3 hover:bg-muted/60 transition-colors cursor-pointer text-left relative",
-                              !notif.is_read && "bg-primary/5 font-medium"
+                              "group p-3 flex items-start gap-3 hover:bg-muted/60 transition-colors cursor-pointer text-left relative",
+                              !notif.is_read ? "bg-primary/5 font-medium" : "opacity-85 hover:opacity-100"
                             )}
                           >
                             <div className={cn(
-                              "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5",
-                              getNotifIconBg(notif.type)
+                              "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5 transition-transform group-hover:scale-105",
+                              getNotifIconBg(notif.type, notif.title)
                             )}>
-                              {getNotifIcon(notif.type)}
+                              {getNotifIcon(notif.type, notif.title)}
                             </div>
-                            <div className="flex-1 min-w-0">
+                            <div className="flex-1 min-w-0 pr-1">
                               <div className="flex items-center justify-between gap-1">
                                 <h4 className={cn("text-xs truncate", !notif.is_read ? "font-bold text-foreground" : "font-semibold text-foreground/80")}>
                                   {notif.title}
                                 </h4>
-                                <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                                <span className="text-[10px] text-muted-foreground whitespace-nowrap shrink-0">
                                   {formatTimeAgo(notif.created_at)}
                                 </span>
                               </div>
-                              <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-snug">
+                              <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-snug break-words">
                                 {notif.message}
                               </p>
                             </div>
-                            {!notif.is_read && (
-                              <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 mt-1.5" />
-                            )}
+                            <div className="flex items-center gap-1 shrink-0 self-center">
+                              {!notif.is_read && (
+                                <button
+                                  onClick={(e) => markAsRead(notif.id, e)}
+                                  className="p-1 rounded-md text-emerald-600 hover:bg-emerald-500/10 transition-colors"
+                                  title="Mark as read"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              <button
+                                onClick={(e) => deleteNotification(notif.id, notif.is_read, e)}
+                                className="p-1 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                title="Dismiss notification"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                              {!notif.is_read && (
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                              )}
+                            </div>
                           </div>
                         ))
                       )}
@@ -1098,7 +1209,10 @@ function formatTimeAgo(dateStr?: string) {
   }
 }
 
-function getNotifIcon(type: string) {
+function getNotifIcon(type: string, title?: string) {
+  if (title?.toLowerCase().includes('discrepancy')) {
+    return <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+  }
   switch (type) {
     case 'check_in':
       return <MapPin className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
@@ -1118,7 +1232,10 @@ function getNotifIcon(type: string) {
   }
 }
 
-function getNotifIconBg(type: string) {
+function getNotifIconBg(type: string, title?: string) {
+  if (title?.toLowerCase().includes('discrepancy')) {
+    return 'bg-rose-500/15'
+  }
   switch (type) {
     case 'check_in':
       return 'bg-emerald-500/15'
