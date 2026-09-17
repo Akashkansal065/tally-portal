@@ -888,7 +888,7 @@ export default function CustomersPage() {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-rose-500/10 text-rose-600 border border-rose-500/20 whitespace-normal break-words">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-          <span>Location Mismatch ({dist !== null ? `${(dist / 1000).toFixed(1)}km` : ''})</span>
+          <span>Discrepancy ({dist !== null ? (dist >= 1000 ? `${(dist / 1000).toFixed(1)}km` : `${Math.round(dist)}m`) : ''})</span>
         </span>
       )
     }
@@ -1046,7 +1046,7 @@ export default function CustomersPage() {
                 <ShieldCheck className="w-3.5 h-3.5 text-rose-500" />
               </div>
               <div className="text-2xl font-bold mt-1 text-rose-600">{metrics.mismatch_count}</div>
-              <div className="text-[11px] text-rose-500 font-medium mt-0.5">Check-in {'>'} 250m away</div>
+              <div className="text-[11px] text-rose-500 font-medium mt-0.5">Check-in {'>'} 20m away</div>
             </div>
           </div>
         </div>
@@ -1477,9 +1477,9 @@ export default function CustomersPage() {
                     className="text-xs bg-background border border-border rounded-xl px-2.5 py-1.5 text-foreground appearance-none focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
                   >
                     <option value="all">🛡️ Audit: All</option>
-                    <option value="verified">✅ Verified (≤75m)</option>
-                    <option value="nearby">📍 Nearby (75-250m)</option>
-                    <option value="mismatch">🚨 Mismatch (&gt;250m)</option>
+                    <option value="verified">✅ Verified (≤20m)</option>
+                    <option value="nearby">📍 Nearby (Historic)</option>
+                    <option value="mismatch">🚨 Discrepancy (&gt;20m)</option>
                   </select>
                 </div>
 
@@ -2547,15 +2547,15 @@ export default function CustomersPage() {
 
                       {log.verification_status === 'VERIFIED_ON_SITE' ? (
                         <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                          Verified (≤75m)
+                          Verified (≤20m)
                         </span>
                       ) : log.verification_status === 'NEARBY' ? (
                         <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-amber-500/10 text-amber-600 border border-amber-500/20">
-                          Nearby (75-250m)
+                          Nearby (Historic)
                         </span>
                       ) : log.verification_status === 'MISMATCH_FAR' ? (
                         <span className="px-2 py-0.5 rounded-md font-bold text-[10px] bg-rose-500/10 text-rose-600 border border-rose-500/20">
-                          Mismatch (&gt;250m away)
+                          Discrepancy (&gt;20m away)
                         </span>
                       ) : (
                         <span className="px-2 py-0.5 rounded-md font-medium text-[10px] bg-muted text-muted-foreground">

@@ -984,7 +984,7 @@ export default function CustomerProfilePage() {
       return (
         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-rose-500/10 text-rose-600 border border-rose-500/25">
           <AlertTriangle className="w-4 h-4" />
-          Location Mismatch ({dist !== null ? `${(dist / 1000).toFixed(1)}km` : ''})
+          Location Discrepancy ({dist !== null ? (dist >= 1000 ? `${(dist / 1000).toFixed(1)}km` : `${Math.round(dist)}m`) : ''})
         </span>
       )
     }

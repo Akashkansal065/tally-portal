@@ -246,6 +246,9 @@ export default function CheckInPage() {
       
       if (data.location_established) {
         setSuccess('✓ Check-in recorded! Master GPS location established & verified for this shop.')
+      } else if (data.verification_status === 'MISMATCH_FAR') {
+        const dist = data.distance_from_base_meters ? `${Math.round(data.distance_from_base_meters)}m` : ''
+        setSuccess(`⚠️ Check-in recorded with Location Discrepancy (${dist ? `${dist} away from shop` : '>20m away'}). Flagged for audit.`)
       } else {
         setSuccess('✓ Check-in recorded successfully!')
       }

@@ -139,8 +139,8 @@ async def check_in(
             dist_meters, verification_status = evaluate_checkin_proximity(
                 req.latitude, req.longitude, profile.latitude, profile.longitude
             )
-            # If coordinates were not previously verified, verify them now upon successful on-site check-in
-            if not profile.location_verified:
+            # If coordinates were not previously verified, verify them now upon successful on-site check-in (<=20m)
+            if not profile.location_verified and verification_status == "VERIFIED_ON_SITE":
                 profile.location_verified = True
                 profile.location_verified_at = func.now()
         else:
@@ -278,12 +278,21 @@ async def check_in(
     # Notify admins
     from app.routers.notifications import notify_admins
     shop_title = visit.custom_shop_name or (profile.custom_name if profile else None) or (f"Ledger #{visit.ledger_id}" if visit.ledger_id else "a customer")
+    
+    if verification_status == "MISMATCH_FAR":
+        dist_str = f" ({round(dist_meters)}m away)" if dist_meters is not None else ""
+        admin_title = "⚠️ Check-In Discrepancy"
+        admin_msg = f"{user.username} checked in at {shop_title} with location discrepancy{dist_str} (> 20m away)"
+    else:
+        admin_title = "New Check-In"
+        admin_msg = f"{user.username} checked in at {shop_title}"
+
     await notify_admins(
         db=db,
         company_id=user.company_id,
         type="check_in",
-        title="New Check-In",
-        message=f"{user.username} checked in at {shop_title}",
+        title=admin_title,
+        message=admin_msg,
         reference_id=str(visit.id),
         reference_type="visit",
         exclude_user_id=user.user_id,
