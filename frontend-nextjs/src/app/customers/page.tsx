@@ -159,7 +159,6 @@ export default function CustomersPage() {
   const [viewMode, setViewMode] = useState<'list' | 'grid' | 'route'>('list')
   const [selectedRadius, setSelectedRadius] = useState<number | null>(null)
   const [selectedRecency, setSelectedRecency] = useState<string>('all')
-  const [selectedHealthGrade, setSelectedHealthGrade] = useState<string>('all')
   const [plannerRoute, setPlannerRoute] = useState<string>('all')
   const [isOffline, setIsOffline] = useState(false)
   const [offlineCachedAt, setOfflineCachedAt] = useState<string | null>(null)
@@ -295,8 +294,7 @@ export default function CustomersPage() {
     overrideSort: string = sortBy,
     overrideLocality: string = selectedLocality,
     overrideRadius: number | null = selectedRadius,
-    overrideRecency: string = selectedRecency,
-    overrideHealth: string = selectedHealthGrade
+    overrideRecency: string = selectedRecency
   ) => {
     if (!token) return
     if (isRefresh) setRefreshing(true)
@@ -308,7 +306,6 @@ export default function CustomersPage() {
       const activeLoc = overrideLocality !== undefined ? overrideLocality : selectedLocality
       const activeRadius = overrideRadius !== undefined ? overrideRadius : selectedRadius
       const activeRecency = overrideRecency !== undefined ? overrideRecency : selectedRecency
-      const activeHealth = overrideHealth !== undefined ? overrideHealth : selectedHealthGrade
 
       let url = `${API_BASE}/customers?location_status=${locationFilter}&sort_by=${activeSort}`
       if (search) url += `&search=${encodeURIComponent(search)}`
@@ -318,7 +315,6 @@ export default function CustomersPage() {
       if (verificationFilter !== 'all') url += `&verification_filter=${encodeURIComponent(verificationFilter)}`
       if (activeRadius !== null) url += `&radius_km=${activeRadius}`
       if (activeRecency !== 'all') url += `&visit_recency=${encodeURIComponent(activeRecency)}`
-      if (activeHealth !== 'all') url += `&health_grade=${encodeURIComponent(activeHealth)}`
 
       if (activeCoords) {
         url += `&my_lat=${activeCoords.lat}&my_lon=${activeCoords.lon}`
@@ -359,7 +355,7 @@ export default function CustomersPage() {
   useEffect(() => {
     fetchCustomers()
     fetchLocalities()
-  }, [token, locationFilter, selectedLocality, selectedCity, selectedRoute, verificationFilter, sortBy, myCoords, selectedRadius, selectedRecency, selectedHealthGrade])
+  }, [token, locationFilter, selectedLocality, selectedCity, selectedRoute, verificationFilter, sortBy, myCoords, selectedRadius, selectedRecency])
 
   // Handle sort change with auto-GPS trigger if nearest is chosen
   const handleSortChange = (newSort: string) => {
@@ -1368,37 +1364,6 @@ export default function CustomersPage() {
                   )
                 })}
               </div>
-
-              {/* Health Score Filter */}
-              <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-0.5 text-xs">
-                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider whitespace-nowrap flex items-center gap-1 mr-1">
-                  <HeartPulse className="w-3 h-3 text-primary" />
-                  Health:
-                </span>
-                {[
-                  { label: 'All', val: 'all' },
-                  { label: '🟢 Healthy (80+)', val: 'healthy' },
-                  { label: '🟡 Fair (50-79)', val: 'fair' },
-                  { label: '🔴 At Risk (<50)', val: 'at_risk' },
-                ].map((item) => {
-                  const isActive = selectedHealthGrade === item.val
-                  return (
-                    <button
-                      key={item.val}
-                      type="button"
-                      onClick={() => setSelectedHealthGrade(item.val)}
-                      className={cn(
-                        'px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-all text-xs border',
-                        isActive
-                          ? 'bg-violet-600 text-white border-violet-600 shadow-sm'
-                          : 'bg-background border-border text-foreground hover:bg-muted'
-                      )}
-                    >
-                      {item.label}
-                    </button>
-                  )
-                })}
-              </div>
             </div>
 
             {/* 3. DEDICATED SORT OPTIONS TOOLBAR */}
@@ -1554,7 +1519,7 @@ export default function CustomersPage() {
           </div>
 
           {/* 4. ACTIVE FILTER BADGES BAR */}
-          {(selectedLocality !== 'all' || selectedCity !== 'all' || selectedRoute !== 'all' || verificationFilter !== 'all' || selectedRadius !== null || selectedRecency !== 'all' || selectedHealthGrade !== 'all' || sortBy !== 'name_asc' || search || myCoords) && (
+          {(selectedLocality !== 'all' || selectedCity !== 'all' || selectedRoute !== 'all' || verificationFilter !== 'all' || selectedRadius !== null || selectedRecency !== 'all' || sortBy !== 'name_asc' || search || myCoords) && (
             <div className="flex items-center justify-between text-xs bg-muted/30 px-4 py-2 text-muted-foreground">
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="font-semibold text-foreground">Active:</span>
@@ -1591,15 +1556,6 @@ export default function CustomersPage() {
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-500/15 text-blue-700 dark:text-blue-300 font-semibold hover:bg-blue-500/25 transition-colors"
                   >
                     <span>🕒 Recency: {selectedRecency}</span>
-                    <X className="w-3 h-3" />
-                  </button>
-                )}
-                {selectedHealthGrade !== 'all' && (
-                  <button
-                    onClick={() => setSelectedHealthGrade('all')}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-violet-500/15 text-violet-700 dark:text-violet-300 font-semibold hover:bg-violet-500/25 transition-colors"
-                  >
-                    <span>💚 Health: {selectedHealthGrade}</span>
                     <X className="w-3 h-3" />
                   </button>
                 )}
@@ -1640,7 +1596,6 @@ export default function CustomersPage() {
                   setVerificationFilter('all')
                   setSelectedRadius(null)
                   setSelectedRecency('all')
-                  setSelectedHealthGrade('all')
                   setSortBy('name_asc')
                   setSearch('')
                 }}
