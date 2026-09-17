@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders, formatDate } from '@/lib/utils'
+import { API_BASE, authHeaders, formatDate, formatToIST } from '@/lib/utils'
 import {
   Shield,
   Users,
@@ -89,6 +89,7 @@ type VisitLog = {
   longitude?: number | null
   ip_address?: string | null
   photoUrl?: string | null
+  status?: string | null
 }
 
 export type SyncTrafficLogItem = {
@@ -2042,95 +2043,191 @@ const handleSavePermissions = async () => {
                   No visit logs found matching the selected filters.
                 </div>
               ) : (
-                <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-muted/50 border-b border-border text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
-                          <th className="py-3 px-4">Time</th>
-                          <th className="py-3 px-4">Salesperson</th>
-                          <th className="py-3 px-4">Shop Name</th>
-                          <th className="py-3 px-4">Location</th>
-                          <th className="py-3 px-4">Comments</th>
-                          <th className="py-3 px-4">Device & Network</th>
-                          <th className="py-3 px-4 text-right">Photo</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border text-xs font-medium">
-                        {visits.map(v => {
-                          const initial = (v.salesperson || 'U').charAt(0).toLowerCase()
-                          const timeStr = v.createdAt ? new Date(v.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }).toLowerCase() : '--'
-                          return (
-                            <tr key={v.id} className="hover:bg-muted/30 transition-colors">
-                              {/* Time */}
-                              <td className="py-3.5 px-4 font-bold text-foreground whitespace-nowrap">
-                                {timeStr}
-                              </td>
+                <>
+                  {/* Desktop Table View (Hidden on mobile) */}
+                  <div className="hidden md:block bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-muted/50 border-b border-border text-[11px] font-bold text-muted-foreground uppercase tracking-wider">
+                            <th className="py-3 px-4">Time (IST)</th>
+                            <th className="py-3 px-4">Salesperson</th>
+                            <th className="py-3 px-4">Shop Name</th>
+                            <th className="py-3 px-4">Location</th>
+                            <th className="py-3 px-4">Comments</th>
+                            <th className="py-3 px-4">Device & Network</th>
+                            <th className="py-3 px-4 text-right">Photo</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border text-xs font-medium">
+                          {visits.map(v => {
+                            const initial = (v.salesperson || 'U').charAt(0).toLowerCase()
+                            const timeStr = formatToIST(v.createdAt)
+                            return (
+                              <tr key={v.id} className="hover:bg-muted/30 transition-colors">
+                                {/* Time */}
+                                <td className="py-3.5 px-4 font-bold text-foreground whitespace-nowrap">
+                                  {timeStr}
+                                </td>
 
-                              {/* Salesperson */}
-                              <td className="py-3.5 px-4 whitespace-nowrap">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-5.5 h-5.5 rounded-full bg-emerald-500/10 text-emerald-600 font-extrabold text-[10px] flex items-center justify-center shrink-0">
-                                    {initial}
+                                {/* Salesperson */}
+                                <td className="py-3.5 px-4 whitespace-nowrap">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-5.5 h-5.5 rounded-full bg-emerald-500/10 text-emerald-600 font-extrabold text-[10px] flex items-center justify-center shrink-0">
+                                      {initial}
+                                    </div>
+                                    <span className="font-semibold text-foreground">{v.salesperson}</span>
                                   </div>
-                                  <span className="font-semibold text-foreground">{v.salesperson}</span>
-                                </div>
-                              </td>
+                                </td>
 
-                              {/* Shop Name */}
-                              <td className="py-3.5 px-4 font-extrabold text-foreground min-w-[180px]">
-                                {v.shopName || v.customShopName || 'Custom Shop'}
-                              </td>
+                                {/* Shop Name */}
+                                <td className="py-3.5 px-4 font-extrabold text-foreground min-w-[180px]">
+                                  {v.shopName || v.customShopName || 'Custom Shop'}
+                                </td>
 
-                              {/* Location */}
-                              <td className="py-3.5 px-4 whitespace-nowrap">
-                                {v.latitude && v.longitude ? (
-                                  <a
-                                    href={`https://www.google.com/maps?q=${v.latitude},${v.longitude}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-flex items-center gap-1.5 px-3 py-1 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 border border-sky-500/20 rounded-full text-[11px] font-bold transition-colors"
-                                  >
-                                    <MapPin className="h-3 w-3 text-sky-500" /> View Map ↗
-                                  </a>
-                                ) : (
-                                  <span className="text-muted-foreground text-[11px] italic">No GPS</span>
-                                )}
-                              </td>
+                                {/* Location */}
+                                <td className="py-3.5 px-4 whitespace-nowrap">
+                                  {v.latitude && v.longitude ? (
+                                    <a
+                                      href={`https://www.google.com/maps?q=${v.latitude},${v.longitude}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-flex items-center gap-1.5 px-3 py-1 bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 border border-sky-500/20 rounded-full text-[11px] font-bold transition-colors"
+                                    >
+                                      <MapPin className="h-3 w-3 text-sky-500" /> View Map ↗
+                                    </a>
+                                  ) : (
+                                    <span className="text-muted-foreground text-[11px] italic">No GPS</span>
+                                  )}
+                                </td>
 
-                              {/* Comments */}
-                              <td className="py-3.5 px-4 italic text-muted-foreground max-w-[200px] truncate">
-                                {v.comments || 'No comments'}
-                              </td>
+                                {/* Comments */}
+                                <td className="py-3.5 px-4 italic text-muted-foreground max-w-[200px] truncate">
+                                  {v.comments || 'No comments'}
+                                </td>
 
-                              {/* Device & Network */}
-                              <td className="py-3.5 px-4 whitespace-nowrap space-y-0.5">
-                                <span className="inline-block px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 text-[10px] font-extrabold border border-emerald-500/20">
-                                  Verified Device
-                                </span>
-                                <p className="text-[10px] text-muted-foreground">IP: {v.ip_address || '152.59.87.245'}</p>
-                              </td>
+                                {/* Device & Network */}
+                                <td className="py-3.5 px-4 whitespace-nowrap space-y-0.5">
+                                  <span className="inline-block px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 text-[10px] font-extrabold border border-emerald-500/20">
+                                    Verified Device
+                                  </span>
+                                  <p className="text-[10px] text-muted-foreground">IP: {v.ip_address || '152.59.87.245'}</p>
+                                </td>
 
-                              {/* Photo */}
-                              <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                                {v.photoUrl ? (
-                                  <button
-                                    onClick={() => setPreviewPhoto(v)}
-                                    className="inline-flex items-center gap-1.5 px-3 py-1 border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 font-bold rounded-xl text-xs transition-colors cursor-pointer"
-                                  >
-                                    <span>🖼 View</span>
-                                  </button>
-                                ) : (
-                                  <span className="text-muted-foreground text-[11px] italic">No Photo</span>
-                                )}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
+                                {/* Photo */}
+                                <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                                  {v.photoUrl ? (
+                                    <button
+                                      onClick={() => setPreviewPhoto(v)}
+                                      className="inline-flex items-center gap-1.5 px-3 py-1 border border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 font-bold rounded-xl text-xs transition-colors cursor-pointer"
+                                    >
+                                      <span>🖼 View</span>
+                                    </button>
+                                  ) : (
+                                    <span className="text-muted-foreground text-[11px] italic">No Photo</span>
+                                  )}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
+
+                  {/* Mobile Cards View (Visible on mobile screens) */}
+                  <div className="block md:hidden space-y-3">
+                    {visits.map(v => {
+                      const initial = (v.salesperson || 'U').charAt(0).toLowerCase()
+                      const timeStr = formatToIST(v.createdAt)
+                      return (
+                        <div
+                          key={v.id}
+                          className="bg-card border border-border rounded-2xl p-4 shadow-sm hover:border-emerald-500/30 transition-all space-y-3"
+                        >
+                          {/* Card Header: Shop Name & IST Time Badge */}
+                          <div className="flex items-start justify-between gap-2.5 border-b border-border/50 pb-2.5">
+                            <div className="min-w-0 flex-1">
+                              <h3 className="font-extrabold text-sm text-foreground leading-snug break-words">
+                                {v.shopName || v.customShopName || 'Custom Shop'}
+                              </h3>
+                              <p className="text-[10px] text-muted-foreground mt-0.5 font-medium">
+                                Visit #{v.id}
+                              </p>
+                            </div>
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-lg shrink-0 whitespace-nowrap">
+                              🕒 {timeStr}
+                            </span>
+                          </div>
+
+                          {/* Salesperson & Verification Row */}
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-600 font-extrabold text-[11px] flex items-center justify-center shrink-0">
+                                {initial}
+                              </div>
+                              <span className="font-bold text-xs text-foreground truncate">
+                                {v.salesperson}
+                              </span>
+                            </div>
+
+                            <span className="inline-block px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 text-[10px] font-extrabold border border-emerald-500/20 shrink-0">
+                              Verified Device
+                            </span>
+                          </div>
+
+                          {/* Comments if any */}
+                          {v.comments && (
+                            <div className="bg-muted/40 border border-border/40 rounded-xl p-2.5 text-xs italic text-foreground/90 leading-relaxed">
+                              "{v.comments}"
+                            </div>
+                          )}
+
+                          {/* Network & IP Info */}
+                          <div className="flex items-center justify-between text-[10px] text-muted-foreground px-0.5">
+                            <span>Network IP: <code className="font-mono text-foreground/80">{v.ip_address || '152.59.87.245'}</code></span>
+                            {v.status && (
+                              <span className="capitalize font-semibold text-muted-foreground">
+                                {v.status}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Action Buttons: Location & Photo */}
+                          <div className="flex items-center gap-2 pt-1 border-t border-border/40">
+                            {v.latitude && v.longitude ? (
+                              <a
+                                href={`https://www.google.com/maps?q=${v.latitude},${v.longitude}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-xl text-xs font-bold transition-colors"
+                              >
+                                <MapPin className="h-3.5 w-3.5 shrink-0" /> View Map ↗
+                              </a>
+                            ) : (
+                              <div className="flex-1 text-center py-2 text-muted-foreground text-xs italic bg-muted/20 rounded-xl border border-border/30">
+                                No GPS
+                              </div>
+                            )}
+
+                            {v.photoUrl ? (
+                              <button
+                                onClick={() => setPreviewPhoto(v)}
+                                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                              >
+                                <span>🖼</span> View Photo
+                              </button>
+                            ) : (
+                              <div className="flex-1 text-center py-2 text-muted-foreground text-xs italic bg-muted/20 rounded-xl border border-border/30">
+                                No Photo
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
               )}
             </div>
           ) : tab === 'einvoice' ? (
@@ -2711,6 +2808,43 @@ const handleSavePermissions = async () => {
           onStatusChange={handleStatusChange}
           onResetPassword={handleResetPassword}
         />
+      )}
+
+      {/* Visit Photo Modal Popup */}
+      {previewPhoto && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-2xl rounded-3xl overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200 border border-border p-6 space-y-4">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between">
+              <h3 className="font-extrabold text-base text-foreground truncate pr-2">
+                Visit Photo - {previewPhoto.shopName || previewPhoto.customShopName || 'Customer Shop'}
+              </h3>
+              <button
+                onClick={() => setPreviewPhoto(null)}
+                className="w-8 h-8 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 transition-colors flex items-center justify-center cursor-pointer shrink-0"
+              >
+                <X className="w-4.5 h-4.5" />
+              </button>
+            </div>
+
+            {/* Modal Image Display Area */}
+            <div className="bg-muted/50 p-4 sm:p-6 rounded-2xl flex items-center justify-center border border-border/50">
+              {previewPhoto.photoUrl && (previewPhoto.photoUrl.startsWith('data:') || previewPhoto.photoUrl.startsWith('http')) ? (
+                <img
+                  src={previewPhoto.photoUrl}
+                  alt={`Visit Photo - ${previewPhoto.shopName || previewPhoto.customShopName}`}
+                  className="max-h-[72vh] w-auto object-contain rounded-xl shadow-sm"
+                />
+              ) : (
+                <div className="py-12 text-center space-y-2">
+                  <MapPin className="h-10 w-10 mx-auto text-emerald-500 opacity-60" />
+                  <p className="text-sm font-bold text-foreground">Verified Check-In Record</p>
+                  <p className="text-xs text-muted-foreground">{previewPhoto.photoUrl || 'GPS Verified Visit'}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

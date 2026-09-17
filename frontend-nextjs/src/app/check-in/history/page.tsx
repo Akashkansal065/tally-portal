@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders, formatDate } from '@/lib/utils'
+import { API_BASE, authHeaders, formatDate, formatToIST } from '@/lib/utils'
 import { MapPin, History, ArrowLeft, RefreshCw, Calendar, CalendarCheck, Search, User as UserIcon, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -253,7 +253,7 @@ export default function CheckInHistoryPage() {
                   <tbody className="divide-y divide-border text-xs font-medium">
                     {filteredVisits.map(v => {
                       const initial = (v.salesperson || user?.username || 'U').charAt(0).toLowerCase()
-                      const timeStr = v.createdAt ? new Date(v.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }).toLowerCase() : '--'
+                      const timeStr = formatToIST(v.createdAt)
                       return (
                         <tr key={v.id} className="hover:bg-muted/30 transition-colors">
                           {/* Time */}
@@ -330,7 +330,7 @@ export default function CheckInHistoryPage() {
             <div className="block md:hidden space-y-3">
               {filteredVisits.map(v => {
                 const initial = (v.salesperson || user?.username || 'U').charAt(0).toLowerCase()
-                const timeStr = v.createdAt ? new Date(v.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }).toLowerCase() : '--'
+                const timeStr = formatToIST(v.createdAt)
                 return (
                   <div key={v.id} className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3">
                     <div className="flex items-start justify-between gap-3 border-b border-border/50 pb-2">

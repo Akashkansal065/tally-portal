@@ -300,6 +300,23 @@ export default function ReportsPage() {
   // GST Display Toggle (GROSS vs NET) - Default: GROSS (With GST) Enabled
   const [isGrossGst, setIsGrossGst] = useState(true)
 
+  // Helper to retrieve gross or net stock metric based on isGrossGst toggle
+  const getStockVal = (obj: any, field: string): number => {
+    if (!obj) return 0
+    if (isGrossGst) {
+      const grossKey = `${field}_gross`
+      if (obj[grossKey] !== undefined && obj[grossKey] !== null) {
+        return Number(obj[grossKey]) || 0
+      }
+      const isMonetary = /value|cost|rate|profit|revenue|loss|capital|difference|inward|outward|movement/i.test(field)
+      if (isMonetary) {
+        const gstRate = Number(obj.gst_rate_percent) > 0 ? Number(obj.gst_rate_percent) : 18
+        return (Number(obj[field]) || 0) * (1 + gstRate / 100)
+      }
+    }
+    return Number(obj[field]) || 0
+  }
+
   // Account Group Info Modal State
   const [selectedGroupInfo, setSelectedGroupInfo] = useState<string | null>(null)
 
@@ -2027,29 +2044,29 @@ export default function ReportsPage() {
                   <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
                     <Package className="h-3.5 w-3.5 text-blue-500" /> Total Purchased
                   </div>
-                  <p className="text-lg font-black">{formatCurrency(gt.total_purchased_value)}</p>
+                  <p className="text-lg font-black">{formatCurrency(getStockVal(gt, 'total_purchased_value'))}</p>
                   <p className="text-[10px] text-muted-foreground">{gt.total_purchased_qty.toLocaleString()} units across {gt.total_items} items</p>
                 </div>
                 <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-1">
                   <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
                     <TrendingUp className="h-3.5 w-3.5 text-emerald-500" /> Total Sold
                   </div>
-                  <p className="text-lg font-black text-emerald-600">{formatCurrency(gt.total_sold_value)}</p>
+                  <p className="text-lg font-black text-emerald-600">{formatCurrency(getStockVal(gt, 'total_sold_value'))}</p>
                   <p className="text-[10px] text-muted-foreground">{gt.total_sold_qty.toLocaleString()} units sold</p>
                 </div>
                 <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-1">
                   <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
                     <Layers className="h-3.5 w-3.5 text-amber-500" /> Pending Stock
                   </div>
-                  <p className="text-lg font-black text-amber-600">{formatCurrency(gt.total_pending_value)}</p>
+                  <p className="text-lg font-black text-amber-600">{formatCurrency(getStockVal(gt, 'total_pending_value'))}</p>
                   <p className="text-[10px] text-muted-foreground">{gt.total_pending_qty.toLocaleString()} units remaining</p>
                 </div>
                 <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-1">
                   <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
                     <DollarSign className="h-3.5 w-3.5 text-indigo-500" /> Realized Profit
                   </div>
-                  <p className={cn("text-lg font-black", gt.total_profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                    {formatCurrency(gt.total_profit_on_sold)}
+                  <p className={cn("text-lg font-black", getStockVal(gt, 'total_profit_on_sold') >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(getStockVal(gt, 'total_profit_on_sold'))}
                   </p>
                   <p className="text-[10px] text-muted-foreground">GP: {gt.overall_gp_percent}% (on sold stock only)</p>
                 </div>
@@ -2108,8 +2125,8 @@ export default function ReportsPage() {
                   ? (a.company_name || '').localeCompare(b.company_name || '')
                   : (b.company_name || '').localeCompare(a.company_name || '')
               }
-              const valA = Number(a[companySortField]) || 0
-              const valB = Number(b[companySortField]) || 0
+              const valA = getStockVal(a, companySortField)
+              const valB = getStockVal(b, companySortField)
               return companySortDir === 'asc' ? valA - valB : valB - valA
             })
 
@@ -2119,6 +2136,12 @@ export default function ReportsPage() {
                   <div>
                     <h3 className="font-extrabold text-base flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-indigo-500" /> Company / Brand Performance
+                      <span className={cn(
+                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
+                      )}>
+                        {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
+                      </span>
                     </h3>
                     <p className="text-xs text-muted-foreground">{companyStockData.grand_totals.total_companies} companies • Click to expand item details</p>
                   </div>
@@ -2150,11 +2173,12 @@ export default function ReportsPage() {
                         )
                       })}
                     </div>
-                    <button onClick={() => exportToCsv('Company_Stock_Performance', companyStockData.companies.map((c: any) => ({
+                    <button onClick={() => exportToCsv(`Company_Stock_Performance_${isGrossGst ? 'Gross_With_GST' : 'Net_Without_GST'}`, companyStockData.companies.map((c: any) => ({
                       Company: c.company_name, Items: c.items_count,
-                      'Purchased Value': c.purchased_value, 'Sold Value': c.sold_value,
-                      'Pending Value': c.pending_value, 'COGS': c.cost_of_sold,
-                      'Profit': c.profit_on_sold, 'GP%': c.gp_percent
+                      'Purchased Value': getStockVal(c, 'purchased_value'), 'Sold Value': getStockVal(c, 'sold_value'),
+                      'Pending Value': getStockVal(c, 'pending_value'), 'COGS': getStockVal(c, 'cost_of_sold'),
+                      'Profit': getStockVal(c, 'profit_on_sold'), 'GP%': c.gp_percent,
+                      'Tax Mode': isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'
                     })))} className="p-2 bg-muted hover:bg-background border border-border text-xs rounded-xl transition-colors cursor-pointer" title="Export CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
@@ -2171,8 +2195,8 @@ export default function ReportsPage() {
                             ? (a.name || '').localeCompare(b.name || '')
                             : (b.name || '').localeCompare(a.name || '')
                         }
-                        const valA = Number(a[itemSortField]) || 0
-                        const valB = Number(b[itemSortField]) || 0
+                        const valA = getStockVal(a, itemSortField)
+                        const valB = getStockVal(b, itemSortField)
                         return itemSortDir === 'asc' ? valA - valB : valB - valA
                       })
 
@@ -2210,16 +2234,16 @@ export default function ReportsPage() {
                             <div className="mt-2.5 grid grid-cols-3 gap-1.5 text-center text-[10px] sm:hidden pt-2 border-t border-border/40">
                               <div className="bg-muted/40 rounded-lg p-1.5">
                                 <span className="text-muted-foreground block text-[9px] font-medium">Purchased</span>
-                                <span className="font-extrabold text-foreground">{formatCurrency(comp.purchased_value)}</span>
+                                <span className="font-extrabold text-foreground">{formatCurrency(getStockVal(comp, 'purchased_value'))}</span>
                               </div>
                               <div className="bg-emerald-500/10 rounded-lg p-1.5 border border-emerald-500/20">
                                 <span className="text-emerald-600 dark:text-emerald-400 block text-[9px] font-bold">Sold</span>
-                                <span className="font-extrabold text-emerald-600 dark:text-emerald-400">{formatCurrency(comp.sold_value)}</span>
+                                <span className="font-extrabold text-emerald-600 dark:text-emerald-400">{formatCurrency(getStockVal(comp, 'sold_value'))}</span>
                               </div>
-                              <div className={cn("rounded-lg p-1.5 border", comp.profit_on_sold >= 0 ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20")}>
+                              <div className={cn("rounded-lg p-1.5 border", getStockVal(comp, 'profit_on_sold') >= 0 ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20")}>
                                 <span className="text-muted-foreground block text-[9px] font-medium">Profit</span>
-                                <span className={cn("font-extrabold", comp.profit_on_sold >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
-                                  {formatCurrency(comp.profit_on_sold)}
+                                <span className={cn("font-extrabold", getStockVal(comp, 'profit_on_sold') >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
+                                  {formatCurrency(getStockVal(comp, 'profit_on_sold'))}
                                 </span>
                               </div>
                             </div>
@@ -2228,16 +2252,16 @@ export default function ReportsPage() {
                             <div className="grid grid-cols-3 gap-4 text-[11px]">
                               <div>
                                 <p className="text-muted-foreground font-medium">Purchased</p>
-                                <p className="font-extrabold">{formatCurrency(comp.purchased_value)}</p>
+                                <p className="font-extrabold">{formatCurrency(getStockVal(comp, 'purchased_value'))}</p>
                               </div>
                               <div>
                                 <p className="text-muted-foreground font-medium">Sold</p>
-                                <p className="font-extrabold text-emerald-600">{formatCurrency(comp.sold_value)}</p>
+                                <p className="font-extrabold text-emerald-600">{formatCurrency(getStockVal(comp, 'sold_value'))}</p>
                               </div>
                               <div>
                                 <p className="text-muted-foreground font-medium">Profit</p>
-                                <p className={cn("font-extrabold", comp.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                                  {formatCurrency(comp.profit_on_sold)}
+                                <p className={cn("font-extrabold", getStockVal(comp, 'profit_on_sold') >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                  {formatCurrency(getStockVal(comp, 'profit_on_sold'))}
                                 </p>
                               </div>
                             </div>
@@ -2368,7 +2392,7 @@ export default function ReportsPage() {
                                         <ExternalLink className="h-3 w-3 opacity-40 group-hover:opacity-100 text-primary shrink-0 transition-opacity" />
                                       </div>
                                       <p className="text-xs text-muted-foreground mt-0.5">
-                                        {item.uom || 'PCS'} • Avg Cost: <strong className="text-foreground font-semibold">{formatCurrency(item.avg_cost)}</strong>{item.opening_qty > 0 ? <span className="ml-1 text-[11px] text-muted-foreground/80">• Op: {item.opening_qty}</span> : null}
+                                        {item.uom || 'PCS'} • Avg Cost: <strong className="text-foreground font-semibold">{formatCurrency(getStockVal(item, 'avg_cost'))}</strong>{item.opening_qty > 0 ? <span className="ml-1 text-[11px] text-muted-foreground/80">• Op: {item.opening_qty}</span> : null}
                                       </p>
                                     </div>
                                     <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full shrink-0",
@@ -2385,33 +2409,33 @@ export default function ReportsPage() {
                                     {/* Purchased */}
                                     <div className="bg-muted/40 rounded-lg p-2 border border-border/40">
                                       <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Purchased</span>
-                                      <p className="font-black text-foreground text-xs mt-0.5">{formatCurrency(item.purchased_value)}</p>
+                                      <p className="font-black text-foreground text-xs mt-0.5">{formatCurrency(getStockVal(item, 'purchased_value'))}</p>
                                       <p className="text-[10px] text-muted-foreground">{item.purchased_qty} {item.uom || 'PCS'}</p>
                                     </div>
 
                                     {/* Sold */}
                                     <div className="bg-emerald-500/5 rounded-lg p-2 border border-emerald-500/20">
                                       <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold uppercase tracking-wider block">Sold</span>
-                                      <p className="font-black text-emerald-600 dark:text-emerald-400 text-xs mt-0.5">{formatCurrency(item.sold_value)}</p>
+                                      <p className="font-black text-emerald-600 dark:text-emerald-400 text-xs mt-0.5">{formatCurrency(getStockVal(item, 'sold_value'))}</p>
                                       <p className="text-[10px] text-muted-foreground">{item.sold_qty} {item.uom || 'PCS'}</p>
                                     </div>
 
                                     {/* Pending */}
                                     <div className="bg-amber-500/5 rounded-lg p-2 border border-amber-500/20">
                                       <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold uppercase tracking-wider block">Pending</span>
-                                      <p className="font-black text-amber-600 dark:text-amber-400 text-xs mt-0.5">{formatCurrency(item.pending_value)}</p>
+                                      <p className="font-black text-amber-600 dark:text-amber-400 text-xs mt-0.5">{formatCurrency(getStockVal(item, 'pending_value'))}</p>
                                       <p className="text-[10px] text-muted-foreground">{item.pending_qty} {item.uom || 'PCS'}</p>
                                     </div>
 
                                     {/* Realized Profit & COGS */}
                                     <div className={cn("rounded-lg p-2 border",
-                                      item.profit_on_sold >= 0 ? "bg-emerald-500/5 border-emerald-500/20" : "bg-rose-500/5 border-rose-500/20"
+                                      getStockVal(item, 'profit_on_sold') >= 0 ? "bg-emerald-500/5 border-emerald-500/20" : "bg-rose-500/5 border-rose-500/20"
                                     )}>
                                       <span className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider block">Realized Profit</span>
-                                      <p className={cn("font-black text-xs mt-0.5", item.profit_on_sold >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
-                                        {formatCurrency(item.profit_on_sold)}
+                                      <p className={cn("font-black text-xs mt-0.5", getStockVal(item, 'profit_on_sold') >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400")}>
+                                        {formatCurrency(getStockVal(item, 'profit_on_sold'))}
                                       </p>
-                                      <p className="text-[10px] text-muted-foreground">COGS: {formatCurrency(item.cost_of_sold)}</p>
+                                      <p className="text-[10px] text-muted-foreground">COGS: {formatCurrency(getStockVal(item, 'cost_of_sold'))}</p>
                                     </div>
                                   </div>
 
@@ -2465,7 +2489,7 @@ export default function ReportsPage() {
                                         <span className="group-hover/item:underline truncate">{item.name}</span>
                                         <ExternalLink className="h-2.5 w-2.5 opacity-30 group-hover/item:opacity-100 text-primary shrink-0 transition-opacity" />
                                       </button>
-                                      <p className="text-[9px] text-muted-foreground truncate">{item.uom} • Avg: {formatCurrency(item.avg_cost)}{item.opening_qty > 0 ? ` • Op: ${item.opening_qty}` : ''}</p>
+                                      <p className="text-[9px] text-muted-foreground truncate">{item.uom} • Avg: {formatCurrency(getStockVal(item, 'avg_cost'))}{item.opening_qty > 0 ? ` • Op: ${item.opening_qty}` : ''}</p>
                                     </div>
                                   ),
                                 },
@@ -2482,7 +2506,7 @@ export default function ReportsPage() {
                                   ),
                                   renderCell: (item) => (
                                     <div>
-                                      <p className="font-bold">{formatCurrency(item.purchased_value)}</p>
+                                      <p className="font-bold">{formatCurrency(getStockVal(item, 'purchased_value'))}</p>
                                       <p className="text-[9px] text-muted-foreground">{item.purchased_qty} {item.uom}</p>
                                     </div>
                                   ),
@@ -2500,7 +2524,7 @@ export default function ReportsPage() {
                                   ),
                                   renderCell: (item) => (
                                     <div>
-                                      <p className="font-bold text-emerald-600">{formatCurrency(item.sold_value)}</p>
+                                      <p className="font-bold text-emerald-600">{formatCurrency(getStockVal(item, 'sold_value'))}</p>
                                       <p className="text-[9px] text-muted-foreground">{item.sold_qty} {item.uom}</p>
                                     </div>
                                   ),
@@ -2518,7 +2542,7 @@ export default function ReportsPage() {
                                   ),
                                   renderCell: (item) => (
                                     <div>
-                                      <p className="font-bold text-amber-600">{formatCurrency(item.pending_value)}</p>
+                                      <p className="font-bold text-amber-600">{formatCurrency(getStockVal(item, 'pending_value'))}</p>
                                       <p className="text-[9px] text-muted-foreground">{item.pending_qty} {item.uom}</p>
                                     </div>
                                   ),
@@ -2534,7 +2558,7 @@ export default function ReportsPage() {
                                       {renderSortIcon('cost_of_sold', itemSortField, itemSortDir)}
                                     </div>
                                   ),
-                                  renderCell: (item) => formatCurrency(item.cost_of_sold),
+                                  renderCell: (item) => formatCurrency(getStockVal(item, 'cost_of_sold')),
                                 },
                                 profit_on_sold: {
                                   label: 'Profit',
@@ -2548,8 +2572,8 @@ export default function ReportsPage() {
                                     </div>
                                   ),
                                   renderCell: (item) => (
-                                    <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                                      {formatCurrency(item.profit_on_sold)}
+                                    <span className={cn("font-extrabold", getStockVal(item, 'profit_on_sold') >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                                      {formatCurrency(getStockVal(item, 'profit_on_sold'))}
                                     </span>
                                   ),
                                 },
@@ -2681,7 +2705,7 @@ export default function ReportsPage() {
                     {renderSortIcon('inward_value', monthlySortField, monthlySortDir)}
                   </div>
                 ),
-                renderCell: (m) => formatCurrency(m.inward_value),
+                renderCell: (m) => formatCurrency(getStockVal(m, 'inward_value')),
               },
               outward_value: {
                 label: 'Outward ₹',
@@ -2693,7 +2717,7 @@ export default function ReportsPage() {
                     {renderSortIcon('outward_value', monthlySortField, monthlySortDir)}
                   </div>
                 ),
-                renderCell: (m) => formatCurrency(m.outward_value),
+                renderCell: (m) => formatCurrency(getStockVal(m, 'outward_value')),
               },
               net_movement: {
                 label: 'Net Movement',
@@ -2705,11 +2729,14 @@ export default function ReportsPage() {
                     {renderSortIcon('net_movement', monthlySortField, monthlySortDir)}
                   </div>
                 ),
-                renderCell: (m) => (
-                  <span className={m.net_movement >= 0 ? "text-blue-600" : "text-emerald-600"}>
-                    {m.net_movement >= 0 ? '+' : ''}{formatCurrency(m.net_movement)}
-                  </span>
-                ),
+                renderCell: (m) => {
+                  const netVal = getStockVal(m, 'net_movement')
+                  return (
+                    <span className={netVal >= 0 ? "text-blue-600" : "text-emerald-600"}>
+                      {netVal >= 0 ? '+' : ''}{formatCurrency(netVal)}
+                    </span>
+                  )
+                },
               },
               items_moved: {
                 label: 'Items Moved',
@@ -2743,8 +2770,8 @@ export default function ReportsPage() {
                 if (monthlySortField === 'month') {
                   return monthlySortDir === 'asc' ? (a.month || '').localeCompare(b.month || '') : (b.month || '').localeCompare(a.month || '')
                 }
-                const valA = Number(a[monthlySortField]) || 0
-                const valB = Number(b[monthlySortField]) || 0
+                const valA = getStockVal(a, monthlySortField)
+                const valB = getStockVal(b, monthlySortField)
                 return monthlySortDir === 'asc' ? valA - valB : valB - valA
               })
 
@@ -2754,6 +2781,12 @@ export default function ReportsPage() {
                   <div>
                     <h3 className="font-extrabold text-base flex items-center gap-2">
                       <Activity className="h-4 w-4 text-blue-500" /> Monthly Stock Movement Trend
+                      <span className={cn(
+                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
+                      )}>
+                        {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
+                      </span>
                     </h3>
                     <p className="text-xs text-muted-foreground">Inward (Purchase) vs Outward (Sales) value over time • Click & drag column headers to move left/right</p>
                   </div>
@@ -2774,8 +2807,8 @@ export default function ReportsPage() {
                           }}
                         />
                         <Legend />
-                        <Bar dataKey="inward_value" name="Inward (Purchase)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="outward_value" name="Outward (Sales)" fill="#10b981" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey={isGrossGst ? "inward_value_gross" : "inward_value"} name={isGrossGst ? "Inward (Purchase incl. GST)" : "Inward (Purchase)"} fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey={isGrossGst ? "outward_value_gross" : "outward_value"} name={isGrossGst ? "Outward (Sales incl. GST)" : "Outward (Sales)"} fill="#10b981" radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   ) : (
@@ -2905,7 +2938,7 @@ export default function ReportsPage() {
                     {renderSortIcon('sold_value', fastSortField, fastSortDir)}
                   </div>
                 ),
-                renderCell: (item) => formatCurrency(item.sold_value),
+                renderCell: (item) => formatCurrency(getStockVal(item, 'sold_value')),
               },
               remaining_qty: {
                 label: 'Remaining',
@@ -2930,8 +2963,8 @@ export default function ReportsPage() {
                   </div>
                 ),
                 renderCell: (item) => (
-                  <span className={cn("font-extrabold", item.profit_on_sold >= 0 ? "text-emerald-600" : "text-rose-600")}>
-                    {formatCurrency(item.profit_on_sold)}
+                  <span className={cn("font-extrabold", getStockVal(item, 'profit_on_sold') >= 0 ? "text-emerald-600" : "text-rose-600")}>
+                    {formatCurrency(getStockVal(item, 'profit_on_sold'))}
                   </span>
                 ),
               },
@@ -2965,8 +2998,8 @@ export default function ReportsPage() {
                     ? (a[fastSortField] || '').localeCompare(b[fastSortField] || '')
                     : (b[fastSortField] || '').localeCompare(a[fastSortField] || '')
                 }
-                const valA = Number(a[fastSortField]) || 0
-                const valB = Number(b[fastSortField]) || 0
+                const valA = getStockVal(a, fastSortField)
+                const valB = getStockVal(b, fastSortField)
                 return fastSortDir === 'asc' ? valA - valB : valB - valA
               })
 
@@ -2976,6 +3009,12 @@ export default function ReportsPage() {
                   <div>
                     <h3 className="font-extrabold text-base flex items-center gap-2">
                       <Zap className="h-4 w-4 text-yellow-500" /> Top 25 Fast-Moving Items
+                      <span className={cn(
+                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
+                      )}>
+                        {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
+                      </span>
                     </h3>
                     <p className="text-xs text-muted-foreground">
                       Ranked by sold quantity with profit analysis • Click & drag column headers to move left/right • Click to sort
@@ -2983,7 +3022,11 @@ export default function ReportsPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <ResetColumnsButton isCustomized={fastCols.isCustomized} onReset={fastCols.resetColumns} />
-                    <button onClick={() => exportToCsv('Fast_Moving_Items', companyStockData.fast_movers)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
+                    <button onClick={() => exportToCsv(`Fast_Moving_Items_${isGrossGst ? 'Gross' : 'Net'}`, companyStockData.fast_movers.map((item: any) => ({
+                      ...item,
+                      sold_value: getStockVal(item, 'sold_value'),
+                      profit_on_sold: getStockVal(item, 'profit_on_sold')
+                    })))} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -3102,7 +3145,7 @@ export default function ReportsPage() {
                     {renderSortIcon('closing_value', deadSortField, deadSortDir)}
                   </div>
                 ),
-                renderCell: (item) => formatCurrency(item.closing_value),
+                renderCell: (item) => formatCurrency(getStockVal(item, 'closing_value')),
               },
               last_sold_date: {
                 label: 'Last Sold Date',
@@ -3126,8 +3169,8 @@ export default function ReportsPage() {
                     ? (a[deadSortField] || '').localeCompare(b[deadSortField] || '')
                     : (b[deadSortField] || '').localeCompare(a[deadSortField] || '')
                 }
-                const valA = Number(a[deadSortField]) || 0
-                const valB = Number(b[deadSortField]) || 0
+                const valA = getStockVal(a, deadSortField)
+                const valB = getStockVal(b, deadSortField)
                 return deadSortDir === 'asc' ? valA - valB : valB - valA
               })
 
@@ -3137,15 +3180,24 @@ export default function ReportsPage() {
                   <div>
                     <h3 className="font-extrabold text-base flex items-center gap-2">
                       <Skull className="h-4 w-4 text-orange-500" /> Dead / Slow-Moving Stock
+                      <span className={cn(
+                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
+                      )}>
+                        {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
+                      </span>
                     </h3>
                     <p className="text-xs text-muted-foreground">
                       {companyStockData.dead_stock.count} items with zero sales in last {companyStockData.dead_stock.days_threshold} days •
-                      <span className="font-extrabold text-orange-600 ml-1">{formatCurrency(companyStockData.dead_stock.total_locked_value)} capital locked</span> • Click & drag column headers to move left/right
+                      <span className="font-extrabold text-orange-600 ml-1">{formatCurrency(getStockVal(companyStockData.dead_stock, 'total_locked_value'))} capital locked</span> • Click & drag column headers to move left/right
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <ResetColumnsButton isCustomized={deadCols.isCustomized} onReset={deadCols.resetColumns} />
-                    <button onClick={() => exportToCsv('Dead_Stock', companyStockData.dead_stock.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
+                    <button onClick={() => exportToCsv(`Dead_Stock_${isGrossGst ? 'Gross' : 'Net'}`, companyStockData.dead_stock.items.map((item: any) => ({
+                      ...item,
+                      closing_value: getStockVal(item, 'closing_value')
+                    })))} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -3261,7 +3313,7 @@ export default function ReportsPage() {
                     {renderSortIcon('avg_purchase_rate', lossSortField, lossSortDir)}
                   </div>
                 ),
-                renderCell: (item) => formatCurrency(item.avg_purchase_rate),
+                renderCell: (item) => formatCurrency(getStockVal(item, 'avg_purchase_rate')),
               },
               avg_selling_rate: {
                 label: 'Sell Rate',
@@ -3273,7 +3325,7 @@ export default function ReportsPage() {
                     {renderSortIcon('avg_selling_rate', lossSortField, lossSortDir)}
                   </div>
                 ),
-                renderCell: (item) => formatCurrency(item.avg_selling_rate),
+                renderCell: (item) => formatCurrency(getStockVal(item, 'avg_selling_rate')),
               },
               rate_difference: {
                 label: 'Rate Gap',
@@ -3285,7 +3337,7 @@ export default function ReportsPage() {
                     {renderSortIcon('rate_difference', lossSortField, lossSortDir)}
                   </div>
                 ),
-                renderCell: (item) => `-${formatCurrency(item.rate_difference)}`,
+                renderCell: (item) => `-${formatCurrency(getStockVal(item, 'rate_difference'))}`,
               },
               sold_qty: {
                 label: 'Sold Qty',
@@ -3309,7 +3361,7 @@ export default function ReportsPage() {
                     {renderSortIcon('loss_amount', lossSortField, lossSortDir)}
                   </div>
                 ),
-                renderCell: (item) => formatCurrency(item.loss_amount),
+                renderCell: (item) => formatCurrency(getStockVal(item, 'loss_amount')),
               },
             }
 
@@ -3321,8 +3373,8 @@ export default function ReportsPage() {
                     ? (a[lossSortField] || '').localeCompare(b[lossSortField] || '')
                     : (b[lossSortField] || '').localeCompare(a[lossSortField] || '')
                 }
-                const valA = Number(a[lossSortField]) || 0
-                const valB = Number(b[lossSortField]) || 0
+                const valA = getStockVal(a, lossSortField)
+                const valB = getStockVal(b, lossSortField)
                 return lossSortDir === 'asc' ? valA - valB : valB - valA
               })
 
@@ -3332,15 +3384,27 @@ export default function ReportsPage() {
                   <div>
                     <h3 className="font-extrabold text-base flex items-center gap-2">
                       <TrendingDown className="h-4 w-4 text-rose-500" /> Loss-Making Items
+                      <span className={cn(
+                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
+                      )}>
+                        {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
+                      </span>
                     </h3>
                     <p className="text-xs text-muted-foreground">
                       {companyStockData.loss_making_items.count} items sold below purchase cost •
-                      <span className="font-extrabold text-rose-600 ml-1">{formatCurrency(Math.abs(companyStockData.loss_making_items.total_loss))} total loss</span> • Click & drag column headers to move left/right
+                      <span className="font-extrabold text-rose-600 ml-1">{formatCurrency(Math.abs(getStockVal(companyStockData.loss_making_items, 'total_loss')))} total loss</span> • Click & drag column headers to move left/right
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <ResetColumnsButton isCustomized={lossCols.isCustomized} onReset={lossCols.resetColumns} />
-                    <button onClick={() => exportToCsv('Loss_Making_Items', companyStockData.loss_making_items.items)} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
+                    <button onClick={() => exportToCsv(`Loss_Making_Items_${isGrossGst ? 'Gross' : 'Net'}`, companyStockData.loss_making_items.items.map((item: any) => ({
+                      ...item,
+                      avg_purchase_rate: getStockVal(item, 'avg_purchase_rate'),
+                      avg_selling_rate: getStockVal(item, 'avg_selling_rate'),
+                      rate_difference: getStockVal(item, 'rate_difference'),
+                      loss_amount: getStockVal(item, 'loss_amount')
+                    })))} className="p-1.5 bg-muted hover:bg-background border border-border text-xs rounded-lg transition-colors cursor-pointer" title="Export CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -4506,12 +4570,18 @@ export default function ReportsPage() {
                       {formatCurrency(
                         productVoucherPeriodFilter === 'all' && voucherStats.inwardQty > 0
                           ? voucherStats.inwardVal / voucherStats.inwardQty
-                          : (productDetailItem.avg_purchase_rate || productDetailItem.avg_cost || (productDetailItem.purchased_qty > 0 ? productDetailItem.purchased_value / productDetailItem.purchased_qty : 0) || (voucherStats.inwardQty > 0 ? voucherStats.inwardVal / voucherStats.inwardQty : 0) || productDetailItem.closing_rate || 0)
+                          : (getStockVal(productDetailItem, 'avg_purchase_rate') || getStockVal(productDetailItem, 'avg_cost') || (productDetailItem.purchased_qty > 0 ? getStockVal(productDetailItem, 'purchased_value') / productDetailItem.purchased_qty : 0) || (voucherStats.inwardQty > 0 ? voucherStats.inwardVal / voucherStats.inwardQty : 0) || getStockVal(productDetailItem, 'closing_rate') || 0)
                       )}
                     </strong></span>
                     {productDetailItem.avg_selling_rate > 0 && (
-                      <span>• Avg Selling Rate: <strong className="text-emerald-600 dark:text-emerald-400">{formatCurrency(productDetailItem.avg_selling_rate)}</strong></span>
+                      <span>• Avg Selling Rate: <strong className="text-emerald-600 dark:text-emerald-400">{formatCurrency(getStockVal(productDetailItem, 'avg_selling_rate'))}</strong></span>
                     )}
+                    <span className={cn(
+                      "text-[10px] font-black px-2 py-0.5 rounded-full ml-1",
+                      isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
+                    )}>
+                      {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
+                    </span>
                   </p>
                 </div>
               </div>
@@ -4540,23 +4610,23 @@ export default function ReportsPage() {
               const isAllTime = productVoucherPeriodFilter === 'all'
               const purchasedVal = isAllTime && voucherStats.inwardVal > 0 
                 ? voucherStats.inwardVal 
-                : (productDetailItem.purchased_value > 0 ? productDetailItem.purchased_value : (voucherStats.inwardVal || 0))
+                : (productDetailItem.purchased_value > 0 ? getStockVal(productDetailItem, 'purchased_value') : (voucherStats.inwardVal || 0))
               const purchasedQty = isAllTime && voucherStats.inwardQty > 0 
                 ? voucherStats.inwardQty 
                 : (productDetailItem.purchased_qty > 0 ? productDetailItem.purchased_qty : (voucherStats.inwardQty || 0))
               const soldVal = isAllTime && voucherStats.outwardVal > 0 
                 ? voucherStats.outwardVal 
-                : (productDetailItem.sold_value > 0 ? productDetailItem.sold_value : (voucherStats.outwardVal || 0))
+                : (productDetailItem.sold_value > 0 ? getStockVal(productDetailItem, 'sold_value') : (voucherStats.outwardVal || 0))
               const soldQty = isAllTime && voucherStats.outwardQty > 0 
                 ? voucherStats.outwardQty 
                 : (productDetailItem.sold_qty > 0 ? productDetailItem.sold_qty : (voucherStats.outwardQty || 0))
 
               const effectiveAvgRate = (purchasedQty > 0 && purchasedVal > 0)
                 ? (purchasedVal / purchasedQty)
-                : (productDetailItem.avg_purchase_rate || productDetailItem.avg_cost || (voucherStats.inwardQty > 0 ? voucherStats.inwardVal / voucherStats.inwardQty : 0) || productDetailItem.closing_rate || 0)
+                : (getStockVal(productDetailItem, 'avg_purchase_rate') || getStockVal(productDetailItem, 'avg_cost') || (voucherStats.inwardQty > 0 ? voucherStats.inwardVal / voucherStats.inwardQty : 0) || getStockVal(productDetailItem, 'closing_rate') || 0)
 
               const closingQty = productDetailItem.closing_qty ?? productDetailItem.remaining_qty ?? 0
-              const closingVal = productDetailItem.closing_value ?? productDetailItem.remaining_value ?? 0
+              const closingVal = getStockVal(productDetailItem, 'closing_value') || getStockVal(productDetailItem, 'remaining_value') || 0
 
               const pendingQty = isAllTime && voucherStats.inwardQty > 0
                 ? Math.max(0, voucherStats.inwardQty - voucherStats.outwardQty)
@@ -4567,12 +4637,12 @@ export default function ReportsPage() {
               const pendingVal = isAllTime && voucherStats.inwardVal > 0
                 ? Math.round(pendingQty * effectiveAvgRate * 100) / 100
                 : (productDetailItem.pending_value !== undefined && productDetailItem.pending_value > 0
-                    ? productDetailItem.pending_value
+                    ? getStockVal(productDetailItem, 'pending_value')
                     : (closingVal > 0 ? closingVal : Math.round(pendingQty * effectiveAvgRate * 100) / 100))
 
               const profitVal = isAllTime && voucherStats.outwardVal > 0
                 ? Math.round((soldVal - (soldQty * effectiveAvgRate)) * 100) / 100
-                : (productDetailItem.profit_on_sold || 0)
+                : (getStockVal(productDetailItem, 'profit_on_sold') || 0)
               const gpPct = soldVal > 0 ? Math.round((profitVal / soldVal * 100) * 100) / 100 : (productDetailItem.gp_percent || 0)
 
               return (

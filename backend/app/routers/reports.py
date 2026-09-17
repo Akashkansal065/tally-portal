@@ -1356,7 +1356,7 @@ async def get_company_stock_performance(
     from sqlalchemy import text as sa_text
     from app.core.config import settings
 
-    cache_key = f"company_stock_perf_{from_date}_{to_date}_{dead_stock_days}"
+    cache_key = f"company_stock_perf_v4_{from_date}_{to_date}_{dead_stock_days}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -1384,6 +1384,7 @@ async def get_company_stock_performance(
             si.stock_item_id,
             si.name AS item_name,
             COALESCE(u.symbol, 'PCS') AS uom,
+            COALESCE(si.gst_rate_percent, 18.0) AS gst_rate_percent,
             COALESCE(si.opening_qty, 0) AS opening_qty,
             COALESCE(si.opening_rate, 0) AS opening_rate,
             COALESCE(si.closing_qty, 0) AS closing_qty,
@@ -1404,7 +1405,7 @@ async def get_company_stock_performance(
             AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
             {date_filter}
         WHERE si.company_id = :company_id
-        GROUP BY sg.name, sg.stock_group_id, si.stock_item_id, si.name, u.symbol,
+        GROUP BY sg.name, sg.stock_group_id, si.stock_item_id, si.name, u.symbol, si.gst_rate_percent,
                  si.opening_qty, si.opening_rate, si.closing_qty, si.closing_rate, si.closing_value
     """)
     res = await db.execute(company_sql, params)
@@ -1424,6 +1425,10 @@ async def get_company_stock_performance(
         out_val = float(r.outward_value)
         cl_qty = float(r.closing_qty)
         cl_val = float(r.closing_value)
+
+        # GST Multiplier for Gross calculations
+        gst_percent = float(r.gst_rate_percent) if (r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0) else 18.0
+        gst_multiplier = 1.0 + (gst_percent / 100.0)
 
         # Weighted average cost
         total_avail_qty = op_qty + in_qty
@@ -1449,27 +1454,49 @@ async def get_company_stock_performance(
         pending_rate = float(r.avg_purchase_rate) if float(r.avg_purchase_rate) > 0 else avg_cost
         pending_val = round(pending_qty * pending_rate, 2)
 
+        # Gross amounts (including GST)
+        in_val_gross = in_val * gst_multiplier
+        out_val_gross = out_val * gst_multiplier
+        cost_of_sold_gross = cost_of_sold * gst_multiplier
+        profit_on_sold_gross = profit_on_sold * gst_multiplier
+        pending_val_gross = pending_val * gst_multiplier
+        cl_val_gross = cl_val * gst_multiplier
+        avg_cost_gross = avg_cost * gst_multiplier
+        effective_purchase_rate_gross = effective_purchase_rate * gst_multiplier
+        avg_selling_rate_gross = float(r.avg_selling_rate or 0) * gst_multiplier
+
         item_data = {
             "item_id": r.stock_item_id,
             "name": r.item_name,
             "uom": r.uom,
             "company_name": cname,
+            "gst_rate_percent": gst_percent,
             "opening_qty": round(op_qty, 3),
             "opening_value": round(op_qty * op_rate, 2),
+            "opening_value_gross": round((op_qty * op_rate) * gst_multiplier, 2),
             "closing_qty": round(cl_qty, 3),
             "closing_value": round(cl_val, 2),
+            "closing_value_gross": round(cl_val_gross, 2),
             "purchased_qty": round(in_qty, 3),
             "purchased_value": round(in_val, 2),
+            "purchased_value_gross": round(in_val_gross, 2),
             "avg_purchase_rate": round(effective_purchase_rate, 2),
+            "avg_purchase_rate_gross": round(effective_purchase_rate_gross, 2),
             "sold_qty": round(out_qty, 3),
             "sold_value": round(out_val, 2),
-            "avg_selling_rate": round(float(r.avg_selling_rate), 2),
+            "sold_value_gross": round(out_val_gross, 2),
+            "avg_selling_rate": round(float(r.avg_selling_rate or 0), 2),
+            "avg_selling_rate_gross": round(avg_selling_rate_gross, 2),
             "pending_qty": pending_qty,
             "pending_value": pending_val,
+            "pending_value_gross": round(pending_val_gross, 2),
             "cost_of_sold": round(cost_of_sold, 2),
+            "cost_of_sold_gross": round(cost_of_sold_gross, 2),
             "profit_on_sold": round(profit_on_sold, 2),
+            "profit_on_sold_gross": round(profit_on_sold_gross, 2),
             "gp_percent": round(gp_pct, 2),
             "avg_cost": round(avg_cost, 2),
+            "avg_cost_gross": round(avg_cost_gross, 2),
         }
         all_items_list.append(item_data)
 
@@ -1480,28 +1507,40 @@ async def get_company_stock_performance(
                 "items_count": 0,
                 "purchased_qty": 0.0,
                 "purchased_value": 0.0,
+                "purchased_value_gross": 0.0,
                 "sold_qty": 0.0,
                 "sold_value": 0.0,
+                "sold_value_gross": 0.0,
                 "pending_qty": 0.0,
                 "pending_value": 0.0,
+                "pending_value_gross": 0.0,
                 "closing_qty": 0.0,
                 "closing_value": 0.0,
+                "closing_value_gross": 0.0,
                 "cost_of_sold": 0.0,
+                "cost_of_sold_gross": 0.0,
                 "profit_on_sold": 0.0,
+                "profit_on_sold_gross": 0.0,
                 "items": [],
             }
         comp = companies_map[cname]
         comp["items_count"] += 1
         comp["purchased_qty"] += in_qty
         comp["purchased_value"] += in_val
+        comp["purchased_value_gross"] += in_val_gross
         comp["sold_qty"] += out_qty
         comp["sold_value"] += out_val
+        comp["sold_value_gross"] += out_val_gross
         comp["pending_qty"] += pending_qty
         comp["pending_value"] += pending_val
+        comp["pending_value_gross"] += pending_val_gross
         comp["closing_qty"] += cl_qty
         comp["closing_value"] += cl_val
+        comp["closing_value_gross"] += cl_val_gross
         comp["cost_of_sold"] += cost_of_sold
+        comp["cost_of_sold_gross"] += cost_of_sold_gross
         comp["profit_on_sold"] += profit_on_sold
+        comp["profit_on_sold_gross"] += profit_on_sold_gross
         comp["items"].append(item_data)
 
     # Calculate GP% for each company
@@ -1514,23 +1553,31 @@ async def get_company_stock_performance(
             (comp["sold_qty"] / comp["purchased_qty"] * 100) if comp["purchased_qty"] > 0 else 0.0, 2
         )
         # Round numeric fields
-        for k in ["purchased_qty", "purchased_value", "sold_qty", "sold_value",
-                   "pending_qty", "pending_value", "closing_qty", "closing_value",
-                   "cost_of_sold", "profit_on_sold"]:
+        for k in ["purchased_qty", "purchased_value", "purchased_value_gross",
+                  "sold_qty", "sold_value", "sold_value_gross",
+                  "pending_qty", "pending_value", "pending_value_gross",
+                  "closing_qty", "closing_value", "closing_value_gross",
+                  "cost_of_sold", "cost_of_sold_gross",
+                  "profit_on_sold", "profit_on_sold_gross"]:
             comp[k] = round(comp[k], 2)
         companies_list.append(comp)
     companies_list.sort(key=lambda x: x["sold_value"], reverse=True)
 
-    # Grand totals
+    # Grand totals (Net and Gross)
     grand_totals = {
         "total_purchased_value": round(sum(c["purchased_value"] for c in companies_list), 2),
+        "total_purchased_value_gross": round(sum(c["purchased_value_gross"] for c in companies_list), 2),
         "total_purchased_qty": round(sum(c["purchased_qty"] for c in companies_list), 2),
         "total_sold_value": round(sum(c["sold_value"] for c in companies_list), 2),
+        "total_sold_value_gross": round(sum(c["sold_value_gross"] for c in companies_list), 2),
         "total_sold_qty": round(sum(c["sold_qty"] for c in companies_list), 2),
         "total_pending_value": round(sum(c["pending_value"] for c in companies_list), 2),
+        "total_pending_value_gross": round(sum(c["pending_value_gross"] for c in companies_list), 2),
         "total_pending_qty": round(sum(c["pending_qty"] for c in companies_list), 2),
         "total_cost_of_sold": round(sum(c["cost_of_sold"] for c in companies_list), 2),
+        "total_cost_of_sold_gross": round(sum(c["cost_of_sold_gross"] for c in companies_list), 2),
         "total_profit_on_sold": round(sum(c["profit_on_sold"] for c in companies_list), 2),
+        "total_profit_on_sold_gross": round(sum(c["profit_on_sold_gross"] for c in companies_list), 2),
         "total_items": sum(c["items_count"] for c in companies_list),
         "total_companies": len(companies_list),
     }
@@ -1581,6 +1628,7 @@ async def get_company_stock_performance(
         SELECT si.stock_item_id, si.name AS item_name,
                COALESCE(sg.name, 'Others') AS company_name,
                COALESCE(u.symbol, 'PCS') AS uom,
+               COALESCE(si.gst_rate_percent, 18.0) AS gst_rate_percent,
                si.closing_qty, si.closing_value,
                COALESCE(si.closing_rate, 0) AS closing_rate,
                COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
@@ -1593,7 +1641,7 @@ async def get_company_stock_performance(
         LEFT JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
             AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
         WHERE si.company_id = :company_id AND si.closing_qty > 0
-        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_value, si.closing_rate
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.gst_rate_percent, si.closing_qty, si.closing_value, si.closing_rate
         HAVING sold_in_period = 0
         ORDER BY si.closing_value DESC
         LIMIT 50
@@ -1601,27 +1649,39 @@ async def get_company_stock_performance(
     dead_res = await db.execute(dead_sql, params)
     dead_stock = []
     total_dead_value = 0.0
+    total_dead_value_gross = 0.0
     for r in dead_res.fetchall():
         val = float(r.closing_value or 0)
         cl_q = float(r.closing_qty or 0)
         cl_rate = float(r.closing_rate or 0)
         cl_unit = float(r.closing_unit_cost or 0)
         rate = cl_unit if cl_unit > 0 else cl_rate
+        gst_p = float(r.gst_rate_percent) if (r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0) else 18.0
+        gst_m = 1.0 + (gst_p / 100.0)
+        val_gross = val * gst_m
         total_dead_value += val
+        total_dead_value_gross += val_gross
         dead_stock.append({
             "item_id": r.stock_item_id,
             "name": r.item_name,
             "company_name": r.company_name,
             "uom": r.uom,
+            "gst_rate_percent": gst_p,
             "closing_qty": round(cl_q, 3),
             "closing_rate": round(cl_rate, 2),
+            "closing_rate_gross": round(cl_rate * gst_m, 2),
             "closing_value": round(val, 2),
+            "closing_value_gross": round(val_gross, 2),
             "purchased_qty": 0.0,
             "purchased_value": 0.0,
+            "purchased_value_gross": 0.0,
             "pending_qty": round(cl_q, 3),
             "pending_value": round(val, 2),
+            "pending_value_gross": round(val_gross, 2),
             "avg_purchase_rate": round(rate, 2),
+            "avg_purchase_rate_gross": round(rate * gst_m, 2),
             "avg_cost": round(rate, 2),
+            "avg_cost_gross": round(rate * gst_m, 2),
             "last_sold_date": str(r.last_sold_date) if r.last_sold_date else None,
             "days_threshold": dead_stock_days,
         })
@@ -1633,6 +1693,7 @@ async def get_company_stock_performance(
         SELECT si.stock_item_id, si.name AS item_name,
                COALESCE(sg.name, 'Others') AS company_name,
                COALESCE(u.symbol, 'PCS') AS uom,
+               COALESCE(si.gst_rate_percent, 18.0) AS gst_rate_percent,
                COALESCE(si.opening_qty, 0) AS opening_qty,
                COALESCE(si.opening_rate, 0) AS opening_rate,
                si.closing_qty, si.closing_value,
@@ -1650,7 +1711,7 @@ async def get_company_stock_performance(
         LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
         LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
         WHERE si.company_id = :company_id
-        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.opening_qty, si.opening_rate, si.closing_qty, si.closing_value, si.closing_rate
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.gst_rate_percent, si.opening_qty, si.opening_rate, si.closing_qty, si.closing_value, si.closing_rate
         HAVING sold_qty > 0
     """)
     loss_res = await db.execute(loss_sql, params)
@@ -1684,6 +1745,9 @@ async def get_company_stock_performance(
         if loss_amount <= 0.001 or profit_on_sold >= -0.001:
             continue
 
+        gst_p = float(r.gst_rate_percent) if (r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0) else 18.0
+        gst_m = 1.0 + (gst_p / 100.0)
+
         effective_sell_rate = s_val / s_qty if s_qty > 0 else 0.0
         effective_buy_rate = avg_cost
         rate_diff = effective_buy_rate - effective_sell_rate
@@ -1697,22 +1761,34 @@ async def get_company_stock_performance(
             "name": r.item_name,
             "company_name": r.company_name,
             "uom": r.uom,
+            "gst_rate_percent": gst_p,
             "purchased_qty": round(in_q, 3),
             "purchased_value": round(in_v, 2),
+            "purchased_value_gross": round(in_v * gst_m, 2),
             "sold_qty": round(s_qty, 3),
             "sold_value": round(s_val, 2),
+            "sold_value_gross": round(s_val * gst_m, 2),
             "pending_qty": pending_qty,
             "pending_value": pending_val,
+            "pending_value_gross": round(pending_val * gst_m, 2),
             "closing_qty": round(float(r.closing_qty or 0), 3),
             "closing_rate": round(cl_rate, 2),
+            "closing_rate_gross": round(cl_rate * gst_m, 2),
             "closing_value": round(float(r.closing_value or 0), 2),
+            "closing_value_gross": round(float(r.closing_value or 0) * gst_m, 2),
             "avg_purchase_rate": round(effective_buy_rate, 2),
+            "avg_purchase_rate_gross": round(effective_buy_rate * gst_m, 2),
             "avg_selling_rate": round(effective_sell_rate, 2),
+            "avg_selling_rate_gross": round(effective_sell_rate * gst_m, 2),
             "avg_cost": round(avg_cost, 2),
+            "avg_cost_gross": round(avg_cost * gst_m, 2),
             "rate_difference": round(rate_diff, 2),
             "cost_of_sold": round(cogs, 2),
+            "cost_of_sold_gross": round(cogs * gst_m, 2),
             "loss_amount": round(loss_amount, 2),
+            "loss_amount_gross": round(loss_amount * gst_m, 2),
             "profit_on_sold": round(profit_on_sold, 2),
+            "profit_on_sold_gross": round(profit_on_sold * gst_m, 2),
             "gp_percent": round(gp_pct, 2),
         })
 
@@ -1755,6 +1831,7 @@ async def get_company_stock_performance(
         SELECT si.stock_item_id, si.name AS item_name,
                COALESCE(sg.name, 'Others') AS company_name,
                COALESCE(u.symbol, 'PCS') AS uom,
+               COALESCE(si.gst_rate_percent, 18.0) AS gst_rate_percent,
                si.closing_qty, si.closing_value,
                COALESCE(si.closing_rate, 0) AS closing_rate,
                COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
@@ -1774,7 +1851,7 @@ async def get_company_stock_performance(
         LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
         LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
         WHERE si.company_id = :company_id
-        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.closing_qty, si.closing_rate, si.closing_value, si.opening_qty, si.opening_rate
+        GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.gst_rate_percent, si.closing_qty, si.closing_rate, si.closing_value, si.opening_qty, si.opening_rate
         HAVING sold_qty > 0
         ORDER BY sold_qty DESC
         LIMIT 25
@@ -1799,6 +1876,9 @@ async def get_company_stock_performance(
             avg_cost = fallback_cost
         buy_rate = float(r.avg_inward_rate or 0) if float(r.avg_inward_rate or 0) > 0 else avg_cost
 
+        gst_p = float(r.gst_rate_percent) if (r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0) else 18.0
+        gst_m = 1.0 + (gst_p / 100.0)
+
         cogs = s_qty * avg_cost
         profit = s_val - cogs
         gp_pct = (profit / s_val * 100) if s_val > 0 else 0
@@ -1810,21 +1890,31 @@ async def get_company_stock_performance(
             "name": r.item_name,
             "company_name": r.company_name,
             "uom": r.uom,
+            "gst_rate_percent": gst_p,
             "purchased_qty": round(in_q, 3),
             "purchased_value": round(in_v, 2),
+            "purchased_value_gross": round(in_v * gst_m, 2),
             "sold_qty": round(s_qty, 3),
             "sold_value": round(s_val, 2),
+            "sold_value_gross": round(s_val * gst_m, 2),
             "pending_qty": pending_qty,
             "pending_value": pending_val,
+            "pending_value_gross": round(pending_val * gst_m, 2),
             "remaining_qty": round(float(r.closing_qty), 3),
             "remaining_value": round(float(r.closing_value or 0), 2),
             "closing_qty": round(float(r.closing_qty), 3),
             "closing_rate": round(cl_rate, 2),
+            "closing_rate_gross": round(cl_rate * gst_m, 2),
             "closing_value": round(float(r.closing_value or 0), 2),
+            "closing_value_gross": round(float(r.closing_value or 0) * gst_m, 2),
             "avg_purchase_rate": round(buy_rate, 2),
+            "avg_purchase_rate_gross": round(buy_rate * gst_m, 2),
             "avg_selling_rate": round(float(r.avg_selling_rate or 0), 2),
+            "avg_selling_rate_gross": round(float(r.avg_selling_rate or 0) * gst_m, 2),
             "avg_cost": round(avg_cost, 2),
+            "avg_cost_gross": round(avg_cost * gst_m, 2),
             "profit_on_sold": round(profit, 2),
+            "profit_on_sold_gross": round(profit * gst_m, 2),
             "gp_percent": round(gp_pct, 2),
         })
 

@@ -348,7 +348,7 @@ async def get_recent_visits(
             "longitude": v.longitude,
             "comments": v.comments,
             "status": v.status,
-            "createdAt": v.created_at.isoformat() if v.created_at else None,
+            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
             "photoUrl": v.photo_url,
         })
     return output
@@ -386,7 +386,7 @@ async def get_user_visit_history(
             "longitude": v.longitude,
             "comments": v.comments,
             "status": v.status,
-            "createdAt": v.created_at.isoformat() if v.created_at else None,
+            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
             "photoUrl": v.photo_url,
         })
     return output
@@ -408,7 +408,7 @@ async def get_visit_logs(
         from datetime import date as dt
         try:
             d = dt.fromisoformat(date)
-            query = query.where(func.date(SalesVisit.created_at) == d)
+            query = query.where(func.date(func.convert_tz(SalesVisit.created_at, '+00:00', '+05:30')) == d)
         except Exception:
             pass
     if user_id:
@@ -439,7 +439,7 @@ async def get_visit_logs(
             "comments": v.comments,
             "status": v.status,
             "ip_address": v.ip_address or "152.59.87.245",
-            "createdAt": v.created_at.isoformat() if v.created_at else None,
+            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
             "photoUrl": v.photo_url,
         })
     return output

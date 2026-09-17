@@ -506,10 +506,10 @@ export function GlobalHeader() {
               {showNotifications && (
                 <>
                   <div
-                    className="fixed inset-0 z-40"
+                    className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[1px] sm:bg-transparent sm:backdrop-blur-none"
                     onClick={() => setShowNotifications(false)}
                   />
-                  <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden text-foreground animate-in fade-in slide-in-from-top-2 duration-150">
+                  <div className="fixed sm:absolute inset-x-3 sm:inset-x-auto sm:right-0 top-[calc(3.5rem+env(safe-area-inset-top,0px)+8px)] sm:top-full sm:mt-2 w-auto sm:w-96 max-w-[calc(100vw-24px)] bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden text-foreground animate-in fade-in slide-in-from-top-2 duration-150">
                     <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/40">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="font-extrabold text-sm text-foreground">Notifications</span>
@@ -548,7 +548,7 @@ export function GlobalHeader() {
                       </div>
                     </div>
 
-                    <div className="max-h-[380px] overflow-y-auto divide-y divide-border/40">
+                    <div className="max-h-[min(380px,calc(100dvh-10rem))] sm:max-h-[380px] overflow-y-auto divide-y divide-border/40">
                       {loadingNotifications ? (
                         <div className="p-8 flex flex-col items-center justify-center gap-2 text-muted-foreground">
                           <Loader2 className="w-5 h-5 animate-spin text-primary" />
@@ -603,7 +603,7 @@ export function GlobalHeader() {
                               )}
                               <button
                                 onClick={(e) => deleteNotification(notif.id, notif.is_read, e)}
-                                className="p-1 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                className="p-1 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-70 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
                                 title="Dismiss notification"
                               >
                                 <X className="w-3.5 h-3.5" />
