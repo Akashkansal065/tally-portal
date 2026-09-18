@@ -467,8 +467,39 @@ export default function CustomerProfilePage() {
 
     const reader = new FileReader()
     reader.onload = (event) => {
-      setUploadBase64(event.target?.result as string)
-      setIsCropping(true)
+      const rawBase64 = event.target?.result as string
+      // Compress high-res mobile camera images to max 1800px for fast, reliable upload
+      const img = new Image()
+      img.onload = () => {
+        const MAX_DIM = 1800
+        let width = img.width
+        let height = img.height
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width)
+            width = MAX_DIM
+          } else {
+            width = Math.round((width * MAX_DIM) / height)
+            height = MAX_DIM
+          }
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height)
+          setUploadBase64(canvas.toDataURL('image/jpeg', 0.85))
+        } else {
+          setUploadBase64(rawBase64)
+        }
+        setIsCropping(true)
+      }
+      img.onerror = () => {
+        setUploadBase64(rawBase64)
+        setIsCropping(true)
+      }
+      img.src = rawBase64
     }
     reader.readAsDataURL(file)
 
@@ -2779,8 +2810,8 @@ export default function CustomerProfilePage() {
 
                 {uploadBase64 ? (
                   isCropping ? (
-                    <div className="relative rounded-2xl overflow-hidden border border-border aspect-square sm:aspect-video bg-black flex flex-col items-center justify-center">
-                      <div className="relative w-full h-full flex-1 min-h-[250px]">
+                    <div className="rounded-2xl overflow-hidden border border-border bg-card flex flex-col shadow-sm">
+                      <div className="relative w-full h-[220px] sm:h-[260px] bg-black overflow-hidden">
                         <Cropper
                           image={uploadBase64}
                           crop={crop}
@@ -2793,9 +2824,9 @@ export default function CustomerProfilePage() {
                           onZoomChange={setZoom}
                         />
                       </div>
-                      <div className="w-full bg-background p-3 flex flex-col gap-3">
-                        <div className="flex items-center gap-4">
-                           <span className="text-xs font-semibold whitespace-nowrap">Zoom</span>
+                      <div className="w-full bg-card p-3.5 flex flex-col gap-2.5 border-t border-border">
+                        <div className="flex items-center gap-3">
+                           <span className="text-xs font-semibold whitespace-nowrap w-12 text-muted-foreground">Zoom</span>
                            <input
                              type="range"
                              value={zoom}
@@ -2804,11 +2835,11 @@ export default function CustomerProfilePage() {
                              step={0.1}
                              aria-labelledby="Zoom"
                              onChange={(e) => setZoom(Number(e.target.value))}
-                             className="w-full"
+                             className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
                            />
                         </div>
-                        <div className="flex items-center gap-4">
-                           <span className="text-xs font-semibold whitespace-nowrap">Rotate</span>
+                        <div className="flex items-center gap-3">
+                           <span className="text-xs font-semibold whitespace-nowrap w-12 text-muted-foreground">Rotate</span>
                            <input
                              type="range"
                              value={rotation}
@@ -2817,17 +2848,17 @@ export default function CustomerProfilePage() {
                              step={1}
                              aria-labelledby="Rotation"
                              onChange={(e) => setRotation(Number(e.target.value))}
-                             className="w-full"
+                             className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
                            />
                         </div>
-                        <div className="flex items-center justify-between gap-2 pt-1">
+                        <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/60">
                           <button
                             type="button"
                             onClick={() => {
                               setUploadBase64('')
                               setIsCropping(false)
                             }}
-                            className="px-3 py-1.5 rounded-lg bg-muted text-foreground text-xs font-semibold"
+                            className="flex-1 py-2 px-3 rounded-xl bg-muted hover:bg-muted/80 text-foreground text-xs font-bold transition-colors text-center"
                           >
                             Cancel
                           </button>
@@ -2842,7 +2873,7 @@ export default function CustomerProfilePage() {
                                 console.error(e)
                               }
                             }}
-                            className="px-4 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-bold shadow-sm"
+                            className="flex-1 py-2 px-3 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold shadow-sm transition-colors text-center"
                           >
                             Save Crop
                           </button>
@@ -2857,7 +2888,7 @@ export default function CustomerProfilePage() {
                         <button
                           type="button"
                           onClick={() => setIsCropping(true)}
-                          className="p-1.5 rounded-xl bg-black/70 text-white hover:bg-black opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="p-1.5 rounded-xl bg-black/70 text-white hover:bg-black opacity-90 sm:opacity-0 group-hover:opacity-100 transition-opacity"
                           title="Crop Image"
                         >
                           <Edit2 className="w-4 h-4" />

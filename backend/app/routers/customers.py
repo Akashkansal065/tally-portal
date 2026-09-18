@@ -1795,7 +1795,6 @@ async def upload_customer_shop_photo(
     if photo_type == "customer_owner":
         profile.customer_photo_url = ik_res["url"]
         is_primary = True
-        target_owner = None
         if req.owner_id:
             ow_res = await db.execute(
                 select(CustomerOwner).where(
@@ -1804,14 +1803,15 @@ async def upload_customer_shop_photo(
                 )
             )
             target_owner = ow_res.scalars().first()
-    ik_res = upload_customer_photo(req.photo_base64, folder=ik_folder, file_prefix=file_prefix)
-    if not ik_res.get("success"):
-        raise HTTPException(status_code=500, detail=ik_res.get("error", "ImageKit upload failed"))
+            if target_owner:
+                target_owner.photo_url = ik_res["url"]
+                target_owner.imagekit_file_id = ik_res.get("file_id")
 
     # Save record to customer_photos table
     photo_entry = CustomerPhoto(
         company_id=user.company_id,
         customer_profile_id=profile.id if profile else None,
+        ledger_id=ledger_id,
         photo_type=photo_type,
         imagekit_file_id=ik_res.get("file_id"),
         imagekit_url=ik_res.get("url"),
@@ -1820,18 +1820,19 @@ async def upload_customer_shop_photo(
         caption=req.caption.strip() if req.caption else None,
         latitude=req.latitude,
         longitude=req.longitude,
-        user_id=user.user_id,
-        is_primary=False,
+        uploaded_by=user.user_id,
+        is_primary=is_primary,
     )
     db.add(photo_entry)
 
-    # If photo_type is customer_owner, also set as profile avatar if none exists
+    # If photo_type is customer_owner, set as profile avatar
     if profile:
-        if photo_type == "customer_owner" and not profile.customer_photo_url:
+        if photo_type == "customer_owner":
             profile.customer_photo_url = ik_res.get("url")
             photo_entry.is_primary = True
         elif photo_type in ("shop_front", "shop_board") and not profile.shop_photo_url:
             profile.shop_photo_url = ik_res.get("url")
+        profile.updated_at = func.now()
 
     await db.commit()
     await db.refresh(photo_entry)
