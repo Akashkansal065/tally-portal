@@ -34,6 +34,7 @@ class AdminUserResponse(BaseModel):
     showOrders: bool
     showCheckIn: bool
     showGst: bool
+    showCustomers: bool = True
     ledgerScope: str
     stockScope: str
     allowedStockGroups: Optional[str] = None
@@ -151,6 +152,7 @@ async def get_users(
             showOrders=toggles["showOrders"],
             showCheckIn=toggles["showCheckIn"],
             showGst=toggles["showGst"],
+            showCustomers=toggles.get("showCustomers", True),
             ledgerScope=u.ledger_scope,
             stockScope=u.stock_scope,
             allowedStockGroups=u.allowed_stock_groups,
@@ -218,6 +220,7 @@ async def create_user(
         showOrders=toggles["showOrders"],
         showCheckIn=toggles["showCheckIn"],
         showGst=toggles["showGst"],
+        showCustomers=toggles.get("showCustomers", True),
         ledgerScope=user.ledger_scope,
         stockScope=user.stock_scope,
         allowedStockGroups=user.allowed_stock_groups,
@@ -698,6 +701,7 @@ class UserPermissionsToggle(BaseModel):
     showOrders: bool
     showCheckIn: bool
     showGst: bool
+    showCustomers: Optional[bool] = None
 
 class UserScopesToggle(BaseModel):
     ledgerScope: str
@@ -739,6 +743,8 @@ async def update_user_permissions(
         "visits": payload.showCheckIn,
         "gst": payload.showGst
     }
+    if payload.showCustomers is not None:
+        mapping["customers"] = payload.showCustomers
     
     for mod_code, requested_val in mapping.items():
         # Find module

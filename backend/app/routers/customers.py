@@ -14,7 +14,7 @@ from datetime import datetime
 from collections import defaultdict, Counter
 
 from app.core.database import get_db
-from app.core.permissions import get_current_user, require_permission
+from app.core.permissions import get_current_user, require_permission, get_effective_permission
 from app.models.portal_core import User, CustomerProfile, CustomerLocationLog, CustomerPhoto, CustomerOwner
 from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting
 from app.services.geo_service import calculate_haversine_distance, evaluate_checkin_proximity
@@ -186,7 +186,7 @@ async def list_customers(
     sort_by: Optional[str] = Query("name_asc", description="name_asc, name_desc, nearest, missing_gps, last_visited, health_asc, health_desc"),
     my_lat: Optional[float] = Query(None, description="Current salesperson latitude"),
     my_lon: Optional[float] = Query(None, description="Current salesperson longitude"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -591,7 +591,7 @@ async def list_customers(
 
 @router.get("/localities")
 async def get_localities_and_routes(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """Return distinct localities, cities, and routes with customer counts for instant filter chips."""
@@ -759,7 +759,7 @@ async def get_unlinked_ledgers(
 @router.post("")
 async def create_field_customer(
     req: CustomerCreateRequest,
-    user: User = Depends(require_permission("visits", "create")),
+    user: User = Depends(require_permission("customers", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -839,7 +839,7 @@ async def create_field_customer(
 async def update_customer_profile(
     target_id: str,
     req: CustomerProfileUpdateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1048,7 +1048,7 @@ async def link_customer_to_ledger(
 async def tag_customer_location(
     target_id: str,
     req: TagLocationRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1142,7 +1142,7 @@ async def tag_customer_location(
 @router.get("/{target_id}/location-history")
 async def get_customer_location_history(
     target_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1220,7 +1220,7 @@ async def get_customer_location_history(
 @router.get("/{target_id}")
 async def get_customer_profile_detail(
     target_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1348,35 +1348,41 @@ async def get_customer_profile_detail(
                 "created_at": ph.created_at.isoformat() if ph.created_at else None,
             })
 
-    # Fetch Recent Visits
+    # Fetch Recent Visits (check permission)
     visits = []
-    visit_conds = []
-    if ledger:
-        visit_conds.append(SalesVisit.ledger_id == ledger.ledger_id)
-    if profile and profile.custom_name:
-        visit_conds.append(SalesVisit.custom_shop_name == profile.custom_name)
+    can_view_visits = bool(user.role and user.role.name.lower() in ("admin", "superadmin", "owner"))
+    if not can_view_visits:
+        visit_perm = await get_effective_permission(user.user_id, "check_in", db)
+        can_view_visits = bool(visit_perm.get("can_read"))
 
-    if visit_conds:
-        v_stmt = (
-            select(SalesVisit)
-            .options(selectinload(SalesVisit.user))
-            .where(or_(*visit_conds))
-            .order_by(desc(SalesVisit.created_at))
-            .limit(15)
-        )
-        v_res = await db.execute(v_stmt)
-        for v in v_res.scalars().all():
-            u_name = v.user.username if v.user else "Sales Rep"
-            visits.append({
-                "id": v.id,
-                "salesperson": u_name,
-                "comments": v.comments,
-                "latitude": v.latitude,
-                "longitude": v.longitude,
-                "photo_url": v.photo_url,
-                "status": v.status,
-                "created_at": v.created_at.isoformat() if v.created_at else None,
-            })
+    if can_view_visits:
+        visit_conds = []
+        if ledger:
+            visit_conds.append(SalesVisit.ledger_id == ledger.ledger_id)
+        if profile and profile.custom_name:
+            visit_conds.append(SalesVisit.custom_shop_name == profile.custom_name)
+
+        if visit_conds:
+            v_stmt = (
+                select(SalesVisit)
+                .options(selectinload(SalesVisit.user))
+                .where(or_(*visit_conds))
+                .order_by(desc(SalesVisit.created_at))
+                .limit(15)
+            )
+            v_res = await db.execute(v_stmt)
+            for v in v_res.scalars().all():
+                u_name = v.user.username if v.user else "Sales Rep"
+                visits.append({
+                    "id": v.id,
+                    "salesperson": u_name,
+                    "comments": v.comments,
+                    "latitude": v.latitude,
+                    "longitude": v.longitude,
+                    "photo_url": v.photo_url,
+                    "status": v.status,
+                    "created_at": v.created_at.isoformat() if v.created_at else None,
+                })
 
     # Fetch Latest location log
     latest_log = None
@@ -1480,8 +1486,16 @@ async def get_customer_profile_detail(
     # ── Financial Ledger Statement & Vouchers ──
     financial_summary = None
     recent_vouchers = []
+    recent_payments = []
 
-    if ledger:
+    can_view_finance = bool(user.role and user.role.name.lower() in ("admin", "superadmin", "owner"))
+    if not can_view_finance:
+        debtor_perm = await get_effective_permission(user.user_id, "debtors", db)
+        ledger_perm = await get_effective_permission(user.user_id, "ledgers", db)
+        rec_perm = await get_effective_permission(user.user_id, "receivables", db)
+        can_view_finance = bool(debtor_perm.get("can_read") or ledger_perm.get("can_read") or rec_perm.get("can_read"))
+
+    if ledger and can_view_finance:
         op_bal = float(ledger.opening_balance or 0)
         op_type = ledger.opening_balance_type or "Dr"
         
@@ -1569,43 +1583,9 @@ async def get_customer_profile_detail(
         except Exception as v_err:
             print(f"Warning: Could not fetch vouchers for customer statement: {v_err}")
 
-    # ── Recent Portal Orders ──
-    recent_orders = []
-    try:
-        from app.routers.orders import TempOrder
-        o_conds = []
-        if ledger:
-            o_conds.append(TempOrder.ledger_id == ledger.ledger_id)
-        if name:
-            o_conds.append(TempOrder.custom_customer_name == name)
-        if o_conds:
-            o_stmt = (
-                select(TempOrder)
-                .options(selectinload(TempOrder.items), selectinload(TempOrder.user))
-                .where(or_(*o_conds))
-                .order_by(desc(TempOrder.created_at))
-                .limit(10)
-            )
-            o_res = await db.execute(o_stmt)
-            for o in o_res.scalars().all():
-                items_cnt = sum(it.quantity or 0 for it in o.items) if o.items else 0
-                amt = sum(float(it.quantity or 0) * float(it.price or 0) for it in o.items) if o.items else 0.0
-                recent_orders.append({
-                    "id": o.id,
-                    "status": o.status,
-                    "items_count": items_cnt,
-                    "total_amount": round(amt, 2),
-                    "created_by": o.user.username if o.user else "Salesperson",
-                    "created_at": o.created_at.isoformat() if o.created_at else None
-                })
-    except Exception as ord_err:
-        print(f"Warning: Could not fetch orders for customer: {ord_err}")
-
-    # ── Recent Shop Payments ──
-    recent_payments = []
-    try:
-        from app.models.portal_core import ShopPayment
-        if ledger:
+        # Recent Shop Payments
+        try:
+            from app.models.portal_core import ShopPayment
             p_stmt = (
                 select(ShopPayment)
                 .options(selectinload(ShopPayment.user))
@@ -1625,8 +1605,46 @@ async def get_customer_profile_detail(
                     "collected_by": p.user.username if p.user else "Staff",
                     "created_at": p.created_at.isoformat() if p.created_at else None
                 })
-    except Exception as pay_err:
-        print(f"Warning: Could not fetch payments for customer: {pay_err}")
+        except Exception as pay_err:
+            print(f"Warning: Could not fetch payments for customer: {pay_err}")
+
+    # ── Recent Portal Orders ──
+    recent_orders = []
+    can_view_orders = bool(user.role and user.role.name.lower() in ("admin", "superadmin", "owner"))
+    if not can_view_orders:
+        ord_perm = await get_effective_permission(user.user_id, "orders", db)
+        can_view_orders = bool(ord_perm.get("can_read"))
+
+    if can_view_orders:
+        try:
+            from app.routers.orders import TempOrder
+            o_conds = []
+            if ledger:
+                o_conds.append(TempOrder.ledger_id == ledger.ledger_id)
+            if name:
+                o_conds.append(TempOrder.custom_customer_name == name)
+            if o_conds:
+                o_stmt = (
+                    select(TempOrder)
+                    .options(selectinload(TempOrder.items), selectinload(TempOrder.user))
+                    .where(or_(*o_conds))
+                    .order_by(desc(TempOrder.created_at))
+                    .limit(10)
+                )
+                o_res = await db.execute(o_stmt)
+                for o in o_res.scalars().all():
+                    items_cnt = sum(it.quantity or 0 for it in o.items) if o.items else 0
+                    amt = sum(float(it.quantity or 0) * float(it.price or 0) for it in o.items) if o.items else 0.0
+                    recent_orders.append({
+                        "id": o.id,
+                        "status": o.status,
+                        "items_count": items_cnt,
+                        "total_amount": round(amt, 2),
+                        "created_by": o.user.username if o.user else "Salesperson",
+                        "created_at": o.created_at.isoformat() if o.created_at else None
+                    })
+        except Exception as ord_err:
+            print(f"Warning: Could not fetch orders for customer: {ord_err}")
 
     return {
         "key": f"tally_{ledger.ledger_id}" if ledger else f"profile_{profile.id}",
@@ -1686,7 +1704,7 @@ async def get_customer_profile_detail(
 async def upload_customer_shop_photo(
     target_id: str,
     req: CustomerPhotoUploadRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1786,47 +1804,41 @@ async def upload_customer_shop_photo(
                 )
             )
             target_owner = ow_res.scalars().first()
-        if not target_owner:
-            ow_res = await db.execute(
-                select(CustomerOwner).where(
-                    CustomerOwner.customer_profile_id == profile.id,
-                    CustomerOwner.company_id == user.company_id,
-                    CustomerOwner.is_primary == True
-                )
-            )
-            target_owner = ow_res.scalars().first()
+    ik_res = upload_customer_photo(req.photo_base64, folder=ik_folder, file_prefix=file_prefix)
+    if not ik_res.get("success"):
+        raise HTTPException(status_code=500, detail=ik_res.get("error", "ImageKit upload failed"))
 
-        if target_owner:
-            target_owner.photo_url = ik_res["url"]
-            target_owner.imagekit_file_id = ik_res["file_id"]
-    elif photo_type == "shop_front":
-        if not profile.shop_photo_url or is_primary:
-            profile.shop_photo_url = ik_res["url"]
-            is_primary = True
-
+    # Save record to customer_photos table
     photo_entry = CustomerPhoto(
         company_id=user.company_id,
-        customer_profile_id=profile.id,
-        ledger_id=ledger_id,
+        customer_profile_id=profile.id if profile else None,
         photo_type=photo_type,
-        imagekit_file_id=ik_res["file_id"],
-        imagekit_url=ik_res["url"],
-        imagekit_thumbnail_url=ik_res["thumbnail_url"],
-        imagekit_file_path=ik_res["file_path"],
-        caption=req.caption,
+        imagekit_file_id=ik_res.get("file_id"),
+        imagekit_url=ik_res.get("url"),
+        imagekit_thumbnail_url=ik_res.get("thumbnail_url"),
+        imagekit_file_path=ik_res.get("file_path"),
+        caption=req.caption.strip() if req.caption else None,
         latitude=req.latitude,
         longitude=req.longitude,
-        is_primary=is_primary,
-        uploaded_by=user.user_id,
+        user_id=user.user_id,
+        is_primary=False,
     )
     db.add(photo_entry)
-    profile.updated_at = func.now()
+
+    # If photo_type is customer_owner, also set as profile avatar if none exists
+    if profile:
+        if photo_type == "customer_owner" and not profile.customer_photo_url:
+            profile.customer_photo_url = ik_res.get("url")
+            photo_entry.is_primary = True
+        elif photo_type in ("shop_front", "shop_board") and not profile.shop_photo_url:
+            profile.shop_photo_url = ik_res.get("url")
+
     await db.commit()
     await db.refresh(photo_entry)
 
     return {
         "success": True,
-        "message": f"Photo ({photo_type}) uploaded successfully to ImageKit directory '{folder}'.",
+        "message": "Photo uploaded successfully to ImageKit.",
         "photo": {
             "id": photo_entry.id,
             "photo_type": photo_entry.photo_type,
@@ -1836,7 +1848,6 @@ async def upload_customer_shop_photo(
             "caption": photo_entry.caption,
             "latitude": photo_entry.latitude,
             "longitude": photo_entry.longitude,
-            "is_primary": photo_entry.is_primary,
             "uploaded_by_name": user.username,
             "created_at": photo_entry.created_at.isoformat() if photo_entry.created_at else None,
         }
@@ -1846,7 +1857,7 @@ async def upload_customer_shop_photo(
 @router.get("/{target_id}/photos")
 async def list_customer_photos(
     target_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """List all photos uploaded for this customer."""
@@ -1920,7 +1931,7 @@ async def list_customer_photos(
 async def delete_customer_photo_endpoint(
     target_id: str,
     photo_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     """Delete a customer photo from database and ImageKit storage."""
@@ -1958,7 +1969,7 @@ async def delete_customer_photo_endpoint(
 @router.delete("/{target_id}")
 async def delete_customer_endpoint(
     target_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -2125,7 +2136,7 @@ async def resolve_customer_profile_for_target(
 @router.get("/{target_id}/owners")
 async def get_customer_owners(
     target_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """List all registered owners/partners for a customer."""
@@ -2194,7 +2205,7 @@ async def get_customer_owners(
 async def add_customer_owner(
     target_id: str,
     req: CustomerOwnerCreate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     """Add a new owner or business partner to a customer shop."""
@@ -2226,7 +2237,6 @@ async def add_customer_owner(
             ledger = l_res.scalars().first()
 
         existing_name = (profile.contact_person if profile and profile.contact_person else None) or (ledger.contact_person if ledger and ledger.contact_person else None)
-        # Only materialize if the existing contact person is different from the one being added
         if existing_name and existing_name.strip().lower() != req.name.strip().lower():
             existing_phone = (profile.phone if profile and profile.phone else None) or (ledger.phone if ledger and ledger.phone else None) or (ledger.mobile if ledger and ledger.mobile else None)
             existing_wa = (profile.whatsapp_number if profile and profile.whatsapp_number else None) or existing_phone
@@ -2287,6 +2297,17 @@ async def add_customer_owner(
         notes=req.notes.strip() if req.notes else None
     )
     db.add(new_owner)
+
+    # Sync primary owner contact to customer_profile
+    if should_be_primary:
+        profile.contact_person = new_owner.name
+        if new_owner.phone:
+            profile.phone = new_owner.phone
+        if new_owner.whatsapp_number:
+            profile.whatsapp_number = new_owner.whatsapp_number
+        if new_owner.photo_url:
+            profile.customer_photo_url = new_owner.photo_url
+
     profile.updated_at = func.now()
     await db.commit()
     await db.refresh(new_owner)
@@ -2314,7 +2335,7 @@ async def update_customer_owner(
     target_id: str,
     owner_id: int,
     req: CustomerOwnerUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     """Update details of an existing owner/partner."""
@@ -2394,7 +2415,7 @@ async def update_customer_owner(
 async def delete_customer_owner(
     target_id: str,
     owner_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     """Delete an owner/partner from a customer shop."""
@@ -2457,7 +2478,7 @@ async def upload_owner_photo(
     target_id: str,
     owner_id: int,
     req: OwnerPhotoUploadRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("customers", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     """Upload photo for a specific owner/partner to ImageKit in the customer directory."""

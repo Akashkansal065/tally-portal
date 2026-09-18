@@ -35,20 +35,16 @@ async def lifespan(app: FastAPI):
     await auto_sync_all_model_schemas()
         
     # 3. Seed global default roles, modules, permissions
-    async with AsyncSessionLocal() as session:
-        roles_count = (await session.execute(text("SELECT COUNT(*) FROM roles"))).scalar()
-        if roles_count == 0:
-            print("Database empty. Auto-seeding default global metadata...")
-            def sync_seed(connection):
-                with connection.begin():
-                    # We pass the underlying synchronous DBAPI connection wrapper
-                    from sqlalchemy.orm import Session
-                    sync_db = Session(bind=connection)
-                    seed_global_data(sync_db)
-            async with engine.connect() as conn:
-                # We need to run the sync function in a thread pool since it blocks
-                # and SQLAlchemy requires a special wrapper for sync execution
-                await conn.run_sync(sync_seed)
+    def sync_seed(connection):
+        with connection.begin():
+            # We pass the underlying synchronous DBAPI connection wrapper
+            from sqlalchemy.orm import Session
+            sync_db = Session(bind=connection)
+            seed_global_data(sync_db)
+    async with engine.connect() as conn:
+        # We need to run the sync function in a thread pool since it blocks
+        # and SQLAlchemy requires a special wrapper for sync execution
+        await conn.run_sync(sync_seed)
 
     # 4. Start background DB keep-alive worker task (pings every 2 minutes)
     keep_alive_task = asyncio.create_task(db_keep_alive_task(120))

@@ -16,9 +16,17 @@ export interface UserPermissions {
   showOrders: boolean
   showCheckIn: boolean
   showGst: boolean
+  showCustomers: boolean
   ledgerScope: 'all' | 'dr_only' | 'restricted'
   stockScope: 'full' | 'restricted'
   isAdmin: boolean
+}
+
+export interface ModuleCapability {
+  can_create: boolean
+  can_read: boolean
+  can_update: boolean
+  can_delete: boolean
 }
 
 export interface CompanyInfo {
@@ -50,6 +58,7 @@ export interface AuthUser {
   company?: CompanyInfo
   allowedCompanies: CompanyInfo[]
   permissions: UserPermissions
+  capabilities?: Record<string, ModuleCapability>
 }
 
 interface AuthContextValue {
@@ -60,6 +69,7 @@ interface AuthContextValue {
   logout: () => void
   switchCompany: (company_id: number) => Promise<void>
   permissions: UserPermissions
+  can: (module: string, action: 'create' | 'read' | 'update' | 'delete') => boolean
 }
 
 const DEFAULT_PERMISSIONS: UserPermissions = {
@@ -75,6 +85,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   showOrders: false,
   showCheckIn: true,
   showGst: false,
+  showCustomers: true,
   ledgerScope: 'dr_only',
   stockScope: 'full',
   isAdmin: false,
@@ -88,6 +99,7 @@ const AuthContext = createContext<AuthContextValue>({
   logout: () => { },
   switchCompany: async () => { },
   permissions: DEFAULT_PERMISSIONS,
+  can: () => false,
 })
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -115,6 +127,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser({
         ...data,
         allowedCompanies,
+        capabilities: data.capabilities || {},
         username: data.email?.split('@')[0] ?? data.email ?? 'User',
         permissions: {
           showLedger: isAdmin ? true : (data.showLedger ?? true),
@@ -129,6 +142,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           showOrders: isAdmin ? true : (data.showOrders ?? false),
           showCheckIn: isAdmin ? true : (data.showCheckIn ?? true),
           showGst: isAdmin ? true : (data.showGst ?? false),
+          showCustomers: isAdmin ? true : (data.showCustomers ?? true),
           ledgerScope: isAdmin ? 'all' : (data.ledgerScope ?? 'dr_only'),
           stockScope: isAdmin ? 'full' : (data.stockScope ?? 'full'),
           isAdmin,
@@ -188,10 +202,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const can = useCallback((module: string, action: 'create' | 'read' | 'update' | 'delete'): boolean => {
+    if (!user) return false
+    if (user.permissions?.isAdmin) return true
+    const cap = user.capabilities?.[module]
+    if (!cap) return false
+    const field = `can_${action}` as keyof typeof cap
+    return Boolean(cap[field])
+  }, [user])
+
   const permissions = user?.permissions ?? DEFAULT_PERMISSIONS
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, logout, permissions, switchCompany }}>
+    <AuthContext.Provider value={{ user, token, isLoading, login, logout, permissions, switchCompany, can }}>
       {children}
     </AuthContext.Provider>
   )

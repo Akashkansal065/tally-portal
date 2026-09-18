@@ -849,12 +849,6 @@ async def get_ledger_statement(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    from app.core.cache import get_cached_response, set_cached_response
-    cache_key = f"ledger_statement_{ledger_id}_{from_date}_{to_date}"
-    cached = get_cached_response(user.company_id, cache_key)
-    if cached is not None:
-        return cached
-
     from app.models.tally_core import MstLedger
     ledger_stmt = select(MstLedger).options(selectinload(MstLedger.group)).where(
         MstLedger.ledger_id == ledger_id,
@@ -864,6 +858,31 @@ async def get_ledger_statement(
     ledger = ledger_res.scalars().first()
     if not ledger:
         raise HTTPException(status_code=404, detail="Ledger not found")
+
+    # Check permission for reading debtor/creditor ledger statement
+    from app.core.permissions import get_effective_permission
+    group_name = ledger.group.name.lower() if (ledger.group and ledger.group.name) else ""
+    is_debtor = "debtor" in group_name or "customer" in group_name
+    is_creditor = "creditor" in group_name or "supplier" in group_name
+    
+    if is_debtor:
+        perm = await get_effective_permission(user.user_id, "ledger_customer", db)
+        if not perm.get("can_read", False):
+            raise HTTPException(status_code=403, detail="You do not have permission to view customer financial statements.")
+    elif is_creditor:
+        perm = await get_effective_permission(user.user_id, "ledger_supplier", db)
+        if not perm.get("can_read", False):
+            raise HTTPException(status_code=403, detail="You do not have permission to view supplier financial statements.")
+    else:
+        perm = await get_effective_permission(user.user_id, "ledgers", db)
+        if not perm.get("can_read", False):
+            raise HTTPException(status_code=403, detail="You do not have permission to view ledger statements.")
+
+    from app.core.cache import get_cached_response, set_cached_response
+    cache_key = f"ledger_statement_{ledger_id}_{from_date}_{to_date}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
         
     addr = ledger.address or ""
     mobile_val = ledger.mobile or ""

@@ -132,7 +132,7 @@ interface LocationLog {
 }
 
 export default function CustomersPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
 
   const [customers, setCustomers] = useState<Customer[]>([])
@@ -198,6 +198,8 @@ export default function CustomersPage() {
     user?.role?.toLowerCase() === 'superadmin' ||
     user?.role?.toLowerCase() === 'owner'
   )
+
+  const canDelete = isAdmin || (can ? can('customers', 'delete') : false)
 
   // Link Ledger Modal state (Admin Only, for unmapped profiles without ledger_id)
   const [showLinkModal, setShowLinkModal] = useState(false)
@@ -685,6 +687,10 @@ export default function CustomersPage() {
 
   // Delete unmapped customer lead (wrong tagging)
   const handleDeleteCustomer = async () => {
+    if (!canDelete) {
+      alert('You do not have permission to delete customer leads.')
+      return
+    }
     if (!token || !customerToDelete || customerToDelete.ledger_id) return
 
     setDeletingCustomer(true)
@@ -1894,7 +1900,7 @@ export default function CustomersPage() {
                             )}
 
                             {/* Delete Wrong Tagging (Only for unmapped leads) */}
-                            {!cust.ledger_id && (
+                            {canDelete && !cust.ledger_id && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -2073,7 +2079,7 @@ export default function CustomersPage() {
                         )}
 
                         {/* Delete Wrong Tagging (Only for unmapped leads) */}
-                        {!cust.ledger_id && (
+                        {canDelete && !cust.ledger_id && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
@@ -2561,7 +2567,7 @@ export default function CustomersPage() {
                     )}
 
                     {/* Delete Wrong Tagging (Only for unmapped leads) */}
-                    {!cust.ledger_id && (
+                    {canDelete && !cust.ledger_id && (
                       <button
                         onClick={(e) => {
                           e.stopPropagation()
@@ -3092,7 +3098,7 @@ export default function CustomersPage() {
               </div>
 
               <div className="pt-3 border-t border-border flex items-center justify-between gap-2">
-                {!selectedCustomer.ledger_id ? (
+                {canDelete && !selectedCustomer.ledger_id ? (
                   <button
                     type="button"
                     onClick={() => {

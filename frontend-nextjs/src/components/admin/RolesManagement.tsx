@@ -51,6 +51,7 @@ interface RolesManagementProps {
   roles: RoleItem[]
   onRolesChange: (roles: RoleItem[]) => void
   token: string
+  onPermissionsSaved?: () => void
 }
 
 const MODULE_GROUPS = [
@@ -73,10 +74,10 @@ const MODULE_GROUPS = [
   {
     id: 'field_ops',
     title: 'Field Sales & Operations',
-    description: 'Shop GPS check-in logs, mobile sales orders, visit history & staff attendance',
+    description: 'Customer directory, shop GPS check-in logs, mobile sales orders, visit history & staff attendance',
     icon: MapPin,
     color: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
-    codes: ['visits', 'orders', 'attendance']
+    codes: ['customers', 'visits', 'orders', 'attendance']
   },
   {
     id: 'reports_tax',
@@ -96,7 +97,7 @@ const MODULE_GROUPS = [
   }
 ]
 
-export function RolesManagement({ roles, onRolesChange, token }: RolesManagementProps) {
+export function RolesManagement({ roles, onRolesChange, token, onPermissionsSaved }: RolesManagementProps) {
   const [selectedRoleId, setSelectedRoleId] = useState<number | null>(null)
   const [permissions, setPermissions] = useState<PermissionItem[]>([])
   const [loadingPerms, setLoadingPerms] = useState(false)
@@ -239,6 +240,7 @@ export function RolesManagement({ roles, onRolesChange, token }: RolesManagement
       }
       toast.success(`Permissions for '${selectedRole.name}' saved successfully!`)
       setIsDirty(false)
+      onPermissionsSaved?.()
     } catch (err: any) {
       toast.error(err.message || 'Error saving permissions')
     } finally {

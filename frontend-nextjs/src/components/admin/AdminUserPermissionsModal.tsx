@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Landmark, Layers, BarChart3, Laptop, User, Shield, Ban, CheckCircle2, MapPin, Receipt, Wallet, KeyRound, Eye, EyeOff, Clock, FileSpreadsheet } from "lucide-react";
+import { Landmark, Layers, BarChart3, Laptop, User, Users, Shield, Ban, CheckCircle2, MapPin, Receipt, Wallet, KeyRound, Eye, EyeOff, Clock, FileSpreadsheet } from "lucide-react";
 
 const ALL_REPORT_CATEGORIES = [
   "Accounting Reports",
@@ -34,6 +34,7 @@ type UserItem = {
   showOrders: boolean;
   showCheckIn: boolean;
   showGst: boolean;
+  showCustomers?: boolean;
   ledgerScope: string;
   stockScope: string;
   allowedStockGroups: string | null;
@@ -52,7 +53,7 @@ interface AdminUserPermissionsModalProps {
   availableStockGroups: string[];
   availableRoles?: { role_id: number; name: string; description?: string }[];
   onRoleChange: (userId: number, role: string) => void;
-  onPermissionToggle: (userId: number, field: "showLedger" | "showStocks" | "showReports" | "showOrders" | "showCheckIn" | "showSalesLedgers" | "showPurchaseLedgers" | "showReceipts" | "showPayments" | "showExpenses" | "showAttendance" | "showGst", value: boolean) => void;
+  onPermissionToggle: (userId: number, field: "showLedger" | "showStocks" | "showReports" | "showOrders" | "showCheckIn" | "showSalesLedgers" | "showPurchaseLedgers" | "showReceipts" | "showPayments" | "showExpenses" | "showAttendance" | "showGst" | "showCustomers", value: boolean) => void;
   onScopeChange: (userId: number, field: "ledgerScope" | "stockScope", value: string) => void;
   onAllowedGroupsChange: (
     userId: number,
@@ -412,6 +413,22 @@ export function AdminUserPermissionsModal({
                 id="checkin-module"
                 checked={user.showCheckIn}
                 onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showCheckIn", checked)}
+                disabled={isPending}
+              />
+            </div>
+          </div>
+
+          {/* Module: Show Customer Directory */}
+          <div className="space-y-3 border-t pt-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Users className={`h-4 w-4 ${user.showCustomers !== false ? "text-primary" : "text-muted-foreground"}`} />
+                <Label htmlFor="customers-module" className="text-sm font-semibold cursor-pointer">Show Customer Directory</Label>
+              </div>
+              <Switch
+                id="customers-module"
+                checked={user.showCustomers !== false}
+                onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showCustomers", checked)}
                 disabled={isPending}
               />
             </div>

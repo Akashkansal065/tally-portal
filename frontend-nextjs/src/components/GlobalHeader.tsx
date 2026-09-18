@@ -741,9 +741,11 @@ export function GlobalHeader() {
                 </CollapsibleMenu>
               )}
 
-              {(permissions.showCheckIn || permissions.showLedger || permissions.showSalesLedgers) && (
+              {(permissions.showCustomers || permissions.showCheckIn || permissions.showLedger || permissions.showSalesLedgers) && (
                 <CollapsibleMenu label="Field Operations" icon={MapPin} defaultOpen={true}>
-                  <DrawerLink href="/customers" icon={Users} label="Customer Directory" onClick={() => setDrawerOpen(false)} />
+                  {(permissions.showCustomers || permissions.showCheckIn || permissions.showSalesLedgers || permissions.showLedger) && (
+                    <DrawerLink href="/customers" icon={Users} label="Customer Directory" onClick={() => setDrawerOpen(false)} />
+                  )}
                   {permissions.showCheckIn && (
                     <>
                       <DrawerLink href="/planner" icon={Calendar} label="Daily Beat Planner" onClick={() => setDrawerOpen(false)} />

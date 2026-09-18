@@ -182,6 +182,7 @@ async def get_user_permission_toggles(
             "showOrders": True,
             "showCheckIn": True,
             "showGst": True,
+            "showCustomers": True,
             "isAdmin": True
         }
 
@@ -198,6 +199,7 @@ async def get_user_permission_toggles(
         "showOrders": False,
         "showCheckIn": False,
         "showGst": False,
+        "showCustomers": False,
         "isAdmin": False
     }
 
@@ -214,7 +216,8 @@ async def get_user_permission_toggles(
         "reports": "showReports",
         "orders": "showOrders",
         "visits": "showCheckIn",
-        "gst": "showGst"
+        "gst": "showGst",
+        "customers": "showCustomers"
     }
     
     # 1. Fetch role permissions joined with Module

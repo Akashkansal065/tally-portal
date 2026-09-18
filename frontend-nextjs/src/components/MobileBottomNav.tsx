@@ -11,9 +11,7 @@ import {
   Layers,
   ShoppingCart,
   IndianRupee,
-  CalendarCheck,
   MapPin,
-  History,
   Wallet,
   Clock,
   BarChart3,
@@ -43,6 +41,7 @@ export function MobileBottomNav() {
     permissions.showPayments
 
   const hasCustomersAccess =
+    permissions.showCustomers ||
     permissions.showLedger ||
     permissions.showCheckIn ||
     permissions.showSalesLedgers
@@ -68,11 +67,7 @@ export function MobileBottomNav() {
       ? [{ href: '/payments', label: 'Payments', icon: IndianRupee }]
       : []),
     ...(permissions.showCheckIn
-      ? [
-          { href: '/planner', label: 'Planner', icon: CalendarCheck },
-          { href: '/check-in', label: 'Check-In', icon: MapPin },
-          { href: '/check-in/history', label: 'Visit Log', icon: History }
-        ]
+      ? [{ href: '/check-in', label: 'Check-In', icon: MapPin }]
       : []),
     ...(permissions.showExpenses
       ? [{ href: '/expenses', label: 'Expenses', icon: Wallet }]

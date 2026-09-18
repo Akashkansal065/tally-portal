@@ -39,7 +39,8 @@ def seed_global_data(db: Session):
             ('visits',    'Shop Check-In',         'GPS check-in records for sales visits', 1),
             ('expenses',  'Expenses',              'Expense claim submission and approval', 1),
             ('attendance', 'Attendance',            'Daily check-in and check-out logs', 1),
-            ('gst',       'GST Return Filing',     'File and view GST return periods', 1)
+            ('gst',       'GST Return Filing',     'File and view GST return periods', 1),
+            ('customers', 'Customer Directory & Profiles', 'Customer directory, shop profiles, GPS tagging, owner media & photos', 1)
         """))
         db.commit()
         print("Modules seeded successfully.")
@@ -51,6 +52,16 @@ def seed_global_data(db: Session):
             db.execute(text("""
                 INSERT INTO modules (code, name, description, is_system)
                 VALUES ('gst', 'GST Return Filing', 'File and view GST return periods', 1)
+            """))
+            db.commit()
+
+        # Ensure 'customers' module exists on update
+        cust_exists = db.execute(text("SELECT COUNT(*) FROM modules WHERE code = 'customers'")).scalar()
+        if cust_exists == 0:
+            print("Adding missing 'customers' module...")
+            db.execute(text("""
+                INSERT INTO modules (code, name, description, is_system)
+                VALUES ('customers', 'Customer Directory & Profiles', 'Customer directory, shop profiles, GPS tagging, owner media & photos', 1)
             """))
             db.commit()
 
@@ -73,7 +84,7 @@ def seed_global_data(db: Session):
                     VALUES ({roles['Admin']}, {mod_id}, 1, 1, 1, 1)
                 """))
             
-        # Sales role permissions (check-in/visits, payments, orders, attendance)
+        # Sales role permissions (check-in/visits, payments, orders, attendance, customers)
         sales_role_id = roles.get('Sales') or roles.get('User')
         if sales_role_id:
             user_perms = {
@@ -81,6 +92,7 @@ def seed_global_data(db: Session):
                 'payments': (1, 1, 1, 1),
                 'orders': (1, 1, 1, 1),
                 'attendance': (1, 1, 1, 1),
+                'customers': (1, 1, 1, 0),
             }
             for mod_code, (c, r, u, d) in user_perms.items():
                 if mod_code in modules:
@@ -107,6 +119,35 @@ def seed_global_data(db: Session):
                     VALUES ({admin_role_id}, {gst_mod_id}, 1, 1, 1, 1)
                 """))
                 db.commit()
+
+        # Ensure permissions exist for 'customers' module
+        if 'customers' in modules:
+            cust_mod_id = modules['customers']
+            if 'Admin' in roles:
+                admin_role_id = roles['Admin']
+                admin_cust_exists = db.execute(text(f"""
+                    SELECT COUNT(*) FROM permissions 
+                    WHERE role_id = {admin_role_id} AND module_id = {cust_mod_id}
+                """)).scalar()
+                if admin_cust_exists == 0:
+                    db.execute(text(f"""
+                        INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
+                        VALUES ({admin_role_id}, {cust_mod_id}, 1, 1, 1, 1)
+                    """))
+                    db.commit()
+
+            sales_role_id = roles.get('Sales') or roles.get('User')
+            if sales_role_id:
+                sales_cust_exists = db.execute(text(f"""
+                    SELECT COUNT(*) FROM permissions 
+                    WHERE role_id = {sales_role_id} AND module_id = {cust_mod_id}
+                """)).scalar()
+                if sales_cust_exists == 0:
+                    db.execute(text(f"""
+                        INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
+                        VALUES ({sales_role_id}, {cust_mod_id}, 1, 1, 1, 0)
+                    """))
+                    db.commit()
 
 def seed_company_defaults(db: Session, company_id: int):
     """

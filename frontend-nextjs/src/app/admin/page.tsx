@@ -62,6 +62,7 @@ type UserItem = {
   showOrders: boolean
   showCheckIn: boolean
   showGst: boolean
+  showCustomers?: boolean
   ledgerScope: string
   stockScope: string
   allowedStockGroups: string | null
@@ -753,6 +754,7 @@ export default function AdminPage() {
       showOrders: field === 'showOrders' ? value : user.showOrders,
       showCheckIn: field === 'showCheckIn' ? value : user.showCheckIn,
       showGst: field === 'showGst' ? value : user.showGst,
+      showCustomers: field === 'showCustomers' ? value : (user.showCustomers ?? true),
     }
     
     // Optimistic
@@ -1258,6 +1260,7 @@ const handleSavePermissions = async () => {
               roles={roles}
               onRolesChange={setRoles}
               token={token}
+              onPermissionsSaved={fetchData}
             />
           ) : tab === 'sync' ? (
             <div className="space-y-6">

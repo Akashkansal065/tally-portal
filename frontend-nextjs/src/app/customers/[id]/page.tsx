@@ -208,7 +208,7 @@ interface CustomerDetail {
 export default function CustomerProfilePage() {
   const params = useParams()
   const router = useRouter()
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const targetId = params?.id as string
 
   const isAdmin = Boolean(
@@ -217,6 +217,12 @@ export default function CustomerProfilePage() {
     user?.role?.toLowerCase() === 'superadmin' ||
     user?.role?.toLowerCase() === 'owner'
   )
+
+  const canViewStatement = Boolean(isAdmin || permissions?.showSalesLedgers || permissions?.showReceivables || can?.('sales_ledgers', 'read'))
+  const canViewOrders = Boolean(isAdmin || permissions?.showSalesOrders || can?.('sales_orders', 'read'))
+  const canViewVisits = Boolean(isAdmin || permissions?.showCheckIn || can?.('check_in', 'read'))
+  const canDelete = Boolean(isAdmin || can?.('customers', 'delete'))
+  const canUpdate = Boolean(isAdmin || can?.('customers', 'update'))
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -227,9 +233,20 @@ export default function CustomerProfilePage() {
   // 360° View Main Tabs: overview | statement | orders | visits
   const [mainTab, setMainTab] = useState<'overview' | 'statement' | 'orders' | 'visits'>('overview')
 
+  // Safety fallback if active tab is restricted
+  useEffect(() => {
+    if (mainTab === 'statement' && !canViewStatement) {
+      setMainTab('overview')
+    } else if (mainTab === 'orders' && !canViewOrders) {
+      setMainTab('overview')
+    } else if (mainTab === 'visits' && !canViewVisits) {
+      setMainTab('overview')
+    }
+  }, [mainTab, canViewStatement, canViewOrders, canViewVisits])
+
   // WhatsApp Statement Sharing Handler
   const handleShareStatement = () => {
-    if (!customer) return
+    if (!customer || !canViewStatement) return
     const phone = (customer.whatsapp_number || customer.mobile || customer.phone || '').replace(/\D/g, '')
     const bal = Math.abs(customer.financial_summary?.closing_balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })
     const balType = customer.financial_summary?.balance_type || 'Dr'
@@ -301,7 +318,7 @@ export default function CustomerProfilePage() {
 
   // Fetch full ledger statement when on statement tab
   useEffect(() => {
-    if (mainTab === 'statement' && customer?.ledger_id && token) {
+    if (mainTab === 'statement' && canViewStatement && customer?.ledger_id && token) {
       setLoadingLedger(true)
       let url = `${API_BASE}/ledgers/${customer.ledger_id}/statement`
       const q: string[] = []
@@ -320,7 +337,7 @@ export default function CustomerProfilePage() {
         .catch(console.error)
         .finally(() => setLoadingLedger(false))
     }
-  }, [mainTab, customer?.ledger_id, token, startDate, endDate])
+  }, [mainTab, canViewStatement, customer?.ledger_id, token, startDate, endDate])
 
   const [editForm, setEditForm] = useState({
     contact_person: '',
@@ -517,6 +534,10 @@ export default function CustomerProfilePage() {
 
   // Delete Photo
   const handleDeletePhoto = async (photoId: number) => {
+    if (!canDelete) {
+      alert('You do not have permission to delete customer photos.')
+      return
+    }
     if (!confirm('Are you sure you want to permanently delete this photo from ImageKit storage?')) {
       return
     }
@@ -657,6 +678,10 @@ export default function CustomerProfilePage() {
 
   // Delete unmapped customer lead (wrong tagging)
   const handleDeleteCustomer = async () => {
+    if (!canDelete) {
+      alert('You do not have permission to delete customer leads.')
+      return
+    }
     if (!token || !targetId || customer?.ledger_id) return
 
     setDeleting(true)
@@ -797,6 +822,10 @@ export default function CustomerProfilePage() {
   }
 
   const handleDeleteOwner = async () => {
+    if (!canDelete) {
+      alert('You do not have permission to delete owners.')
+      return
+    }
     if (!token || !targetId || !ownerToDelete || !ownerToDelete.id) return
 
     setDeletingOwner(true)
@@ -1372,8 +1401,8 @@ export default function CustomerProfilePage() {
                 </button>
               )}
 
-              {/* Delete Wrong Tagging (ONLY if customer has NO ledger_id) */}
-              {!customer.ledger_id && (
+              {/* Delete Wrong Tagging (ONLY if customer has NO ledger_id and user has delete permission) */}
+              {canDelete && !customer.ledger_id && (
                 <button
                   onClick={() => setShowDeleteModal(true)}
                   className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 font-bold text-xs transition-colors"
@@ -1483,7 +1512,7 @@ export default function CustomerProfilePage() {
         )}
 
         {/* ─── FINANCIAL 360° METRICS BAR ─── */}
-        {customer.financial_summary && (
+        {canViewStatement && customer.financial_summary && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Outstanding Balance */}
             <div className="bg-card border border-border rounded-3xl p-5 shadow-sm relative overflow-hidden flex flex-col justify-between">
@@ -1602,14 +1631,46 @@ export default function CustomerProfilePage() {
           </div>
         )}
 
+        {(!canViewStatement || !customer.financial_summary) && (
+          <div className="bg-gradient-to-br from-primary/5 via-card to-primary/10 border border-primary/20 rounded-3xl p-5 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <span className="text-xs font-bold text-primary uppercase tracking-wider">Commercial Desk</span>
+              <h4 className="text-base font-extrabold text-foreground mt-1">Actions & Quick Access</h4>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Direct billing and visit check-in for this customer account.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+              {canViewOrders && (
+                <Link
+                  href={`/orders/new?customer_id=${customer.profile_id}${customer.ledger_id ? `&ledger_id=${customer.ledger_id}` : ''}`}
+                  className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold shadow-sm transition-colors"
+                >
+                  <ShoppingCart className="w-3.5 h-3.5" />
+                  <span>Create New Order</span>
+                </Link>
+              )}
+              {canViewVisits && (
+                <Link
+                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                  className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl border border-border bg-background hover:bg-muted text-foreground text-xs font-bold transition-colors"
+                >
+                  <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Check-In & Record Visit</span>
+                </Link>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ─── 360° VIEW NAVIGATION TABS ─── */}
-        <div className="grid grid-cols-4 sm:flex sm:items-center gap-1 sm:gap-2 p-1 bg-muted/60 dark:bg-muted/30 sm:bg-transparent sm:p-0 rounded-2xl sm:rounded-none border sm:border-0 sm:border-b border-border/80 sm:border-border sm:pb-1 shadow-2xs sm:shadow-none">
+        <div className="flex items-center gap-1 sm:gap-2 p-1 bg-muted/60 dark:bg-muted/30 sm:bg-transparent sm:p-0 rounded-2xl sm:rounded-none border sm:border-0 sm:border-b border-border/80 sm:border-border sm:pb-1 shadow-2xs sm:shadow-none overflow-x-auto">
           {/* Tab 1: Store & Partners */}
           <button
             type="button"
             onClick={() => setMainTab('overview')}
             className={cn(
-              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0',
+              'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0',
               mainTab === 'overview'
                 ? 'bg-primary text-primary-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
@@ -1621,106 +1682,112 @@ export default function CustomerProfilePage() {
           </button>
 
           {/* Tab 2: Ledger Statement */}
-          <button
-            type="button"
-            onClick={() => setMainTab('statement')}
-            className={cn(
-              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
-              mainTab === 'statement'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
-            )}
-          >
-            <div className="flex items-center gap-1">
-              <Receipt className="w-4 h-4 shrink-0" />
+          {canViewStatement && (
+            <button
+              type="button"
+              onClick={() => setMainTab('statement')}
+              className={cn(
+                'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
+                mainTab === 'statement'
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
+              )}
+            >
+              <div className="flex items-center gap-1">
+                <Receipt className="w-4 h-4 shrink-0" />
+                {customer.recent_vouchers && customer.recent_vouchers.length > 0 && (
+                  <span className={cn(
+                    'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
+                    mainTab === 'statement' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                  )}>
+                    {customer.recent_vouchers.length}
+                  </span>
+                )}
+              </div>
+              <span className="sm:hidden truncate">Ledger</span>
+              <span className="hidden sm:inline whitespace-nowrap">Ledger Statement</span>
               {customer.recent_vouchers && customer.recent_vouchers.length > 0 && (
                 <span className={cn(
-                  'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
-                  mainTab === 'statement' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                  'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                  mainTab === 'statement' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
                 )}>
                   {customer.recent_vouchers.length}
                 </span>
               )}
-            </div>
-            <span className="sm:hidden truncate">Ledger</span>
-            <span className="hidden sm:inline whitespace-nowrap">Ledger Statement</span>
-            {customer.recent_vouchers && customer.recent_vouchers.length > 0 && (
-              <span className={cn(
-                'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
-                mainTab === 'statement' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
-              )}>
-                {customer.recent_vouchers.length}
-              </span>
-            )}
-          </button>
+            </button>
+          )}
 
           {/* Tab 3: Order History */}
-          <button
-            type="button"
-            onClick={() => setMainTab('orders')}
-            className={cn(
-              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
-              mainTab === 'orders'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
-            )}
-          >
-            <div className="flex items-center gap-1">
-              <ShoppingCart className="w-4 h-4 shrink-0" />
+          {canViewOrders && (
+            <button
+              type="button"
+              onClick={() => setMainTab('orders')}
+              className={cn(
+                'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
+                mainTab === 'orders'
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
+              )}
+            >
+              <div className="flex items-center gap-1">
+                <ShoppingCart className="w-4 h-4 shrink-0" />
+                {customer.recent_orders && customer.recent_orders.length > 0 && (
+                  <span className={cn(
+                    'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
+                    mainTab === 'orders' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                  )}>
+                    {customer.recent_orders.length}
+                  </span>
+                )}
+              </div>
+              <span className="sm:hidden truncate">Orders</span>
+              <span className="hidden sm:inline whitespace-nowrap">Order History</span>
               {customer.recent_orders && customer.recent_orders.length > 0 && (
                 <span className={cn(
-                  'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
-                  mainTab === 'orders' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                  'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                  mainTab === 'orders' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
                 )}>
                   {customer.recent_orders.length}
                 </span>
               )}
-            </div>
-            <span className="sm:hidden truncate">Orders</span>
-            <span className="hidden sm:inline whitespace-nowrap">Order History</span>
-            {customer.recent_orders && customer.recent_orders.length > 0 && (
-              <span className={cn(
-                'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
-                mainTab === 'orders' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
-              )}>
-                {customer.recent_orders.length}
-              </span>
-            )}
-          </button>
+            </button>
+          )}
 
           {/* Tab 4: Field Visits */}
-          <button
-            type="button"
-            onClick={() => setMainTab('visits')}
-            className={cn(
-              'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1.5 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
-              mainTab === 'visits'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
-            )}
-          >
-            <div className="flex items-center gap-1">
-              <Clock className="w-4 h-4 shrink-0" />
+          {canViewVisits && (
+            <button
+              type="button"
+              onClick={() => setMainTab('visits')}
+              className={cn(
+                'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
+                mainTab === 'visits'
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
+              )}
+            >
+              <div className="flex items-center gap-1">
+                <Clock className="w-4 h-4 shrink-0" />
+                {customer.visits && customer.visits.length > 0 && (
+                  <span className={cn(
+                    'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
+                    mainTab === 'visits' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                  )}>
+                    {customer.visits.length}
+                  </span>
+                )}
+              </div>
+              <span className="sm:hidden truncate">Visits</span>
+              <span className="hidden sm:inline whitespace-nowrap">Field Visits</span>
               {customer.visits && customer.visits.length > 0 && (
                 <span className={cn(
-                  'sm:hidden px-1.5 py-0.2 rounded-full text-[9px] font-extrabold leading-tight',
-                  mainTab === 'visits' ? 'bg-white/20 text-white' : 'bg-background text-foreground border border-border/70'
+                  'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
+                  mainTab === 'visits' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
                 )}>
                   {customer.visits.length}
                 </span>
               )}
-            </div>
-            <span className="sm:hidden truncate">Visits</span>
-            <span className="hidden sm:inline whitespace-nowrap">Field Visits</span>
-            {customer.visits && customer.visits.length > 0 && (
-              <span className={cn(
-                'hidden sm:inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold',
-                mainTab === 'visits' ? 'bg-white/20 text-white' : 'bg-muted text-foreground'
-              )}>
-                {customer.visits.length}
-              </span>
-            )}
-          </button>
+            </button>
+          )}
         </div>
 
         {/* ─── TAB 1: STORE & PARTNERS (OVERVIEW) ─── */}
@@ -1846,18 +1913,20 @@ export default function CustomerProfilePage() {
                           )}
 
                           {/* Delete Button (Visible on Mobile) */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleDeletePhoto(photo.id)
-                            }}
-                            className="absolute bottom-2 right-2 z-20 p-1.5 rounded-lg bg-black/70 hover:bg-rose-600 text-white shadow-md backdrop-blur-sm transition-all opacity-90 hover:opacity-100 active:scale-95 flex items-center justify-center"
-                            title="Delete photo"
-                            aria-label="Delete photo"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {canDelete && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleDeletePhoto(photo.id)
+                              }}
+                              className="absolute bottom-2 right-2 z-20 p-1.5 rounded-lg bg-black/70 hover:bg-rose-600 text-white shadow-md backdrop-blur-sm transition-all opacity-90 hover:opacity-100 active:scale-95 flex items-center justify-center"
+                              title="Delete photo"
+                              aria-label="Delete photo"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
 
                         {/* Bottom Info Bar */}
@@ -2079,14 +2148,16 @@ export default function CustomerProfilePage() {
                                 >
                                   <Edit2 className="w-3.5 h-3.5" />
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setOwnerToDelete(owner)}
-                                  className="p-1 rounded-lg hover:bg-rose-500/10 text-muted-foreground hover:text-rose-600 transition-colors"
-                                  title="Remove this owner"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                {canDelete && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setOwnerToDelete(owner)}
+                                    className="p-1 rounded-lg hover:bg-rose-500/10 text-muted-foreground hover:text-rose-600 transition-colors"
+                                    title="Remove this owner"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                               </div>
                             )}
                           </div>
@@ -2380,7 +2451,7 @@ export default function CustomerProfilePage() {
         )}
 
         {/* ─── TAB 2: LEDGER STATEMENT ─── */}
-        {mainTab === 'statement' && (
+        {mainTab === 'statement' && canViewStatement && (
           <div className="bg-card border border-border rounded-3xl p-6 sm:p-8 shadow-sm space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
               <div className="flex items-center gap-3">
@@ -2450,7 +2521,7 @@ export default function CustomerProfilePage() {
         )}
 
         {/* ─── TAB 3: ORDER HISTORY ─── */}
-        {mainTab === 'orders' && (
+        {mainTab === 'orders' && canViewOrders && (
           <div className="bg-card border border-border rounded-3xl p-6 sm:p-8 shadow-sm space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
               <div className="flex items-center gap-3">
@@ -2544,7 +2615,7 @@ export default function CustomerProfilePage() {
         )}
 
         {/* ─── TAB 4: FIELD VISITS TIMELINE ─── */}
-        {mainTab === 'visits' && (
+        {mainTab === 'visits' && canViewVisits && (
           <div className="bg-card border border-border rounded-3xl p-6 sm:p-8 shadow-sm space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-5">
               <div className="flex items-center gap-3">
@@ -2924,7 +2995,7 @@ export default function CustomerProfilePage() {
               </div>
 
               <div className="flex items-center gap-2">
-                {lightboxPhoto.id > 0 && (
+                {canDelete && lightboxPhoto.id > 0 && (
                   <button
                     onClick={() => handleDeletePhoto(lightboxPhoto.id)}
                     className="p-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white transition-colors"
@@ -3425,7 +3496,7 @@ export default function CustomerProfilePage() {
       )}
 
       {/* ─── MODAL 5: Delete Wrong Tagging Modal ─── */}
-      {showDeleteModal && !customer.ledger_id && (
+      {showDeleteModal && canDelete && !customer.ledger_id && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-600 mx-auto">
@@ -3628,7 +3699,7 @@ export default function CustomerProfilePage() {
       )}
 
       {/* ─── MODAL 7: Delete Owner Confirmation ─── */}
-      {ownerToDelete && (
+      {ownerToDelete && canDelete && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
             <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-600 mx-auto">

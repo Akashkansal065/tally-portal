@@ -302,6 +302,8 @@ class UserMeResponse(BaseModel):
     showOrders: bool
     showCheckIn: bool
     showGst: bool
+    showCustomers: bool
+    capabilities: Optional[dict] = None
     ledgerScope: str
     stockScope: str
     allowedStockGroups: Optional[str] = None
@@ -317,6 +319,13 @@ async def get_me(
     await db.refresh(user, ["role"])
     r_name = user.role.name if user.role else "User"
     toggles = await get_user_permission_toggles(user.user_id, user.role_id, r_name, db)
+    
+    # Resolve granular action capabilities
+    from app.core.permissions import get_effective_permission
+    capabilities = {}
+    for mod in ["customers", "visits", "orders", "attendance", "inventory", "ledger_customer", "vouchers", "payments"]:
+        capabilities[mod] = await get_effective_permission(user.user_id, mod, db)
+
     return {
         "user_id": user.user_id,
         "company_id": user.company_id,
@@ -335,6 +344,8 @@ async def get_me(
         "showOrders": toggles["showOrders"],
         "showCheckIn": toggles["showCheckIn"],
         "showGst": toggles["showGst"],
+        "showCustomers": toggles.get("showCustomers", True),
+        "capabilities": capabilities,
         "ledgerScope": user.ledger_scope,
         "stockScope": user.stock_scope,
         "allowedStockGroups": user.allowed_stock_groups,
