@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE } from '@/lib/utils'
+import { clearAllOfflineData } from '@/lib/offline-storage'
 import { Eye, EyeOff, LogIn } from 'lucide-react'
 
 export default function LoginPage() {
@@ -35,6 +36,12 @@ export default function LoginPage() {
   useEffect(() => {
     if (!isLoading && user) router.replace('/')
   }, [user, isLoading, router])
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      clearAllOfflineData().catch(() => {})
+    }
+  }, [user, isLoading])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {

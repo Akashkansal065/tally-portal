@@ -34,6 +34,8 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
+import { loadOutstanding } from '@/lib/data-sync-service'
+import DataFreshnessIndicator from '@/components/DataFreshnessIndicator'
 
 interface CustomerAgingBill {
   bill_id: number
@@ -293,31 +295,34 @@ export default function DebtorsAgingPage() {
     defaultColumns: ['bill_reference', 'bill_date', 'due_date', 'days_overdue', 'bill_amount', 'settled', 'balance_due', 'action'],
   })
 
-  const fetchAgingData = async () => {
+  const [refreshing, setRefreshing] = useState(false)
+
+  const fetchAgingData = async (forceRefresh = false) => {
     if (!token) return
-    setLoading(true)
+    if (forceRefresh) setRefreshing(true)
+    else if (!data) setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${API_BASE}/payment/aging/dashboard`, {
-        headers: authHeaders(token)
-      })
-      if (!res.ok) throw new Error('Failed to fetch aging dashboard')
-      const json: AgingDashboardData = await res.json()
-      setData({
-        kpis: json.kpis,
-        customers: json.customers,
-        upi_vpa: json.upi_vpa,
-        merchant_name: json.merchant_name || 'Merchant'
-      })
+      const { data: cachedOrFresh, fromCache } = await loadOutstanding(token, forceRefresh)
+      if (cachedOrFresh) {
+        setData({
+          kpis: cachedOrFresh.kpis,
+          customers: cachedOrFresh.customers,
+          upi_vpa: cachedOrFresh.upi_vpa,
+          merchant_name: cachedOrFresh.merchant_name || 'Merchant'
+        })
+        if (fromCache) setLoading(false)
+      }
     } catch (err: any) {
       setError(err.message || 'Error fetching aging data')
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }
 
   useEffect(() => {
-    fetchAgingData()
+    fetchAgingData(false)
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
       const bParam = params.get('bucket')
@@ -329,6 +334,18 @@ export default function DebtorsAgingPage() {
         else if (bParam.toLowerCase() === 'overdue') setSelectedBucket('OVERDUE')
       }
     }
+  }, [token])
+
+  // Listen for background sync updates
+  useEffect(() => {
+    const handleDataUpdated = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (!detail?.domain || detail.domain === 'outstanding') {
+        fetchAgingData(false)
+      }
+    }
+    window.addEventListener('mytally:data-updated', handleDataUpdated)
+    return () => window.removeEventListener('mytally:data-updated', handleDataUpdated)
   }, [token])
 
   const toggleExpand = (partyId: number) => {
@@ -462,6 +479,12 @@ export default function DebtorsAgingPage() {
           </div>
 
           <div className="flex items-center gap-2.5 self-start md:self-auto">
+            <DataFreshnessIndicator
+              domain="outstanding"
+              onRefresh={() => fetchAgingData(true)}
+              isRefreshing={refreshing}
+            />
+
             <button
               onClick={handleOpenBulkModal}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-2 cursor-pointer active:scale-95"
@@ -471,7 +494,7 @@ export default function DebtorsAgingPage() {
             </button>
 
             <button
-              onClick={fetchAgingData}
+              onClick={() => fetchAgingData(true)}
               className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
               title="Refresh Aging Data"
             >

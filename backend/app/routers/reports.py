@@ -54,6 +54,45 @@ async def get_reports_cache_stats(
     return get_cache_stats()
 
 
+@router.get("/last-modified")
+async def reports_last_modified(
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Lightweight endpoint — returns only the latest voucher/stock-movement timestamps.
+    The frontend compares these against its IndexedDB cache timestamp to decide
+    whether to skip all 12 expensive report fetches. Typically < 50ms.
+    """
+    from app.models.tally_core import TrnInventory
+
+    # Latest voucher timestamp + count
+    voucher_result = await db.execute(
+        select(
+            func.max(TrnVoucher.updated_at).label("last_voucher_at"),
+            func.count(TrnVoucher.voucher_id).label("voucher_count")
+        ).where(TrnVoucher.company_id == user.company_id)
+    )
+    v_row = voucher_result.one_or_none()
+
+    # Latest stock movement timestamp (uses voucher's updated_at since stock_entries has no updated_at)
+    stock_result = await db.execute(
+        select(
+            func.max(TrnVoucher.updated_at).label("last_stock_movement_at")
+        )
+        .select_from(TrnInventory)
+        .join(TrnVoucher, TrnInventory.voucher_id == TrnVoucher.voucher_id)
+        .where(TrnVoucher.company_id == user.company_id)
+    )
+    s_row = stock_result.one_or_none()
+
+    return {
+        "last_voucher_at": v_row.last_voucher_at.isoformat() if v_row and v_row.last_voucher_at else None,
+        "voucher_count": v_row.voucher_count if v_row else 0,
+        "last_stock_movement_at": s_row.last_stock_movement_at.isoformat() if s_row and s_row.last_stock_movement_at else None,
+    }
+
+
 def resolve_voucher_party_and_amount(v: TrnVoucher) -> Tuple[str, float]:
     """Extract true party name and net invoice payable/receivable amount deducting discounts."""
     if not v.entries:

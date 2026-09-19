@@ -358,6 +358,7 @@ class MstLedger(Base):
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     group = relationship("MstGroup", back_populates="ledgers")
     company = relationship("Company")
     bank_details = relationship("MstLedgerBankDetail", back_populates="ledger", cascade="all, delete-orphan")

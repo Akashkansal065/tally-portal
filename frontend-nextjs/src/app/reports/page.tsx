@@ -21,6 +21,8 @@ import {
 } from 'recharts'
 import ProjectedFinancials from '@/components/ProjectedFinancials'
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
+import { checkReportsLastModified, loadReportsData, saveReportsData } from '@/lib/data-sync-service'
+import DataFreshnessIndicator from '@/components/DataFreshnessIndicator'
 
 type TabType = 'executive' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance'
 type PresetType = 'all' | 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
@@ -540,40 +542,92 @@ export default function ReportsPage() {
     }
   }, [])
 
-  const fetchReportsData = useCallback(async () => {
+  const fetchReportsData = useCallback(async (forceRefresh = false) => {
     if (!token) return
+    const cacheKey = `${fromDate || 'all'}_${toDate || 'all'}`
+
+    // 1. Instant 0ms load from IndexedDB cache
+    try {
+      const cachedResult = await loadReportsData(token, fromDate, toDate, forceRefresh)
+      if (cachedResult.data && !forceRefresh) {
+        const c = cachedResult.data
+        if (c.summary) setSummary(c.summary)
+        if (c.execData) setExecData(c.execData)
+        if (c.topCustomers) setTopCustomers(c.topCustomers)
+        if (c.inventoryData) setInventoryData(c.inventoryData)
+        if (c.salesRegister) setSalesRegister(c.salesRegister)
+        if (c.daybook) setDaybook(c.daybook)
+        if (c.trialBalance) setTrialBalance(c.trialBalance)
+        if (c.pnlData) setPnlData(c.pnlData)
+        if (c.balanceSheetData) setBalanceSheetData(c.balanceSheetData)
+        if (c.cashFlowData) setCashFlowData(c.cashFlowData)
+        if (c.ratiosData) setRatiosData(c.ratiosData)
+        if (c.companyStockData) setCompanyStockData(c.companyStockData)
+        setLoading(false)
+
+        // 2. Quick check if database actually had new vouchers
+        const lastMod = await checkReportsLastModified(token)
+        if (
+          lastMod &&
+          c.last_voucher_at === lastMod.last_voucher_at &&
+          c.voucher_count === lastMod.voucher_count
+        ) {
+          // Zero accounting modifications in Tally — skip all 12 heavy queries!
+          setLastUpdatedMessage(
+            fromDate || toDate
+              ? `Data up to date for period: ${formatDate(fromDate)} to ${formatDate(toDate)}`
+              : 'Data up to date: All Time'
+          )
+          return
+        }
+      }
+    } catch (e) {
+      console.warn('[Reports] Cache read error, continuing to fetch:', e)
+    }
+
     setLoading(true)
     try {
       const headers = authHeaders(token)
       const q = `from_date=${fromDate}&to_date=${toDate}`
       
-      const results = await Promise.allSettled([
-        fetch(`${API_BASE}/reports/dashboard-summary?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/executive-analytics?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/top-customers?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/inventory-analytics`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/sales-register?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/daybook?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/trial-balance`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/profit-loss?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/balance-sheet`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/cash-flow?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/ratio-analysis`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/company-stock-performance?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+      const [lastMod, results] = await Promise.all([
+        checkReportsLastModified(token),
+        Promise.allSettled([
+          fetch(`${API_BASE}/reports/dashboard-summary?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/executive-analytics?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/top-customers?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/inventory-analytics`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/sales-register?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/daybook?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/trial-balance`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/profit-loss?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/balance-sheet`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/cash-flow?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/ratio-analysis`, { headers }).then(r => r.ok ? r.json() : null),
+          fetch(`${API_BASE}/reports/company-stock-performance?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        ])
       ])
 
-      if (results[0].status === 'fulfilled' && results[0].value) setSummary(results[0].value)
-      if (results[1].status === 'fulfilled' && results[1].value) setExecData(results[1].value)
-      if (results[2].status === 'fulfilled' && results[2].value) setTopCustomers(results[2].value)
-      if (results[3].status === 'fulfilled' && results[3].value) setInventoryData(results[3].value)
-      if (results[4].status === 'fulfilled' && results[4].value) setSalesRegister(results[4].value)
-      if (results[5].status === 'fulfilled' && results[5].value) setDaybook(results[5].value)
-      if (results[6].status === 'fulfilled' && results[6].value) setTrialBalance(results[6].value)
-      if (results[7].status === 'fulfilled' && results[7].value) setPnlData(results[7].value)
-      if (results[8].status === 'fulfilled' && results[8].value) setBalanceSheetData(results[8].value)
-      if (results[9].status === 'fulfilled' && results[9].value) setCashFlowData(results[9].value)
-      if (results[10].status === 'fulfilled' && results[10].value) setRatiosData(results[10].value)
-      if (results[11].status === 'fulfilled' && results[11].value) setCompanyStockData(results[11].value)
+      const snapshot: any = {
+        last_voucher_at: lastMod?.last_voucher_at || null,
+        voucher_count: lastMod?.voucher_count || 0,
+      }
+
+      if (results[0].status === 'fulfilled' && results[0].value) { setSummary(results[0].value); snapshot.summary = results[0].value }
+      if (results[1].status === 'fulfilled' && results[1].value) { setExecData(results[1].value); snapshot.execData = results[1].value }
+      if (results[2].status === 'fulfilled' && results[2].value) { setTopCustomers(results[2].value); snapshot.topCustomers = results[2].value }
+      if (results[3].status === 'fulfilled' && results[3].value) { setInventoryData(results[3].value); snapshot.inventoryData = results[3].value }
+      if (results[4].status === 'fulfilled' && results[4].value) { setSalesRegister(results[4].value); snapshot.salesRegister = results[4].value }
+      if (results[5].status === 'fulfilled' && results[5].value) { setDaybook(results[5].value); snapshot.daybook = results[5].value }
+      if (results[6].status === 'fulfilled' && results[6].value) { setTrialBalance(results[6].value); snapshot.trialBalance = results[6].value }
+      if (results[7].status === 'fulfilled' && results[7].value) { setPnlData(results[7].value); snapshot.pnlData = results[7].value }
+      if (results[8].status === 'fulfilled' && results[8].value) { setBalanceSheetData(results[8].value); snapshot.balanceSheetData = results[8].value }
+      if (results[9].status === 'fulfilled' && results[9].value) { setCashFlowData(results[9].value); snapshot.cashFlowData = results[9].value }
+      if (results[10].status === 'fulfilled' && results[10].value) { setRatiosData(results[10].value); snapshot.ratiosData = results[10].value }
+      if (results[11].status === 'fulfilled' && results[11].value) { setCompanyStockData(results[11].value); snapshot.companyStockData = results[11].value }
+
+      // Save to IndexedDB cache
+      await saveReportsData(cacheKey, snapshot)
 
       setLastUpdatedMessage(
         fromDate || toDate
@@ -1134,8 +1188,14 @@ export default function ReportsPage() {
             </div>
           </div>
 
+          <DataFreshnessIndicator
+            domain="reports"
+            onRefresh={() => fetchReportsData(true)}
+            isRefreshing={loading}
+          />
+
           <button
-            onClick={fetchReportsData}
+            onClick={() => fetchReportsData(true)}
             disabled={loading}
             className="p-2.5 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl transition-all shadow-sm cursor-pointer disabled:opacity-50 flex items-center gap-1.5 text-xs font-bold"
             title="Refresh reports data"

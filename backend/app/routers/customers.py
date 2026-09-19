@@ -589,6 +589,346 @@ async def list_customers(
     }
 
 
+@router.get("/delta")
+async def customer_delta(
+    since_ts: str = Query(..., description="ISO timestamp of last successful sync (e.g. 2026-09-19T10:00:00Z)"),
+    user: User = Depends(require_permission("customers", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Delta sync endpoint — returns only customers modified since `since_ts`.
+    The frontend calls this instead of the full list to save bandwidth on 2G/3G.
+    Strictly read-only; zero accounting impact.
+
+    Response:
+    - updated_customers: customer records changed since since_ts (same shape as list_customers)
+    - deleted_ids: customer keys removed since last sync
+    - server_ts: timestamp to use as next since_ts
+    - full_refresh_required: if since_ts is too old, tells client to do a full re-fetch
+    """
+    from datetime import timedelta
+    import dateutil.parser as dp
+
+    try:
+        since_dt = dp.isoparse(since_ts)
+        # Strip timezone info for naive comparison with DB timestamps
+        if since_dt.tzinfo is not None:
+            since_dt = since_dt.replace(tzinfo=None)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid since_ts format. Use ISO 8601 (e.g. 2026-09-19T10:00:00Z).")
+
+    now = datetime.now()
+
+    # If the client hasn't synced in > 24 hours, force a full refresh
+    if (now - since_dt) > timedelta(hours=24):
+        return {
+            "updated_customers": [],
+            "deleted_ids": [],
+            "server_ts": now.isoformat(),
+            "full_refresh_required": True
+        }
+
+    # ── Identify changed ledgers ──────────────────────────────────────────
+
+    # 1. Fetch groups to identify Sundry Debtors
+    grp_res = await db.execute(
+        select(MstGroup).where(MstGroup.company_id == user.company_id)
+    )
+    groups = grp_res.scalars().all()
+    groups_dict = {g.group_id: g for g in groups}
+
+    def is_sundry_debtor(group_id):
+        curr_id = group_id
+        visited = set()
+        while curr_id and curr_id in groups_dict and curr_id not in visited:
+            visited.add(curr_id)
+            grp = groups_dict[curr_id]
+            if grp.name and grp.name.strip().lower() == "sundry debtors":
+                return True
+            curr_id = grp.parent_group_id
+        return False
+
+    # 2. Get ledgers updated since since_ts
+    changed_ledger_res = await db.execute(
+        select(MstLedger).where(
+            MstLedger.company_id == user.company_id,
+            MstLedger.updated_at > since_dt
+        )
+    )
+    changed_ledgers = changed_ledger_res.scalars().all()
+    changed_ledger_ids = {l.ledger_id for l in changed_ledgers if is_sundry_debtor(l.group_id)}
+
+    # 3. Get profiles updated since since_ts
+    changed_profile_res = await db.execute(
+        select(CustomerProfile).where(
+            CustomerProfile.company_id == user.company_id,
+            CustomerProfile.updated_at > since_dt
+        )
+    )
+    changed_profiles = changed_profile_res.scalars().all()
+
+    # Collect all affected ledger_ids and standalone profile_ids
+    changed_profile_ledger_ids = {p.ledger_id for p in changed_profiles if p.ledger_id is not None}
+    changed_standalone_profile_ids = {p.id for p in changed_profiles if p.ledger_id is None}
+
+    # Union of ledger IDs that need to be re-sent
+    affected_ledger_ids = changed_ledger_ids | changed_profile_ledger_ids
+
+    # If nothing changed, return early
+    if not affected_ledger_ids and not changed_standalone_profile_ids:
+        return {
+            "updated_customers": [],
+            "deleted_ids": [],
+            "server_ts": now.isoformat(),
+            "full_refresh_required": False
+        }
+
+    # ── Build updated customer records (same shape as list_customers) ─────
+
+    # Fetch full data only for affected records
+    all_ledgers_res = await db.execute(
+        select(MstLedger).where(
+            MstLedger.company_id == user.company_id,
+            MstLedger.ledger_id.in_(affected_ledger_ids)
+        )
+    ) if affected_ledger_ids else None
+    affected_ledgers = all_ledgers_res.scalars().all() if all_ledgers_res else []
+
+    profiles_res = await db.execute(
+        select(CustomerProfile).where(CustomerProfile.company_id == user.company_id)
+    )
+    profiles = profiles_res.scalars().all()
+    profile_by_ledger = {p.ledger_id: p for p in profiles if p.ledger_id is not None}
+
+    # Latest location logs for affected profiles
+    latest_logs_stmt = (
+        select(CustomerLocationLog)
+        .where(CustomerLocationLog.company_id == user.company_id)
+        .order_by(desc(CustomerLocationLog.created_at))
+    )
+    logs_res = await db.execute(latest_logs_stmt)
+    all_logs = logs_res.scalars().all()
+    latest_log_by_profile = {}
+    for log in all_logs:
+        if log.customer_profile_id and log.customer_profile_id not in latest_log_by_profile:
+            latest_log_by_profile[log.customer_profile_id] = log
+
+    # Owners for affected profiles
+    owners_res = await db.execute(
+        select(CustomerOwner)
+        .where(CustomerOwner.company_id == user.company_id)
+        .order_by(CustomerOwner.is_primary.desc(), CustomerOwner.id.asc())
+    )
+    all_owners = owners_res.scalars().all()
+    owners_by_profile = defaultdict(list)
+    for o in all_owners:
+        owners_by_profile[o.customer_profile_id].append({
+            "id": o.id,
+            "name": o.name,
+            "designation": o.designation or "Owner / Partner",
+            "phone": o.phone or "",
+            "whatsapp_number": o.whatsapp_number or "",
+            "email": o.email or "",
+            "photo_url": o.photo_url,
+            "is_primary": o.is_primary,
+            "notes": o.notes or ""
+        })
+
+    # Voucher stats for health calculation
+    voucher_stats_by_ledger = {}
+    if affected_ledger_ids:
+        try:
+            voucher_stats_stmt = (
+                select(
+                    TrnAccounting.ledger_id,
+                    func.max(TrnVoucher.voucher_date).label("last_voucher_date"),
+                    func.count(TrnVoucher.voucher_id).label("voucher_count")
+                )
+                .join(TrnVoucher, TrnVoucher.voucher_id == TrnAccounting.voucher_id)
+                .where(
+                    TrnVoucher.company_id == user.company_id,
+                    TrnVoucher.is_cancelled == False,
+                    TrnAccounting.ledger_id.in_(affected_ledger_ids)
+                )
+                .group_by(TrnAccounting.ledger_id)
+            )
+            v_res = await db.execute(voucher_stats_stmt)
+            for row in v_res.all():
+                voucher_stats_by_ledger[row.ledger_id] = (row.last_voucher_date, row.voucher_count)
+        except Exception:
+            pass
+
+    # Photo counts
+    photos_count_by_profile = {}
+    try:
+        photos_stmt = (
+            select(
+                CustomerPhoto.customer_profile_id,
+                func.count(CustomerPhoto.id).label("photo_count")
+            )
+            .where(CustomerPhoto.company_id == user.company_id)
+            .group_by(CustomerPhoto.customer_profile_id)
+        )
+        p_res = await db.execute(photos_stmt)
+        for row in p_res.all():
+            photos_count_by_profile[row.customer_profile_id] = row.photo_count
+    except Exception:
+        pass
+
+    updated_customers = []
+
+    # Build records for affected Tally ledger-based customers
+    for l in affected_ledgers:
+        if not is_sundry_debtor(l.group_id):
+            continue
+
+        p = profile_by_ledger.get(l.ledger_id)
+        addr_clean = l.address or ""
+        mobile_clean = l.mobile
+        if addr_clean and " | Mobile: " in addr_clean:
+            parts = addr_clean.split(" | Mobile: ")
+            addr_clean = parts[0]
+            if not mobile_clean and len(parts) > 1:
+                mobile_clean = parts[1]
+
+        lat = p.latitude if p else None
+        lon = p.longitude if p else None
+        e_loc, e_city = extract_locality_and_city(addr_clean)
+        loc = (p.locality.strip() if (p and p.locality) else e_loc) or ""
+        c_city = (p.city.strip() if (p and p.city) else (e_city or l.state)) or ""
+        r_name = p.route_name if p else None
+
+        latest_log = latest_log_by_profile.get(p.id) if p else None
+
+        recency = calculate_visit_recency(p.last_visit_at if p else None, now)
+
+        v_date, v_count = voucher_stats_by_ledger.get(l.ledger_id, (None, 0))
+        has_contact = bool((p.phone if p and p.phone else l.phone) or (p.contact_person if p and p.contact_person else l.contact_person))
+        has_photos = bool(photos_count_by_profile.get(p.id, 0) > 0 if p else False)
+        health = calculate_customer_health(
+            last_visit_at=p.last_visit_at if p else None,
+            visit_frequency=p.visit_frequency if p else "weekly",
+            last_voucher_date=v_date,
+            voucher_count=v_count,
+            has_verified_location=p.location_verified if p else False,
+            has_contact=has_contact,
+            has_photos=has_photos,
+            now=now
+        )
+
+        cust = {
+            "key": f"tally_{l.ledger_id}",
+            "source": "tally",
+            "ledger_id": l.ledger_id,
+            "profile_id": p.id if p else None,
+            "name": l.name,
+            "contact_person": (p.contact_person if p and p.contact_person else l.contact_person) or "",
+            "phone": (p.phone if p and p.phone else l.phone) or "",
+            "mobile": (p.whatsapp_number if p and p.whatsapp_number else mobile_clean) or "",
+            "whatsapp_number": (p.whatsapp_number if p and p.whatsapp_number else mobile_clean) or "",
+            "email": (p.email if p and p.email else l.email) or "",
+            "address": (p.address if p and p.address else addr_clean) or "",
+            "locality": loc or "",
+            "city": c_city or "",
+            "state": l.state or (p.state if p else ""),
+            "pincode": l.pincode or (p.pincode if p else ""),
+            "route_name": r_name or "",
+            "shop_type": (p.shop_type if p else "Retailer") or "Retailer",
+            "tags": [t.strip() for t in p.tags.split(",") if t.strip()] if (p and p.tags) else [],
+            "priority": (p.priority if p else "medium") or "medium",
+            "latitude": lat,
+            "longitude": lon,
+            "has_location": lat is not None and lon is not None,
+            "location_verified": p.location_verified if p else False,
+            "maps_url": build_maps_url(lat, lon, addr_clean),
+            "distance_from_me_meters": None,
+            "last_visit_at": p.last_visit_at.isoformat() if (p and p.last_visit_at) else None,
+            "days_since_last_visit": recency["days"],
+            "visit_recency_category": recency["category"],
+            "visit_recency_label": recency["label"],
+            "health_score": health,
+            "total_visits": p.total_visits if p else 0,
+            "notes": p.notes if p else "",
+            "latest_verification_status": latest_log.verification_status if latest_log else ("NO_CHECK_IN" if (lat and lon) else "NO_BASE_COORDINATE"),
+            "latest_checkin_distance": latest_log.distance_from_base_meters if latest_log else None,
+            "latest_checkin_at": latest_log.created_at.isoformat() if latest_log else None,
+            "owners": owners_by_profile.get(p.id, []) if p else [],
+            "owners_count": len(owners_by_profile.get(p.id, [])) if p else 0,
+        }
+        updated_customers.append(cust)
+
+    # Build records for affected standalone field profiles
+    standalone_changed = [p for p in profiles if p.ledger_id is None and p.id in changed_standalone_profile_ids]
+    for p in standalone_changed:
+        latest_log = latest_log_by_profile.get(p.id)
+        e_loc, e_city = extract_locality_and_city(p.address)
+        loc = (p.locality.strip() if p.locality else e_loc) or ""
+        c_city = (p.city.strip() if p.city else e_city) or ""
+
+        recency = calculate_visit_recency(p.last_visit_at, now)
+
+        has_contact = bool(p.phone or p.contact_person)
+        has_photos = bool(photos_count_by_profile.get(p.id, 0) > 0)
+        health = calculate_customer_health(
+            last_visit_at=p.last_visit_at,
+            visit_frequency=p.visit_frequency,
+            last_voucher_date=None,
+            voucher_count=0,
+            has_verified_location=p.location_verified,
+            has_contact=has_contact,
+            has_photos=has_photos,
+            now=now
+        )
+
+        cust = {
+            "key": f"profile_{p.id}",
+            "source": "field_profile",
+            "ledger_id": None,
+            "profile_id": p.id,
+            "name": p.custom_name or "Unnamed Shop",
+            "contact_person": p.contact_person or "",
+            "phone": p.phone or "",
+            "mobile": p.phone or p.whatsapp_number or "",
+            "whatsapp_number": p.whatsapp_number or p.phone or "",
+            "email": p.email or "",
+            "address": p.address or "",
+            "locality": loc or "",
+            "city": c_city or "",
+            "state": p.state or "",
+            "pincode": p.pincode or "",
+            "route_name": p.route_name or "",
+            "shop_type": p.shop_type or "Retailer",
+            "tags": [t.strip() for t in p.tags.split(",") if t.strip()] if p.tags else [],
+            "priority": p.priority or "medium",
+            "latitude": p.latitude,
+            "longitude": p.longitude,
+            "has_location": p.latitude is not None and p.longitude is not None,
+            "location_verified": p.location_verified,
+            "maps_url": build_maps_url(p.latitude, p.longitude, p.address),
+            "distance_from_me_meters": None,
+            "last_visit_at": p.last_visit_at.isoformat() if p.last_visit_at else None,
+            "days_since_last_visit": recency["days"],
+            "visit_recency_category": recency["category"],
+            "visit_recency_label": recency["label"],
+            "health_score": health,
+            "total_visits": p.total_visits or 0,
+            "notes": p.notes or "",
+            "latest_verification_status": latest_log.verification_status if latest_log else ("NO_CHECK_IN" if (p.latitude and p.longitude) else "NO_BASE_COORDINATE"),
+            "latest_checkin_distance": latest_log.distance_from_base_meters if latest_log else None,
+            "latest_checkin_at": latest_log.created_at.isoformat() if latest_log else None,
+            "owners": owners_by_profile.get(p.id, []),
+            "owners_count": len(owners_by_profile.get(p.id, [])),
+        }
+        updated_customers.append(cust)
+
+    return {
+        "updated_customers": updated_customers,
+        "deleted_ids": [],  # TODO: Track deletions via soft-delete or audit log when implemented
+        "server_ts": now.isoformat(),
+        "full_refresh_required": False
+    }
+
+
 @router.get("/localities")
 async def get_localities_and_routes(
     user: User = Depends(require_permission("customers", "read")),

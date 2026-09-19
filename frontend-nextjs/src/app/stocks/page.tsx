@@ -6,6 +6,8 @@ import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
 import Link from 'next/link'
 import { Search, X, Package, ArrowLeft, ArrowUpDown, ArrowUp, ArrowDown, PackageCheck } from 'lucide-react'
+import { loadStockItems } from '@/lib/data-sync-service'
+import DataFreshnessIndicator from '@/components/DataFreshnessIndicator'
 
 type SortKey =
   | 'name'
@@ -91,34 +93,58 @@ export default function StocksPage() {
     return <ArrowUpDown className="h-2.5 w-2.5 opacity-0 group-hover:opacity-40 transition-opacity text-muted-foreground ml-1" />
   }
 
+  const [refreshing, setRefreshing] = useState(false)
+
+  const fetchItems = async (forceRefresh = false) => {
+    if (!token) return
+    if (forceRefresh) setRefreshing(true)
+    else if (items.length === 0) setLoading(true)
+
+    try {
+      const { items: data } = await loadStockItems(token, forceRefresh)
+      const list = (Array.isArray(data) ? data : []).map(i => ({
+        ...i,
+        closing_balance: Number(i.closing_balance) || 0,
+        closing_rate: Number(i.closing_rate) || 0,
+        closing_value: Number(i.closing_value) || 0,
+        opening_balance: Number(i.opening_balance) || 0,
+        opening_rate: Number(i.opening_rate) || 0,
+        inward_qty: Number(i.inward_qty) || 0,
+        inward_value: Number(i.inward_value) || 0,
+        outward_qty: Number(i.outward_qty) || 0,
+        outward_value: Number(i.outward_value) || 0,
+        cons_value: Number(i.cons_value) || 0,
+        gp_value: Number(i.gp_value) || 0,
+        gp_percent: Number(i.gp_percent) || 0,
+      }))
+      setItems(list)
+    } catch (e) {
+      console.warn('[Stocks] Failed to load stocks:', e)
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }
+
   useEffect(() => {
     if (!user) {
       router.replace('/login')
       return
     }
-    fetch(`${API_BASE}/inventory/items`, { headers: authHeaders(token) })
-      .then(r => r.json())
-      .then((data: StockItem[]) => {
-        const list = (Array.isArray(data) ? data : []).map(i => ({
-          ...i,
-          closing_balance: Number(i.closing_balance) || 0,
-          closing_rate: Number(i.closing_rate) || 0,
-          closing_value: Number(i.closing_value) || 0,
-          opening_balance: Number(i.opening_balance) || 0,
-          opening_rate: Number(i.opening_rate) || 0,
-          inward_qty: Number(i.inward_qty) || 0,
-          inward_value: Number(i.inward_value) || 0,
-          outward_qty: Number(i.outward_qty) || 0,
-          outward_value: Number(i.outward_value) || 0,
-          cons_value: Number(i.cons_value) || 0,
-          gp_value: Number(i.gp_value) || 0,
-          gp_percent: Number(i.gp_percent) || 0,
-        }))
-        setItems(list)
-      })
-      .catch(() => setItems([]))
-      .finally(() => setLoading(false))
+    fetchItems(false)
   }, [user, token, router])
+
+  // Listen for background sync updates
+  useEffect(() => {
+    const handleDataUpdated = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (!detail?.domain || detail.domain === 'stocks') {
+        fetchItems(false)
+      }
+    }
+    window.addEventListener('mytally:data-updated', handleDataUpdated)
+    return () => window.removeEventListener('mytally:data-updated', handleDataUpdated)
+  }, [token])
 
   // Fetch vouchers when an item is selected
   useEffect(() => {
@@ -279,6 +305,11 @@ export default function StocksPage() {
           <span className="font-extrabold text-sm tracking-wider text-emerald-900 dark:text-emerald-50 absolute left-1/2 -translate-x-1/2 hidden xs:block">
             {activeCompanyName}
           </span>
+          <DataFreshnessIndicator
+            domain="stocks"
+            onRefresh={() => fetchItems(true)}
+            isRefreshing={refreshing}
+          />
         </div>
       ) : (
         <div className="relative px-4 py-3 bg-[#4a90e2] text-white border-b border-blue-400 flex items-center justify-between">

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
@@ -50,7 +50,9 @@ import {
   HeartPulse,
   Check
 } from 'lucide-react'
-import { saveOfflineDirectory, getOfflineDirectory } from '@/lib/offline-storage'
+import { saveOfflineDirectory, getOfflineDirectory, getAllCachedCustomers, getCachedDomainData, setCachedDomainData } from '@/lib/offline-storage'
+import { loadCustomers, syncCustomersDelta, loadLocalities } from '@/lib/data-sync-service'
+import DataFreshnessIndicator from '@/components/DataFreshnessIndicator'
 
 interface LocalityItem {
   name: string
@@ -262,18 +264,40 @@ export default function CustomersPage() {
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null)
   const [deletingCustomer, setDeletingCustomer] = useState(false)
 
+  // Helper to compute summary metrics directly from customer directory
+  const computeMetricsFromCustomers = useCallback((list: any[]) => {
+    if (!Array.isArray(list) || list.length === 0) {
+      return {
+        total: 0,
+        tagged: 0,
+        missing_location: 0,
+        mismatch_count: 0,
+        verified_count: 0,
+      }
+    }
+    const total = list.length
+    const tagged = list.filter(c => Boolean(c.has_location || (c.latitude != null && c.longitude != null))).length
+    const missing_location = Math.max(0, total - tagged)
+    const mismatch_count = list.filter(c => c.latest_verification_status === 'MISMATCH_FAR').length
+    const verified_count = list.filter(c => c.latest_verification_status === 'VERIFIED_ON_SITE').length
+    return {
+      total,
+      tagged,
+      missing_location,
+      mismatch_count,
+      verified_count,
+    }
+  }, [])
+
   // Fetch localities and routes
   const fetchLocalities = async () => {
     if (!token) return
     try {
-      const res = await fetch(`${API_BASE}/customers/localities`, {
-        headers: authHeaders(token),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setLocalitiesList(data.localities || [])
-        setCitiesList(data.cities || [])
-        setRoutesList(data.routes || [])
+      const result = await loadLocalities(token)
+      if (result && result.data) {
+        setLocalitiesList(result.data.localities || [])
+        setCitiesList(result.data.cities || [])
+        setRoutesList(result.data.routes || [])
       }
     } catch (e) {
       console.error('Failed to load localities', e)
@@ -289,7 +313,55 @@ export default function CustomersPage() {
     }
   }
 
-  // Fetch customers list with instant override support & offline caching
+  // Load initial cached customers & metrics immediately on mount for 0ms instant render
+  useEffect(() => {
+    getAllCachedCustomers().then(cached => {
+      if (cached && cached.length > 0) {
+        setCustomers(cached)
+        setMetrics(computeMetricsFromCustomers(cached))
+        setLoading(false)
+      }
+    }).catch(() => {})
+
+    getCachedDomainData<any>('customer_metrics').then(cachedMeta => {
+      if (cachedMeta && cachedMeta.data && cachedMeta.data.total > 0) {
+        setMetrics(cachedMeta.data)
+      }
+    }).catch(() => {})
+
+    getCachedDomainData<any>('localities').then(cachedLoc => {
+      if (cachedLoc && cachedLoc.data) {
+        setLocalitiesList(cachedLoc.data.localities || [])
+        setCitiesList(cachedLoc.data.cities || [])
+        setRoutesList(cachedLoc.data.routes || [])
+      }
+    }).catch(() => {})
+  }, [computeMetricsFromCustomers])
+
+  // Listen for background sync updates from data-sync-service
+  useEffect(() => {
+    const handleDataUpdated = async (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (!detail?.domain || detail.domain === 'customers') {
+        const cached = await getAllCachedCustomers()
+        if (cached && cached.length > 0) {
+          setCustomers(cached)
+          setMetrics(computeMetricsFromCustomers(cached))
+        }
+      }
+    }
+    window.addEventListener('mytally:data-updated', handleDataUpdated)
+    return () => window.removeEventListener('mytally:data-updated', handleDataUpdated)
+  }, [computeMetricsFromCustomers])
+
+  // Guard: Auto-compute and populate metrics whenever customers are loaded but metrics are still 0
+  useEffect(() => {
+    if (customers.length > 0 && metrics.total === 0) {
+      setMetrics(computeMetricsFromCustomers(customers))
+    }
+  }, [customers, metrics.total, computeMetricsFromCustomers])
+
+  // Fetch customers list with instant override support, delta sync & offline caching
   const fetchCustomers = async (
     isRefresh = false,
     overrideCoords: { lat: number; lon: number } | null = myCoords,
@@ -300,7 +372,10 @@ export default function CustomersPage() {
   ) => {
     if (!token) return
     if (isRefresh) setRefreshing(true)
-    else setLoading(true)
+    else {
+      // If we already have customers displayed from cache, don't show full loading spinner
+      if (customers.length === 0) setLoading(true)
+    }
 
     try {
       const activeSort = overrideSort || sortBy
@@ -308,6 +383,36 @@ export default function CustomersPage() {
       const activeLoc = overrideLocality !== undefined ? overrideLocality : selectedLocality
       const activeRadius = overrideRadius !== undefined ? overrideRadius : selectedRadius
       const activeRecency = overrideRecency !== undefined ? overrideRecency : selectedRecency
+
+      const hasCustomFilters = Boolean(
+        search ||
+        (activeLoc && activeLoc !== 'all') ||
+        (selectedCity && selectedCity !== 'all') ||
+        (selectedRoute && selectedRoute !== 'all') ||
+        (verificationFilter && verificationFilter !== 'all') ||
+        (locationFilter && locationFilter !== 'all') ||
+        activeRadius !== null ||
+        (activeRecency && activeRecency !== 'all') ||
+        activeCoords
+      )
+
+      // When no complex server filters are active, use lightweight delta sync!
+      if (!hasCustomFilters && !isRefresh) {
+        try {
+          const deltaCustomers = await syncCustomersDelta(token)
+          if (deltaCustomers && deltaCustomers.length > 0) {
+            setCustomers(deltaCustomers)
+            const computed = computeMetricsFromCustomers(deltaCustomers)
+            setMetrics(computed)
+            setCachedDomainData('customer_metrics', computed)
+            setOfflineCachedAt(null)
+            setIsOffline(false)
+            return
+          }
+        } catch (deltaErr) {
+          console.warn('[Customers] Delta sync fallback to query fetch:', deltaErr)
+        }
+      }
 
       let url = `${API_BASE}/customers?location_status=${locationFilter}&sort_by=${activeSort}`
       if (search) url += `&search=${encodeURIComponent(search)}`
@@ -327,26 +432,32 @@ export default function CustomersPage() {
         const data = await res.json()
         const custList = data.customers || []
         setCustomers(custList)
-        setMetrics(data.metrics || {
-          total: 0,
-          tagged: 0,
-          missing_location: 0,
-          mismatch_count: 0,
-          verified_count: 0,
-        })
+        const computed = data.metrics || computeMetricsFromCustomers(custList)
+        setMetrics(computed)
+        setCachedDomainData('customer_metrics', computed)
         // Save fresh directory snapshot to local offline storage
         saveOfflineDirectory({ customers: custList })
         setOfflineCachedAt(null)
+        setIsOffline(false)
       } else {
         throw new Error(`Server returned ${res.status}`)
       }
     } catch (e) {
       console.error('Failed to load customers, attempting offline cache fallback', e)
-      const cached = getOfflineDirectory()
-      if (cached && cached.customers?.length > 0) {
-        setCustomers(cached.customers)
-        setOfflineCachedAt(new Date(cached.cachedAt).toLocaleTimeString())
+      const cached = await getAllCachedCustomers()
+      if (cached && cached.length > 0) {
+        setCustomers(cached)
+        setMetrics(computeMetricsFromCustomers(cached))
+        setOfflineCachedAt(new Date().toLocaleTimeString())
         setIsOffline(true)
+      } else {
+        const legacyCached = getOfflineDirectory()
+        if (legacyCached && legacyCached.customers?.length > 0) {
+          setCustomers(legacyCached.customers)
+          setMetrics(computeMetricsFromCustomers(legacyCached.customers))
+          setOfflineCachedAt(new Date(legacyCached.cachedAt).toLocaleTimeString())
+          setIsOffline(true)
+        }
       }
     } finally {
       setLoading(false)
@@ -971,6 +1082,12 @@ export default function CustomersPage() {
             </div>
 
             <div className="flex items-center gap-2.5">
+              <DataFreshnessIndicator
+                domain="customers"
+                onRefresh={() => fetchCustomers(true)}
+                isRefreshing={refreshing}
+              />
+
               <button
                 onClick={() => fetchCustomers(true)}
                 disabled={refreshing}
