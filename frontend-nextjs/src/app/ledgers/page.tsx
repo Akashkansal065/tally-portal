@@ -8,8 +8,6 @@ import { Search, ChevronLeft, ChevronRight, RefreshCw, Plus, Edit2, Trash2, Fold
 import { cn } from '@/lib/utils'
 import LedgerFormModal, { LedgerFormData } from '@/components/LedgerFormModal'
 import DeleteLedgerModal from '@/components/DeleteLedgerModal'
-import { loadLedgers } from '@/lib/data-sync-service'
-import DataFreshnessIndicator from '@/components/DataFreshnessIndicator'
 
 type Ledger = {
   ledger_id: number
@@ -80,41 +78,23 @@ export default function LedgersPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const pageSize = 10
 
-  const [refreshing, setRefreshing] = useState(false)
-
-  const fetchData = async (forceRefresh = false) => {
-    if (!token) return
-    if (forceRefresh) setRefreshing(true)
-    else if (ledgers.length === 0) setLoading(true)
-
+  const fetchData = async () => {
+    setLoading(true)
     try {
-      const { ledgers: data, fromCache } = await loadLedgers(token, forceRefresh)
+      const res = await fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) })
+      const data = await res.json()
       setLedgers(Array.isArray(data) ? data : [])
-      if (fromCache) setLoading(false)
     } catch (err) {
       console.error(err)
     } finally {
       setLoading(false)
-      setRefreshing(false)
     }
   }
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    fetchData(false)
+    fetchData()
   }, [user, token])
-
-  // Listen for background sync updates
-  useEffect(() => {
-    const handleDataUpdated = (e: Event) => {
-      const detail = (e as CustomEvent).detail
-      if (!detail?.domain || detail.domain === 'ledgers') {
-        fetchData(false)
-      }
-    }
-    window.addEventListener('mytally:data-updated', handleDataUpdated)
-    return () => window.removeEventListener('mytally:data-updated', handleDataUpdated)
-  }, [token])
 
   // Filter and sort ledgers
   const processedData = useMemo(() => {
@@ -260,11 +240,6 @@ export default function LedgersPage() {
           <p className="text-[11px] text-muted-foreground font-semibold">Manage Customer & Supplier accounts</p>
         </div>
         <div className="flex items-center gap-2">
-          <DataFreshnessIndicator
-            domain="ledgers"
-            onRefresh={() => fetchData(true)}
-            isRefreshing={refreshing}
-          />
           <button
             onClick={handleTriggerSync}
             disabled={isSyncing}

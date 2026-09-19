@@ -10,7 +10,6 @@ import { PwaRegister } from '@/components/PwaRegister'
 import { DatePickerInitializer } from '@/components/DatePickerInitializer'
 import { MobileInstallPrompt } from '@/components/MobileInstallPrompt'
 import { SessionRestorer } from '@/components/SessionRestorer'
-import { OfflineSyncManager } from '@/components/OfflineSyncManager'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
@@ -77,7 +76,6 @@ export default function RootLayout({
               <DatePickerInitializer />
               <MobileInstallPrompt />
               <SessionRestorer />
-              <OfflineSyncManager />
               {/* Top Header */}
               <GlobalHeader />
 

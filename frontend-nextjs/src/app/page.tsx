@@ -34,9 +34,6 @@ import {
   PieChart as PieChartIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { loadDashboardSummary } from '@/lib/data-sync-service'
-import { getCachedDomainData, setCachedDomainData } from '@/lib/offline-storage'
-import DataFreshnessIndicator from '@/components/DataFreshnessIndicator'
 import {
   ResponsiveContainer,
   AreaChart,
@@ -125,16 +122,23 @@ export default function DashboardPage() {
     setPeriodModalOpen(false)
   }
 
-  const loadDashboard = async (fDate?: string, tDate?: string, forceRefresh = false) => {
+  const loadDashboard = async (fDate?: string, tDate?: string) => {
     if (!token || !permissions.showReports) return
     const targetFrom = fDate || globalFrom
     const targetTo = tDate || globalTo
-    if (!dashboardData) setFetchingSummary(true)
+    setFetchingSummary(true)
     try {
-      const { data, fromCache } = await loadDashboardSummary(token, targetFrom, targetTo, forceRefresh)
-      if (data) {
+      let url = `${API_BASE}/reports/dashboard-summary`
+      const queryParams: string[] = []
+      if (targetFrom) queryParams.push(`from_date=${targetFrom}`)
+      if (targetTo) queryParams.push(`to_date=${targetTo}`)
+      if (queryParams.length > 0) {
+        url += `?${queryParams.join('&')}`
+      }
+      const res = await fetch(url, { headers: authHeaders(token) })
+      if (res.ok) {
+        const data = await res.json()
         setDashboardData(data)
-        if (fromCache) setFetchingSummary(false)
       }
     } catch (e) {
       console.error('Failed to load dashboard:', e)
@@ -143,26 +147,11 @@ export default function DashboardPage() {
     }
   }
 
-  const loadAnalytics = async (fDate?: string, tDate?: string, forceRefresh = false) => {
+  const loadAnalytics = async (fDate?: string, tDate?: string) => {
     if (!token || !permissions.showReports) return
     const targetFrom = fDate || globalFrom
     const targetTo = tDate || globalTo
-    const cacheKey = `analytics_${targetFrom || 'all'}_${targetTo || 'all'}`
-
-    // 1. Instant 0ms render from cache
-    try {
-      const cached = await getCachedDomainData<any>(cacheKey)
-      if (cached && cached.data) {
-        if (cached.data.analytics) setAnalyticsData(cached.data.analytics)
-        if (cached.data.topCustomers) setTopCustomersData(cached.data.topCustomers)
-        setAnalyticsLoading(false)
-        if (!cached.isStale && !forceRefresh) return
-      }
-    } catch (e) {
-      console.warn('[Dashboard] Cache read failed:', e)
-    }
-
-    if (!analyticsData) setAnalyticsLoading(true)
+    setAnalyticsLoading(true)
     try {
       const queryParams: string[] = []
       if (targetFrom) queryParams.push(`from_date=${targetFrom}`)
@@ -174,24 +163,13 @@ export default function DashboardPage() {
         fetch(`${API_BASE}/reports/top-customers${qs}`, { headers: authHeaders(token) }),
       ])
 
-      let freshAnalytics = null
-      let freshTopCustomers = null
-
       if (resAnalytics.ok) {
-        freshAnalytics = await resAnalytics.json()
-        setAnalyticsData(freshAnalytics)
+        const data = await resAnalytics.json()
+        setAnalyticsData(data)
       }
       if (resTopCustomers.ok) {
-        const custArr = await resTopCustomers.json()
-        freshTopCustomers = Array.isArray(custArr) ? custArr : []
-        setTopCustomersData(freshTopCustomers)
-      }
-
-      if (freshAnalytics || freshTopCustomers) {
-        await setCachedDomainData(cacheKey, {
-          analytics: freshAnalytics || analyticsData,
-          topCustomers: freshTopCustomers || topCustomersData,
-        }, 10 * 60 * 1000)
+        const data = await resTopCustomers.json()
+        setTopCustomersData(Array.isArray(data) ? data : [])
       }
     } catch (e) {
       console.error('Failed to load executive analytics:', e)
@@ -438,14 +416,6 @@ export default function DashboardPage() {
             Real-time synchronization with Tally Prime
           </p>
         </div>
-        <DataFreshnessIndicator
-          domain="dashboard"
-          onRefresh={() => {
-            loadDashboard(undefined, undefined, true)
-            loadAnalytics(undefined, undefined, true)
-          }}
-          isRefreshing={fetchingSummary || analyticsLoading}
-        />
       </div>
 
       {/* Tally Prime Style Header Banner */}

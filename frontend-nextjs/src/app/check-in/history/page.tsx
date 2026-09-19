@@ -94,10 +94,6 @@ export default function CheckInHistoryPage() {
     if (!user) { router.replace('/login'); return }
     if (!permissions.showCheckIn) { router.replace('/'); return }
     fetchHistory()
-
-    const handleSync = () => fetchHistory()
-    window.addEventListener('mytally:checkins-synced', handleSync)
-    return () => window.removeEventListener('mytally:checkins-synced', handleSync)
   }, [user, permissions, router, fetchHistory])
 
   const filteredVisits = useMemo(() => {

@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { API_BASE, authHeaders } from '@/lib/utils'
-import { clearAllOfflineData } from '@/lib/offline-storage'
 
 export interface UserPermissions {
   showLedger: boolean
@@ -67,7 +66,7 @@ interface AuthContextValue {
   token: string
   isLoading: boolean
   login: (token: string, email: string) => Promise<void>
-  logout: () => Promise<void>
+  logout: () => void
   switchCompany: (company_id: number) => Promise<void>
   permissions: UserPermissions
   can: (module: string, action: 'create' | 'read' | 'update' | 'delete') => boolean
@@ -97,7 +96,7 @@ const AuthContext = createContext<AuthContextValue>({
   token: '',
   isLoading: true,
   login: async () => { },
-  logout: async () => { },
+  logout: () => { },
   switchCompany: async () => { },
   permissions: DEFAULT_PERMISSIONS,
   can: () => false,
@@ -150,9 +149,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         },
       })
     } catch {
-      try {
-        await clearAllOfflineData()
-      } catch {}
       setUser(null)
       setToken('')
       localStorage.removeItem('mytally_token')
@@ -169,8 +165,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       fetchMe(saved)
     } else {
       setIsLoading(false)
-      // When unauthenticated on app load, ensure all offline data is cleared
-      clearAllOfflineData().catch(() => {})
     }
   }, [fetchMe])
 
@@ -181,10 +175,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await fetchMe(tok)
   }
 
-  const logout = async () => {
-    try {
-      await clearAllOfflineData()
-    } catch {}
+  const logout = () => {
     setUser(null)
     setToken('')
     localStorage.removeItem('mytally_token')
@@ -199,7 +190,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ company_id })
     })
     if (res.ok) {
-      await clearAllOfflineData().catch(() => {})
       await fetchMe(token)
     } else {
       let msg = "Failed to switch company"
