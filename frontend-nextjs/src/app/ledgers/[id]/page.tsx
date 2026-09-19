@@ -225,7 +225,12 @@ export default function LedgerDetailsPage() {
       </div>
 
       {/* Interactive table list container */}
-      <LedgerDetailsClient ledgerInfo={ledgerInfo} transactions={transactions} />
+      <LedgerDetailsClient
+        ledgerInfo={ledgerInfo}
+        transactions={transactions}
+        customerPhone={ledgerInfo.mobile || ledgerInfo.phone || ''}
+        customerName={ledgerInfo.name}
+      />
     </div>
   )
 }

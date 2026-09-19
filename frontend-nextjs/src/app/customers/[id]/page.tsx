@@ -218,8 +218,8 @@ export default function CustomerProfilePage() {
     user?.role?.toLowerCase() === 'owner'
   )
 
-  const canViewStatement = Boolean(isAdmin || permissions?.showSalesLedgers || permissions?.showReceivables || can?.('sales_ledgers', 'read'))
-  const canViewOrders = Boolean(isAdmin || permissions?.showSalesOrders || can?.('sales_orders', 'read'))
+  const canViewStatement = Boolean(isAdmin || permissions?.showSalesLedgers || can?.('sales_ledgers', 'read'))
+  const canViewOrders = Boolean(isAdmin || permissions?.showOrders || can?.('sales_orders', 'read'))
   const canViewVisits = Boolean(isAdmin || permissions?.showCheckIn || can?.('check_in', 'read'))
   const canDelete = Boolean(isAdmin || can?.('customers', 'delete'))
   const canUpdate = Boolean(isAdmin || can?.('customers', 'update'))
@@ -2541,7 +2541,12 @@ export default function CustomerProfilePage() {
               </div>
             ) : ledgerInfo ? (
               <div className="pt-2">
-                <LedgerDetailsClient ledgerInfo={ledgerInfo} transactions={transactions} />
+                <LedgerDetailsClient
+                  ledgerInfo={ledgerInfo}
+                  transactions={transactions}
+                  customerPhone={customer.whatsapp_number || customer.mobile || customer.phone || ''}
+                  customerName={customer.name}
+                />
               </div>
             ) : (
               <div className="py-16 text-center text-muted-foreground">
