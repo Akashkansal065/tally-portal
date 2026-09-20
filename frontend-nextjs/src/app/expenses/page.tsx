@@ -17,7 +17,11 @@ import {
   ListTodo,
   BarChart3,
   Calendar,
-  CheckCircle2
+  CheckCircle2,
+  Users,
+  Filter,
+  Upload,
+  UserCheck
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -32,9 +36,20 @@ type Expense = {
   receipt_photo_url?: string
   salesperson?: string
   user_id?: number
+  is_salesman_related?: boolean
 }
 
-const CATEGORIES = ['Travel', 'Food', 'Petrol', 'Toll', 'Accommodation', 'Stationery', 'Other']
+const CATEGORIES = [
+  'Office Rent',
+  'Salary',
+  'Travel / Commute',
+  'Transport/E-Rickshaw',
+  'Food & Meals',
+  'Utilities / Internet',
+  'Fuel / Maintenance',
+  'Stationery',
+  'Miscellaneous / Others'
+]
 const MODES = ['Cash', 'Bank', 'Online']
 
 export default function ExpensesPage() {
@@ -52,12 +67,14 @@ export default function ExpensesPage() {
   // Form states
   const [amount, setAmount] = useState('')
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [category, setCategory] = useState('Travel')
+  const [category, setCategory] = useState('Office Rent')
   const [mode, setMode] = useState('Cash')
   const [narration, setNarration] = useState('')
   const [refNo, setRefNo] = useState('')
   const [photo, setPhoto] = useState<string | null>(null)
   const [processingPhoto, setProcessingPhoto] = useState(false)
+  const [isSalesmanRelated, setIsSalesmanRelated] = useState(false)
+  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string>('')
 
   // Zoomed image modal state
   const [selectedReceipt, setSelectedReceipt] = useState<string | null>(null)
@@ -66,10 +83,27 @@ export default function ExpensesPage() {
   const [rejectingExpenseId, setRejectingExpenseId] = useState<number | null>(null)
   const [rejectReason, setRejectReason] = useState('')
 
+  // Scope and filters
+  const [scope, setScope] = useState<'all' | 'my'>('all')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [salespersons, setSalespersons] = useState<{ user_id: number; username: string; role_name?: string }[]>([])
+  const [selectedSalesperson, setSelectedSalesperson] = useState<string>('all')
+
   const fetchExpenses = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/expenses`, { headers: authHeaders(token) })
+      const params = new URLSearchParams()
+      if (permissions.isAdmin) {
+        params.set('scope', scope)
+        if (scope === 'all' && selectedSalesperson !== 'all') {
+          params.set('salesperson_id', selectedSalesperson)
+        }
+      }
+      if (statusFilter !== 'all') {
+        params.set('status', statusFilter)
+      }
+      const qs = params.toString() ? `?${params.toString()}` : ''
+      const res = await fetch(`${API_BASE}/expenses${qs}`, { headers: authHeaders(token) })
       if (res.ok) {
         const data = await res.json()
         setExpenses(Array.isArray(data) ? data : (data?.data ?? []))
@@ -81,11 +115,33 @@ export default function ExpensesPage() {
     }
   }
 
+  // Load salespersons list
+  useEffect(() => {
+    if (token) {
+      fetch(`${API_BASE}/expenses/salespersons`, { headers: authHeaders(token) })
+        .then(r => r.ok ? r.json() : [])
+        .then(data => {
+          if (Array.isArray(data)) setSalespersons(data)
+        })
+        .catch(() => {})
+    }
+  }, [token])
+
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
     if (!permissions.showExpenses && !permissions.isAdmin) { router.replace('/'); return }
     fetchExpenses()
-  }, [user, token, router, permissions])
+  }, [user, token, router, permissions, scope, statusFilter, selectedSalesperson])
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      setPhoto(reader.result as string)
+    }
+    reader.readAsDataURL(file)
+  }
 
   const handlePhotoCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -106,6 +162,7 @@ export default function ExpensesPage() {
   const handleSubmitClaim = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!amount || parseFloat(amount) <= 0) { setError('Enter a valid amount.'); return }
+    if (isSalesmanRelated && !selectedSalesmanId) { setError('Please select a salesman.'); return }
     setSubmitting(true)
     setError('')
     setSuccess('')
@@ -118,9 +175,11 @@ export default function ExpensesPage() {
           date,
           category,
           payment_mode: mode,
-          narration,
-          reference_no: refNo,
-          photo_base64: photo
+          is_salesman_related: isSalesmanRelated,
+          salesperson_user_id: isSalesmanRelated && selectedSalesmanId ? parseInt(selectedSalesmanId) : null,
+          narration: narration || undefined,
+          reference_no: refNo || undefined,
+          photo_base64: photo || undefined
         }),
       })
       if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
@@ -130,6 +189,8 @@ export default function ExpensesPage() {
       setNarration('')
       setRefNo('')
       setPhoto(null)
+      setIsSalesmanRelated(false)
+      setSelectedSalesmanId('')
       await fetchExpenses()
     } catch (err: any) {
       setError(err.message)
@@ -246,9 +307,72 @@ export default function ExpensesPage() {
         {showForm && (
           <form onSubmit={handleSubmitClaim} className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
             <h2 className="font-extrabold text-sm text-foreground">Log Expense Claim</h2>
+
+            {/* Salesman Association Toggle Card */}
+            <div className="bg-muted/30 border border-border/80 rounded-2xl p-4 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-start gap-2.5">
+                  <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-500 mt-0.5 shrink-0">
+                    <UserCheck className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-foreground">Is this expense related to a salesman?</h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">Select if this expense is linked to a specific salesperson.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsSalesmanRelated(v => !v)}
+                  className={cn(
+                    "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
+                    isSalesmanRelated ? "bg-emerald-500" : "bg-muted border border-border"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out",
+                      isSalesmanRelated ? "translate-x-5" : "translate-x-0"
+                    )}
+                  />
+                </button>
+              </div>
+
+              {isSalesmanRelated && (
+                <div className="space-y-1.5 pt-3 border-t border-border/60">
+                  <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">
+                    SELECT SALESMAN <span className="text-destructive">*</span>
+                  </label>
+                  <select
+                    value={selectedSalesmanId}
+                    onChange={e => setSelectedSalesmanId(e.target.value)}
+                    required={isSalesmanRelated}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-emerald-500/60 bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    <option value="">Select a salesperson...</option>
+                    {salespersons.map(sp => (
+                      <option key={sp.user_id} value={sp.user_id}>
+                        {sp.username.toLowerCase()} ({sp.role_name?.toLowerCase() || 'sales'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Date and Amount */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Amount (₹)</label>
+                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">DATE</label>
+                <input
+                  type="date"
+                  value={date}
+                  required
+                  onChange={e => setDate(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">AMOUNT (₹)</label>
                 <input
                   type="number"
                   min="0"
@@ -260,21 +384,12 @@ export default function ExpensesPage() {
                   className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Date</label>
-                <input
-                  type="date"
-                  value={date}
-                  required
-                  onChange={e => setDate(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
             </div>
 
+            {/* Category and Payment Mode */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Category</label>
+                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">EXPENSE CATEGORY</label>
                 <select
                   value={category}
                   onChange={e => setCategory(e.target.value)}
@@ -284,7 +399,7 @@ export default function ExpensesPage() {
                 </select>
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Payment Mode</label>
+                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">PAYMENT MODE</label>
                 <select
                   value={mode}
                   onChange={e => setMode(e.target.value)}
@@ -295,23 +410,24 @@ export default function ExpensesPage() {
               </div>
             </div>
 
+            {/* Reference / Bill No (Optional) */}
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Narration Description</label>
-              <textarea
-                placeholder="What was this expense spent on?"
-                value={narration}
-                onChange={e => setNarration(e.target.value)}
-                rows={2}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">REFERENCE / BILL NO (OPTIONAL)</label>
+              <input
+                type="text"
+                placeholder="e.g. INV-9871"
+                value={refNo}
+                onChange={e => setRefNo(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </div>
 
-            {/* Receipt Photo Stamping */}
+            {/* Receipt / Bill Copy (Optional) */}
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Receipt Photo Proof</label>
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">RECEIPT / BILL COPY (OPTIONAL)</label>
               {photo ? (
                 <div className="relative rounded-xl overflow-hidden border border-border mt-1 shadow-sm">
-                  <img src={photo} alt="receipt preview" className="w-full h-32 object-cover" />
+                  <img src={photo} alt="receipt preview" className="w-full h-36 object-cover" />
                   <button
                     type="button"
                     onClick={() => setPhoto(null)}
@@ -321,27 +437,45 @@ export default function ExpensesPage() {
                   </button>
                 </div>
               ) : (
-                <label className="mt-1.5 w-full flex flex-col items-center justify-center gap-1.5 py-6 rounded-2xl border-2 border-dashed border-border hover:border-emerald-500/50 cursor-pointer text-xs text-muted-foreground transition-all">
-                  {processingPhoto ? (
-                    <>
-                      <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                      <span className="font-bold">Encoding camera metadata...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Camera className="h-5 w-5 opacity-70 text-muted-foreground" />
-                      <span className="font-bold">Capture Stamped Receipt</span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        className="hidden"
-                        onChange={handlePhotoCapture}
-                      />
-                    </>
-                  )}
-                </label>
+                <div className="flex items-center gap-2">
+                  <label className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-dashed border-border hover:border-emerald-500/60 bg-muted/20 cursor-pointer text-xs font-semibold text-muted-foreground transition-all">
+                    <Upload className="h-4 w-4 text-emerald-500" />
+                    <span>Upload Invoice File</span>
+                    <input
+                      type="file"
+                      accept="image/*,application/pdf"
+                      className="hidden"
+                      onChange={handleFileUpload}
+                    />
+                  </label>
+                  <label className="p-3 rounded-xl border border-dashed border-border hover:border-emerald-500/60 bg-muted/20 cursor-pointer flex items-center justify-center text-muted-foreground transition-all" title="Capture Camera Receipt">
+                    {processingPhoto ? (
+                      <div className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Camera className="h-4 w-4 text-emerald-500" />
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      onChange={handlePhotoCapture}
+                    />
+                  </label>
+                </div>
               )}
+            </div>
+
+            {/* Notes / Description (Optional) */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">NOTES / DESCRIPTION (OPTIONAL)</label>
+              <textarea
+                placeholder="Details of the expense"
+                value={narration}
+                onChange={e => setNarration(e.target.value)}
+                rows={2}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-border bg-muted/40 text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none"
+              />
             </div>
 
             <button
@@ -358,6 +492,62 @@ export default function ExpensesPage() {
         {/* Claims Log view */}
         {!showForm && activeTab === 'claims' && (
           <div className="space-y-3">
+            {/* Filter controls */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-card border border-border">
+              {permissions.isAdmin ? (
+                <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg text-xs font-semibold">
+                  <button
+                    onClick={() => setScope('all')}
+                    className={cn(
+                      "px-2.5 py-1 rounded-md transition-all cursor-pointer",
+                      scope === 'all' ? "bg-emerald-500 text-white font-bold shadow-xs" : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    All Team Claims
+                  </button>
+                  <button
+                    onClick={() => setScope('my')}
+                    className={cn(
+                      "px-2.5 py-1 rounded-md transition-all cursor-pointer",
+                      scope === 'my' ? "bg-emerald-500 text-white font-bold shadow-xs" : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    My Claims
+                  </button>
+                </div>
+              ) : (
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider pl-1">
+                  My Reimbursements
+                </span>
+              )}
+
+              <div className="flex items-center gap-2">
+                {permissions.isAdmin && scope === 'all' && salespersons.length > 0 && (
+                  <select
+                    value={selectedSalesperson}
+                    onChange={(e) => setSelectedSalesperson(e.target.value)}
+                    className="text-xs bg-muted/40 border border-border rounded-lg px-2.5 py-1 text-foreground font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  >
+                    <option value="all">All Team Members</option>
+                    {salespersons.map(sp => (
+                      <option key={sp.user_id} value={sp.user_id}>{sp.username}</option>
+                    ))}
+                  </select>
+                )}
+
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  className="text-xs bg-muted/40 border border-border rounded-lg px-2.5 py-1 text-foreground font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
+            </div>
+
             {loading ? (
               <div className="flex justify-center py-10">
                 <div className="w-6 h-6 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -366,7 +556,9 @@ export default function ExpensesPage() {
               <div className="text-center py-12 bg-card border border-border rounded-2xl border-dashed">
                 <Wallet className="h-10 w-10 mx-auto mb-3 opacity-25 text-muted-foreground" />
                 <p className="text-sm font-bold text-muted-foreground">No claims log found</p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">Submit your first expense claim above</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {statusFilter !== 'all' ? 'No claims matching the selected filter' : 'Submit your first expense claim above'}
+                </p>
               </div>
             ) : (
               expenses.map(e => (
@@ -376,9 +568,14 @@ export default function ExpensesPage() {
                       <h3 className="font-extrabold text-sm text-foreground">{e.category}</h3>
                       <div className="flex gap-2 items-center mt-1 text-[10px] text-muted-foreground font-semibold">
                         <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {formatDate(e.date)}</span>
-                        {permissions.isAdmin && e.salesperson && (
-                          <span className="flex items-center gap-1 uppercase bg-muted px-1.5 py-0.5 rounded tracking-wider text-[8px]">
+                        {e.salesperson ? (
+                          <span className="flex items-center gap-1 uppercase bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold px-1.5 py-0.5 rounded tracking-wider text-[8px]">
+                            <Users className="w-2.5 h-2.5" />
                             {e.salesperson}
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 uppercase bg-muted text-muted-foreground font-semibold px-1.5 py-0.5 rounded tracking-wider text-[8px]">
+                            Office / General
                           </span>
                         )}
                       </div>
