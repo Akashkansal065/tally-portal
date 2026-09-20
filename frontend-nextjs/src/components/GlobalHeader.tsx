@@ -88,26 +88,6 @@ export function GlobalHeader() {
     pending_queue_count: number
   } | null>(null)
 
-  useEffect(() => {
-    if (!token) return
-    const fetchSyncHealth = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/sync/health`, {
-          headers: authHeaders(token)
-        })
-        if (res.ok) {
-          const data = await res.json()
-          setSyncHealth(data)
-        }
-      } catch (e) {
-        // silent fail
-      }
-    }
-    fetchSyncHealth()
-    const interval = setInterval(fetchSyncHealth, 15000)
-    return () => clearInterval(interval)
-  }, [token])
-
   // Notification States
   const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0)
   const [showNotifications, setShowNotifications] = useState<boolean>(false)
@@ -136,19 +116,27 @@ export function GlobalHeader() {
   const handleEnablePush = async () => {
     if (!token) return
     setIsEnablingPush(true)
+    const safetyTimer = setTimeout(() => {
+      setIsEnablingPush(false)
+      toast.error('Alert setup timed out. Please check iOS/Safari settings and try again.')
+    }, 12000)
+
     try {
       const result = await subscribeToPushNotifications(token)
+      clearTimeout(safetyTimer)
       if (result.success) {
         setIsPushSubscribed(true)
         setPushPermission('granted')
-        toast.success('Mobile alerts enabled! You will now receive notifications anytime.')
+        toast.success(result.message || 'Mobile alerts enabled! You will now receive notifications anytime.')
       } else {
         setPushPermission(getNotificationPermission())
         toast.error(result.message)
       }
     } catch (e: any) {
-      toast.error(e.message || 'Failed to enable notifications')
+      clearTimeout(safetyTimer)
+      toast.error(e?.message || 'Failed to enable notifications')
     } finally {
+      clearTimeout(safetyTimer)
       setIsEnablingPush(false)
     }
   }

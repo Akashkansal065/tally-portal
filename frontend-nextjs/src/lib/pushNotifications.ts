@@ -29,8 +29,10 @@ export function isPushNotificationSupported(): boolean {
 
 export function isIOS(): boolean {
   if (typeof window === 'undefined') return false
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) || 
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  )
 }
 
 export function isStandalone(): boolean {
@@ -54,7 +56,11 @@ export function getNotificationPermission(): NotificationPermission {
 export async function isCurrentDeviceSubscribed(): Promise<boolean> {
   if (!isPushNotificationSupported()) return false
   try {
-    const reg = await navigator.serviceWorker.ready
+    const reg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500))
+    ])
+    if (!reg) return false
     const sub = await reg.pushManager.getSubscription()
     return !!sub
   } catch {
@@ -69,13 +75,19 @@ export async function isCurrentDeviceSubscribed(): Promise<boolean> {
 export async function subscribeToPushNotifications(
   token: string
 ): Promise<{ success: boolean; message: string }> {
-  if (!isPushNotificationSupported()) {
-    if (isIOS() && !isStandalone()) {
-      return {
-        success: false,
-        message: 'On iPhone, please tap Share -> "Add to Home Screen" first to enable notifications.'
-      }
+  if (typeof window === 'undefined') {
+    return { success: false, message: 'Browser window is undefined.' }
+  }
+
+  // Handle iOS specific requirement: Apple requires web app to be saved to Home Screen
+  if (isIOS() && !isStandalone()) {
+    return {
+      success: false,
+      message: 'On iPhone/iPad, Apple requires saving to Home Screen first. Tap Safari’s Share button -> "Add to Home Screen", then open from your Home Screen to enable alerts.'
     }
+  }
+
+  if (!isPushNotificationSupported()) {
     return {
       success: false,
       message: 'Push notifications are not supported by this browser.'
@@ -83,24 +95,64 @@ export async function subscribeToPushNotifications(
   }
 
   try {
-    // 1. Request permission
-    const permission = await Notification.requestPermission()
+    // 1. Request permission synchronously on user gesture
+    let permission: NotificationPermission = Notification.permission
+    if (permission !== 'granted') {
+      try {
+        const permResult = Notification.requestPermission()
+        if (permResult && typeof permResult.then === 'function') {
+          permission = await Promise.race([
+            permResult,
+            new Promise<NotificationPermission>((_, reject) => 
+              setTimeout(() => reject(new Error('Permission prompt timed out')), 20000)
+            )
+          ])
+        } else {
+          permission = await new Promise<NotificationPermission>((resolve) => {
+            Notification.requestPermission((p) => resolve(p))
+          })
+        }
+      } catch (err) {
+        console.warn('Notification permission request error:', err)
+        permission = Notification.permission
+      }
+    }
+
     if (permission !== 'granted') {
       return {
         success: false,
         message: permission === 'denied' 
           ? 'Notification permission was denied. Please allow notifications in device settings.'
-          : 'Notification permission was dismissed.'
+          : 'Notification permission was not granted.'
       }
     }
 
-    // 2. Ensure Service Worker is ready
-    const reg = await navigator.serviceWorker.ready
+    // 2. Ensure Service Worker is registered & ready
+    try {
+      await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+    } catch (e) {
+      console.warn('Direct SW register error:', e)
+    }
 
-    // 3. Fetch VAPID public key
+    // Wait for SW ready with a 6-second timeout so it NEVER hangs indefinitely
+    const readyPromise = navigator.serviceWorker.ready
+    const timeoutPromise = new Promise<ServiceWorkerRegistration>((_, reject) =>
+      setTimeout(() => reject(new Error('Service Worker took too long to activate. Please refresh and try again.')), 6000)
+    )
+    const reg = await Promise.race([readyPromise, timeoutPromise])
+
+    if (!reg) {
+      throw new Error('Could not obtain an active Service Worker.')
+    }
+
+    // 3. Fetch VAPID public key with 8-second timeout
+    const controller = new AbortController()
+    const fetchTimer = setTimeout(() => controller.abort(), 8000)
     const vapidRes = await fetch(`${API_BASE}/notifications/vapid-public-key`, {
-      headers: authHeaders(token)
-    })
+      headers: authHeaders(token),
+      signal: controller.signal
+    }).finally(() => clearTimeout(fetchTimer))
+
     if (!vapidRes.ok) {
       throw new Error('Failed to retrieve push encryption key from server.')
     }
@@ -114,19 +166,28 @@ export async function subscribeToPushNotifications(
     let subscription = await reg.pushManager.getSubscription()
     
     if (!subscription) {
-      subscription = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        // Passing applicationServerKey as ArrayBuffer or Uint8Array
-        applicationServerKey: applicationServerKey as unknown as ArrayBuffer
-      })
+      try {
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKey as unknown as BufferSource
+        })
+      } catch (subErr) {
+        console.warn('Subscribe with Uint8Array failed, retrying with ArrayBuffer:', subErr)
+        subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKey.buffer as unknown as BufferSource
+        })
+      }
     }
 
     const subJson = subscription.toJSON()
     if (!subJson.endpoint || !subJson.keys?.p256dh || !subJson.keys?.auth) {
-      throw new Error('Invalid push subscription generated by browser.')
+      throw new Error('Browser returned an incomplete push subscription.')
     }
 
-    // 5. Send subscription to MyTally backend
+    // 5. Send subscription to MyTally backend with 10-second timeout
+    const saveController = new AbortController()
+    const saveTimer = setTimeout(() => saveController.abort(), 10000)
     const saveRes = await fetch(`${API_BASE}/notifications/subscribe`, {
       method: 'POST',
       headers: {
@@ -140,8 +201,9 @@ export async function subscribeToPushNotifications(
           auth: subJson.keys.auth
         },
         user_agent: typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 255) : null
-      })
-    })
+      }),
+      signal: saveController.signal
+    }).finally(() => clearTimeout(saveTimer))
 
     if (!saveRes.ok) {
       const err = await saveRes.json().catch(() => ({}))
@@ -150,7 +212,7 @@ export async function subscribeToPushNotifications(
 
     return {
       success: true,
-      message: 'Mobile push notifications enabled! You will now receive alerts even when your phone is locked.'
+      message: 'Mobile alerts enabled! You will now receive notifications anytime.'
     }
   } catch (err: unknown) {
     console.error('[PushNotifications] Subscription error:', err)
