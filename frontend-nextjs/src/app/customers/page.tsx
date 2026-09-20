@@ -1047,6 +1047,22 @@ export default function CustomersPage() {
         </span>
       )
     }
+    if (status === 'ADMIN_OVERRIDE') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-purple-500/10 text-purple-600 border border-purple-500/20 whitespace-normal break-words">
+          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+          <span>Admin Tagged</span>
+        </span>
+      )
+    }
+    if (cust.total_visits && cust.total_visits > 0) {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 whitespace-normal break-words">
+          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+          <span>Visited ({cust.total_visits})</span>
+        </span>
+      )
+    }
     if (!cust.has_location) {
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-muted text-muted-foreground whitespace-normal break-words">

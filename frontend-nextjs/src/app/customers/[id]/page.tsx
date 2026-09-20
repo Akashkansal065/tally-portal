@@ -1235,6 +1235,22 @@ function CustomerProfileContent() {
         </span>
       )
     }
+    if (status === 'ADMIN_OVERRIDE') {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-purple-500/10 text-purple-600 border border-purple-500/25">
+          <ShieldCheck className="w-4 h-4" />
+          Admin Verified Location
+        </span>
+      )
+    }
+    if (customer.visits && customer.visits.length > 0) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/25">
+          <ShieldCheck className="w-4 h-4" />
+          Visit Recorded ({customer.visits.length} visit{customer.visits.length > 1 ? 's' : ''})
+        </span>
+      )
+    }
     if (!customer.has_location) {
       return (
         <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-semibold bg-muted text-muted-foreground border border-border">

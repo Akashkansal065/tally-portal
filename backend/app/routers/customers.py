@@ -229,6 +229,7 @@ async def list_customers(
     standalone_profiles = [p for p in profiles if p.ledger_id is None]
 
     # 4. Fetch latest location log for each customer to get real-time audit status
+    # Specifically index both field check-in logs and general logs so admin edits don't mask check-in status
     latest_logs_stmt = (
         select(CustomerLocationLog)
         .where(CustomerLocationLog.company_id == user.company_id)
@@ -236,10 +237,14 @@ async def list_customers(
     )
     logs_res = await db.execute(latest_logs_stmt)
     all_logs = logs_res.scalars().all()
+    latest_checkin_by_profile = {}
     latest_log_by_profile = {}
     for log in all_logs:
-        if log.customer_profile_id and log.customer_profile_id not in latest_log_by_profile:
-            latest_log_by_profile[log.customer_profile_id] = log
+        if log.customer_profile_id:
+            if log.customer_profile_id not in latest_log_by_profile:
+                latest_log_by_profile[log.customer_profile_id] = log
+            if log.source == "check_in" and log.customer_profile_id not in latest_checkin_by_profile:
+                latest_checkin_by_profile[log.customer_profile_id] = log
 
     # 5. Fetch all owners for this company
     owners_res = await db.execute(
@@ -384,9 +389,18 @@ async def list_customers(
             "health_score": health,
             "total_visits": p.total_visits if p else 0,
             "notes": p.notes if p else "",
-            "latest_verification_status": latest_log.verification_status if latest_log else ("NO_CHECK_IN" if (lat and lon) else "NO_BASE_COORDINATE"),
-            "latest_checkin_distance": latest_log.distance_from_base_meters if latest_log else None,
-            "latest_checkin_at": latest_log.created_at.isoformat() if latest_log else None,
+            "latest_verification_status": (
+                latest_checkin_by_profile.get(p.id).verification_status if (p and latest_checkin_by_profile.get(p.id))
+                else (latest_log.verification_status if latest_log else ("NO_CHECK_IN" if (lat and lon) else "NO_BASE_COORDINATE"))
+            ),
+            "latest_checkin_distance": (
+                latest_checkin_by_profile.get(p.id).distance_from_base_meters if (p and latest_checkin_by_profile.get(p.id))
+                else (latest_log.distance_from_base_meters if latest_log else None)
+            ),
+            "latest_checkin_at": (
+                latest_checkin_by_profile.get(p.id).created_at.isoformat() if (p and latest_checkin_by_profile.get(p.id) and latest_checkin_by_profile.get(p.id).created_at)
+                else (latest_log.created_at.isoformat() if (latest_log and latest_log.created_at) else None)
+            ),
             "owners": owners_by_profile.get(p.id, []) if p else [],
             "owners_count": len(owners_by_profile.get(p.id, [])) if p else 0,
         }
@@ -453,9 +467,18 @@ async def list_customers(
             "health_score": health,
             "total_visits": p.total_visits or 0,
             "notes": p.notes or "",
-            "latest_verification_status": latest_log.verification_status if latest_log else ("NO_CHECK_IN" if (p.latitude and p.longitude) else "NO_BASE_COORDINATE"),
-            "latest_checkin_distance": latest_log.distance_from_base_meters if latest_log else None,
-            "latest_checkin_at": latest_log.created_at.isoformat() if latest_log else None,
+            "latest_verification_status": (
+                latest_checkin_by_profile.get(p.id).verification_status if latest_checkin_by_profile.get(p.id)
+                else (latest_log.verification_status if latest_log else ("NO_CHECK_IN" if (p.latitude and p.longitude) else "NO_BASE_COORDINATE"))
+            ),
+            "latest_checkin_distance": (
+                latest_checkin_by_profile.get(p.id).distance_from_base_meters if latest_checkin_by_profile.get(p.id)
+                else (latest_log.distance_from_base_meters if latest_log else None)
+            ),
+            "latest_checkin_at": (
+                latest_checkin_by_profile.get(p.id).created_at.isoformat() if (latest_checkin_by_profile.get(p.id) and latest_checkin_by_profile.get(p.id).created_at)
+                else (latest_log.created_at.isoformat() if (latest_log and latest_log.created_at) else None)
+            ),
             "owners": owners_by_profile.get(p.id, []),
             "owners_count": len(owners_by_profile.get(p.id, [])),
         }
@@ -1384,10 +1407,24 @@ async def get_customer_profile_detail(
                     "created_at": v.created_at.isoformat() if v.created_at else None,
                 })
 
-    # Fetch Latest location log
-    latest_log = None
+    # Fetch Latest location log (specifically prioritize field check-in logs)
+    latest_checkin_log = None
+    latest_general_log = None
     if profile:
-        log_stmt = (
+        c_stmt = (
+            select(CustomerLocationLog)
+            .where(
+                CustomerLocationLog.company_id == user.company_id,
+                CustomerLocationLog.customer_profile_id == profile.id,
+                CustomerLocationLog.source == "check_in"
+            )
+            .order_by(desc(CustomerLocationLog.created_at))
+            .limit(1)
+        )
+        c_res = await db.execute(c_stmt)
+        latest_checkin_log = c_res.scalars().first()
+
+        g_stmt = (
             select(CustomerLocationLog)
             .where(
                 CustomerLocationLog.company_id == user.company_id,
@@ -1396,8 +1433,8 @@ async def get_customer_profile_detail(
             .order_by(desc(CustomerLocationLog.created_at))
             .limit(1)
         )
-        log_res = await db.execute(log_stmt)
-        latest_log = log_res.scalars().first()
+        g_res = await db.execute(g_stmt)
+        latest_general_log = g_res.scalars().first()
 
     # Fetch all owners / partners
     owners_list = []
@@ -1679,9 +1716,22 @@ async def get_customer_profile_detail(
         "visit_recency_category": recency["category"],
         "visit_recency_label": recency["label"],
         "health_score": health,
-        "latest_verification_status": latest_log.verification_status if latest_log else ("NO_CHECK_IN" if (lat and lon) else "NO_BASE_COORDINATE"),
-        "latest_checkin_distance": latest_log.distance_from_base_meters if latest_log else None,
-        "latest_checkin_at": latest_log.created_at.isoformat() if latest_log else None,
+        "latest_verification_status": (
+            latest_checkin_log.verification_status if latest_checkin_log
+            else ("ESTABLISHED_BASE" if visits and (lat and lon)
+            else (latest_general_log.verification_status if latest_general_log
+            else ("NO_CHECK_IN" if (lat and lon) else "NO_BASE_COORDINATE")))
+        ),
+        "latest_checkin_distance": (
+            latest_checkin_log.distance_from_base_meters if latest_checkin_log
+            else (0.0 if visits
+            else (latest_general_log.distance_from_base_meters if latest_general_log else None))
+        ),
+        "latest_checkin_at": (
+            latest_checkin_log.created_at.isoformat() if (latest_checkin_log and latest_checkin_log.created_at)
+            else (visits[0]["created_at"] if (visits and visits[0].get("created_at"))
+            else (latest_general_log.created_at.isoformat() if (latest_general_log and latest_general_log.created_at) else None))
+        ),
         "owners": owners_list,
         "photos": photos,
         "visits": visits,
