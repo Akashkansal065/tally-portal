@@ -3226,7 +3226,12 @@ export default function ReportsPage() {
                                                 {formatCurrency(rate)}
                                               </td>
                                               <td className="py-2 px-3 text-right font-extrabold text-emerald-600">
-                                                {formatCurrency(amt)}
+                                                <div>{formatCurrency(amt)}</div>
+                                                {isGrossGst && (
+                                                  <div className="text-[10px] font-semibold text-muted-foreground">
+                                                    ({it.gst_rate_percent || 18}% GST)
+                                                  </div>
+                                                )}
                                               </td>
                                               <td className="py-2 px-3 text-center font-semibold text-muted-foreground">
                                                 <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] font-bold">
@@ -3362,7 +3367,12 @@ export default function ReportsPage() {
                                                 {formatCurrency(rate)}
                                               </td>
                                               <td className="py-2 px-3 text-right font-extrabold text-emerald-600">
-                                                {formatCurrency(amt)}
+                                                <div>{formatCurrency(amt)}</div>
+                                                {isGrossGst && (
+                                                  <div className="text-[10px] font-semibold text-muted-foreground">
+                                                    ({it.gst_rate_percent || 18}% GST)
+                                                  </div>
+                                                )}
                                               </td>
                                               <td className="py-2 px-3 text-center font-semibold text-muted-foreground">
                                                 <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] font-bold">
@@ -3456,7 +3466,12 @@ export default function ReportsPage() {
                                   {formatCurrency(rate)}
                                 </td>
                                 <td className="py-2.5 px-3 text-right font-extrabold text-emerald-600">
-                                  {formatCurrency(amt)}
+                                  <div>{formatCurrency(amt)}</div>
+                                  {isGrossGst && (
+                                    <div className="text-[10px] font-semibold text-muted-foreground">
+                                      ({it.gst_rate_percent || 18}% GST)
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="py-2.5 px-3 text-center font-semibold">
                                   <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] font-bold text-muted-foreground">

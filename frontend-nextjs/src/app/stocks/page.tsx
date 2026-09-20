@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
+import { API_BASE, authHeaders, formatCurrency, toTitleCase, cn } from '@/lib/utils'
 import Link from 'next/link'
 import { Search, X, Package, ArrowLeft, ArrowUpDown, ArrowUp, ArrowDown, PackageCheck } from 'lucide-react'
 
@@ -26,6 +26,7 @@ type StockItem = {
   name: string
   group_name: string
   uom: string
+  gst_rate_percent: number
   closing_balance: number
   closing_rate: number
   closing_value: number
@@ -59,6 +60,22 @@ function StocksContent() {
 
   const [search, setSearch] = useState('')
   const [selectedGroup, setSelectedGroup] = useState<string | null>(groupParam || null)
+
+  // GST Display Mode Toggle (Default: With GST / Gross)
+  const [isGrossGst, setIsGrossGst] = useState(true)
+
+  // Helper to calculate valuation with or without GST
+  const getItemVal = (
+    item: StockItem,
+    field: 'closing_value' | 'inward_value' | 'outward_value' | 'cons_value' | 'gp_value'
+  ): number => {
+    const base = Number(item[field]) || 0
+    if (isGrossGst) {
+      const gstRate = Number(item.gst_rate_percent) > 0 ? Number(item.gst_rate_percent) : 18
+      return base * (1 + gstRate / 100)
+    }
+    return base
+  }
 
   // 3rd level — selected stock item voucher detail
   const [selectedItem, setSelectedItem] = useState<StockItem | null>(null)
@@ -163,6 +180,7 @@ function StocksContent() {
       .then((data: StockItem[]) => {
         const list = (Array.isArray(data) ? data : []).map(i => ({
           ...i,
+          gst_rate_percent: Number(i.gst_rate_percent) > 0 ? Number(i.gst_rate_percent) : 18,
           closing_balance: Number(i.closing_balance) || 0,
           closing_rate: Number(i.closing_rate) || 0,
           closing_value: Number(i.closing_value) || 0,
@@ -203,19 +221,31 @@ function StocksContent() {
 
   // Compute aggregated list of stock groups for the summary view
   const summaryData = useMemo(() => {
-    const summary: Record<string, number> = {}
+    const summary: Record<string, { value: number; gstRates: Set<number> }> = {}
     items.forEach(item => {
       const g = item.group_name || 'Others'
-      const val = Number(item.closing_value) || 0
-      summary[g] = (summary[g] || 0) + val
+      const val = getItemVal(item, 'closing_value')
+      const gstRate = Number(item.gst_rate_percent) > 0 ? Number(item.gst_rate_percent) : 18
+      if (!summary[g]) {
+        summary[g] = { value: 0, gstRates: new Set<number>() }
+      }
+      summary[g].value += val
+      summary[g].gstRates.add(gstRate)
     })
     return Object.entries(summary)
-      .map(([group_name, value]) => ({
-        group_name,
-        value,
-      }))
+      .map(([group_name, data]) => {
+        const sortedRates = Array.from(data.gstRates).sort((a, b) => a - b)
+        const gstLabel = sortedRates.length === 1
+          ? `${sortedRates[0]}% GST`
+          : `${sortedRates.join(', ')}% GST`
+        return {
+          group_name,
+          value: data.value,
+          gstLabel,
+        }
+      })
       .sort((a, b) => b.value - a.value)
-  }, [items])
+  }, [items, isGrossGst])
 
   const grandTotal = useMemo(() => {
     return summaryData.reduce((acc, row) => acc + row.value, 0)
@@ -261,6 +291,16 @@ function StocksContent() {
       let comparison = 0
       if (sortField === 'name') {
         comparison = a.name.localeCompare(b.name)
+      } else if (
+        sortField === 'closing_value' ||
+        sortField === 'inward_value' ||
+        sortField === 'outward_value' ||
+        sortField === 'cons_value' ||
+        sortField === 'gp_value'
+      ) {
+        const valA = getItemVal(a, sortField)
+        const valB = getItemVal(b, sortField)
+        comparison = valA - valB
       } else {
         const valA = Number(a[sortField]) || 0
         const valB = Number(b[sortField]) || 0
@@ -270,16 +310,16 @@ function StocksContent() {
     })
 
     return result
-  }, [items, selectedGroup, search, stockStatus, movement, profitFilter, sortField, sortDir])
+  }, [items, selectedGroup, search, stockStatus, movement, profitFilter, sortField, sortDir, isGrossGst])
 
   // Compute aggregated totals for the selected stock group
   const groupTotals = useMemo(() => {
     const totalInwardQty = filtered.reduce((sum, item) => sum + (Number(item.inward_qty) || 0), 0)
-    const totalInwardValue = filtered.reduce((sum, item) => sum + (Number(item.inward_value) || 0), 0)
+    const totalInwardValue = filtered.reduce((sum, item) => sum + getItemVal(item, 'inward_value'), 0)
     const totalOutwardQty = filtered.reduce((sum, item) => sum + (Number(item.outward_qty) || 0), 0)
-    const totalOutwardValue = filtered.reduce((sum, item) => sum + (Number(item.outward_value) || 0), 0)
-    const totalConsValue = filtered.reduce((sum, item) => sum + (Number(item.cons_value) || 0), 0)
-    const totalGpValue = filtered.reduce((sum, item) => sum + (Number(item.gp_value) || 0), 0)
+    const totalOutwardValue = filtered.reduce((sum, item) => sum + getItemVal(item, 'outward_value'), 0)
+    const totalConsValue = filtered.reduce((sum, item) => sum + getItemVal(item, 'cons_value'), 0)
+    const totalGpValue = filtered.reduce((sum, item) => sum + getItemVal(item, 'gp_value'), 0)
     
     // In Tally, Gross Profit % is calculated as: (Total Gross Profit / Total Outward Value) * 100
     const totalGpPercent = totalOutwardValue > 0
@@ -287,7 +327,7 @@ function StocksContent() {
       : (totalConsValue > 0 ? (totalGpValue / totalConsValue) * 100 : 0)
       
     const totalClosingQty = filtered.reduce((sum, item) => sum + (Number(item.closing_balance) || 0), 0)
-    const totalClosingValue = filtered.reduce((sum, item) => sum + (Number(item.closing_value) || 0), 0)
+    const totalClosingValue = filtered.reduce((sum, item) => sum + getItemVal(item, 'closing_value'), 0)
 
     return {
       totalInwardQty,
@@ -300,7 +340,7 @@ function StocksContent() {
       totalClosingQty,
       totalClosingValue,
     }
-  }, [filtered])
+  }, [filtered, isGrossGst])
 
   // Filtered vouchers for 3rd level
   const filteredVouchers = itemVouchers.filter(v => {
@@ -375,6 +415,25 @@ function StocksContent() {
               <p className="text-xs text-muted-foreground font-medium">Period: 1-Apr-2026 to 31-Mar-2027</p>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsGrossGst(!isGrossGst)}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shadow-2xs select-none',
+                  isGrossGst
+                    ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/20'
+                    : 'bg-card border-border text-foreground hover:bg-muted/50'
+                )}
+                title="Toggle between Stock Valuation With GST (Gross) and Without GST (Net)"
+              >
+                <div className={cn(
+                  'w-7 h-4 rounded-full p-0.5 transition-colors flex items-center',
+                  isGrossGst ? 'bg-white/30 justify-end' : 'bg-muted-foreground/30 justify-start'
+                )}>
+                  <div className="w-3 h-3 rounded-full bg-white shadow-xs" />
+                </div>
+                <span>{isGrossGst ? 'With GST (Gross)' : 'Without GST (Net)'}</span>
+              </button>
+
               <Link
                 href="/reports?tab=company_stock"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900 transition-colors shadow-2xs"
@@ -382,8 +441,8 @@ function StocksContent() {
                 <PackageCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                 <span>Stock & Profit Report</span>
               </Link>
-              <div className="bg-[#e2f5ec] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-extrabold uppercase self-start">
-                Closing Balance
+              <div className="bg-[#e2f5ec] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-extrabold uppercase self-center">
+                {isGrossGst ? 'Closing Balance (Incl. GST)' : 'Closing Balance (Excl. GST)'}
               </div>
             </div>
           </div>
@@ -393,7 +452,7 @@ function StocksContent() {
               {/* Table Column Headers */}
               <div className="shrink-0 grid grid-cols-2 bg-muted/40 text-[10px] font-bold text-muted-foreground uppercase tracking-wider border-b border-border">
                 <span className="px-4 py-3 border-r border-border">Particulars</span>
-                <span className="px-4 py-3 text-right">Value</span>
+                <span className="px-4 py-3 text-right">Value {isGrossGst ? '(Incl. GST)' : '(Excl. GST)'}</span>
               </div>
 
               {/* Table List Items */}
@@ -414,11 +473,21 @@ function StocksContent() {
                       onClick={() => handleSelectGroup(row.group_name)}
                       className="w-full grid grid-cols-2 text-left font-medium text-sm transition-colors text-foreground focus:outline-none hover:bg-muted/30"
                     >
-                      <span className="px-4 py-3.5 font-extrabold text-foreground uppercase tracking-wide border-r border-border">
-                        {row.group_name}
+                      <span className="px-4 py-3.5 font-extrabold text-foreground uppercase tracking-wide border-r border-border flex items-center justify-between">
+                        <span>{row.group_name}</span>
+                        {isGrossGst && (
+                          <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded normal-case tracking-normal">
+                            ({row.gstLabel})
+                          </span>
+                        )}
                       </span>
-                      <span className="px-4 py-3.5 font-black text-right text-foreground">
-                        {formatCurrency(row.value)}
+                      <span className="px-4 py-3.5 font-black text-right text-foreground flex flex-col items-end justify-center">
+                        <span>{formatCurrency(row.value)}</span>
+                        {isGrossGst && (
+                          <span className="text-[11px] font-semibold text-muted-foreground">
+                            ({row.gstLabel})
+                          </span>
+                        )}
                       </span>
                     </button>
                   ))
@@ -429,7 +498,14 @@ function StocksContent() {
               {!loading && summaryData.length > 0 && (
                 <div className="shrink-0 grid grid-cols-2 bg-muted/40 border-t border-border font-black text-sm uppercase text-foreground">
                   <span className="px-4 py-3.5 border-r border-border">Grand Total</span>
-                  <span className="text-right px-4 py-3.5">{formatCurrency(grandTotal)}</span>
+                  <span className="text-right px-4 py-3.5 flex flex-col items-end justify-center">
+                    <span>{formatCurrency(grandTotal)}</span>
+                    {isGrossGst && (
+                      <span className="text-[11px] font-semibold text-muted-foreground normal-case tracking-normal">
+                        (incl. applicable GST)
+                      </span>
+                    )}
+                  </span>
                 </div>
               )}
             </div>
@@ -469,7 +545,27 @@ function StocksContent() {
             </div>
 
             {/* Filters Block */}
-            <div className="grid grid-cols-2 md:flex md:flex-row md:items-center md:gap-6 gap-2 text-xs font-semibold text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-xs font-semibold text-muted-foreground">
+              {/* GST Display Mode Toggle */}
+              <button
+                onClick={() => setIsGrossGst(!isGrossGst)}
+                className={cn(
+                  'flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer shadow-2xs select-none',
+                  isGrossGst
+                    ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/20'
+                    : 'bg-card border-border text-foreground hover:bg-muted/50'
+                )}
+                title="Toggle between Valuation With GST (Gross) and Without GST (Net)"
+              >
+                <div className={cn(
+                  'w-6 h-3.5 rounded-full p-0.5 transition-colors flex items-center',
+                  isGrossGst ? 'bg-white/30 justify-end' : 'bg-muted-foreground/30 justify-start'
+                )}>
+                  <div className="w-2.5 h-2.5 rounded-full bg-white shadow-xs" />
+                </div>
+                <span>{isGrossGst ? 'With GST' : 'Without GST'}</span>
+              </button>
+
               <div className="flex items-center justify-between md:justify-start gap-1 md:gap-2">
                 <span>STOCK STATUS:</span>
                 <select
@@ -569,6 +665,9 @@ function StocksContent() {
                     <div style={{ marginBottom: '12px' }}>
                       <h3 style={{ fontWeight: 800, fontSize: '15px', color: '#111827', lineHeight: 1.3, marginBottom: '4px' }}>
                         {item.name}
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#059669', marginLeft: '6px' }}>
+                          ({item.gst_rate_percent}% GST)
+                        </span>
                       </h3>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <span style={{ background: '#2563eb', color: '#fff', padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -576,6 +675,9 @@ function StocksContent() {
                         </span>
                         <span style={{ fontSize: '11px', color: '#6b7280', fontWeight: 500 }}>
                           {details.subtitle}
+                        </span>
+                        <span style={{ fontSize: '10px', color: '#374151', background: '#f3f4f6', padding: '1px 5px', borderRadius: '4px', fontWeight: 700, border: '1px solid #e5e7eb' }}>
+                          ({item.gst_rate_percent}% GST)
                         </span>
                       </div>
                     </div>
@@ -590,9 +692,16 @@ function StocksContent() {
                           <span style={{ fontWeight: 800, fontSize: '13px', color: '#065f46' }}>
                             {item.inward_qty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
-                          <span style={{ fontWeight: 700, fontSize: '12px', color: '#065f46' }}>
-                            {formatCurrency(item.inward_value)}
-                          </span>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ fontWeight: 700, fontSize: '12px', color: '#065f46' }}>
+                              {formatCurrency(getItemVal(item, 'inward_value'))}
+                            </span>
+                            {isGrossGst && item.inward_value > 0 && (
+                              <div style={{ fontSize: '9px', fontWeight: 600, color: '#059669' }}>
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -603,9 +712,16 @@ function StocksContent() {
                           <span style={{ fontWeight: 800, fontSize: '13px', color: '#991b1b' }}>
                             {item.outward_qty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
-                          <span style={{ fontWeight: 700, fontSize: '12px', color: '#991b1b' }}>
-                            {formatCurrency(item.outward_value)}
-                          </span>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ fontWeight: 700, fontSize: '12px', color: '#991b1b' }}>
+                              {formatCurrency(getItemVal(item, 'outward_value'))}
+                            </span>
+                            {isGrossGst && item.outward_value > 0 && (
+                              <div style={{ fontSize: '9px', fontWeight: 600, color: '#dc2626' }}>
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -617,8 +733,13 @@ function StocksContent() {
                         </div>
                         <div style={{ textAlign: 'right' }}>
                           <span style={{ fontWeight: 800, fontSize: '13px', color: '#374151' }}>
-                            {formatCurrency(item.cons_value)}
+                            {formatCurrency(getItemVal(item, 'cons_value'))}
                           </span>
+                          {isGrossGst && item.cons_value > 0 && (
+                            <div style={{ fontSize: '9px', fontWeight: 600, color: '#6b7280' }}>
+                              ({item.gst_rate_percent}% GST)
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -627,11 +748,18 @@ function StocksContent() {
                         <div style={{ fontSize: '9px', fontWeight: 700, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>GP</div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontWeight: 800, fontSize: '13px', color: '#1d4ed8' }}>
-                            {formatCurrency(item.gp_value)}
+                            {formatCurrency(getItemVal(item, 'gp_value'))}
                           </span>
-                          <span style={{ fontWeight: 700, fontSize: '11px', color: '#1d4ed8' }}>
-                            ({item.gp_percent.toFixed(1)}%)
-                          </span>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ fontWeight: 700, fontSize: '11px', color: '#1d4ed8' }}>
+                              ({item.gp_percent.toFixed(1)}%)
+                            </span>
+                            {isGrossGst && item.gp_value !== 0 && (
+                              <div style={{ fontSize: '9px', fontWeight: 600, color: '#2563eb' }}>
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -646,8 +774,15 @@ function StocksContent() {
                       {/* CLOSING VALUE */}
                       <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '8px', padding: '10px' }}>
                         <div style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Closing Value</div>
-                        <div style={{ fontWeight: 800, fontSize: '13px', color: '#312e81' }}>
-                          {formatCurrency(item.closing_value)}
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontWeight: 800, fontSize: '13px', color: '#312e81' }}>
+                            {formatCurrency(getItemVal(item, 'closing_value'))}
+                          </div>
+                          {isGrossGst && item.closing_value > 0 && (
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#4338ca' }}>
+                              ({item.gst_rate_percent}% GST)
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -725,7 +860,7 @@ function StocksContent() {
                         title="Click to sort by Inward Value"
                       >
                         <div className="flex items-center justify-end gap-1">
-                          <span>Inward</span>
+                          <span>Inward {isGrossGst ? '(Gross)' : ''}</span>
                           {(sortField === 'inward_qty' || sortField === 'inward_value') && (
                             <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
                           )}
@@ -738,7 +873,7 @@ function StocksContent() {
                         title="Click to sort by Outward Value"
                       >
                         <div className="flex items-center justify-end gap-1">
-                          <span>Outward</span>
+                          <span>Outward {isGrossGst ? '(Gross)' : ''}</span>
                           {(sortField === 'outward_qty' || sortField === 'outward_value') && (
                             <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
                           )}
@@ -750,7 +885,7 @@ function StocksContent() {
                         title="Click to sort by Consumption Value"
                       >
                         <div className="flex items-center justify-end gap-1">
-                          <span>Cons. Value</span>
+                          <span>Cons. Value {isGrossGst ? '(Gross)' : ''}</span>
                           {sortField === 'cons_value' && (
                             <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
                           )}
@@ -763,7 +898,7 @@ function StocksContent() {
                         title="Click to sort by Gross Profit Value"
                       >
                         <div className="flex items-center justify-end gap-1">
-                          <span>Gross Profit</span>
+                          <span>Gross Profit {isGrossGst ? '(Gross)' : ''}</span>
                           {(sortField === 'gp_value' || sortField === 'gp_percent') && (
                             <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
                           )}
@@ -787,7 +922,7 @@ function StocksContent() {
                         title="Click to sort by Closing Value"
                       >
                         <div className="flex items-center justify-end gap-1">
-                          <span>Closing Value</span>
+                          <span>Closing Value {isGrossGst ? '(Gross)' : ''}</span>
                           {sortField === 'closing_value' && (
                             <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
                           )}
@@ -919,12 +1054,20 @@ function StocksContent() {
                         >
                           {/* Particulars */}
                           <td className="px-4 py-3 border-r border-border">
-                            <div className="font-extrabold text-foreground uppercase text-[12px] mb-1">{item.name}</div>
+                            <div className="font-extrabold text-foreground uppercase text-[12px] mb-1 flex items-center flex-wrap gap-1">
+                              <span>{item.name}</span>
+                              <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 normal-case tracking-normal">
+                                ({item.gst_rate_percent}% GST)
+                              </span>
+                            </div>
                             <div className="flex items-center gap-2">
                               <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-secondary text-secondary-foreground border border-border">
                                 {details.brand}
                               </span>
                               <span className="text-muted-foreground font-medium text-[11px]">{details.subtitle}</span>
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold text-muted-foreground bg-muted border border-border">
+                                ({item.gst_rate_percent}% GST)
+                              </span>
                             </div>
                           </td>
                           {/* Inward Qty */}
@@ -933,7 +1076,12 @@ function StocksContent() {
                           </td>
                           {/* Inward Value */}
                           <td className={`px-3 py-3.5 text-right border-r border-border ${isInwardZero ? 'text-muted-foreground/30' : 'text-foreground font-bold'}`}>
-                            {formatCurrency(item.inward_value)}
+                            <div>{formatCurrency(getItemVal(item, 'inward_value'))}</div>
+                            {!isInwardZero && isGrossGst && (
+                              <div className="text-[10px] font-medium text-muted-foreground">
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
                           </td>
                           {/* Outward Qty */}
                           <td className={`px-3 py-3.5 text-right border-r border-border/50 font-medium ${isOutwardZero ? 'text-muted-foreground/30' : 'text-foreground font-semibold'}`}>
@@ -941,16 +1089,31 @@ function StocksContent() {
                           </td>
                           {/* Outward Value */}
                           <td className={`px-3 py-3.5 text-right border-r border-border ${isOutwardZero ? 'text-muted-foreground/30' : 'text-foreground font-bold'}`}>
-                            {formatCurrency(item.outward_value)}
+                            <div>{formatCurrency(getItemVal(item, 'outward_value'))}</div>
+                            {!isOutwardZero && isGrossGst && (
+                              <div className="text-[10px] font-medium text-muted-foreground">
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
                           </td>
                           {/* Cons */}
                           <td className={`px-4 py-3.5 text-right border-r border-border font-medium ${isConsZero ? 'text-muted-foreground/30' : 'text-foreground'}`}>
-                            {formatCurrency(item.cons_value)}
+                            <div>{formatCurrency(getItemVal(item, 'cons_value'))}</div>
+                            {!isConsZero && isGrossGst && (
+                              <div className="text-[10px] font-medium text-muted-foreground">
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
                           </td>
                           {/* GP Value */}
                           <td className={`px-3 py-3.5 text-right border-r border-border/50 font-bold ${isGpZero ? 'text-muted-foreground/30' : item.gp_value > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
                             }`}>
-                            {formatCurrency(item.gp_value)}
+                            <div>{formatCurrency(getItemVal(item, 'gp_value'))}</div>
+                            {!isGpZero && isGrossGst && (
+                              <div className="text-[10px] font-medium opacity-80">
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
                           </td>
                           {/* GP % */}
                           <td className={`px-3 py-3.5 text-right border-r border-border font-semibold ${isGpZero ? 'text-muted-foreground/30' : item.gp_value > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
@@ -963,7 +1126,12 @@ function StocksContent() {
                           </td>
                           {/* Closing Value */}
                           <td className={`px-4 py-3.5 text-right font-black ${isClosingZero ? 'text-muted-foreground/30' : 'text-foreground'}`}>
-                            {formatCurrency(item.closing_value)}
+                            <div>{formatCurrency(getItemVal(item, 'closing_value'))}</div>
+                            {!isClosingZero && isGrossGst && (
+                              <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
                           </td>
                         </tr>
                       )
@@ -1017,7 +1185,12 @@ function StocksContent() {
                       </td>
                       {/* Final Closing Value */}
                       <td className="px-4 py-3 text-right font-black text-sm text-foreground bg-primary/10 border-l border-primary/20">
-                        {formatCurrency(groupTotals.totalClosingValue)}
+                        <div>{formatCurrency(groupTotals.totalClosingValue)}</div>
+                        {isGrossGst && (
+                          <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 normal-case tracking-normal">
+                            (incl. GST)
+                          </div>
+                        )}
                       </td>
                     </tr>
                   </tfoot>
@@ -1045,8 +1218,10 @@ function StocksContent() {
               </span>
             </div>
             <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: 600 }}>{selectedItem.group_name}</div>
-            <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '2px' }}>
-              PART NO / UOM &nbsp;•&nbsp; <strong style={{ color: '#374151' }}>N/A / {selectedItem.uom || 'PCS'}</strong>
+            <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span>PART NO / UOM &nbsp;•&nbsp; <strong style={{ color: '#374151' }}>N/A / {selectedItem.uom || 'PCS'}</strong></span>
+              <span>•</span>
+              <span>GST RATE &nbsp;•&nbsp; <strong style={{ color: '#059669' }}>({selectedItem.gst_rate_percent}% GST)</strong></span>
             </div>
           </div>
 
@@ -1059,7 +1234,27 @@ function StocksContent() {
               onChange={e => setVoucherSearch(e.target.value)}
               style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '13px', outline: 'none', marginBottom: '8px', boxSizing: 'border-box' }}
             />
-            <div style={{ display: 'flex', gap: '8px', fontSize: '12px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '8px', fontSize: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+              {/* GST Toggle */}
+              <button
+                onClick={() => setIsGrossGst(!isGrossGst)}
+                className={cn(
+                  'flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer shadow-2xs select-none',
+                  isGrossGst
+                    ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/20'
+                    : 'bg-card border-border text-foreground hover:bg-muted/50'
+                )}
+                title="Toggle between Valuation With GST (Gross) and Without GST (Net)"
+              >
+                <div className={cn(
+                  'w-6 h-3.5 rounded-full p-0.5 transition-colors flex items-center',
+                  isGrossGst ? 'bg-white/30 justify-end' : 'bg-muted-foreground/30 justify-start'
+                )}>
+                  <div className="w-2.5 h-2.5 rounded-full bg-white shadow-xs" />
+                </div>
+                <span>{isGrossGst ? 'With GST' : 'Without GST'}</span>
+              </button>
+
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span style={{ color: '#6b7280', fontWeight: 600 }}>TYPE:</span>
                 <select
@@ -1104,6 +1299,11 @@ function StocksContent() {
                 const dateStr = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
                 const vType = v.voucher_type.toUpperCase()
                 const vTypeBg = isInward ? '#059669' : '#e53e3e'
+                const effectiveGstRate = Number(v.gst_rate) > 0 ? Number(v.gst_rate) : (selectedItem.gst_rate_percent || 18)
+                const voucherDisplayAmount = isGrossGst
+                  ? Number(v.amount) * (1 + effectiveGstRate / 100)
+                  : Number(v.amount)
+
                 return (
                   <div
                     key={v.stock_entry_id}
@@ -1152,7 +1352,7 @@ function StocksContent() {
                           {v.quantity.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {selectedItem.uom || 'PCS'}
                         </span>
                         <span style={{ fontSize: '12px', color: isInward ? '#059669' : '#dc2626', fontWeight: 700, marginLeft: '10px' }}>
-                          | {formatCurrency(v.amount)}
+                          | {formatCurrency(voucherDisplayAmount)} {isGrossGst ? `(${effectiveGstRate}% GST)` : ''}
                         </span>
                       </div>
                     </div>
