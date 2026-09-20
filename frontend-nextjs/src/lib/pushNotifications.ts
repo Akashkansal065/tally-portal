@@ -10,12 +10,18 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
     .replace(/_/g, '/')
 
   const rawData = window.atob(base64)
-  const outputArray = new Uint8Array(rawData.length)
+  const buffer = new ArrayBuffer(rawData.length)
+  const outputArray = new Uint8Array(buffer)
 
   for (let i = 0; i < rawData.length; ++i) {
     outputArray[i] = rawData.charCodeAt(i)
   }
   return outputArray
+}
+
+export function isSecureContext(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
 }
 
 export function isPushNotificationSupported(): boolean {
@@ -50,6 +56,29 @@ export function getNotificationPermission(): NotificationPermission {
   return Notification.permission
 }
 
+let cachedVapidKey: string | null = null
+
+/**
+ * Pre-fetch VAPID public key in background on page load
+ * so there is zero network delay during user click gesture on iOS.
+ */
+export async function prefetchVapidKey(token: string): Promise<string | null> {
+  if (cachedVapidKey) return cachedVapidKey
+  try {
+    const res = await fetch(`${API_BASE}/notifications/vapid-public-key`, {
+      headers: authHeaders(token)
+    })
+    if (res.ok) {
+      const data = await res.json()
+      cachedVapidKey = data.public_key || null
+      return cachedVapidKey
+    }
+  } catch (e) {
+    console.warn('[PushNotifications] Prefetch VAPID key failed:', e)
+  }
+  return null
+}
+
 /**
  * Check if the current device/browser is already subscribed to push notifications.
  */
@@ -79,6 +108,13 @@ export async function subscribeToPushNotifications(
     return { success: false, message: 'Browser window is undefined.' }
   }
 
+  if (!isSecureContext()) {
+    return {
+      success: false,
+      message: 'Push notifications require a secure HTTPS connection. Please access MyTally over HTTPS.'
+    }
+  }
+
   // Handle iOS specific requirement: Apple requires web app to be saved to Home Screen
   if (isIOS() && !isStandalone()) {
     return {
@@ -104,7 +140,7 @@ export async function subscribeToPushNotifications(
           permission = await Promise.race([
             permResult,
             new Promise<NotificationPermission>((_, reject) => 
-              setTimeout(() => reject(new Error('Permission prompt timed out')), 20000)
+              setTimeout(() => reject(new Error('Permission prompt timed out')), 25000)
             )
           ])
         } else {
@@ -134,7 +170,6 @@ export async function subscribeToPushNotifications(
       console.warn('Direct SW register error:', e)
     }
 
-    // Wait for SW ready with a 6-second timeout so it NEVER hangs indefinitely
     const readyPromise = navigator.serviceWorker.ready
     const timeoutPromise = new Promise<ServiceWorkerRegistration>((_, reject) =>
       setTimeout(() => reject(new Error('Service Worker took too long to activate. Please refresh and try again.')), 6000)
@@ -145,24 +180,30 @@ export async function subscribeToPushNotifications(
       throw new Error('Could not obtain an active Service Worker.')
     }
 
-    // 3. Fetch VAPID public key with 8-second timeout
-    const controller = new AbortController()
-    const fetchTimer = setTimeout(() => controller.abort(), 8000)
-    const vapidRes = await fetch(`${API_BASE}/notifications/vapid-public-key`, {
-      headers: authHeaders(token),
-      signal: controller.signal
-    }).finally(() => clearTimeout(fetchTimer))
+    // 3. Obtain VAPID key (use pre-cached or fetch with timeout)
+    let publicKey = cachedVapidKey
+    if (!publicKey) {
+      const controller = new AbortController()
+      const fetchTimer = setTimeout(() => controller.abort(), 6000)
+      const vapidRes = await fetch(`${API_BASE}/notifications/vapid-public-key`, {
+        headers: authHeaders(token),
+        signal: controller.signal
+      }).finally(() => clearTimeout(fetchTimer))
 
-    if (!vapidRes.ok) {
-      throw new Error('Failed to retrieve push encryption key from server.')
+      if (!vapidRes.ok) {
+        throw new Error('Failed to retrieve push encryption key from server.')
+      }
+      const data = await vapidRes.json()
+      publicKey = data.public_key
+      cachedVapidKey = publicKey
     }
-    const { public_key } = await vapidRes.json()
-    if (!public_key) {
+
+    if (!publicKey) {
       throw new Error('VAPID public key missing from server response.')
     }
 
-    // 4. Subscribe to PushManager
-    const applicationServerKey = urlBase64ToUint8Array(public_key)
+    // 4. Subscribe to PushManager (try Uint8Array, fallback to ArrayBuffer)
+    const applicationServerKey = urlBase64ToUint8Array(publicKey)
     let subscription = await reg.pushManager.getSubscription()
     
     if (!subscription) {
@@ -171,12 +212,16 @@ export async function subscribeToPushNotifications(
           userVisibleOnly: true,
           applicationServerKey: applicationServerKey as unknown as BufferSource
         })
-      } catch (subErr) {
+      } catch (subErr: any) {
         console.warn('Subscribe with Uint8Array failed, retrying with ArrayBuffer:', subErr)
-        subscription = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: applicationServerKey.buffer as unknown as BufferSource
-        })
+        try {
+          subscription = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: applicationServerKey.buffer as unknown as BufferSource
+          })
+        } catch (retryErr: any) {
+          throw new Error(retryErr?.message || subErr?.message || 'Push subscription failed in browser.')
+        }
       }
     }
 

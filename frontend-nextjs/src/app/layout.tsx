@@ -13,6 +13,7 @@ import { SessionRestorer } from '@/components/SessionRestorer'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
+import { Toaster } from 'sonner'
 import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
 
@@ -76,6 +77,7 @@ export default function RootLayout({
               <DatePickerInitializer />
               <MobileInstallPrompt />
               <SessionRestorer />
+              <Toaster richColors position="top-center" closeButton />
               {/* Top Header */}
               <GlobalHeader />
 
