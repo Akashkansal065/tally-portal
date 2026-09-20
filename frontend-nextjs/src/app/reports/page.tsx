@@ -352,7 +352,18 @@ export default function ReportsPage() {
   // Company Stock & Profit state
   const [companyStockData, setCompanyStockData] = useState<any>(null)
   const [expandedCompany, setExpandedCompany] = useState<string | null>(null)
-  const [stockSubTab, setStockSubTab] = useState<'overview' | 'trends' | 'dead' | 'loss' | 'negative' | 'fast' | 'turnover' | 'returns'>('overview')
+  const [stockSubTab, setStockSubTab] = useState<'overview' | 'trends' | 'dead' | 'loss' | 'negative' | 'fast' | 'turnover' | 'returns' | 'customer_purchases'>('overview')
+
+  // Customer-Item Purchases state
+  const [customerItemData, setCustomerItemData] = useState<any>(null)
+  const [custItemCompanyFilter, setCustItemCompanyFilter] = useState<string>('all')
+  const [custItemCustomerFilter, setCustItemCustomerFilter] = useState<string>('all')
+  const [custItemSearch, setCustItemSearch] = useState<string>('')
+  const [custItemViewMode, setCustItemViewMode] = useState<'by_company' | 'by_customer' | 'flat'>('by_company')
+  const [expandedCustCompany, setExpandedCustCompany] = useState<string | null>(null)
+  const [expandedCustCustomer, setExpandedCustCustomer] = useState<string | null>(null)
+  const [custItemSortField, setCustItemSortField] = useState<'amount' | 'quantity' | 'customer_name' | 'company_name' | 'item_name' | 'last_sold_date' | 'invoice_count'>('amount')
+  const [custItemSortDir, setCustItemSortDir] = useState<'asc' | 'desc'>('desc')
 
   // Sorting state for Company Stock & Profit report
   const [itemSortField, setItemSortField] = useState<ItemSortKey>('sold_value')
@@ -534,7 +545,7 @@ export default function ReportsPage() {
         setActiveTab(tab as TabType)
       }
       const sub = params.get('sub')
-      if (sub && ['overview', 'trends', 'dead', 'loss', 'negative', 'fast', 'turnover', 'returns'].includes(sub)) {
+      if (sub && ['overview', 'trends', 'dead', 'loss', 'negative', 'fast', 'turnover', 'returns', 'customer_purchases'].includes(sub)) {
         setStockSubTab(sub as any)
       }
     }
@@ -560,6 +571,7 @@ export default function ReportsPage() {
         fetch(`${API_BASE}/reports/cash-flow?${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/ratio-analysis`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/company-stock-performance?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/customer-item-sales?${q}`, { headers }).then(r => r.ok ? r.json() : null),
       ])
 
       if (results[0].status === 'fulfilled' && results[0].value) setSummary(results[0].value)
@@ -574,6 +586,7 @@ export default function ReportsPage() {
       if (results[9].status === 'fulfilled' && results[9].value) setCashFlowData(results[9].value)
       if (results[10].status === 'fulfilled' && results[10].value) setRatiosData(results[10].value)
       if (results[11].status === 'fulfilled' && results[11].value) setCompanyStockData(results[11].value)
+      if (results[12].status === 'fulfilled' && results[12].value) setCustomerItemData(results[12].value)
 
       setLastUpdatedMessage(
         fromDate || toDate
@@ -1758,6 +1771,31 @@ export default function ReportsPage() {
       {/* TAB 3: SALES & CUSTOMER ANALYTICS */}
       {activeTab === 'sales' && (
         <div className="space-y-6">
+          {/* Quick link banner to Customer Purchases by Company report */}
+          <div className="bg-linear-to-r from-blue-500/10 via-indigo-500/10 to-purple-500/10 border border-blue-500/20 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-blue-500/15 text-blue-600 dark:text-blue-400 rounded-xl shrink-0">
+                <ShoppingBag className="h-5 w-5" />
+              </div>
+              <div>
+                <h4 className="font-extrabold text-sm text-foreground flex items-center gap-2">
+                  Customer Purchases by Company / Brand
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400">NEW</span>
+                </h4>
+                <p className="text-xs text-muted-foreground">Looking to check which customer bought which items from a particular company or brand? View the cross-reference report.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setActiveTab('company_stock')
+                setStockSubTab('customer_purchases')
+              }}
+              className="px-3.5 py-2 bg-primary text-primary-foreground font-extrabold text-xs rounded-xl hover:opacity-90 transition-all flex items-center gap-1.5 whitespace-nowrap self-start sm:self-center cursor-pointer shadow-xs"
+            >
+              View Customer Purchases <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+
           {/* Top Customers Bar Chart */}
           <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/50 pb-3">
@@ -2078,6 +2116,7 @@ export default function ReportsPage() {
           <div className="flex gap-1 bg-muted/50 p-1 rounded-xl overflow-x-auto no-scrollbar border border-border">
             {([
               { id: 'overview', label: 'Company Performance', icon: Building2 },
+              { id: 'customer_purchases', label: 'Customer Purchases', icon: Users },
               { id: 'trends', label: 'Monthly Trends', icon: Activity },
               { id: 'fast', label: 'Fast Movers', icon: Zap },
               { id: 'dead', label: 'Dead Stock', icon: Skull },
@@ -2091,6 +2130,7 @@ export default function ReportsPage() {
               const count = tab.id === 'dead' ? companyStockData?.dead_stock?.count
                 : tab.id === 'loss' ? companyStockData?.loss_making_items?.count
                 : tab.id === 'negative' ? companyStockData?.negative_stock?.count
+                : tab.id === 'customer_purchases' ? customerItemData?.summary?.total_customers
                 : null
               return (
                 <button
@@ -2107,6 +2147,7 @@ export default function ReportsPage() {
                     <span className={cn("px-1.5 py-0.5 rounded-full text-[9px] font-black",
                       tab.id === 'negative' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
                       : tab.id === 'loss' ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                      : tab.id === 'customer_purchases' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
                       : 'bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300'
                     )}>
                       {count}
@@ -2666,6 +2707,773 @@ export default function ReportsPage() {
                     )
                   })}
                 </div>
+              </div>
+            )
+          })()}
+
+          {/* SUB-TAB: Customer Purchases by Company */}
+          {stockSubTab === 'customer_purchases' && (() => {
+            const rawRecords: any[] = customerItemData?.records || []
+            const companies: any[] = customerItemData?.companies || []
+            const customers: any[] = customerItemData?.customers || []
+
+            // Filter records based on selected dropdowns and search
+            const filtered = rawRecords.filter(r => {
+              if (custItemCompanyFilter !== 'all' && r.company_name !== custItemCompanyFilter) return false
+              if (custItemCustomerFilter !== 'all' && r.customer_name !== custItemCustomerFilter) return false
+              if (custItemSearch.trim()) {
+                const q = custItemSearch.toLowerCase()
+                const matchCust = (r.customer_name || '').toLowerCase().includes(q)
+                const matchComp = (r.company_name || '').toLowerCase().includes(q)
+                const matchItem = (r.item_name || '').toLowerCase().includes(q)
+                if (!matchCust && !matchComp && !matchItem) return false
+              }
+              return true
+            })
+
+            // Filtered Totals
+            const totalQty = filtered.reduce((acc, r) => acc + (Number(r.quantity) || 0), 0)
+            const totalVal = filtered.reduce((acc, r) => acc + (isGrossGst ? (Number(r.amount_gross) || 0) : (Number(r.amount) || 0)), 0)
+            const uniqueCustCount = new Set(filtered.map(r => r.customer_name)).size
+            const uniqueCompCount = new Set(filtered.map(r => r.company_name)).size
+            const uniqueItemCount = new Set(filtered.map(r => r.item_name)).size
+
+            // Group by Company -> Customer -> Items
+            const byCompanyGroups: Record<string, {
+              company_name: string
+              total_qty: number
+              total_value: number
+              items_count: number
+              customers_count: number
+              customer_map: Record<string, {
+                customer_name: string
+                customer_ledger_id: number
+                total_qty: number
+                total_value: number
+                items: any[]
+              }>
+            }> = {}
+
+            // Group by Customer -> Company -> Items
+            const byCustomerGroups: Record<string, {
+              customer_name: string
+              customer_ledger_id: number
+              total_qty: number
+              total_value: number
+              companies_count: number
+              items_count: number
+              company_map: Record<string, {
+                company_name: string
+                total_qty: number
+                total_value: number
+                items: any[]
+              }>
+            }> = {}
+
+            filtered.forEach(r => {
+              const comp = r.company_name || 'Unbranded / Others'
+              const cust = r.customer_name || 'Cash / Counter Sale'
+              const val = isGrossGst ? (Number(r.amount_gross) || 0) : (Number(r.amount) || 0)
+              const qty = Number(r.quantity) || 0
+
+              // Populate byCompanyGroups
+              if (!byCompanyGroups[comp]) {
+                byCompanyGroups[comp] = {
+                  company_name: comp,
+                  total_qty: 0,
+                  total_value: 0,
+                  items_count: 0,
+                  customers_count: 0,
+                  customer_map: {}
+                }
+              }
+              const compGrp = byCompanyGroups[comp]
+              compGrp.total_qty += qty
+              compGrp.total_value += val
+              if (!compGrp.customer_map[cust]) {
+                compGrp.customer_map[cust] = {
+                  customer_name: cust,
+                  customer_ledger_id: r.customer_ledger_id,
+                  total_qty: 0,
+                  total_value: 0,
+                  items: []
+                }
+              }
+              const compCustEntry = compGrp.customer_map[cust]
+              compCustEntry.total_qty += qty
+              compCustEntry.total_value += val
+              compCustEntry.items.push(r)
+
+              // Populate byCustomerGroups
+              if (!byCustomerGroups[cust]) {
+                byCustomerGroups[cust] = {
+                  customer_name: cust,
+                  customer_ledger_id: r.customer_ledger_id,
+                  total_qty: 0,
+                  total_value: 0,
+                  companies_count: 0,
+                  items_count: 0,
+                  company_map: {}
+                }
+              }
+              const custGrp = byCustomerGroups[cust]
+              custGrp.total_qty += qty
+              custGrp.total_value += val
+              if (!custGrp.company_map[comp]) {
+                custGrp.company_map[comp] = {
+                  company_name: comp,
+                  total_qty: 0,
+                  total_value: 0,
+                  items: []
+                }
+              }
+              const custCompEntry = custGrp.company_map[comp]
+              custCompEntry.total_qty += qty
+              custCompEntry.total_value += val
+              custCompEntry.items.push(r)
+            })
+
+            // Finalize counts
+            Object.values(byCompanyGroups).forEach(cg => {
+              cg.customers_count = Object.keys(cg.customer_map).length
+              const itemSet = new Set<string>()
+              Object.values(cg.customer_map).forEach(cm => cm.items.forEach(it => itemSet.add(it.item_name)))
+              cg.items_count = itemSet.size
+            })
+
+            Object.values(byCustomerGroups).forEach(cg => {
+              cg.companies_count = Object.keys(cg.company_map).length
+              const itemSet = new Set<string>()
+              Object.values(cg.company_map).forEach(cm => cm.items.forEach(it => itemSet.add(it.item_name)))
+              cg.items_count = itemSet.size
+            })
+
+            // Sorted lists for accordion displays
+            const sortedCompanyGroups = Object.values(byCompanyGroups).sort((a, b) => b.total_value - a.total_value)
+            const sortedCustomerGroups = Object.values(byCustomerGroups).sort((a, b) => b.total_value - a.total_value)
+
+            // Sorted flat list
+            const sortedFlat = [...filtered].sort((a, b) => {
+              let valA = 0
+              let valB = 0
+              if (custItemSortField === 'amount') {
+                valA = isGrossGst ? (Number(a.amount_gross) || 0) : (Number(a.amount) || 0)
+                valB = isGrossGst ? (Number(b.amount_gross) || 0) : (Number(b.amount) || 0)
+                return custItemSortDir === 'asc' ? valA - valB : valB - valA
+              } else if (custItemSortField === 'quantity') {
+                valA = Number(a.quantity) || 0
+                valB = Number(b.quantity) || 0
+                return custItemSortDir === 'asc' ? valA - valB : valB - valA
+              } else if (custItemSortField === 'customer_name') {
+                return custItemSortDir === 'asc'
+                  ? (a.customer_name || '').localeCompare(b.customer_name || '')
+                  : (b.customer_name || '').localeCompare(a.customer_name || '')
+              } else if (custItemSortField === 'company_name') {
+                return custItemSortDir === 'asc'
+                  ? (a.company_name || '').localeCompare(b.company_name || '')
+                  : (b.company_name || '').localeCompare(a.company_name || '')
+              } else if (custItemSortField === 'item_name') {
+                return custItemSortDir === 'asc'
+                  ? (a.item_name || '').localeCompare(b.item_name || '')
+                  : (b.item_name || '').localeCompare(a.item_name || '')
+              } else if (custItemSortField === 'invoice_count') {
+                valA = Number(a.invoice_count) || 0
+                valB = Number(b.invoice_count) || 0
+                return custItemSortDir === 'asc' ? valA - valB : valB - valA
+              } else if (custItemSortField === 'last_sold_date') {
+                return custItemSortDir === 'asc'
+                  ? (a.last_sold_date || '').localeCompare(b.last_sold_date || '')
+                  : (b.last_sold_date || '').localeCompare(a.last_sold_date || '')
+              }
+              return 0
+            })
+
+            const handleFlatSort = (field: typeof custItemSortField) => {
+              if (custItemSortField === field) {
+                setCustItemSortDir(prev => prev === 'asc' ? 'desc' : 'asc')
+              } else {
+                setCustItemSortField(field)
+                setCustItemSortDir(field === 'customer_name' || field === 'company_name' || field === 'item_name' ? 'asc' : 'desc')
+              }
+            }
+
+            const exportCustItemsCsv = () => {
+              const rows = filtered.map(r => ({
+                Customer: r.customer_name,
+                Company_Brand: r.company_name,
+                Stock_Item: r.item_name,
+                Quantity: r.quantity,
+                UOM: r.uom,
+                Avg_Rate: isGrossGst ? r.avg_rate_gross : r.avg_rate,
+                Amount: isGrossGst ? r.amount_gross : r.amount,
+                Invoices: r.invoice_count,
+                Last_Sold_Date: r.last_sold_date || 'N/A'
+              }))
+              exportToCsv(`Customer_Item_Purchases_${isGrossGst ? 'Gross' : 'Net'}`, rows)
+            }
+
+            return (
+              <div className="space-y-4">
+                {/* Summary KPI Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="bg-card border border-border rounded-2xl p-4 shadow-xs space-y-1">
+                    <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                      <Users className="h-3.5 w-3.5 text-blue-500" /> Unique Customers
+                    </div>
+                    <p className="text-xl font-black">{uniqueCustCount.toLocaleString()}</p>
+                    <p className="text-[10px] text-muted-foreground">across {uniqueCompCount} companies / brands</p>
+                  </div>
+
+                  <div className="bg-card border border-border rounded-2xl p-4 shadow-xs space-y-1">
+                    <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                      <Package className="h-3.5 w-3.5 text-indigo-500" /> Products Purchased
+                    </div>
+                    <p className="text-xl font-black">{uniqueItemCount.toLocaleString()}</p>
+                    <p className="text-[10px] text-muted-foreground">distinct stock items sold</p>
+                  </div>
+
+                  <div className="bg-card border border-border rounded-2xl p-4 shadow-xs space-y-1">
+                    <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                      <Layers className="h-3.5 w-3.5 text-amber-500" /> Total Volume Sold
+                    </div>
+                    <p className="text-xl font-black text-amber-600">{Math.round(totalQty).toLocaleString()} units</p>
+                    <p className="text-[10px] text-muted-foreground">{filtered.length.toLocaleString()} customer-item transactions</p>
+                  </div>
+
+                  <div className="bg-card border border-border rounded-2xl p-4 shadow-xs space-y-1">
+                    <div className="flex items-center gap-2 text-[11px] font-extrabold text-muted-foreground uppercase tracking-wider">
+                      <TrendingUp className="h-3.5 w-3.5 text-emerald-500" /> Total Billed Value
+                    </div>
+                    <p className="text-xl font-black text-emerald-600">{formatCurrency(totalVal)}</p>
+                    <p className="text-[10px] text-muted-foreground">{isGrossGst ? 'Gross Value (With GST)' : 'Net Value (Without GST)'}</p>
+                  </div>
+                </div>
+
+                {/* Filter and View Control Toolbar */}
+                <div className="bg-card border border-border rounded-2xl p-4 shadow-xs space-y-3">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                    {/* Left: Brand & Customer Dropdowns + Search */}
+                    <div className="flex flex-wrap items-center gap-2 flex-1">
+                      {/* Company / Brand Selector */}
+                      <div className="flex items-center gap-1.5 bg-muted/60 border border-border px-2.5 py-1.5 rounded-xl text-xs">
+                        <Building2 className="h-3.5 w-3.5 text-indigo-500 shrink-0" />
+                        <span className="text-muted-foreground font-bold shrink-0">Company:</span>
+                        <select
+                          value={custItemCompanyFilter}
+                          onChange={e => setCustItemCompanyFilter(e.target.value)}
+                          className="bg-transparent font-extrabold text-foreground focus:outline-none cursor-pointer max-w-[200px] truncate"
+                        >
+                          <option value="all">All Companies ({companies.length})</option>
+                          {companies.map((c: any) => (
+                            <option key={c.name} value={c.name}>
+                              {c.name} ({c.item_count} items • {formatCurrency(isGrossGst ? c.total_value_gross : c.total_value)})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Customer Selector */}
+                      <div className="flex items-center gap-1.5 bg-muted/60 border border-border px-2.5 py-1.5 rounded-xl text-xs">
+                        <Users className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                        <span className="text-muted-foreground font-bold shrink-0">Customer:</span>
+                        <select
+                          value={custItemCustomerFilter}
+                          onChange={e => setCustItemCustomerFilter(e.target.value)}
+                          className="bg-transparent font-extrabold text-foreground focus:outline-none cursor-pointer max-w-[200px] truncate"
+                        >
+                          <option value="all">All Customers ({customers.length})</option>
+                          {customers.map((c: any) => (
+                            <option key={c.name} value={c.name}>
+                              {c.name} ({c.item_count} items)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Search Keyword */}
+                      <div className="relative flex-1 min-w-[200px]">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                        <input
+                          type="text"
+                          placeholder="Search customer, item, or company..."
+                          value={custItemSearch}
+                          onChange={e => setCustItemSearch(e.target.value)}
+                          className="w-full pl-8 pr-7 py-1.5 bg-muted/40 border border-border rounded-xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-primary/50"
+                        />
+                        {custItemSearch && (
+                          <button
+                            onClick={() => setCustItemSearch('')}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Reset Filters */}
+                      {(custItemCompanyFilter !== 'all' || custItemCustomerFilter !== 'all' || custItemSearch) && (
+                        <button
+                          onClick={() => {
+                            setCustItemCompanyFilter('all')
+                            setCustItemCustomerFilter('all')
+                            setCustItemSearch('')
+                          }}
+                          className="px-2.5 py-1.5 text-xs font-bold text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 rounded-xl transition-colors cursor-pointer flex items-center gap-1"
+                        >
+                          <RotateCcw className="h-3 w-3" /> Reset
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Right: View Mode Toggle & CSV Export */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center bg-muted/70 p-0.5 rounded-xl border border-border">
+                        <button
+                          onClick={() => setCustItemViewMode('by_company')}
+                          className={cn(
+                            "px-2.5 py-1 text-[11px] font-extrabold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer",
+                            custItemViewMode === 'by_company' ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                          )}
+                          title="Group transactions by Company / Brand"
+                        >
+                          <Building2 className="h-3.5 w-3.5" /> By Company
+                        </button>
+                        <button
+                          onClick={() => setCustItemViewMode('by_customer')}
+                          className={cn(
+                            "px-2.5 py-1 text-[11px] font-extrabold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer",
+                            custItemViewMode === 'by_customer' ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                          )}
+                          title="Group transactions by Customer"
+                        >
+                          <Users className="h-3.5 w-3.5" /> By Customer
+                        </button>
+                        <button
+                          onClick={() => setCustItemViewMode('flat')}
+                          className={cn(
+                            "px-2.5 py-1 text-[11px] font-extrabold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer",
+                            custItemViewMode === 'flat' ? "bg-background text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+                          )}
+                          title="Flat Table View"
+                        >
+                          <TableIcon className="h-3.5 w-3.5" /> Flat Table
+                        </button>
+                      </div>
+
+                      <button
+                        onClick={exportCustItemsCsv}
+                        className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <Download className="h-3.5 w-3.5" /> Export CSV
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Active Filter Indicators */}
+                  <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground pt-1 border-t border-border/40">
+                    <span className="font-semibold">Showing:</span>
+                    <span className="font-bold text-foreground">{filtered.length} transactions</span>
+                    <span>•</span>
+                    <span>{uniqueCustCount} customers</span>
+                    <span>•</span>
+                    <span>{uniqueCompCount} companies</span>
+                    <span>•</span>
+                    <span>{uniqueItemCount} distinct items</span>
+                    {custItemCompanyFilter !== 'all' && (
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 font-extrabold flex items-center gap-1">
+                        Company: {custItemCompanyFilter}
+                        <button onClick={() => setCustItemCompanyFilter('all')} className="cursor-pointer hover:opacity-75"><X className="h-2.5 w-2.5" /></button>
+                      </span>
+                    )}
+                    {custItemCustomerFilter !== 'all' && (
+                      <span className="px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 font-extrabold flex items-center gap-1">
+                        Customer: {custItemCustomerFilter}
+                        <button onClick={() => setCustItemCustomerFilter('all')} className="cursor-pointer hover:opacity-75"><X className="h-2.5 w-2.5" /></button>
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Empty State */}
+                {filtered.length === 0 && (
+                  <div className="bg-card border border-border rounded-2xl p-12 text-center space-y-3">
+                    <div className="p-3 bg-muted/60 rounded-2xl w-fit mx-auto text-muted-foreground">
+                      <ShoppingBag className="h-8 w-8 opacity-40" />
+                    </div>
+                    <h4 className="font-extrabold text-base text-foreground">No matching purchase records found</h4>
+                    <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                      No customer transactions match the selected company, customer, or search keyword within this date range.
+                    </p>
+                    <button
+                      onClick={() => {
+                        setCustItemCompanyFilter('all')
+                        setCustItemCustomerFilter('all')
+                        setCustItemSearch('')
+                      }}
+                      className="px-4 py-2 bg-primary text-primary-foreground text-xs font-bold rounded-xl cursor-pointer"
+                    >
+                      Clear All Filters
+                    </button>
+                  </div>
+                )}
+
+                {/* VIEW MODE 1: Grouped by Company -> Customers -> Items */}
+                {filtered.length > 0 && custItemViewMode === 'by_company' && (
+                  <div className="space-y-3">
+                    {sortedCompanyGroups.map(cg => {
+                      const isExpanded = expandedCustCompany === cg.company_name || (sortedCompanyGroups.length === 1 && expandedCustCompany === null)
+                      const customerList = Object.values(cg.customer_map).sort((a, b) => b.total_value - a.total_value)
+
+                      return (
+                        <div key={cg.company_name} className="bg-card border border-border rounded-2xl overflow-hidden shadow-2xs transition-all">
+                          {/* Company Header */}
+                          <div
+                            onClick={() => setExpandedCustCompany(isExpanded ? '' : cg.company_name)}
+                            className={cn(
+                              "px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer select-none transition-colors",
+                              isExpanded ? "bg-muted/40 border-b border-border/50" : "hover:bg-muted/20"
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                                <Building2 className="h-4 w-4" />
+                              </div>
+                              <div>
+                                <h4 className="font-black text-sm text-foreground flex items-center gap-2">
+                                  {cg.company_name}
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                                    {cg.customers_count} {cg.customers_count === 1 ? 'Customer' : 'Customers'}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                                    {cg.items_count} {cg.items_count === 1 ? 'Item' : 'Items'}
+                                  </span>
+                                </h4>
+                                <p className="text-[11px] text-muted-foreground">
+                                  {Math.round(cg.total_qty).toLocaleString()} total units sold
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-4 self-end sm:self-center">
+                              <div className="text-right">
+                                <span className="text-xs text-muted-foreground font-semibold block">Total Billed</span>
+                                <span className="font-black text-base text-emerald-600">{formatCurrency(cg.total_value)}</span>
+                              </div>
+                              <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform duration-200", isExpanded && "rotate-180")} />
+                            </div>
+                          </div>
+
+                          {/* Company Body: Customers List */}
+                          {isExpanded && (
+                            <div className="p-4 space-y-3 bg-muted/10">
+                              {customerList.map(cm => (
+                                <div key={cm.customer_name} className="bg-background border border-border/70 rounded-xl overflow-hidden shadow-2xs">
+                                  {/* Customer Sub-header */}
+                                  <div className="px-4 py-2.5 bg-muted/30 border-b border-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <Users className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                                      <Link
+                                        href={`/ledgers?search=${encodeURIComponent(cm.customer_name)}`}
+                                        className="font-extrabold text-xs text-foreground hover:text-primary hover:underline transition-colors"
+                                        title={`View ledger for ${cm.customer_name}`}
+                                        onClick={e => e.stopPropagation()}
+                                      >
+                                        {toTitleCase(cm.customer_name)}
+                                      </Link>
+                                      <span className="text-[10px] text-muted-foreground">
+                                        ({cm.items.length} {cm.items.length === 1 ? 'product' : 'products'})
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-3 text-xs">
+                                      <span className="text-muted-foreground font-medium">Qty: <strong className="text-foreground">{Math.round(cm.total_qty).toLocaleString()}</strong></span>
+                                      <span className="text-muted-foreground font-medium">Total: <strong className="text-emerald-600 font-extrabold">{formatCurrency(cm.total_value)}</strong></span>
+                                    </div>
+                                  </div>
+
+                                  {/* Items Table for this Customer */}
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-xs text-left">
+                                      <thead>
+                                        <tr className="border-b border-border/40 text-[10px] uppercase font-bold text-muted-foreground tracking-wider bg-muted/15">
+                                          <th className="py-2 px-3">Item Name</th>
+                                          <th className="py-2 px-3 text-right">Quantity</th>
+                                          <th className="py-2 px-3 text-right">Avg Rate</th>
+                                          <th className="py-2 px-3 text-right">Total Amount</th>
+                                          <th className="py-2 px-3 text-center">Invoices</th>
+                                          <th className="py-2 px-3 text-right">Last Purchase</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-border/30">
+                                        {cm.items.map((it: any, idx: number) => {
+                                          const rate = isGrossGst ? it.avg_rate_gross : it.avg_rate
+                                          const amt = isGrossGst ? it.amount_gross : it.amount
+                                          return (
+                                            <tr key={idx} className="hover:bg-muted/25 transition-colors">
+                                              <td className="py-2 px-3 font-semibold">
+                                                <button
+                                                  onClick={() => openProductDetail(it)}
+                                                  className="text-left font-bold text-foreground hover:text-primary hover:underline transition-colors flex items-center gap-1.5 group cursor-pointer"
+                                                  title="Click to view item transaction history & vouchers"
+                                                >
+                                                  <span>{it.item_name}</span>
+                                                  <ExternalLink className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 text-primary transition-opacity shrink-0" />
+                                                </button>
+                                              </td>
+                                              <td className="py-2 px-3 text-right font-medium">
+                                                {Number(it.quantity).toLocaleString()} <span className="text-[10px] text-muted-foreground">{it.uom}</span>
+                                              </td>
+                                              <td className="py-2 px-3 text-right text-muted-foreground font-medium">
+                                                {formatCurrency(rate)}
+                                              </td>
+                                              <td className="py-2 px-3 text-right font-extrabold text-emerald-600">
+                                                {formatCurrency(amt)}
+                                              </td>
+                                              <td className="py-2 px-3 text-center font-semibold text-muted-foreground">
+                                                <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] font-bold">
+                                                  {it.invoice_count}
+                                                </span>
+                                              </td>
+                                              <td className="py-2 px-3 text-right text-muted-foreground font-medium">
+                                                {it.last_sold_date ? formatDate(it.last_sold_date) : '—'}
+                                              </td>
+                                            </tr>
+                                          )
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* VIEW MODE 2: Grouped by Customer -> Companies -> Items */}
+                {filtered.length > 0 && custItemViewMode === 'by_customer' && (
+                  <div className="space-y-3">
+                    {sortedCustomerGroups.map(cg => {
+                      const isExpanded = expandedCustCustomer === cg.customer_name || (sortedCustomerGroups.length === 1 && expandedCustCustomer === null)
+                      const compList = Object.values(cg.company_map).sort((a, b) => b.total_value - a.total_value)
+
+                      return (
+                        <div key={cg.customer_name} className="bg-card border border-border rounded-2xl overflow-hidden shadow-2xs transition-all">
+                          {/* Customer Header */}
+                          <div
+                            onClick={() => setExpandedCustCustomer(isExpanded ? '' : cg.customer_name)}
+                            className={cn(
+                              "px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer select-none transition-colors",
+                              isExpanded ? "bg-muted/40 border-b border-border/50" : "hover:bg-muted/20"
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                                <Users className="h-4 w-4" />
+                              </div>
+                              <div>
+                                <h4 className="font-black text-sm text-foreground flex items-center gap-2">
+                                  <Link
+                                    href={`/ledgers?search=${encodeURIComponent(cg.customer_name)}`}
+                                    className="hover:underline hover:text-primary transition-colors"
+                                    onClick={e => e.stopPropagation()}
+                                  >
+                                    {toTitleCase(cg.customer_name)}
+                                  </Link>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                                    {cg.companies_count} {cg.companies_count === 1 ? 'Brand' : 'Brands'}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                                    {cg.items_count} {cg.items_count === 1 ? 'Item' : 'Items'}
+                                  </span>
+                                </h4>
+                                <p className="text-[11px] text-muted-foreground">
+                                  {Math.round(cg.total_qty).toLocaleString()} total units purchased
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-4 self-end sm:self-center">
+                              <div className="text-right">
+                                <span className="text-xs text-muted-foreground font-semibold block">Total Spent</span>
+                                <span className="font-black text-base text-emerald-600">{formatCurrency(cg.total_value)}</span>
+                              </div>
+                              <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform duration-200", isExpanded && "rotate-180")} />
+                            </div>
+                          </div>
+
+                          {/* Customer Body: Companies List */}
+                          {isExpanded && (
+                            <div className="p-4 space-y-3 bg-muted/10">
+                              {compList.map(cm => (
+                                <div key={cm.company_name} className="bg-background border border-border/70 rounded-xl overflow-hidden shadow-2xs">
+                                  {/* Company Sub-header */}
+                                  <div className="px-4 py-2.5 bg-muted/30 border-b border-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <Building2 className="h-3.5 w-3.5 text-indigo-500 shrink-0" />
+                                      <span className="font-extrabold text-xs text-foreground">
+                                        {cm.company_name}
+                                      </span>
+                                      <span className="text-[10px] text-muted-foreground">
+                                        ({cm.items.length} {cm.items.length === 1 ? 'product' : 'products'})
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-3 text-xs">
+                                      <span className="text-muted-foreground font-medium">Qty: <strong className="text-foreground">{Math.round(cm.total_qty).toLocaleString()}</strong></span>
+                                      <span className="text-muted-foreground font-medium">Subtotal: <strong className="text-emerald-600 font-extrabold">{formatCurrency(cm.total_value)}</strong></span>
+                                    </div>
+                                  </div>
+
+                                  {/* Items Table for this Company */}
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-xs text-left">
+                                      <thead>
+                                        <tr className="border-b border-border/40 text-[10px] uppercase font-bold text-muted-foreground tracking-wider bg-muted/15">
+                                          <th className="py-2 px-3">Item Name</th>
+                                          <th className="py-2 px-3 text-right">Quantity</th>
+                                          <th className="py-2 px-3 text-right">Avg Rate</th>
+                                          <th className="py-2 px-3 text-right">Total Amount</th>
+                                          <th className="py-2 px-3 text-center">Invoices</th>
+                                          <th className="py-2 px-3 text-right">Last Purchase</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-border/30">
+                                        {cm.items.map((it: any, idx: number) => {
+                                          const rate = isGrossGst ? it.avg_rate_gross : it.avg_rate
+                                          const amt = isGrossGst ? it.amount_gross : it.amount
+                                          return (
+                                            <tr key={idx} className="hover:bg-muted/25 transition-colors">
+                                              <td className="py-2 px-3 font-semibold">
+                                                <button
+                                                  onClick={() => openProductDetail(it)}
+                                                  className="text-left font-bold text-foreground hover:text-primary hover:underline transition-colors flex items-center gap-1.5 group cursor-pointer"
+                                                  title="Click to view item transaction history & vouchers"
+                                                >
+                                                  <span>{it.item_name}</span>
+                                                  <ExternalLink className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 text-primary transition-opacity shrink-0" />
+                                                </button>
+                                              </td>
+                                              <td className="py-2 px-3 text-right font-medium">
+                                                {Number(it.quantity).toLocaleString()} <span className="text-[10px] text-muted-foreground">{it.uom}</span>
+                                              </td>
+                                              <td className="py-2 px-3 text-right text-muted-foreground font-medium">
+                                                {formatCurrency(rate)}
+                                              </td>
+                                              <td className="py-2 px-3 text-right font-extrabold text-emerald-600">
+                                                {formatCurrency(amt)}
+                                              </td>
+                                              <td className="py-2 px-3 text-center font-semibold text-muted-foreground">
+                                                <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] font-bold">
+                                                  {it.invoice_count}
+                                                </span>
+                                              </td>
+                                              <td className="py-2 px-3 text-right text-muted-foreground font-medium">
+                                                {it.last_sold_date ? formatDate(it.last_sold_date) : '—'}
+                                              </td>
+                                            </tr>
+                                          )
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* VIEW MODE 3: Flat Table */}
+                {filtered.length > 0 && custItemViewMode === 'flat' && (
+                  <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-2xs">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left">
+                        <thead>
+                          <tr className="border-b border-border/50 text-[10px] uppercase font-bold text-muted-foreground tracking-wider bg-muted/30">
+                            <th className="py-3 px-3 cursor-pointer group" onClick={() => handleFlatSort('customer_name')}>
+                              <span className="inline-flex items-center gap-1">Customer {renderSortIcon('customer_name', custItemSortField, custItemSortDir)}</span>
+                            </th>
+                            <th className="py-3 px-3 cursor-pointer group" onClick={() => handleFlatSort('company_name')}>
+                              <span className="inline-flex items-center gap-1">Company / Brand {renderSortIcon('company_name', custItemSortField, custItemSortDir)}</span>
+                            </th>
+                            <th className="py-3 px-3 cursor-pointer group" onClick={() => handleFlatSort('item_name')}>
+                              <span className="inline-flex items-center gap-1">Stock Item {renderSortIcon('item_name', custItemSortField, custItemSortDir)}</span>
+                            </th>
+                            <th className="py-3 px-3 text-right cursor-pointer group" onClick={() => handleFlatSort('quantity')}>
+                              <span className="inline-flex items-center justify-end gap-1">Qty {renderSortIcon('quantity', custItemSortField, custItemSortDir)}</span>
+                            </th>
+                            <th className="py-3 px-3 text-right">Avg Rate</th>
+                            <th className="py-3 px-3 text-right cursor-pointer group" onClick={() => handleFlatSort('amount')}>
+                              <span className="inline-flex items-center justify-end gap-1">Total Amount {renderSortIcon('amount', custItemSortField, custItemSortDir)}</span>
+                            </th>
+                            <th className="py-3 px-3 text-center cursor-pointer group" onClick={() => handleFlatSort('invoice_count')}>
+                              <span className="inline-flex items-center justify-center gap-1">Invoices {renderSortIcon('invoice_count', custItemSortField, custItemSortDir)}</span>
+                            </th>
+                            <th className="py-3 px-3 text-right cursor-pointer group" onClick={() => handleFlatSort('last_sold_date')}>
+                              <span className="inline-flex items-center justify-end gap-1">Last Purchase {renderSortIcon('last_sold_date', custItemSortField, custItemSortDir)}</span>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/30">
+                          {sortedFlat.map((it: any, idx: number) => {
+                            const rate = isGrossGst ? it.avg_rate_gross : it.avg_rate
+                            const amt = isGrossGst ? it.amount_gross : it.amount
+                            return (
+                              <tr key={idx} className="hover:bg-muted/25 transition-colors">
+                                <td className="py-2.5 px-3 font-semibold">
+                                  <Link
+                                    href={`/ledgers?search=${encodeURIComponent(it.customer_name)}`}
+                                    className="text-foreground hover:text-primary hover:underline transition-colors"
+                                    title={`View ledger for ${it.customer_name}`}
+                                  >
+                                    {toTitleCase(it.customer_name)}
+                                  </Link>
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  <span className="px-2 py-0.5 rounded-md bg-muted text-[11px] font-bold text-muted-foreground">
+                                    {it.company_name}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 font-semibold">
+                                  <button
+                                    onClick={() => openProductDetail(it)}
+                                    className="text-left font-bold text-foreground hover:text-primary hover:underline transition-colors flex items-center gap-1.5 group cursor-pointer"
+                                    title="Click to view item transaction history & vouchers"
+                                  >
+                                    <span>{it.item_name}</span>
+                                    <ExternalLink className="h-2.5 w-2.5 opacity-0 group-hover:opacity-100 text-primary transition-opacity shrink-0" />
+                                  </button>
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-medium">
+                                  {Number(it.quantity).toLocaleString()} <span className="text-[10px] text-muted-foreground">{it.uom}</span>
+                                </td>
+                                <td className="py-2.5 px-3 text-right text-muted-foreground font-medium">
+                                  {formatCurrency(rate)}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-extrabold text-emerald-600">
+                                  {formatCurrency(amt)}
+                                </td>
+                                <td className="py-2.5 px-3 text-center font-semibold">
+                                  <span className="px-1.5 py-0.5 rounded-full bg-muted text-[10px] font-bold text-muted-foreground">
+                                    {it.invoice_count}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 text-right text-muted-foreground font-medium">
+                                  {it.last_sold_date ? formatDate(it.last_sold_date) : '—'}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })()}

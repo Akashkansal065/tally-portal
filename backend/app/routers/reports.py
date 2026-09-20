@@ -2014,3 +2014,259 @@ async def get_company_stock_performance(
     return output
 
 
+@router.get("/customer-item-sales")
+async def get_customer_item_sales(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    company_name: Optional[str] = Query(None, description="Filter by stock group / company brand name"),
+    group_id: Optional[int] = Query(None, description="Filter by stock group id"),
+    customer_name: Optional[str] = Query(None, description="Filter by customer name"),
+    customer_ledger_id: Optional[int] = Query(None, description="Filter by customer ledger id"),
+    search: Optional[str] = Query(None, description="Search keyword matching item, customer, or company"),
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return comprehensive customer-wise item sales breakdown by company (stock group).
+    Allows answering: 'Which customer purchased which item of a particular company/brand?'
+    """
+    from sqlalchemy import text as sa_text
+    from app.core.config import settings
+
+    cache_key = f"cust_item_sales_{from_date}_{to_date}_{company_name}_{group_id}_{customer_name}_{customer_ledger_id}_{search}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
+    ts = settings.TALLY_DATABASE_NAME
+    cid = user.company_id
+
+    date_filter = ""
+    params: dict = {"company_id": cid}
+    if from_date:
+        date_filter += " AND v.voucher_date >= :from_date"
+        params["from_date"] = from_date
+    if to_date:
+        date_filter += " AND v.voucher_date <= :to_date"
+        params["to_date"] = to_date
+
+    extra_filter = ""
+    if group_id is not None:
+        extra_filter += " AND sg.stock_group_id = :group_id"
+        params["group_id"] = group_id
+    elif company_name:
+        extra_filter += " AND sg.name = :company_name"
+        params["company_name"] = company_name
+
+    sql = sa_text(f"""
+        SELECT 
+            COALESCE(sg.name, 'Unbranded / Others') AS company_name,
+            sg.stock_group_id AS group_id,
+            COALESCE(v_party.ledger_id, debtor_sub.party_ledger_id, cash_sub.party_ledger_id, 0) AS customer_ledger_id,
+            COALESCE(v_party.name, debtor_sub.party_name, cash_sub.party_name, v.buyer_name, 'Cash / Counter Sale') AS customer_name,
+            si.stock_item_id AS item_id,
+            si.name AS item_name,
+            COALESCE(u.symbol, 'PCS') AS uom,
+            COALESCE(si.gst_rate_percent, 18.0) AS gst_rate_percent,
+            COUNT(DISTINCT v.voucher_id) as invoice_count,
+            MAX(v.voucher_date) as last_sold_date,
+            SUM(se.quantity) as total_qty,
+            SUM(se.amount) as total_amount
+        FROM {ts}.stock_entries se
+        JOIN {ts}.stock_items si ON se.stock_item_id = si.stock_item_id
+        JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id
+        LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
+        LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
+        LEFT JOIN {ts}.ledgers v_party ON v.party_ledger_id = v_party.ledger_id
+        LEFT JOIN (
+            SELECT ve.voucher_id, MIN(le.name) AS party_name, MIN(le.ledger_id) AS party_ledger_id
+            FROM {ts}.voucher_entries ve
+            JOIN {ts}.ledgers le ON ve.ledger_id = le.ledger_id
+            JOIN {ts}.account_groups ag ON le.group_id = ag.group_id
+            WHERE ag.name LIKE '%Debtor%' OR ag.name LIKE '%Creditor%'
+            GROUP BY ve.voucher_id
+        ) debtor_sub ON debtor_sub.voucher_id = v.voucher_id
+        LEFT JOIN (
+            SELECT ve.voucher_id, MIN(le.name) AS party_name, MIN(le.ledger_id) AS party_ledger_id
+            FROM {ts}.voucher_entries ve
+            JOIN {ts}.ledgers le ON ve.ledger_id = le.ledger_id
+            JOIN {ts}.account_groups ag ON le.group_id = ag.group_id
+            WHERE ag.name IN ('Cash-in-hand', 'Bank Accounts', 'Bank OD A/c', 'Bank OCC A/c')
+            GROUP BY ve.voucher_id
+        ) cash_sub ON cash_sub.voucher_id = v.voucher_id
+        WHERE se.is_inward = 0 AND v.company_id = :company_id
+            AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+            {date_filter}
+            {extra_filter}
+        GROUP BY company_name, sg.stock_group_id, customer_ledger_id, customer_name, si.stock_item_id, si.name, u.symbol, si.gst_rate_percent
+        ORDER BY total_amount DESC
+    """)
+
+    res = await db.execute(sql, params)
+    rows = res.fetchall()
+
+    records = []
+    companies_dict: dict = {}
+    customers_dict: dict = {}
+
+    total_qty = 0.0
+    total_val = 0.0
+    total_val_gross = 0.0
+    unique_items = set()
+    unique_customers = set()
+    unique_companies = set()
+    total_invoices = 0
+
+    s_lower = search.strip().lower() if search else None
+
+    for r in rows:
+        c_name = r.customer_name or "Cash / Counter Sale"
+        comp_name = r.company_name or "Unbranded / Others"
+        i_name = r.item_name or "Unknown Item"
+        c_lid = int(r.customer_ledger_id or 0)
+
+        # Apply customer-level filters if requested
+        if customer_ledger_id and c_lid != customer_ledger_id:
+            continue
+        if customer_name and customer_name.strip().lower() != c_name.strip().lower():
+            continue
+
+        # Apply text search if requested
+        if s_lower:
+            if s_lower not in c_name.lower() and s_lower not in comp_name.lower() and s_lower not in i_name.lower():
+                continue
+
+        qty = float(r.total_qty or 0.0)
+        amt = float(r.total_amount or 0.0)
+        gst = float(r.gst_rate_percent or 18.0)
+        gst_mult = 1.0 + (gst / 100.0)
+        amt_gross = round(amt * gst_mult, 2)
+        avg_rate = round(amt / qty, 2) if qty > 0 else 0.0
+        avg_rate_gross = round(avg_rate * gst_mult, 2)
+        inv_cnt = int(r.invoice_count or 0)
+        last_dt = r.last_sold_date.isoformat() if r.last_sold_date else None
+
+        records.append({
+            "company_name": comp_name,
+            "group_id": r.group_id,
+            "customer_ledger_id": c_lid,
+            "customer_name": c_name,
+            "item_id": r.item_id,
+            "item_name": i_name,
+            "uom": r.uom or "PCS",
+            "gst_rate_percent": gst,
+            "quantity": round(qty, 3),
+            "amount": round(amt, 2),
+            "amount_gross": amt_gross,
+            "avg_rate": avg_rate,
+            "avg_rate_gross": avg_rate_gross,
+            "invoice_count": inv_cnt,
+            "last_sold_date": last_dt,
+        })
+
+        # Aggregation tracking
+        total_qty += qty
+        total_val += amt
+        total_val_gross += amt_gross
+        unique_items.add(r.item_id)
+        unique_customers.add(c_name)
+        unique_companies.add(comp_name)
+        total_invoices += inv_cnt
+
+        # Company list item
+        if comp_name not in companies_dict:
+            companies_dict[comp_name] = {
+                "name": comp_name,
+                "group_id": r.group_id,
+                "total_value": 0.0,
+                "total_value_gross": 0.0,
+                "total_qty": 0.0,
+                "items_set": set(),
+                "customers_set": set(),
+            }
+        comp_entry = companies_dict[comp_name]
+        comp_entry["total_value"] += amt
+        comp_entry["total_value_gross"] += amt_gross
+        comp_entry["total_qty"] += qty
+        comp_entry["items_set"].add(r.item_id)
+        comp_entry["customers_set"].add(c_name)
+
+        # Customer list item
+        if c_name not in customers_dict:
+            customers_dict[c_name] = {
+                "name": c_name,
+                "ledger_id": c_lid,
+                "total_value": 0.0,
+                "total_value_gross": 0.0,
+                "total_qty": 0.0,
+                "items_set": set(),
+                "companies_set": set(),
+            }
+        cust_entry = customers_dict[c_name]
+        cust_entry["total_value"] += amt
+        cust_entry["total_value_gross"] += amt_gross
+        cust_entry["total_qty"] += qty
+        cust_entry["items_set"].add(r.item_id)
+        cust_entry["companies_set"].add(comp_name)
+
+    # Format companies and customers metadata lists
+    companies_list = [
+        {
+            "name": k,
+            "group_id": v["group_id"],
+            "total_value": round(v["total_value"], 2),
+            "total_value_gross": round(v["total_value_gross"], 2),
+            "total_qty": round(v["total_qty"], 3),
+            "item_count": len(v["items_set"]),
+            "customer_count": len(v["customers_set"]),
+        }
+        for k, v in companies_dict.items()
+    ]
+    companies_list.sort(key=lambda x: x["total_value"], reverse=True)
+
+    customers_list = [
+        {
+            "name": k,
+            "ledger_id": v["ledger_id"],
+            "total_value": round(v["total_value"], 2),
+            "total_value_gross": round(v["total_value_gross"], 2),
+            "total_qty": round(v["total_qty"], 3),
+            "item_count": len(v["items_set"]),
+            "company_count": len(v["companies_set"]),
+        }
+        for k, v in customers_dict.items()
+    ]
+    customers_list.sort(key=lambda x: x["total_value"], reverse=True)
+
+    summary = {
+        "total_records": len(records),
+        "total_customers": len(unique_customers),
+        "total_companies": len(unique_companies),
+        "total_items": len(unique_items),
+        "total_quantity": round(total_qty, 3),
+        "total_value": round(total_val, 2),
+        "total_value_gross": round(total_val_gross, 2),
+        "total_invoices": total_invoices,
+    }
+
+    output = {
+        "summary": summary,
+        "companies": companies_list,
+        "customers": customers_list,
+        "records": records,
+        "filters": {
+            "from_date": from_date,
+            "to_date": to_date,
+            "company_name": company_name,
+            "group_id": group_id,
+            "customer_name": customer_name,
+            "customer_ledger_id": customer_ledger_id,
+            "search": search,
+        }
+    }
+
+    set_cached_response(user.company_id, cache_key, output)
+    return output
+
+
+
