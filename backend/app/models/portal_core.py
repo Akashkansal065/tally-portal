@@ -1042,6 +1042,25 @@ class Notification(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    endpoint = Column(Text, nullable=False)
+    p256dh = Column(String(255), nullable=False)
+    auth = Column(String(255), nullable=False)
+    user_agent = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+
+    # Relationships
+    company = relationship("Company", foreign_keys=[company_id])
+    user = relationship("User", foreign_keys=[user_id])
+
+
+
 class BeatPlan(Base):
     __tablename__ = "beat_plans"
     __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}

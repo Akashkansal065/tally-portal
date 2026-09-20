@@ -49,12 +49,25 @@ import {
   Users,
   History,
   Bell,
+  BellRing,
+  Share2,
+  Send,
   CheckCheck,
   Check,
   Trash2,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useState, useEffect } from 'react'
+import { toast } from 'sonner'
+import {
+  isPushNotificationSupported,
+  isIOS,
+  isStandalone,
+  getNotificationPermission,
+  isCurrentDeviceSubscribed,
+  subscribeToPushNotifications,
+  sendTestPushNotification,
+} from '@/lib/pushNotifications'
 
 export function GlobalHeader() {
   const { user, token, logout, permissions, switchCompany } = useAuth()
@@ -101,6 +114,61 @@ export function GlobalHeader() {
   const [notifications, setNotifications] = useState<any[]>([])
   const [loadingNotifications, setLoadingNotifications] = useState<boolean>(false)
   const [clearingNotifications, setClearingNotifications] = useState<boolean>(false)
+
+  // Mobile Web Push Alert States
+  const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false)
+  const [pushPermission, setPushPermission] = useState<NotificationPermission>('default')
+  const [isEnablingPush, setIsEnablingPush] = useState<boolean>(false)
+  const [isSendingTestPush, setIsSendingTestPush] = useState<boolean>(false)
+  const [isPushSupported, setIsPushSupported] = useState<boolean>(false)
+  const [isIosBrowser, setIsIosBrowser] = useState<boolean>(false)
+
+  useEffect(() => {
+    const supported = isPushNotificationSupported()
+    setIsPushSupported(supported)
+    setIsIosBrowser(isIOS() && !isStandalone())
+    if (supported) {
+      setPushPermission(getNotificationPermission())
+      isCurrentDeviceSubscribed().then(setIsPushSubscribed)
+    }
+  }, [])
+
+  const handleEnablePush = async () => {
+    if (!token) return
+    setIsEnablingPush(true)
+    try {
+      const result = await subscribeToPushNotifications(token)
+      if (result.success) {
+        setIsPushSubscribed(true)
+        setPushPermission('granted')
+        toast.success('Mobile alerts enabled! You will now receive notifications anytime.')
+      } else {
+        setPushPermission(getNotificationPermission())
+        toast.error(result.message)
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to enable notifications')
+    } finally {
+      setIsEnablingPush(false)
+    }
+  }
+
+  const handleSendTestPush = async () => {
+    if (!token) return
+    setIsSendingTestPush(true)
+    try {
+      const result = await sendTestPushNotification(token)
+      if (result.success) {
+        toast.success(result.message || 'Test alert sent! Check your device lock screen.')
+      } else {
+        toast.error(result.message)
+      }
+    } catch {
+      toast.error('Failed to send test alert')
+    } finally {
+      setIsSendingTestPush(false)
+    }
+  }
 
   const fetchUnreadCount = async () => {
     if (!token) return
@@ -543,6 +611,58 @@ export function GlobalHeader() {
                         )}
                       </div>
                     </div>
+
+                    {/* Mobile Device Alerts Banner */}
+                    {isIosBrowser ? (
+                      <div className="px-3.5 py-2.5 bg-amber-500/10 dark:bg-amber-500/15 border-b border-amber-500/20 text-xs text-foreground flex items-start gap-2.5">
+                        <Share2 className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-amber-800 dark:text-amber-200">iPhone Background Alerts</div>
+                          <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                            To get alerts when locked: tap Safari's <span className="font-semibold text-foreground">Share</span> button and choose <span className="font-semibold text-foreground">"Add to Home Screen"</span>.
+                          </div>
+                        </div>
+                      </div>
+                    ) : isPushSupported && !isPushSubscribed && pushPermission !== 'denied' ? (
+                      <div className="px-3.5 py-2.5 bg-emerald-500/10 dark:bg-emerald-500/15 border-b border-emerald-500/20 text-xs text-foreground flex items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <BellRing className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-semibold text-emerald-800 dark:text-emerald-200 text-xs">Enable Device Alerts</div>
+                            <div className="text-[11px] text-muted-foreground truncate">Get sound & lock-screen notifications</div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleEnablePush}
+                          disabled={isEnablingPush}
+                          className="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors cursor-pointer shrink-0 disabled:opacity-50 flex items-center gap-1 shadow-sm"
+                        >
+                          {isEnablingPush && <Loader2 className="w-3 h-3 animate-spin" />}
+                          <span>{isEnablingPush ? "Enabling..." : "Enable"}</span>
+                        </button>
+                      </div>
+                    ) : isPushSubscribed ? (
+                      <div className="px-3.5 py-2 bg-muted/40 border-b border-border text-[11px] text-muted-foreground flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 animate-pulse"></span>
+                          <span className="font-medium text-foreground truncate">Device Alerts Active</span>
+                        </div>
+                        <button
+                          onClick={handleSendTestPush}
+                          disabled={isSendingTestPush}
+                          className="text-[11px] font-semibold text-primary hover:underline cursor-pointer disabled:opacity-50 flex items-center gap-1 shrink-0"
+                          title="Send a test notification to check device alerts"
+                        >
+                          {isSendingTestPush ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                          <span>Test Alert</span>
+                        </button>
+                      </div>
+                    ) : pushPermission === 'denied' ? (
+                      <div className="px-3.5 py-2 bg-rose-500/10 border-b border-rose-500/20 text-[11px] text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">Device notifications blocked in browser settings.</span>
+                      </div>
+                    ) : null}
 
                     <div className="max-h-[min(380px,calc(100dvh-10rem))] sm:max-h-[380px] overflow-y-auto divide-y divide-border/40">
                       {loadingNotifications ? (

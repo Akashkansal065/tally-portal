@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     DEFAULT_UPI_VPA: str = "***@upi"
     RAZORPAY_WEBHOOK_SECRET: Optional[str] = None
     
+    # Web Push / VAPID Settings
+    VAPID_PUBLIC_KEY: Optional[str] = None
+    VAPID_PRIVATE_KEY: Optional[str] = None
+    VAPID_CLAIM_EMAIL: str = "mailto:admin@snehdistributors.com"
+    
     @property
     def PORTAL_DATABASE_NAME(self) -> str:
         db_name = self.DATABASE_URL.rsplit('/', 1)[-1]
