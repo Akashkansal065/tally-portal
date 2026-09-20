@@ -14,7 +14,7 @@ from datetime import datetime
 from collections import defaultdict, Counter
 
 from app.core.database import get_db
-from app.core.permissions import get_current_user, require_permission, get_effective_permission
+from app.core.permissions import get_current_user, require_permission, get_effective_permission, require_customer_read_permission
 from app.models.portal_core import User, CustomerProfile, CustomerLocationLog, CustomerPhoto, CustomerOwner
 from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting
 from app.services.geo_service import calculate_haversine_distance, evaluate_checkin_proximity
@@ -186,7 +186,7 @@ async def list_customers(
     sort_by: Optional[str] = Query("name_asc", description="name_asc, name_desc, nearest, missing_gps, last_visited, health_asc, health_desc"),
     my_lat: Optional[float] = Query(None, description="Current salesperson latitude"),
     my_lon: Optional[float] = Query(None, description="Current salesperson longitude"),
-    user: User = Depends(require_permission("customers", "read")),
+    user: User = Depends(require_customer_read_permission),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -591,7 +591,7 @@ async def list_customers(
 
 @router.get("/localities")
 async def get_localities_and_routes(
-    user: User = Depends(require_permission("customers", "read")),
+    user: User = Depends(require_customer_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
     """Return distinct localities, cities, and routes with customer counts for instant filter chips."""
@@ -1142,7 +1142,7 @@ async def tag_customer_location(
 @router.get("/{target_id}/location-history")
 async def get_customer_location_history(
     target_id: str,
-    user: User = Depends(require_permission("customers", "read")),
+    user: User = Depends(require_customer_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1220,7 +1220,7 @@ async def get_customer_location_history(
 @router.get("/{target_id}")
 async def get_customer_profile_detail(
     target_id: str,
-    user: User = Depends(require_permission("customers", "read")),
+    user: User = Depends(require_customer_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1352,7 +1352,7 @@ async def get_customer_profile_detail(
     visits = []
     can_view_visits = bool(user.role and user.role.name.lower() in ("admin", "superadmin", "owner"))
     if not can_view_visits:
-        visit_perm = await get_effective_permission(user.user_id, "check_in", db)
+        visit_perm = await get_effective_permission(user.user_id, "visits", db)
         can_view_visits = bool(visit_perm.get("can_read"))
 
     if can_view_visits:
@@ -1490,10 +1490,9 @@ async def get_customer_profile_detail(
 
     can_view_finance = bool(user.role and user.role.name.lower() in ("admin", "superadmin", "owner"))
     if not can_view_finance:
-        debtor_perm = await get_effective_permission(user.user_id, "debtors", db)
+        debtor_perm = await get_effective_permission(user.user_id, "ledger_customer", db)
         ledger_perm = await get_effective_permission(user.user_id, "ledgers", db)
-        rec_perm = await get_effective_permission(user.user_id, "receivables", db)
-        can_view_finance = bool(debtor_perm.get("can_read") or ledger_perm.get("can_read") or rec_perm.get("can_read"))
+        can_view_finance = bool(debtor_perm.get("can_read") or ledger_perm.get("can_read"))
 
     if ledger and can_view_finance:
         op_bal = float(ledger.opening_balance or 0)
@@ -1633,8 +1632,8 @@ async def get_customer_profile_detail(
                 )
                 o_res = await db.execute(o_stmt)
                 for o in o_res.scalars().all():
-                    items_cnt = sum(it.quantity or 0 for it in o.items) if o.items else 0
-                    amt = sum(float(it.quantity or 0) * float(it.price or 0) for it in o.items) if o.items else 0.0
+                    items_cnt = sum((getattr(it, "qty", 0) or 0) for it in o.items) if o.items else 0
+                    amt = sum(float(getattr(it, "qty", 0) or 0) * float(it.price or 0) for it in o.items) if o.items else 0.0
                     recent_orders.append({
                         "id": o.id,
                         "status": o.status,

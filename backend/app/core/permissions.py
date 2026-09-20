@@ -289,3 +289,23 @@ async def require_voucher_read_permission(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="You do not have permission to read any voucher categories."
     )
+
+async def require_customer_read_permission(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    """
+    User is allowed to read customers/directory if they have read permission for ANY customer-related feature:
+    customers (Store), ledger_customer (Customer Statement), orders (Orders), or visits (Check-In).
+    Admin unconditionally gets access via get_effective_permission.
+    """
+    for mod_code in ("customers", "ledger_customer", "orders", "visits"):
+        perms = await get_effective_permission(user.user_id, mod_code, db)
+        if perms.get("can_read", False):
+            return user
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to access the customer directory or profile."
+    )
+

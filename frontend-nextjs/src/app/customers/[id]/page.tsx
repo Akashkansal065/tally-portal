@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { usePeriod } from '@/context/PeriodContext'
@@ -20,6 +20,7 @@ import {
   RefreshCw,
   ExternalLink,
   ShieldCheck,
+  ShieldAlert,
   AlertTriangle,
   Clock,
   Building,
@@ -205,11 +206,12 @@ interface CustomerDetail {
   } | null
 }
 
-export default function CustomerProfilePage() {
+function CustomerProfileContent() {
   const params = useParams()
   const router = useRouter()
-  const { user, token, permissions, can } = useAuth()
-  const targetId = params?.id as string
+  const searchParams = useSearchParams()
+  const { user, token, permissions, can, isLoading } = useAuth()
+  const targetId = (params?.id as string) || ''
 
   const isAdmin = Boolean(
     permissions?.isAdmin ||
@@ -218,11 +220,21 @@ export default function CustomerProfilePage() {
     user?.role?.toLowerCase() === 'owner'
   )
 
-  const canViewStatement = Boolean(isAdmin || permissions?.showSalesLedgers || can?.('sales_ledgers', 'read'))
-  const canViewOrders = Boolean(isAdmin || permissions?.showOrders || can?.('sales_orders', 'read'))
-  const canViewVisits = Boolean(isAdmin || permissions?.showCheckIn || can?.('check_in', 'read'))
+  const canViewStore = Boolean(isAdmin || permissions?.showCustomers || can?.('customers', 'read'))
+  const canViewStatement = Boolean(isAdmin || permissions?.showSalesLedgers || permissions?.showLedger || can?.('ledger_customer', 'read') || can?.('ledgers', 'read'))
+  const canViewOrders = Boolean(isAdmin || permissions?.showOrders || can?.('orders', 'read'))
+  const canViewVisits = Boolean(isAdmin || permissions?.showCheckIn || can?.('visits', 'read'))
   const canDelete = Boolean(isAdmin || can?.('customers', 'delete'))
   const canUpdate = Boolean(isAdmin || can?.('customers', 'update'))
+
+  const allowedTabs = useMemo(() => {
+    const list: ('overview' | 'statement' | 'orders' | 'visits')[] = []
+    if (canViewStore) list.push('overview')
+    if (canViewStatement) list.push('statement')
+    if (canViewOrders) list.push('orders')
+    if (canViewVisits) list.push('visits')
+    return list
+  }, [canViewStore, canViewStatement, canViewOrders, canViewVisits])
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -231,18 +243,84 @@ export default function CustomerProfilePage() {
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
 
   // 360° View Main Tabs: overview | statement | orders | visits
-  const [mainTab, setMainTab] = useState<'overview' | 'statement' | 'orders' | 'visits'>('overview')
-
-  // Safety fallback if active tab is restricted
-  useEffect(() => {
-    if (mainTab === 'statement' && !canViewStatement) {
-      setMainTab('overview')
-    } else if (mainTab === 'orders' && !canViewOrders) {
-      setMainTab('overview')
-    } else if (mainTab === 'visits' && !canViewVisits) {
-      setMainTab('overview')
+  const [mainTab, setMainTab] = useState<'overview' | 'statement' | 'orders' | 'visits'>(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search)
+      const tabParam = urlParams.get('tab')
+      if (tabParam === 'statement' || tabParam === 'orders' || tabParam === 'visits' || tabParam === 'overview') {
+        return tabParam
+      }
+      try {
+        const savedTab = sessionStorage.getItem(`customer_tab_${targetId}`)
+        if (savedTab === 'statement' || savedTab === 'orders' || savedTab === 'visits' || savedTab === 'overview') {
+          return savedTab
+        }
+      } catch {}
     }
-  }, [mainTab, canViewStatement, canViewOrders, canViewVisits])
+    return 'overview'
+  })
+
+  // Synchronize tab helper to keep state, sessionStorage, and URL query params in sync
+  const handleTabChange = (tab: 'overview' | 'statement' | 'orders' | 'visits') => {
+    setMainTab(tab)
+    if (typeof window !== 'undefined') {
+      if (targetId) {
+        try {
+          sessionStorage.setItem(`customer_tab_${targetId}`, tab)
+        } catch {}
+      }
+      const url = new URL(window.location.href)
+      if (tab === 'overview') {
+        url.searchParams.delete('tab')
+      } else {
+        url.searchParams.set('tab', tab)
+      }
+      window.history.replaceState(null, '', url.toString())
+    }
+  }
+
+  // Synchronize mainTab when URL searchParams changes (e.g. browser back/forward)
+  useEffect(() => {
+    const tabFromUrl = searchParams.get('tab') as 'overview' | 'statement' | 'orders' | 'visits' | null
+    if (tabFromUrl && ['overview', 'statement', 'orders', 'visits'].includes(tabFromUrl)) {
+      if (tabFromUrl !== mainTab) {
+        setMainTab(tabFromUrl)
+        if (targetId) {
+          try {
+            sessionStorage.setItem(`customer_tab_${targetId}`, tabFromUrl)
+          } catch {}
+        }
+      }
+    } else if (!tabFromUrl && typeof window !== 'undefined' && targetId) {
+      try {
+        const savedTab = sessionStorage.getItem(`customer_tab_${targetId}`) as 'overview' | 'statement' | 'orders' | 'visits' | null
+        if (savedTab && ['statement', 'orders', 'visits', 'overview'].includes(savedTab)) {
+          if (mainTab !== savedTab) {
+            setMainTab(savedTab)
+            const url = new URL(window.location.href)
+            if (savedTab === 'overview') {
+              url.searchParams.delete('tab')
+            } else {
+              url.searchParams.set('tab', savedTab)
+            }
+            window.history.replaceState(null, '', url.toString())
+          }
+          return
+        }
+      } catch {}
+      if (mainTab !== 'overview') {
+        setMainTab('overview')
+      }
+    }
+  }, [searchParams, targetId, mainTab])
+
+  // Safety fallback if active tab is restricted (guarded so it doesn't prematurely fire while auth loads)
+  useEffect(() => {
+    if (isLoading || !user) return
+    if (allowedTabs.length > 0 && !allowedTabs.includes(mainTab)) {
+      handleTabChange(allowedTabs[0])
+    }
+  }, [mainTab, allowedTabs, isLoading, user])
 
   // WhatsApp Statement Sharing Handler
   const handleShareStatement = () => {
@@ -1366,7 +1444,7 @@ export default function CustomerProfilePage() {
 
               {/* Direct Check-In Action Button */}
               <Link
-                href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name || customer.tally_details?.name || '')}`}
                 className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-colors"
                 title="Perform live check-in visit at this shop"
               >
@@ -1579,7 +1657,7 @@ export default function CustomerProfilePage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMainTab('statement')}
+                  onClick={() => handleTabChange('statement')}
                   className="inline-flex items-center justify-center p-1.5 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                   title="View Ledger Statement"
                 >
@@ -1651,7 +1729,7 @@ export default function CustomerProfilePage() {
                   <span>Create New Order</span>
                 </Link>
                 <Link
-                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name || customer.tally_details?.name || '')}`}
                   className="w-full inline-flex items-center justify-center gap-2 py-2 px-3 rounded-xl border border-border bg-background hover:bg-muted text-foreground text-xs font-bold transition-colors"
                 >
                   <MapPin className="w-3.5 h-3.5 text-emerald-600" />
@@ -1683,7 +1761,7 @@ export default function CustomerProfilePage() {
               )}
               {canViewVisits && (
                 <Link
-                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name || customer.tally_details?.name || '')}`}
                   className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl border border-border bg-background hover:bg-muted text-foreground text-xs font-bold transition-colors"
                 >
                   <MapPin className="w-3.5 h-3.5 text-emerald-600" />
@@ -1695,28 +1773,31 @@ export default function CustomerProfilePage() {
         )}
 
         {/* ─── 360° VIEW NAVIGATION TABS ─── */}
-        <div className="flex items-center gap-1 sm:gap-2 p-1 bg-muted/60 dark:bg-muted/30 sm:bg-transparent sm:p-0 rounded-2xl sm:rounded-none border sm:border-0 sm:border-b border-border/80 sm:border-border sm:pb-1 shadow-2xs sm:shadow-none overflow-x-auto">
-          {/* Tab 1: Store & Partners */}
-          <button
-            type="button"
-            onClick={() => setMainTab('overview')}
-            className={cn(
-              'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0',
-              mainTab === 'overview'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
+        {allowedTabs.length > 0 && (
+          <div className="flex items-center gap-1 sm:gap-2 p-1 bg-muted/60 dark:bg-muted/30 sm:bg-transparent sm:p-0 rounded-2xl sm:rounded-none border sm:border-0 sm:border-b border-border/80 sm:border-border sm:pb-1 shadow-2xs sm:shadow-none overflow-x-auto">
+            {/* Tab 1: Store & Partners */}
+            {canViewStore && (
+              <button
+                type="button"
+                onClick={() => handleTabChange('overview')}
+                className={cn(
+                  'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0',
+                  mainTab === 'overview'
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
+                )}
+              >
+                <Store className="w-4 h-4 shrink-0" />
+                <span className="sm:hidden truncate">Store</span>
+                <span className="hidden sm:inline whitespace-nowrap">Store & Partners</span>
+              </button>
             )}
-          >
-            <Store className="w-4 h-4 shrink-0" />
-            <span className="sm:hidden truncate">Store</span>
-            <span className="hidden sm:inline whitespace-nowrap">Store & Partners</span>
-          </button>
 
           {/* Tab 2: Ledger Statement */}
           {canViewStatement && (
             <button
               type="button"
-              onClick={() => setMainTab('statement')}
+              onClick={() => handleTabChange('statement')}
               className={cn(
                 'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
                 mainTab === 'statement'
@@ -1752,7 +1833,7 @@ export default function CustomerProfilePage() {
           {canViewOrders && (
             <button
               type="button"
-              onClick={() => setMainTab('orders')}
+              onClick={() => handleTabChange('orders')}
               className={cn(
                 'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
                 mainTab === 'orders'
@@ -1788,7 +1869,7 @@ export default function CustomerProfilePage() {
           {canViewVisits && (
             <button
               type="button"
-              onClick={() => setMainTab('visits')}
+              onClick={() => handleTabChange('visits')}
               className={cn(
                 'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0 relative',
                 mainTab === 'visits'
@@ -1820,11 +1901,12 @@ export default function CustomerProfilePage() {
             </button>
           )}
         </div>
+        )}
 
         {/* ─── TAB 1: STORE & PARTNERS (OVERVIEW) ─── */}
-        {mainTab === 'overview' && (
+        {mainTab === 'overview' && canViewStore && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* ════════ LEFT COLUMN (Photos & Visits) ════════ */}
+          {/* -------- LEFT COLUMN (Photos & Visits) -------- */}
           <div className="lg:col-span-7 space-y-6">
             {/* 📸 Photos Showcase Card */}
             <div className="bg-card border border-border rounded-3xl p-6 shadow-sm space-y-5">
@@ -2055,7 +2137,7 @@ export default function CustomerProfilePage() {
             </div>
           </div>
 
-          {/* ════════ RIGHT COLUMN (Info, Location, Tally) ════════ */}
+          {/* -------- RIGHT COLUMN (Info, Location, Tally) -------- */}
           <div className="lg:col-span-5 space-y-6">
             {/* 👥 Owners & Business Partners Card */}
             <div className="bg-card border border-border rounded-3xl p-6 shadow-sm space-y-4 relative overflow-hidden">
@@ -2667,7 +2749,7 @@ export default function CustomerProfilePage() {
               </div>
 
               <Link
-                href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name || customer.tally_details?.name || '')}`}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm transition-colors"
               >
                 <MapPin className="w-4 h-4" />
@@ -2683,7 +2765,7 @@ export default function CustomerProfilePage() {
                   Every time a sales executive checks in at this customer location via GPS, the visit details will be recorded here.
                 </p>
                 <Link
-                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name)}`}
+                  href={`/check-in?${customer.ledger_id ? `ledger_id=${customer.ledger_id}` : `profile_id=${customer.profile_id}`}&name=${encodeURIComponent(customer.name || customer.tally_details?.name || '')}`}
                   className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground font-semibold text-xs hover:bg-primary/90 transition-colors shadow-sm"
                 >
                   <MapPin className="w-4 h-4" />
@@ -2762,6 +2844,28 @@ export default function CustomerProfilePage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Fallback if no tabs are allowed */}
+        {allowedTabs.length === 0 && (
+          <div className="bg-card border border-border rounded-3xl p-8 text-center space-y-4 shadow-sm my-6">
+            <div className="w-12 h-12 rounded-2xl bg-destructive/10 text-destructive flex items-center justify-center mx-auto">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="font-black text-lg text-foreground">Access Restricted</h3>
+              <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+                You do not have permission to view store details, ledger statements, orders, or visits for this customer.
+              </p>
+            </div>
+            <Link
+              href="/customers"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground font-bold text-xs hover:opacity-90 transition-opacity shadow-sm"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Back to Customer Directory
+            </Link>
           </div>
         )}
       </div>
@@ -3913,5 +4017,22 @@ export default function CustomerProfilePage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function CustomerProfilePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+            <span className="text-xs font-bold text-muted-foreground">Loading Customer Profile...</span>
+          </div>
+        </div>
+      }
+    >
+      <CustomerProfileContent />
+    </Suspense>
   )
 }

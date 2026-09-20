@@ -153,6 +153,7 @@ async def auto_sync_all_model_schemas():
     # Import all models to ensure they register their tables and columns in Base.metadata
     import app.models.tally_core
     import app.models.portal_core
+    import app.routers.orders
     
     async with engine.begin() as conn:
         for table_key, table in Base.metadata.tables.items():

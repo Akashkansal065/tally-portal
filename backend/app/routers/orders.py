@@ -71,7 +71,8 @@ class TempOrderItem(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.temp_orders.id", ondelete="CASCADE"), nullable=False)
-    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id"), nullable=False)
+    stock_item_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_items.stock_item_id"), nullable=True)
+    custom_item_name = Column(String(256), nullable=True)
     qty = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
     is_bill_required = Column(Boolean, default=True)
@@ -82,7 +83,8 @@ class TempOrderItem(Base):
 # ─── Schemas ─────────────────────────────────────────────────────────────────
 
 class OrderItemCreate(BaseModel):
-    stock_item_id: int
+    stock_item_id: Optional[int] = None
+    custom_item_name: Optional[str] = None
     qty: float
     price: float
     is_bill_required: Optional[bool] = None
@@ -141,17 +143,21 @@ async def create_order(
     await db.refresh(order)
 
     for item in req.items:
-        # Verify stock item exists
-        stock_query = await db.execute(
-            select(MstStockItem).where(MstStockItem.stock_item_id == item.stock_item_id, MstStockItem.company_id == user.company_id)
-        )
-        stock = stock_query.scalars().first()
-        if not stock:
-            raise HTTPException(status_code=400, detail=f"Stock item {item.stock_item_id} not found.")
+        if not item.stock_item_id and not (item.custom_item_name and item.custom_item_name.strip()):
+            raise HTTPException(status_code=400, detail="Each item must have either stock_item_id or custom_item_name.")
+
+        if item.stock_item_id:
+            stock_query = await db.execute(
+                select(MstStockItem).where(MstStockItem.stock_item_id == item.stock_item_id, MstStockItem.company_id == user.company_id)
+            )
+            stock = stock_query.scalars().first()
+            if not stock:
+                raise HTTPException(status_code=400, detail=f"Stock item {item.stock_item_id} not found.")
 
         order_item = TempOrderItem(
             order_id=order.id,
             stock_item_id=item.stock_item_id,
+            custom_item_name=item.custom_item_name.strip()[:256] if item.custom_item_name else None,
             qty=item.qty,
             price=item.price,
             is_bill_required=item.bill_required,
@@ -205,14 +211,17 @@ async def list_orders(
             total += subtotal
 
             c_name = item.stock_item.group_name if (item.stock_item and item.stock_item.group_name not in ("All", " Primary")) else None
+            item_name = item.stock_item.name if item.stock_item else (item.custom_item_name or "Custom Item")
             items_list.append({
                 "stock_item_id": item.stock_item_id,
-                "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
+                "custom_item_name": item.custom_item_name,
+                "stock_item_name": item_name,
                 "company_name": c_name,
                 "qty": item.qty,
                 "price": item.price,
                 "is_bill_required": item.is_bill_required,
                 "has_gst": item.is_bill_required,
+                "is_custom": bool(item.custom_item_name and not item.stock_item_id),
             })
 
         output.append({
@@ -254,14 +263,17 @@ async def list_all_orders(
             total += subtotal
 
             c_name = item.stock_item.group_name if (item.stock_item and item.stock_item.group_name not in ("All", " Primary")) else None
+            item_name = item.stock_item.name if item.stock_item else (item.custom_item_name or "Custom Item")
             items_list.append({
                 "stock_item_id": item.stock_item_id,
-                "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
+                "custom_item_name": item.custom_item_name,
+                "stock_item_name": item_name,
                 "company_name": c_name,
                 "qty": item.qty,
                 "price": item.price,
                 "is_bill_required": item.is_bill_required,
                 "has_gst": item.is_bill_required,
+                "is_custom": bool(item.custom_item_name and not item.stock_item_id),
             })
 
         output.append({
@@ -312,14 +324,17 @@ async def get_order(
         total += subtotal
 
         c_name = item.stock_item.group_name if (item.stock_item and item.stock_item.group_name not in ("All", " Primary")) else None
+        item_name = item.stock_item.name if item.stock_item else (item.custom_item_name or "Custom Item")
         items_list.append({
             "stock_item_id": item.stock_item_id,
-            "stock_item_name": item.stock_item.name if item.stock_item else "Unknown Item",
+            "custom_item_name": item.custom_item_name,
+            "stock_item_name": item_name,
             "company_name": c_name,
             "qty": item.qty,
             "price": item.price,
             "is_bill_required": item.is_bill_required,
             "has_gst": item.is_bill_required,
+            "is_custom": bool(item.custom_item_name and not item.stock_item_id),
         })
 
     return {
@@ -389,16 +404,21 @@ async def edit_order(
     await db.flush()
 
     for item in req.items:
-        stock_query = await db.execute(
-            select(MstStockItem).where(MstStockItem.stock_item_id == item.stock_item_id, MstStockItem.company_id == user.company_id)
-        )
-        stock = stock_query.scalars().first()
-        if not stock:
-            raise HTTPException(status_code=400, detail=f"Stock item {item.stock_item_id} not found")
+        if not item.stock_item_id and not (item.custom_item_name and item.custom_item_name.strip()):
+            raise HTTPException(status_code=400, detail="Each item must have either stock_item_id or custom_item_name.")
+
+        if item.stock_item_id:
+            stock_query = await db.execute(
+                select(MstStockItem).where(MstStockItem.stock_item_id == item.stock_item_id, MstStockItem.company_id == user.company_id)
+            )
+            stock = stock_query.scalars().first()
+            if not stock:
+                raise HTTPException(status_code=400, detail=f"Stock item {item.stock_item_id} not found")
 
         order_item = TempOrderItem(
             order_id=order.id,
             stock_item_id=item.stock_item_id,
+            custom_item_name=item.custom_item_name.strip()[:256] if item.custom_item_name else None,
             qty=item.qty,
             price=item.price,
             is_bill_required=item.bill_required,

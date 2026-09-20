@@ -16,18 +16,21 @@ import {
   ChevronRight, 
   ChevronLeft,
   Package,
-  AlertCircle
+  AlertCircle,
+  Sparkles
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface CartItem {
   cartItemId: string
-  stock_item_id: number
+  stock_item_id?: number | null
+  custom_item_name?: string
   name: string
   company_name?: string
   qty: number
   price: number
   is_bill_required: boolean
+  is_custom?: boolean
 }
 
 type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
@@ -88,6 +91,8 @@ export default function NewOrderPage() {
   // Step 2: Add Items
   const [productQuery, setProductQuery] = useState('')
   const [selectedProduct, setSelectedProduct] = useState<StockItem | null>(null)
+  const [isCustomProduct, setIsCustomProduct] = useState(false)
+  const [customProductName, setCustomProductName] = useState('')
   const [qty, setQty] = useState<number>(1)
   const [price, setPrice] = useState<number | ''>('')
   const [isBillRequired, setIsBillRequired] = useState(true)
@@ -167,9 +172,25 @@ export default function NewOrderPage() {
   const handleAddItem = () => {
     const errs: { product?: string; qty?: string; price?: string } = {}
 
-    if (!selectedProduct) {
-      errs.product = 'Please search and select a stock item'
+    let itemNameToAdd = ''
+    let isCustom = false
+    let stockItemId: number | null = null
+    let company: string | undefined = undefined
+
+    if (selectedProduct) {
+      itemNameToAdd = selectedProduct.name
+      stockItemId = selectedProduct.item_id
+      company = getCompanySuffix(selectedProduct)
+    } else if (isCustomProduct && customProductName.trim()) {
+      itemNameToAdd = customProductName.trim()
+      isCustom = true
+    } else if (productQuery.trim()) {
+      itemNameToAdd = productQuery.trim()
+      isCustom = true
+    } else {
+      errs.product = 'Please search or enter a stock item name'
     }
+
     if (!qty || qty <= 0) {
       errs.qty = 'Quantity must be at least 1'
     }
@@ -177,26 +198,29 @@ export default function NewOrderPage() {
       errs.price = 'Please enter a valid rate'
     }
 
-    if (!selectedProduct || !qty || qty <= 0 || price === '' || Number(price) <= 0) {
+    if (!itemNameToAdd || !qty || qty <= 0 || price === '' || Number(price) <= 0) {
       setItemErrors(errs)
       return
     }
 
     setItemErrors({})
-    const company = getCompanySuffix(selectedProduct)
     const newItem: CartItem = {
       cartItemId: Math.random().toString(36).substring(2, 9),
-      stock_item_id: selectedProduct.item_id,
-      name: selectedProduct.name,
+      stock_item_id: stockItemId,
+      custom_item_name: isCustom ? itemNameToAdd : undefined,
+      name: itemNameToAdd,
       company_name: company,
       qty,
       price: Number(price),
       is_bill_required: isBillRequired,
+      is_custom: isCustom,
     }
 
     setCart([...cart, newItem])
     setProductQuery('')
     setSelectedProduct(null)
+    setIsCustomProduct(false)
+    setCustomProductName('')
     setQty(1)
     setPrice('')
     setIsBillRequired(true)
@@ -232,7 +256,8 @@ export default function NewOrderPage() {
         ledger_id: isCustomShop ? null : selectedShop?.ledger_id,
         custom_customer_name: isCustomShop ? customShopName.trim() : null,
         items: cart.map(item => ({
-          stock_item_id: item.stock_item_id,
+          stock_item_id: item.stock_item_id || null,
+          custom_item_name: item.is_custom ? item.name : (item.custom_item_name || null),
           qty: item.qty,
           price: item.price,
           is_bill_required: item.is_bill_required
@@ -262,8 +287,26 @@ export default function NewOrderPage() {
     <div className="flex flex-col h-full bg-background font-sans">
       {/* Main Container */}
       <div className="flex-1 overflow-y-auto px-4 py-5 max-w-xl mx-auto w-full space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-extrabold text-foreground">Create Order</h1>
+        {/* Header with Back Button */}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== 'undefined' && window.history.length > 1) {
+                router.back()
+              } else {
+                router.push('/temporders')
+              }
+            }}
+            className="p-2 rounded-xl bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-colors cursor-pointer border border-border shrink-0"
+            title="Back to Orders"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <div>
+            <h1 className="text-xl font-extrabold text-foreground">Create Order</h1>
+            <p className="text-[11px] text-muted-foreground mt-0.5">Place a new temporary order for customer</p>
+          </div>
         </div>
         {/* Step Indicators */}
         <div className="flex items-center justify-between bg-card border border-border/80 rounded-2xl p-4 shadow-sm text-sm">
@@ -375,6 +418,19 @@ export default function NewOrderPage() {
             <div className="flex gap-2">
               <button
                 type="button"
+                onClick={() => {
+                  if (typeof window !== 'undefined' && window.history.length > 1) {
+                    router.back()
+                  } else {
+                    router.push('/temporders')
+                  }
+                }}
+                className="w-1/3 py-3 border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground font-bold rounded-xl text-sm transition-all text-center flex items-center justify-center gap-1 cursor-pointer"
+              >
+                <ArrowLeft className="h-4 w-4" /> Cancel
+              </button>
+              <button
+                type="button"
                 disabled={isCustomShop ? !customShopName.trim() : !selectedShop}
                 onClick={() => setStep(2)}
                 className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white font-bold rounded-xl text-sm transition-all active:scale-[0.98] shadow-md shadow-emerald-500/10 text-center flex items-center justify-center gap-1.5 cursor-pointer"
@@ -396,9 +452,16 @@ export default function NewOrderPage() {
                   {cart.map((item, idx) => (
                     <div key={item.cartItemId} className="flex justify-between items-center gap-4 text-xs bg-muted/20 border border-border/40 p-3 rounded-xl">
                       <div className="min-w-0">
-                        <span className="font-bold text-foreground block truncate">
-                          {formatProductNameWithCompany(item.name, item.company_name)}
-                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-foreground block truncate">
+                            {formatProductNameWithCompany(item.name, item.company_name)}
+                          </span>
+                          {item.is_custom && (
+                            <span className="px-1.5 py-0.2 text-[8px] font-extrabold uppercase tracking-wider bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded">
+                              Custom
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[10px] text-muted-foreground mt-0.5 block">
                           {item.qty} Qty @ {formatCurrency(item.price)}/ea •{' '}
                           {item.is_bill_required ? (
@@ -425,17 +488,29 @@ export default function NewOrderPage() {
             {/* Product Picker */}
             <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-4">
               <div className="space-y-1.5 relative" ref={productDropdownRef}>
-                <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Select stock item</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">
+                    Select or enter stock item
+                  </label>
+                  {isCustomProduct && (
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded">
+                      Custom Unlisted Item
+                    </span>
+                  )}
+                </div>
+
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <input
                     type="text"
-                    placeholder="Type product name to search..."
+                    placeholder="Type product name to search or enter custom item..."
                     value={productQuery}
                     onChange={e => {
-                      setProductQuery(e.target.value)
+                      const val = e.target.value
+                      setProductQuery(val)
                       setShowProductDropdown(true)
                       if (selectedProduct) setSelectedProduct(null)
+                      if (isCustomProduct) setCustomProductName(val)
                       if (itemErrors.product) setItemErrors(prev => ({ ...prev, product: undefined }))
                     }}
                     onFocus={() => setShowProductDropdown(true)}
@@ -453,52 +528,119 @@ export default function NewOrderPage() {
                 )}
 
                 {showProductDropdown && productQuery.trim().length >= 1 && (
-                  <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-xl shadow-lg max-h-56 overflow-y-auto divide-y divide-border/50">
+                  <div className="absolute z-50 w-full mt-1 bg-popover border border-border rounded-xl shadow-lg max-h-60 overflow-y-auto divide-y divide-border/50">
                     {filteredProducts.length === 0 ? (
-                      <p className="p-3 text-xs text-muted-foreground text-center">No products found</p>
+                      <div className="p-3.5 text-center space-y-2.5">
+                        <p className="text-xs text-muted-foreground font-medium">No matching products found in Tally.</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsCustomProduct(true)
+                            setCustomProductName(productQuery.trim())
+                            setSelectedProduct(null)
+                            setShowProductDropdown(false)
+                            setItemErrors(prev => ({ ...prev, product: undefined }))
+                          }}
+                          className="w-full py-2.5 px-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Plus className="h-4 w-4" />
+                          <span>Add &ldquo;{productQuery.trim()}&rdquo; as Custom / Unlisted Item</span>
+                        </button>
+                      </div>
                     ) : (
-                      filteredProducts.map(product => {
-                        const company = getCompanySuffix(product)
-                        const mapping = product.name ? getProductDetails(product.name, company || product.parent || '') : null
-                        const displayTitle = formatProductNameWithCompany(product.name, company)
-                        return (
+                      <>
+                        {filteredProducts.map(product => {
+                          const company = getCompanySuffix(product)
+                          const mapping = product.name ? getProductDetails(product.name, company || product.parent || '') : null
+                          const displayTitle = formatProductNameWithCompany(product.name, company)
+                          return (
+                            <button
+                              key={product.item_id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedProduct(product)
+                                setIsCustomProduct(false)
+                                setCustomProductName('')
+                                setProductQuery(displayTitle)
+                                setPrice('')
+                                setShowProductDropdown(false)
+                                setItemErrors(prev => ({ ...prev, product: undefined }))
+                              }}
+                              className="w-full text-left p-3 hover:bg-muted text-xs text-foreground flex flex-col gap-0.5 cursor-pointer"
+                            >
+                              <span className="font-semibold">{displayTitle}</span>
+                              {company ? (
+                                <span className="text-[10px] text-muted-foreground font-medium flex items-center gap-1.5">
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-muted text-foreground/80 font-semibold">{company}</span>
+                                  {product.uom && <span>• {product.uom}</span>}
+                                  {mapping?.subtitle && mapping.subtitle !== product.name && <span>• {mapping.subtitle}</span>}
+                                </span>
+                              ) : mapping && (
+                                <span className="text-[10px] text-muted-foreground font-medium">
+                                  {mapping.brand} • {mapping.subtitle}
+                                </span>
+                              )}
+                            </button>
+                          )
+                        })}
+
+                        <div className="p-2 bg-muted/30 border-t border-border/60">
                           <button
-                            key={product.item_id}
                             type="button"
                             onClick={() => {
-                              setSelectedProduct(product)
-                              setProductQuery(displayTitle)
-                              setPrice('')
+                              setIsCustomProduct(true)
+                              setCustomProductName(productQuery.trim())
+                              setSelectedProduct(null)
                               setShowProductDropdown(false)
                               setItemErrors(prev => ({ ...prev, product: undefined }))
                             }}
-                            className="w-full text-left p-3 hover:bg-muted text-xs text-foreground flex flex-col gap-0.5 cursor-pointer"
+                            className="w-full py-1.5 px-2.5 text-left text-xs font-bold text-primary hover:bg-muted rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
                           >
-                            <span className="font-semibold">{displayTitle}</span>
-                            {company ? (
-                              <span className="text-[10px] text-muted-foreground font-medium flex items-center gap-1.5">
-                                <span className="inline-block px-1.5 py-0.5 rounded bg-muted text-foreground/80 font-semibold">{company}</span>
-                                {product.uom && <span>• {product.uom}</span>}
-                                {mapping?.subtitle && mapping.subtitle !== product.name && <span>• {mapping.subtitle}</span>}
-                              </span>
-                            ) : mapping && (
-                              <span className="text-[10px] text-muted-foreground font-medium">
-                                {mapping.brand} • {mapping.subtitle}
-                              </span>
-                            )}
+                            <Plus className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                            <span className="truncate">Not in list? Add &ldquo;{productQuery.trim()}&rdquo; as custom item</span>
                           </button>
-                        )
-                      })
+                        </div>
+                      </>
                     )}
                   </div>
                 )}
 
-                {selectedProduct && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 p-2.5 rounded-xl text-xs flex items-center gap-1.5 mt-2">
-                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                    <span>Product: <strong>{formatProductNameWithCompany(selectedProduct.name, getCompanySuffix(selectedProduct))}</strong></span>
+                {selectedProduct ? (
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 p-2.5 rounded-xl text-xs flex items-center justify-between gap-1.5 mt-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">Product: <strong>{formatProductNameWithCompany(selectedProduct.name, getCompanySuffix(selectedProduct))}</strong></span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedProduct(null)
+                        setProductQuery('')
+                      }}
+                      className="text-xs text-muted-foreground hover:text-foreground font-semibold underline shrink-0 cursor-pointer"
+                    >
+                      Clear
+                    </button>
                   </div>
-                )}
+                ) : isCustomProduct && customProductName ? (
+                  <div className="bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 p-2.5 rounded-xl text-xs flex items-center justify-between gap-1.5 mt-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Sparkles className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                      <span className="truncate">Custom Item: <strong>{customProductName}</strong></span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCustomProduct(false)
+                        setCustomProductName('')
+                        setProductQuery('')
+                      }}
+                      className="text-xs text-muted-foreground hover:text-foreground font-semibold underline shrink-0 cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                ) : null}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -636,9 +778,16 @@ export default function NewOrderPage() {
                   {cart.map((item, idx) => (
                     <div key={idx} className="flex justify-between items-center text-xs">
                       <div className="min-w-0 pr-2">
-                        <span className="text-foreground font-medium truncate block">
-                          {formatProductNameWithCompany(item.name, item.company_name)}
-                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-foreground font-medium truncate block">
+                            {formatProductNameWithCompany(item.name, item.company_name)}
+                          </span>
+                          {item.is_custom && (
+                            <span className="px-1.5 py-0.2 text-[8px] font-extrabold uppercase tracking-wider bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded">
+                              Custom
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[10px]">
                           {item.is_bill_required ? (
                             <span className="text-emerald-600 dark:text-emerald-400 font-semibold">With Bill</span>

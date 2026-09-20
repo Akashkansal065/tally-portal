@@ -320,7 +320,8 @@ export async function generateVoucherPdf({
 
       if (isDiscount && safeInventory.length > 0) {
         const subtotalAmount = safeInventory.reduce((sum, item) => sum + Math.abs(parseFloat(String(item.amount || '0'))), 0)
-        const discRate = subtotalAmount > 0 ? Math.round((Math.abs(rawAmt) / subtotalAmount) * 100) : 0
+        const rawDiscRate = subtotalAmount > 0 ? (Math.abs(rawAmt) / subtotalAmount) * 100 : 0
+        const discRate = rawDiscRate > 0 ? parseFloat(rawDiscRate.toFixed(2)).toString() : '0'
         
         tableRows.push({
           type: 'ledger',

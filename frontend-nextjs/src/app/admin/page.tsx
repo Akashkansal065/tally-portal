@@ -10,6 +10,7 @@ import {
   RefreshCw,
   FileText,
   Trash2,
+  Edit2,
   CheckCircle,
   XCircle,
   ArrowLeft,
@@ -509,6 +510,18 @@ export default function AdminPage() {
   const [createUserError, setCreateUserError] = useState('')
   const [createUserLoading, setCreateUserLoading] = useState(false)
 
+  // Edit user form state
+  const [editUserModal, setEditUserModal] = useState<UserItem | null>(null)
+  const [editUserData, setEditUserData] = useState({
+    username: '',
+    email: '',
+    role_id: 2,
+    is_active: true,
+    password: '',
+  })
+  const [editUserError, setEditUserError] = useState('')
+  const [editUserLoading, setEditUserLoading] = useState(false)
+
   const fetchEinvSettings = useCallback(async () => {
     if (!token) return
     setEinvLoading(true)
@@ -930,6 +943,52 @@ export default function AdminPage() {
     }
   }
 
+  const openEditUser = (u: UserItem) => {
+    setEditUserModal(u)
+    setEditUserData({
+      username: u.username || '',
+      email: u.email || '',
+      role_id: u.role_id,
+      is_active: u.is_active,
+      password: '',
+    })
+    setEditUserError('')
+  }
+
+  const handleUpdateUser = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editUserModal) return
+    setEditUserError('')
+    setEditUserLoading(true)
+    try {
+      const payload: any = {
+        username: editUserData.username.trim(),
+        email: editUserData.email.trim(),
+        role_id: editUserData.role_id,
+        is_active: editUserData.is_active,
+      }
+      if (editUserData.password.trim()) {
+        payload.password = editUserData.password.trim()
+      }
+      const res = await fetch(`${API_BASE}/admin/users/${editUserModal.user_id}`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to update user details')
+      }
+      const data: UserItem = await res.json()
+      setUsers(users.map(u => u.user_id === data.user_id ? { ...u, ...data } : u))
+      setEditUserModal(null)
+    } catch (err: any) {
+      setEditUserError(err.message || 'Failed to update user details')
+    } finally {
+      setEditUserLoading(false)
+    }
+  }
+
 const handleSavePermissions = async () => {
     if (!showRoleEdit) return
     try {
@@ -1192,7 +1251,16 @@ const handleSavePermissions = async () => {
                             {(u.username || u.email).charAt(0).toUpperCase()}
                           </div>
                           <div className="min-w-0">
-                            <p className="font-extrabold text-sm text-foreground truncate">{u.username || u.email.split('@')[0]}</p>
+                            <div className="flex items-center gap-1.5">
+                              <p className="font-extrabold text-sm text-foreground truncate">{u.username || u.email.split('@')[0]}</p>
+                              <button
+                                onClick={() => openEditUser(u)}
+                                className="text-muted-foreground/60 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors p-0.5 rounded cursor-pointer shrink-0"
+                                title="Edit user details"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                            </div>
                             <p className="text-[11px] text-muted-foreground truncate">{u.email}</p>
                           </div>
                         </div>
@@ -1224,7 +1292,13 @@ const handleSavePermissions = async () => {
                         <span>{formatDate(u.created_at || '2026-06-02')}</span>
                       </div>
 
-                      <div className="flex items-center justify-end gap-2 pt-1">
+                      <div className="flex items-center justify-end gap-2 pt-1 flex-wrap">
+                        <button 
+                          onClick={() => openEditUser(u)}
+                          className="h-8 px-3 text-xs font-bold border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" /> Edit
+                        </button>
                         <button 
                           onClick={() => setPermissionsModalUser(u)}
                           className="h-8 px-3 text-xs font-bold border border-border/80 hover:bg-muted text-foreground rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
@@ -1246,6 +1320,7 @@ const handleSavePermissions = async () => {
                         <button
                           onClick={() => deleteUserItem(u)}
                           className="h-8 w-8 text-destructive/70 hover:text-destructive hover:bg-destructive/10 rounded-xl transition-all flex items-center justify-center cursor-pointer"
+                          title="Delete user"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -2505,6 +2580,151 @@ const handleSavePermissions = async () => {
                   className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-sm transition-all shadow-md disabled:opacity-70"
                 >
                   {createUserLoading ? 'Creating...' : 'Create Account'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit User Modal */}
+      {editUserModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-md rounded-3xl border border-border/80 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-6 py-5 border-b border-border flex justify-between items-center bg-muted/20">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold text-sm shrink-0 border border-emerald-500/20">
+                  <Edit2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-lg text-foreground">Edit User Details</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Update profile for <span className="font-bold text-foreground">{editUserModal.username || editUserModal.email}</span>
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setEditUserModal(null)}
+                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors cursor-pointer"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <form onSubmit={handleUpdateUser} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+              {editUserError && (
+                <div className="p-3 bg-destructive/10 text-destructive text-xs font-bold rounded-xl flex items-center gap-2 border border-destructive/20">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{editUserError}</span>
+                </div>
+              )}
+              
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Username / Full Name</label>
+                <input 
+                  type="text" 
+                  required
+                  value={editUserData.username}
+                  onChange={e => setEditUserData({ ...editUserData, username: e.target.value })}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium" 
+                  placeholder="e.g. Akash Kansal"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Email Address</label>
+                <input 
+                  type="email" 
+                  required
+                  value={editUserData.email}
+                  onChange={e => setEditUserData({ ...editUserData, email: e.target.value })}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium" 
+                  placeholder="name@example.com"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Assigned Role</label>
+                <select 
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  value={editUserData.role_id}
+                  onChange={e => setEditUserData({ ...editUserData, role_id: Number(e.target.value) })}
+                >
+                  {roles.map(r => (
+                    <option key={r.role_id} value={r.role_id}>
+                      {r.name} {r.description ? `— ${r.description}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Status Selector */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-foreground ml-1">Account Status</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditUserData({ ...editUserData, is_active: true })}
+                    className={cn(
+                      'py-2.5 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer',
+                      editUserData.is_active
+                        ? 'bg-emerald-500/15 border-emerald-500 text-emerald-600 dark:text-emerald-400 font-extrabold shadow-2xs'
+                        : 'border-border/80 bg-muted/30 text-muted-foreground hover:bg-muted'
+                    )}
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> Active
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditUserData({ ...editUserData, is_active: false })}
+                    className={cn(
+                      'py-2.5 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer',
+                      !editUserData.is_active
+                        ? 'bg-destructive/15 border-destructive text-destructive font-extrabold shadow-2xs'
+                        : 'border-border/80 bg-muted/30 text-muted-foreground hover:bg-muted'
+                    )}
+                  >
+                    <XCircle className="w-4 h-4" /> Disabled
+                  </button>
+                </div>
+              </div>
+
+              {/* Reset Password (Optional) */}
+              <div className="space-y-1.5 pt-2 border-t border-border/60">
+                <div className="flex items-center justify-between ml-1">
+                  <label className="text-xs font-bold text-foreground">Reset Password</label>
+                  <span className="text-[10px] text-muted-foreground font-semibold">Optional</span>
+                </div>
+                <input 
+                  type="password" 
+                  value={editUserData.password}
+                  onChange={e => setEditUserData({ ...editUserData, password: e.target.value })}
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium" 
+                  placeholder="Leave blank to keep current password"
+                />
+                <p className="text-[10px] text-muted-foreground ml-1">Minimum 6 characters if you wish to change the password.</p>
+              </div>
+
+              <div className="pt-3 flex gap-2">
+                <button 
+                  type="button"
+                  onClick={() => setEditUserModal(null)}
+                  className="flex-1 py-3 bg-muted hover:bg-muted/80 text-foreground font-bold rounded-xl text-sm transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit"
+                  disabled={editUserLoading}
+                  className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-sm transition-all shadow-md disabled:opacity-70 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {editUserLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Saving...
+                    </>
+                  ) : (
+                    'Save Changes'
+                  )}
                 </button>
               </div>
             </form>

@@ -380,6 +380,26 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
                 const amt = parseFloat(acc.amount || '0')
                 const ledgerName = acc.ledger_name || acc.ledger || ''
                 const isDebit = acc.entry_type === 'Debit' || (acc.debit_amount && parseFloat(acc.debit_amount) > 0) || amt < 0
+                const isDiscount = ledgerName.toUpperCase().includes('DISCOUNT')
+
+                if (isInventoryVoucher && isDiscount) {
+                  const totalInvAmount = processedInventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.amount || '0')), 0)
+                  const rawDiscRate = totalInvAmount > 0 ? (Math.abs(amt) / totalInvAmount) * 100 : 0
+                  const discRate = rawDiscRate > 0 ? parseFloat(rawDiscRate.toFixed(2)).toString() : '0'
+
+                  return (
+                    <div key={`mob-acc-${idx}`} className="p-3 flex justify-between items-center text-base">
+                      <span className="text-muted-foreground font-semibold">
+                        <span className="text-foreground font-extrabold">Less : </span>
+                        {ledgerName.toUpperCase()}
+                        <span className="ml-1.5 text-xs font-mono font-bold text-muted-foreground">(-{discRate}%)</span>
+                      </span>
+                      <span className="font-mono font-black text-foreground text-base sm:text-lg">
+                        (-)₹{Math.abs(amt).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  )
+                }
 
                 return (
                   <div key={`mob-acc-${idx}`} className="p-3 flex justify-between items-center text-base">
@@ -513,24 +533,20 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
 
               if (isInventoryVoucher && isDiscount) {
                 const totalInvAmount = processedInventory.reduce((sum, item) => sum + Math.abs(parseFloat(item.amount || '0')), 0)
-                const discRate = totalInvAmount > 0 ? Math.round((Math.abs(amt) / totalInvAmount) * 100) : 0
+                const rawDiscRate = totalInvAmount > 0 ? (Math.abs(amt) / totalInvAmount) * 100 : 0
+                const discRate = rawDiscRate > 0 ? parseFloat(rawDiscRate.toFixed(2)).toString() : '0'
 
                 return (
                   <tr key={`acc-${idx}`} className="hover:bg-muted/30 transition-colors">
-                    <td className="py-2 px-2 italic text-muted-foreground font-semibold" colSpan={3}>
+                    <td className="py-2 px-2 italic text-muted-foreground font-semibold" colSpan={6}>
                       <span className="text-foreground not-italic font-bold">
                         Less :
                       </span>{' '}
                       {ledgerName.toUpperCase()}
                     </td>
-                    <td className="py-2 text-center px-2 text-muted-foreground font-bold">
-                      %
-                    </td>
                     <td className="py-2 text-right px-2 font-mono text-foreground font-bold">
-                      (-){discRate}
+                      (-){discRate}%
                     </td>
-                    <td className="py-2 px-2"></td>
-                    <td className="py-2 px-2"></td>
                     <td className="py-2 px-2"></td>
                     <td className="py-2 text-right px-2 font-mono tabular-nums font-bold text-foreground">
                       (-){Math.abs(amt).toLocaleString('en-IN', { minimumFractionDigits: 2 })}

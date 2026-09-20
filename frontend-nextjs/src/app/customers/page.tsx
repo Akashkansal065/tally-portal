@@ -17,6 +17,7 @@ import {
   RefreshCw,
   ExternalLink,
   ShieldCheck,
+  ShieldAlert,
   AlertTriangle,
   Clock,
   Building,
@@ -146,7 +147,7 @@ export default function CustomersPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
-  // Filters & Search
+  // Filters & Search State
   const [search, setSearch] = useState('')
   const [selectedLocality, setSelectedLocality] = useState('all')
   const [selectedCity, setSelectedCity] = useState('all')
@@ -163,6 +164,89 @@ export default function CustomersPage() {
   const [isOffline, setIsOffline] = useState(false)
   const [offlineCachedAt, setOfflineCachedAt] = useState<string | null>(null)
   const [activeHealthCustomer, setActiveHealthCustomer] = useState<Customer | null>(null)
+  const [filtersLoaded, setFiltersLoaded] = useState(false)
+  const [accessDenied, setAccessDenied] = useState(false)
+
+  const FILTER_STORAGE_KEY = 'mytally_customer_filters_v1'
+  const SCROLL_STORAGE_KEY = 'mytally_customer_scroll_v1'
+
+  // 1. Restore applied filters from sessionStorage on mount so navigating back preserves filters
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(FILTER_STORAGE_KEY)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (typeof parsed.search === 'string') setSearch(parsed.search)
+        if (parsed.selectedLocality) setSelectedLocality(parsed.selectedLocality)
+        if (parsed.selectedCity) setSelectedCity(parsed.selectedCity)
+        if (parsed.selectedRoute) setSelectedRoute(parsed.selectedRoute)
+        if (parsed.locationFilter) setLocationFilter(parsed.locationFilter)
+        if (parsed.verificationFilter) setVerificationFilter(parsed.verificationFilter)
+        if (parsed.sortBy) setSortBy(parsed.sortBy)
+        if (parsed.myCoords !== undefined) setMyCoords(parsed.myCoords)
+        if (parsed.viewMode) setViewMode(parsed.viewMode)
+        if (parsed.selectedRadius !== undefined) setSelectedRadius(parsed.selectedRadius)
+        if (parsed.selectedRecency) setSelectedRecency(parsed.selectedRecency)
+        if (parsed.plannerRoute) setPlannerRoute(parsed.plannerRoute)
+      }
+    } catch (e) {
+      console.warn('[Customers] Failed to restore filter state:', e)
+    } finally {
+      setFiltersLoaded(true)
+    }
+  }, [])
+
+  // 2. Persist applied filters to sessionStorage whenever any filter changes
+  useEffect(() => {
+    if (!filtersLoaded) return
+    try {
+      const toSave = {
+        search,
+        selectedLocality,
+        selectedCity,
+        selectedRoute,
+        locationFilter,
+        verificationFilter,
+        sortBy,
+        myCoords,
+        viewMode,
+        selectedRadius,
+        selectedRecency,
+        plannerRoute,
+      }
+      sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(toSave))
+    } catch (e) {}
+  }, [
+    filtersLoaded,
+    search,
+    selectedLocality,
+    selectedCity,
+    selectedRoute,
+    locationFilter,
+    verificationFilter,
+    sortBy,
+    myCoords,
+    viewMode,
+    selectedRadius,
+    selectedRecency,
+    plannerRoute,
+  ])
+
+  // 3. Restore scroll position after returning from a customer profile
+  useEffect(() => {
+    if (!loading && customers.length > 0) {
+      try {
+        const savedScroll = sessionStorage.getItem(SCROLL_STORAGE_KEY)
+        if (savedScroll) {
+          const scrollY = parseInt(savedScroll, 10)
+          sessionStorage.removeItem(SCROLL_STORAGE_KEY)
+          setTimeout(() => {
+            window.scrollTo({ top: scrollY, behavior: 'instant' as any })
+          }, 60)
+        }
+      } catch {}
+    }
+  }, [loading, customers.length])
 
   // Offline network status tracking
   useEffect(() => {
@@ -296,7 +380,8 @@ export default function CustomersPage() {
     overrideSort: string = sortBy,
     overrideLocality: string = selectedLocality,
     overrideRadius: number | null = selectedRadius,
-    overrideRecency: string = selectedRecency
+    overrideRecency: string = selectedRecency,
+    overrideSearch: string = search
   ) => {
     if (!token) return
     if (isRefresh) setRefreshing(true)
@@ -308,9 +393,10 @@ export default function CustomersPage() {
       const activeLoc = overrideLocality !== undefined ? overrideLocality : selectedLocality
       const activeRadius = overrideRadius !== undefined ? overrideRadius : selectedRadius
       const activeRecency = overrideRecency !== undefined ? overrideRecency : selectedRecency
+      const activeSearch = overrideSearch !== undefined ? overrideSearch : search
 
       let url = `${API_BASE}/customers?location_status=${locationFilter}&sort_by=${activeSort}`
-      if (search) url += `&search=${encodeURIComponent(search)}`
+      if (activeSearch) url += `&search=${encodeURIComponent(activeSearch)}`
       if (activeLoc !== 'all') url += `&locality=${encodeURIComponent(activeLoc)}`
       if (selectedCity !== 'all') url += `&city=${encodeURIComponent(selectedCity)}`
       if (selectedRoute !== 'all') url += `&route_name=${encodeURIComponent(selectedRoute)}`
@@ -337,6 +423,10 @@ export default function CustomersPage() {
         // Save fresh directory snapshot to local offline storage
         saveOfflineDirectory({ customers: custList })
         setOfflineCachedAt(null)
+      } else if (res.status === 403) {
+        setAccessDenied(true)
+        setCustomers([])
+        return
       } else {
         throw new Error(`Server returned ${res.status}`)
       }
@@ -354,10 +444,61 @@ export default function CustomersPage() {
     }
   }
 
+  // Scroll & Navigation helper to preserve scroll position when opening customer
+  const saveScrollPos = () => {
+    try {
+      sessionStorage.setItem(SCROLL_STORAGE_KEY, window.scrollY.toString())
+    } catch {}
+  }
+
+  const navigateToCustomer = (custKey: string) => {
+    saveScrollPos()
+    router.push(`/customers/${custKey}`)
+  }
+
+  // Clear search and immediately re-fetch full list
+  const handleClearSearch = () => {
+    setSearch('')
+    fetchCustomers(false, myCoords, sortBy, selectedLocality, selectedRadius, selectedRecency, '')
+  }
+
+  // Reset all filters, clear persisted session state, and fetch fresh list
+  const handleResetAllFilters = () => {
+    setSearch('')
+    setSelectedLocality('all')
+    setSelectedCity('all')
+    setSelectedRoute('all')
+    setLocationFilter('all')
+    setVerificationFilter('all')
+    setSelectedRadius(null)
+    setSelectedRecency('all')
+    setSortBy('name_asc')
+    setMyCoords(null)
+    setPlannerRoute('all')
+    try {
+      sessionStorage.removeItem(FILTER_STORAGE_KEY)
+      sessionStorage.removeItem(SCROLL_STORAGE_KEY)
+    } catch {}
+    fetchCustomers(false, null, 'name_asc', 'all', null, 'all', '')
+  }
+
   useEffect(() => {
+    if (!filtersLoaded) return
     fetchCustomers()
     fetchLocalities()
-  }, [token, locationFilter, selectedLocality, selectedCity, selectedRoute, verificationFilter, sortBy, myCoords, selectedRadius, selectedRecency])
+  }, [
+    filtersLoaded,
+    token,
+    locationFilter,
+    selectedLocality,
+    selectedCity,
+    selectedRoute,
+    verificationFilter,
+    sortBy,
+    myCoords,
+    selectedRadius,
+    selectedRecency,
+  ])
 
   // Handle sort change with auto-GPS trigger if nearest is chosen
   const handleSortChange = (newSort: string) => {
@@ -953,6 +1094,31 @@ export default function CustomersPage() {
         </div>
       )}
 
+      {/* Access Denied Banner */}
+      {accessDenied && (
+        <div className="max-w-xl mx-auto my-16 p-8 bg-card border border-border rounded-3xl text-center space-y-4 shadow-sm">
+          <div className="w-12 h-12 rounded-2xl bg-destructive/10 text-destructive flex items-center justify-center mx-auto">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="font-black text-lg text-foreground">Access Restricted</h3>
+            <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+              You do not have permission to view the Customer Directory. Please contact your administrator to grant access to customer profiles or sales operations.
+            </p>
+          </div>
+          <Link
+            href="/"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground font-bold text-xs hover:opacity-90 transition-opacity shadow-sm"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Return to Dashboard
+          </Link>
+        </div>
+      )}
+
+      {!accessDenied && (
+        <>
+
       {/* Hero Header Section */}
       <div className="bg-card border-b border-border shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -1216,9 +1382,7 @@ export default function CustomersPage() {
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
-          </div>
-
-          {/* 2. SEARCH & CONTROLS ROW */}
+          </div>          {/* 2. SEARCH & CONTROLS ROW */}
           <div className="p-4 space-y-3">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               {/* Main search input */}
@@ -1235,7 +1399,7 @@ export default function CustomersPage() {
                   {search && (
                     <button
                       type="button"
-                      onClick={() => setSearch('')}
+                      onClick={handleClearSearch}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     >
                       <X className="w-4 h-4" />
@@ -1506,26 +1670,13 @@ export default function CustomersPage() {
                   </select>
                   <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground text-[10px]">▼</div>
                 </div>
-
-                {/* Recalibrate GPS button */}
-                {myCoords && (
-                  <button
-                    type="button"
-                    onClick={handleGetLocation}
-                    disabled={geoLocating}
-                    className="p-1.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 transition-all"
-                    title={`Recalibrate GPS (${myCoords.lat.toFixed(4)}, ${myCoords.lon.toFixed(4)})`}
-                  >
-                    <RefreshCw className={cn('w-3.5 h-3.5', geoLocating && 'animate-spin')} />
-                  </button>
-                )}
               </div>
             </div>
 
           </div>
 
           {/* 4. ACTIVE FILTER BADGES BAR */}
-          {(selectedLocality !== 'all' || selectedCity !== 'all' || selectedRoute !== 'all' || verificationFilter !== 'all' || selectedRadius !== null || selectedRecency !== 'all' || sortBy !== 'name_asc' || search || myCoords) && (
+          {(selectedLocality !== 'all' || selectedCity !== 'all' || selectedRoute !== 'all' || locationFilter !== 'all' || verificationFilter !== 'all' || selectedRadius !== null || selectedRecency !== 'all' || sortBy !== 'name_asc' || search || myCoords) && (
             <div className="flex items-center justify-between text-xs bg-muted/30 px-4 py-2 text-muted-foreground">
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="font-semibold text-foreground">Active:</span>
@@ -1544,6 +1695,33 @@ export default function CustomersPage() {
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-secondary text-secondary-foreground font-semibold hover:bg-muted transition-colors"
                   >
                     <span>🏙️ {selectedCity}</span>
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                {selectedRoute !== 'all' && (
+                  <button
+                    onClick={() => setSelectedRoute('all')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-secondary text-secondary-foreground font-semibold hover:bg-muted transition-colors"
+                  >
+                    <span>🛣️ Route: {selectedRoute}</span>
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                {locationFilter !== 'all' && (
+                  <button
+                    onClick={() => setLocationFilter('all')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-primary/10 text-primary font-semibold hover:bg-primary/20 transition-colors"
+                  >
+                    <span>{locationFilter === 'tagged' ? '📍 GPS Tagged' : '⚠️ Missing Location'}</span>
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                {verificationFilter !== 'all' && (
+                  <button
+                    onClick={() => setVerificationFilter('all')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300 font-semibold hover:bg-amber-500/25 transition-colors"
+                  >
+                    <span>🛡️ Audit: {verificationFilter}</span>
                     <X className="w-3 h-3" />
                   </button>
                 )}
@@ -1577,14 +1755,25 @@ export default function CustomersPage() {
                   </button>
                 )}
                 {myCoords && (
-                  <span className="text-[11px] text-emerald-600 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-lg font-mono flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMyCoords(null)
+                      if (sortBy === 'nearest') {
+                        setSortBy('name_asc')
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-lg font-mono hover:bg-emerald-500/20 transition-colors"
+                    title="Click to clear GPS coordinates"
+                  >
                     <Compass className="w-3 h-3" />
-                    GPS: {myCoords.lat.toFixed(3)}°, {myCoords.lon.toFixed(3)}°
-                  </span>
+                    <span>GPS: {myCoords.lat.toFixed(3)}°, {myCoords.lon.toFixed(3)}°</span>
+                    <X className="w-3 h-3 ml-0.5" />
+                  </button>
                 )}
                 {search && (
                   <button
-                    onClick={() => setSearch('')}
+                    onClick={handleClearSearch}
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-muted text-foreground font-medium hover:bg-muted/80 transition-colors"
                   >
                     <span>Search: &quot;{search}&quot;</span>
@@ -1595,16 +1784,7 @@ export default function CustomersPage() {
 
               <button
                 type="button"
-                onClick={() => {
-                  setSelectedLocality('all')
-                  setSelectedCity('all')
-                  setSelectedRoute('all')
-                  setVerificationFilter('all')
-                  setSelectedRadius(null)
-                  setSelectedRecency('all')
-                  setSortBy('name_asc')
-                  setSearch('')
-                }}
+                onClick={handleResetAllFilters}
                 className="text-primary hover:underline font-semibold flex items-center gap-1 ml-2 flex-shrink-0 text-xs"
               >
                 <X className="w-3.5 h-3.5" />
@@ -1632,14 +1812,7 @@ export default function CustomersPage() {
                 No customers match your current search or filter criteria. Try clearing the filters or add a new customer.
               </p>
               <button
-                onClick={() => {
-                  setSearch('')
-                  setSelectedLocality('all')
-                  setSelectedCity('all')
-                  setSelectedRoute('all')
-                  setLocationFilter('all')
-                  setVerificationFilter('all')
-                }}
+                onClick={handleResetAllFilters}
                 className="mt-4 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-xs font-semibold"
               >
                 Reset All Filters
@@ -1699,7 +1872,7 @@ export default function CustomersPage() {
                           if (target && target.closest('button, a, input, select, textarea')) {
                             return
                           }
-                          router.push(`/customers/${cust.key}`)
+                          navigateToCustomer(cust.key)
                         }}
                         className="hover:bg-muted/40 transition-colors group cursor-pointer"
                       >
@@ -1707,7 +1880,10 @@ export default function CustomersPage() {
                         <td className="w-[26%] py-3 px-3.5 align-top break-words whitespace-normal">
                           <Link
                             href={`/customers/${cust.key}`}
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              saveScrollPos()
+                            }}
                             className="font-bold text-sm text-foreground group-hover:text-primary transition-colors hover:underline break-words whitespace-normal block"
                           >
                             {cust.name}
@@ -1844,8 +2020,11 @@ export default function CustomersPage() {
                             </a>
 
                             <Link
-                              href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
-                              onClick={(e) => e.stopPropagation()}
+                              href={`/check-in?${cust.ledger_id ? `ledger_id=${cust.ledger_id}` : `profile_id=${cust.profile_id}`}&name=${encodeURIComponent(cust.name)}`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                saveScrollPos()
+                              }}
                               className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors text-xs font-semibold shrink-0"
                               title="1-Tap Check-In at this shop"
                             >
@@ -1866,7 +2045,10 @@ export default function CustomersPage() {
 
                             <Link
                               href={`/customers/${cust.key}`}
-                              onClick={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                saveScrollPos()
+                              }}
                               className="p-1.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-colors shrink-0"
                               title="View full customer profile & photos"
                             >
@@ -1930,7 +2112,7 @@ export default function CustomersPage() {
                       if (target && target.closest('button, a, input, select, textarea')) {
                         return
                       }
-                      router.push(`/customers/${cust.key}`)
+                      navigateToCustomer(cust.key)
                     }}
                     className="p-3.5 space-y-2 hover:bg-muted/50 transition-colors even:bg-primary/5 dark:even:bg-primary/10 cursor-pointer select-none"
                   >
@@ -1939,7 +2121,10 @@ export default function CustomersPage() {
                       <div>
                         <Link
                           href={`/customers/${cust.key}`}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            saveScrollPos()
+                          }}
                           className="font-bold text-sm text-foreground hover:text-primary transition-colors line-clamp-1 flex items-center gap-1.5"
                         >
                           <span>{cust.name}</span>
@@ -2026,8 +2211,11 @@ export default function CustomersPage() {
                           <span>Navigate</span>
                         </a>
                         <Link
-                          href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
-                          onClick={(e) => e.stopPropagation()}
+                          href={`/check-in?${cust.ledger_id ? `ledger_id=${cust.ledger_id}` : `profile_id=${cust.profile_id}`}&name=${encodeURIComponent(cust.name)}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            saveScrollPos()
+                          }}
                           className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 text-xs font-bold"
                           title="1-Tap Check In"
                         >
@@ -2036,7 +2224,10 @@ export default function CustomersPage() {
                         </Link>
                         <Link
                           href={`/customers/${cust.key}`}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            saveScrollPos()
+                          }}
                           className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-primary hover:bg-muted/50 transition-colors"
                           title="View 360° Profile & Photos"
                         >
@@ -2206,7 +2397,7 @@ export default function CustomersPage() {
                         if (target && target.closest('button, a, input, select, textarea')) {
                           return
                         }
-                        router.push(`/customers/${cust.key}`)
+                        navigateToCustomer(cust.key)
                       }}
                       className={cn(
                         'bg-card border rounded-2xl p-4 sm:p-5 shadow-sm transition-all hover:shadow-md relative overflow-hidden group cursor-pointer',
@@ -2232,7 +2423,10 @@ export default function CustomersPage() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <Link
                                 href={`/customers/${cust.key}`}
-                                onClick={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  saveScrollPos()
+                                }}
                                 className="font-bold text-base text-foreground hover:text-primary transition-colors hover:underline"
                               >
                                 {cust.name}
@@ -2297,8 +2491,11 @@ export default function CustomersPage() {
 
                           {/* 1-Tap Check In */}
                           <Link
-                            href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
-                            onClick={(e) => e.stopPropagation()}
+                            href={`/check-in?${cust.ledger_id ? `ledger_id=${cust.ledger_id}` : `profile_id=${cust.profile_id}`}&name=${encodeURIComponent(cust.name)}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              saveScrollPos()
+                            }}
                             className={cn(
                               'inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border shadow-sm transition-all',
                               cust.visit_recency_category === 'today'
@@ -2339,7 +2536,10 @@ export default function CustomersPage() {
                           {/* Profile */}
                           <Link
                             href={`/customers/${cust.key}`}
-                            onClick={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              saveScrollPos()
+                            }}
                             className="p-2 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
                             title="View Full Profile"
                           >
@@ -2363,7 +2563,7 @@ export default function CustomersPage() {
                     if (target && target.closest('button, a, input, select, textarea')) {
                       return
                     }
-                    router.push(`/customers/${cust.key}`)
+                    navigateToCustomer(cust.key)
                   }}
                   className="bg-card border border-border rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-all flex flex-col justify-between group hover:border-primary/40 relative overflow-hidden cursor-pointer"
                 >
@@ -2373,7 +2573,10 @@ export default function CustomersPage() {
                       <div>
                         <Link
                           href={`/customers/${cust.key}`}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            saveScrollPos()
+                          }}
                           className="font-bold text-base sm:text-lg text-foreground hover:text-primary transition-colors line-clamp-1 block"
                         >
                           {cust.name}
@@ -2509,8 +2712,11 @@ export default function CustomersPage() {
 
                     {/* 1-Tap Check-In */}
                     <Link
-                      href={cust.ledger_id ? `/check-in?ledger_id=${cust.ledger_id}` : `/check-in?profile_id=${cust.profile_id}&name=${encodeURIComponent(cust.name)}`}
-                      onClick={(e) => e.stopPropagation()}
+                      href={`/check-in?${cust.ledger_id ? `ledger_id=${cust.ledger_id}` : `profile_id=${cust.profile_id}`}&name=${encodeURIComponent(cust.name)}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        saveScrollPos()
+                      }}
                       className="p-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 transition-colors flex items-center justify-center"
                       title="1-Tap Check In at this shop"
                     >
@@ -2520,7 +2726,10 @@ export default function CustomersPage() {
                     {/* View Profile */}
                     <Link
                       href={`/customers/${cust.key}`}
-                      onClick={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        saveScrollPos()
+                      }}
                       className="p-2 rounded-xl border border-border hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
                       title="View 360° Profile & Photos"
                     >
@@ -3597,6 +3806,9 @@ export default function CustomersPage() {
             <div className="flex items-center justify-between pt-2 border-t border-border">
               <Link
                 href={`/customers/${activeHealthCustomer.key}`}
+                onClick={() => {
+                  saveScrollPos()
+                }}
                 className="text-xs text-primary font-semibold hover:underline flex items-center gap-1"
               >
                 <span>View 360° Profile</span>
@@ -3629,6 +3841,8 @@ export default function CustomersPage() {
           <option key={r} value={r} />
         ))}
       </datalist>
+      </>
+      )}
     </div>
   )
 }

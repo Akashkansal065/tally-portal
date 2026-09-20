@@ -50,6 +50,7 @@ export default function CheckInPage() {
   // Form state
   const [selectedLedger, setSelectedLedger] = useState('')
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null)
+  const [selectedShopName, setSelectedShopName] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [isOpen, setIsOpen] = useState(false)
   const [customShop, setCustomShop] = useState('')
@@ -72,22 +73,47 @@ export default function CheckInPage() {
     if (qLedger) {
       setSelectedLedger(qLedger)
       setSelectedProfileId(null)
-      if (qName) setSearchQuery(qName)
+      if (qName) {
+        setSelectedShopName(qName)
+        setSearchQuery(qName)
+      }
     } else if (qProfile) {
       setSelectedProfileId(parseInt(qProfile))
       setSelectedLedger('')
       if (qName) {
+        setSelectedShopName(qName)
         setSearchQuery(qName)
         setCustomShop(qName)
       }
     }
   }, [searchParams])
 
+  // Sync shop name from loaded shops list when ledger_id or profile_id is active
   useEffect(() => {
-    if (selectedLedger === '' && !selectedProfileId) {
-      setSearchQuery('')
+    if (selectedLedger && shops.length > 0) {
+      const found = shops.find(s => String(s.ledger_id) === String(selectedLedger))
+      if (found) {
+        const formatted = toTitleCase(found.name)
+        setSelectedShopName(formatted)
+        setSearchQuery(formatted)
+      }
+    } else if (selectedProfileId && shops.length > 0) {
+      const found = shops.find(s => s.profile_id === selectedProfileId)
+      if (found) {
+        const formatted = toTitleCase(found.name)
+        setSelectedShopName(formatted)
+        setSearchQuery(formatted)
+      }
     }
-  }, [selectedLedger, selectedProfileId])
+  }, [selectedLedger, selectedProfileId, shops])
+
+  const handleClearSelection = () => {
+    setSelectedLedger('')
+    setSelectedProfileId(null)
+    setSelectedShopName('')
+    setSearchQuery('')
+    setCustomShop('')
+  }
 
   // Monitor offline queue & online synchronization
   useEffect(() => {
@@ -206,7 +232,7 @@ export default function CheckInPage() {
     const payload = {
       ledger_id: selectedLedger ? parseInt(selectedLedger) : null,
       customer_profile_id: selectedProfileId || null,
-      custom_shop_name: customShop || searchQuery || null,
+      custom_shop_name: customShop || selectedShopName || searchQuery || null,
       latitude: coords?.lat || 0,
       longitude: coords?.lng || 0,
       comments,
@@ -217,13 +243,11 @@ export default function CheckInPage() {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       queueOfflineCheckIn({
         ...payload,
-        shop_name: searchQuery || customShop || 'Customer Shop',
+        shop_name: selectedShopName || searchQuery || customShop || 'Customer Shop',
       })
       setPendingCheckIns(getPendingCheckIns())
       setSuccess('✓ You are offline. Check-in saved locally and will auto-sync when network returns!')
-      setSelectedLedger('')
-      setSelectedProfileId(null)
-      setCustomShop('')
+      handleClearSelection()
       setComments('')
       setPhoto(null)
       setCoords(null)
@@ -253,9 +277,7 @@ export default function CheckInPage() {
         setSuccess('✓ Check-in recorded successfully!')
       }
 
-      setSelectedLedger('')
-      setSelectedProfileId(null)
-      setCustomShop('')
+      handleClearSelection()
       setComments('')
       setPhoto(null)
       setCoords(null)
@@ -358,11 +380,13 @@ export default function CheckInPage() {
               placeholder="Search customer shop name..."
               value={searchQuery}
               onChange={e => {
-                setSearchQuery(e.target.value)
+                const val = e.target.value
+                setSearchQuery(val)
                 setIsOpen(true)
-                if (e.target.value === '') {
+                if (val === '') {
                   setSelectedLedger('')
                   setSelectedProfileId(null)
+                  setSelectedShopName('')
                 }
               }}
               onFocus={() => setIsOpen(true)}
@@ -387,7 +411,9 @@ export default function CheckInPage() {
                             setSelectedProfileId(s.profile_id)
                             setSelectedLedger('')
                           }
-                          setSearchQuery(toTitleCase(s.name))
+                          const formatted = toTitleCase(s.name)
+                          setSelectedShopName(formatted)
+                          setSearchQuery(formatted)
                           setIsOpen(false)
                         }}
                         className="w-full text-left px-4 py-3 text-xs font-bold hover:bg-muted text-foreground transition-colors flex items-center justify-between"
@@ -408,10 +434,22 @@ export default function CheckInPage() {
               </>
             )}
 
-            {(selectedLedger || selectedProfileId) && (
-              <div className="bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400 p-2.5 rounded-xl text-xs flex items-center gap-1.5 mt-2">
-                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                <span>Selected: <strong>{searchQuery}</strong></span>
+            {(selectedLedger || selectedProfileId || selectedShopName) && (
+              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 p-2.5 rounded-xl text-xs flex items-center justify-between gap-2 mt-2 shadow-2xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <span className="truncate">
+                    Selected: <strong>{selectedShopName || searchQuery || searchParams.get('name') || 'Customer Shop'}</strong>
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearSelection}
+                  className="p-1 hover:bg-emerald-500/20 rounded-lg text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                  title="Clear selection"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
             )}
           </div>

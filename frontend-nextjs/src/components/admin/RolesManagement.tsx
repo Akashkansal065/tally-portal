@@ -54,6 +54,13 @@ interface RolesManagementProps {
   onPermissionsSaved?: () => void
 }
 
+const CUSTOMER_TAB_BADGES: Record<string, { label: string; className: string }> = {
+  customers: { label: 'Customer Tab 1: Store', className: 'bg-primary/10 text-primary border-primary/20' },
+  ledger_customer: { label: 'Customer Tab 2: Ledger', className: 'bg-blue-500/10 text-blue-600 border-blue-500/20' },
+  orders: { label: 'Customer Tab 3: Orders', className: 'bg-amber-500/10 text-amber-600 border-amber-500/20' },
+  visits: { label: 'Customer Tab 4: Visits', className: 'bg-purple-500/10 text-purple-600 border-purple-500/20' },
+}
+
 const MODULE_GROUPS = [
   {
     id: 'accounting',
@@ -700,11 +707,19 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                           >
                             {/* Left: Module Info */}
                             <div className="space-y-0.5 max-w-md">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-bold text-xs text-foreground">{mod.name}</span>
                                 <code className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono">
                                   {mod.code}
                                 </code>
+                                {CUSTOMER_TAB_BADGES[mod.code.toLowerCase()] && (
+                                  <span className={cn(
+                                    "text-[10px] font-extrabold px-2 py-0.5 rounded-full border shadow-2xs whitespace-nowrap",
+                                    CUSTOMER_TAB_BADGES[mod.code.toLowerCase()].className
+                                  )}>
+                                    {CUSTOMER_TAB_BADGES[mod.code.toLowerCase()].label}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-[11px] text-muted-foreground leading-relaxed">
                                 {mod.description || 'Feature access and management control.'}

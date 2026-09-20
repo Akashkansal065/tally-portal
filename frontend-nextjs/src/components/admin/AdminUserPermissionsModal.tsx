@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Landmark, Layers, BarChart3, Laptop, User, Users, Shield, Ban, CheckCircle2, MapPin, Receipt, Wallet, KeyRound, Eye, EyeOff, Clock, FileSpreadsheet } from "lucide-react";
+import { Landmark, Layers, BarChart3, Laptop, User, Users, Shield, Ban, CheckCircle2, MapPin, Receipt, Wallet, KeyRound, Eye, EyeOff, Clock, FileSpreadsheet, Store, ShoppingCart } from "lucide-react";
 
 const ALL_REPORT_CATEGORIES = [
   "Accounting Reports",
@@ -244,20 +244,119 @@ export function AdminUserPermissionsModal({
             </p>
           </div>
 
-          {/* Module 1: Show Ledger */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
+          {/* Section: Customer Profile 4 Tabs Access */}
+          <div className="bg-gradient-to-br from-emerald-500/10 via-muted/20 to-primary/5 p-4 rounded-xl border border-emerald-500/25 space-y-3.5 shadow-2xs">
+            <div className="flex items-center justify-between border-b border-border pb-2.5">
               <div className="flex items-center gap-2">
-                <Landmark className={`h-4 w-4 ${user.showSalesLedgers ? "text-primary" : "text-muted-foreground"}`} />
-                <Label htmlFor="sales-ledger-module" className="text-sm font-semibold cursor-pointer">Show Sales Ledgers (Debtors)</Label>
+                <div className="w-7 h-7 rounded-lg bg-emerald-500/15 text-emerald-600 flex items-center justify-center">
+                  <Store className="h-4 w-4" />
+                </div>
+                <div>
+                  <Label className="text-sm font-bold text-foreground block">Customer Profile Tabs (4 Tabs)</Label>
+                  <p className="text-[11px] text-muted-foreground">Permissions for 360° customer profile pages</p>
+                </div>
               </div>
-              <Switch
-                id="sales-ledger-module"
-                checked={user.showSalesLedgers}
-                onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showSalesLedgers", checked)}
-                disabled={isPending}
-              />
+              <Badge variant="outline" className="text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-600 border-emerald-500/30">
+                /customers/[id]
+              </Badge>
             </div>
+
+            <div className="space-y-2.5">
+              {/* Tab 1: Store & Partners */}
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-background/80 border border-border/80 hover:border-emerald-500/40 transition-colors">
+                <div className="space-y-0.5 pr-2">
+                  <div className="flex items-center gap-2">
+                    <Store className="h-3.5 w-3.5 text-primary shrink-0" />
+                    <Label htmlFor="tab-store-toggle" className="text-xs font-bold text-foreground cursor-pointer">
+                      Tab 1: Store & Partners
+                    </Label>
+                    <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-extrabold bg-primary/10 text-primary">Store</Badge>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Store details, partners/contacts, phone numbers, GPS map pin & shop photos
+                  </p>
+                </div>
+                <Switch
+                  id="tab-store-toggle"
+                  checked={user.showCustomers !== false}
+                  onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showCustomers", checked)}
+                  disabled={isPending}
+                />
+              </div>
+
+              {/* Tab 2: Ledger Statement */}
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-background/80 border border-border/80 hover:border-emerald-500/40 transition-colors">
+                <div className="space-y-0.5 pr-2">
+                  <div className="flex items-center gap-2">
+                    <Receipt className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                    <Label htmlFor="tab-ledger-toggle" className="text-xs font-bold text-foreground cursor-pointer">
+                      Tab 2: Ledger Statement
+                    </Label>
+                    <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-extrabold bg-blue-500/10 text-blue-600">Ledger</Badge>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Debtor ledger statement, closing balance, Dr/Cr transactions & WhatsApp share
+                  </p>
+                </div>
+                <Switch
+                  id="tab-ledger-toggle"
+                  checked={user.showSalesLedgers}
+                  onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showSalesLedgers", checked)}
+                  disabled={isPending}
+                />
+              </div>
+
+              {/* Tab 3: Order History */}
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-background/80 border border-border/80 hover:border-emerald-500/40 transition-colors">
+                <div className="space-y-0.5 pr-2">
+                  <div className="flex items-center gap-2">
+                    <ShoppingCart className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                    <Label htmlFor="tab-orders-toggle" className="text-xs font-bold text-foreground cursor-pointer">
+                      Tab 3: Order History
+                    </Label>
+                    <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-extrabold bg-amber-500/10 text-amber-600">Orders</Badge>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Sales orders placed for this customer and line-item breakdowns
+                  </p>
+                </div>
+                <Switch
+                  id="tab-orders-toggle"
+                  checked={user.showOrders}
+                  onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showOrders", checked)}
+                  disabled={isPending}
+                />
+              </div>
+
+              {/* Tab 4: Field Visits */}
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-background/80 border border-border/80 hover:border-emerald-500/40 transition-colors">
+                <div className="space-y-0.5 pr-2">
+                  <div className="flex items-center gap-2">
+                    <Clock className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                    <Label htmlFor="tab-visits-toggle" className="text-xs font-bold text-foreground cursor-pointer">
+                      Tab 4: Field Visits
+                    </Label>
+                    <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-extrabold bg-emerald-500/10 text-emerald-600">Visits</Badge>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Salesperson shop GPS check-ins, timestamps & visit camera snapshots
+                  </p>
+                </div>
+                <Switch
+                  id="tab-visits-toggle"
+                  checked={user.showCheckIn}
+                  onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showCheckIn", checked)}
+                  disabled={isPending}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section: Accounting & Other Ledgers */}
+          <div className="space-y-3 border-t pt-4">
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block">
+              General Accounting & Vouchers
+            </Label>
 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -299,8 +398,8 @@ export function AdminUserPermissionsModal({
             </div>
 
             {(user.showSalesLedgers || user.showPurchaseLedgers) && (
-              <div className="pl-6 space-y-2">
-                <Label className="text-xs font-semibold text-muted-foreground">Ledger Scope</Label>
+              <div className="pl-6 space-y-2 pt-1">
+                <Label className="text-xs font-semibold text-muted-foreground">Ledger Balance Scope</Label>
                 <select
                   value={user.ledgerScope || "dr_only"}
                   onChange={(e) => onScopeChange(user.id, "ledgerScope", e.target.value)}
@@ -323,12 +422,12 @@ export function AdminUserPermissionsModal({
             )}
           </div>
 
-          {/* Module 2: Show Stocks */}
+          {/* Section: Stocks & Inventory */}
           <div className="space-y-3 border-t pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Layers className={`h-4 w-4 ${user.showStocks ? "text-primary" : "text-muted-foreground"}`} />
-                <Label htmlFor="stock-module" className="text-sm font-semibold cursor-pointer">Show Stocks</Label>
+                <Label htmlFor="stock-module" className="text-sm font-semibold cursor-pointer">Show Stocks & Inventory</Label>
               </div>
               <Switch
                 id="stock-module"
@@ -360,12 +459,12 @@ export function AdminUserPermissionsModal({
             )}
           </div>
 
-          {/* Module 3: Show Reports */}
+          {/* Section: Reports */}
           <div className="space-y-3 border-t pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <BarChart3 className={`h-4 w-4 ${user.showReports ? "text-primary" : "text-muted-foreground"}`} />
-                <Label htmlFor="reports-module" className="text-sm font-semibold cursor-pointer">Show Reports</Label>
+                <Label htmlFor="reports-module" className="text-sm font-semibold cursor-pointer">Show Financial Reports</Label>
               </div>
               <Switch
                 id="reports-module"
@@ -386,56 +485,12 @@ export function AdminUserPermissionsModal({
             )}
           </div>
 
-          {/* Module 4: Show Orders */}
+          {/* Section: Operations, Expenses & Compliance */}
           <div className="space-y-3 border-t pt-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Laptop className={`h-4 w-4 ${user.showOrders ? "text-primary" : "text-muted-foreground"}`} />
-                <Label htmlFor="orders-module" className="text-sm font-semibold cursor-pointer">Show Orders</Label>
-              </div>
-              <Switch
-                id="orders-module"
-                checked={user.showOrders}
-                onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showOrders", checked)}
-                disabled={isPending}
-              />
-            </div>
-          </div>
+            <Label className="text-xs font-bold uppercase tracking-wider text-muted-foreground block">
+              Operations & Compliance
+            </Label>
 
-          {/* Module 5: Show Check-In */}
-          <div className="space-y-3 border-t pt-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <MapPin className={`h-4 w-4 ${user.showCheckIn ? "text-primary" : "text-muted-foreground"}`} />
-                <Label htmlFor="checkin-module" className="text-sm font-semibold cursor-pointer">Show Check-In</Label>
-              </div>
-              <Switch
-                id="checkin-module"
-                checked={user.showCheckIn}
-                onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showCheckIn", checked)}
-                disabled={isPending}
-              />
-            </div>
-          </div>
-
-          {/* Module: Show Customer Directory */}
-          <div className="space-y-3 border-t pt-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Users className={`h-4 w-4 ${user.showCustomers !== false ? "text-primary" : "text-muted-foreground"}`} />
-                <Label htmlFor="customers-module" className="text-sm font-semibold cursor-pointer">Show Customer Directory</Label>
-              </div>
-              <Switch
-                id="customers-module"
-                checked={user.showCustomers !== false}
-                onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showCustomers", checked)}
-                disabled={isPending}
-              />
-            </div>
-          </div>
-
-          {/* Module 6: Show Expenses */}
-          <div className="space-y-3 border-t pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Wallet className={`h-4 w-4 ${user.showExpenses ? "text-primary" : "text-muted-foreground"}`} />
@@ -448,14 +503,11 @@ export function AdminUserPermissionsModal({
                 disabled={isPending}
               />
             </div>
-          </div>
 
-          {/* Module 7: Show Attendance */}
-          <div className="space-y-3 border-t pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Clock className={`h-4 w-4 ${user.showAttendance ? "text-primary" : "text-muted-foreground"}`} />
-                <Label htmlFor="attendance-module" className="text-sm font-semibold cursor-pointer">Show Attendance</Label>
+                <Label htmlFor="attendance-module" className="text-sm font-semibold cursor-pointer">Staff Attendance</Label>
               </div>
               <Switch
                 id="attendance-module"
@@ -464,10 +516,7 @@ export function AdminUserPermissionsModal({
                 disabled={isPending}
               />
             </div>
-          </div>
 
-          {/* Module 8: GST Returns */}
-          <div className="space-y-3 border-t pt-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <FileSpreadsheet className={`h-4 w-4 ${user.showGst ? "text-primary" : "text-muted-foreground"}`} />

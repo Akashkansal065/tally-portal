@@ -39,14 +39,14 @@ export interface ExportPeriodSummary {
 }
 
 export interface ExportCompanyInfo {
-  name?: string
-  address?: string
-  city?: string
-  state?: string
-  gstin?: string
-  phone?: string
-  mobile?: string
-  email?: string
+  name?: string | null
+  address?: string | null
+  city?: string | null
+  state?: string | null
+  gstin?: string | null
+  phone?: string | null
+  mobile?: string | null
+  email?: string | null
 }
 
 export interface ExportOptions {

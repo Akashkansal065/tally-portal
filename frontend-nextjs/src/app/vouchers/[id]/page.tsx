@@ -407,10 +407,16 @@ export default function VoucherDetailPage() {
       {/* Top Action Bar */}
       <div className="flex flex-wrap justify-between items-center gap-3 mb-3 sm:mb-4 px-2 sm:px-0 no-print">
         <button
-          onClick={() => router.back()}
+          onClick={() => {
+            if (typeof window !== 'undefined' && window.history.length > 1) {
+              router.back()
+            } else {
+              router.push('/vouchers')
+            }
+          }}
           className="flex items-center gap-1.5 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
         >
-          <ArrowLeft className="h-4 w-4" /> Back to Vouchers
+          <ArrowLeft className="h-4 w-4" /> Back
         </button>
 
         <div className="flex items-center gap-2">

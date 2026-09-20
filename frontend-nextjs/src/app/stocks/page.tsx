@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useState, useMemo, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
 import Link from 'next/link'
@@ -42,9 +42,13 @@ type StockItem = {
 
 import { getProductDetails } from '@/lib/kgoc-mapping'
 
-export default function StocksPage() {
+function StocksContent() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const groupParam = searchParams.get('group')
+  const itemParam = searchParams.get('item')
+
   const [items, setItems] = useState<StockItem[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -54,7 +58,7 @@ export default function StocksPage() {
   }, [user, permissions, router])
 
   const [search, setSearch] = useState('')
-  const [selectedGroup, setSelectedGroup] = useState<string | null>(null)
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(groupParam || null)
 
   // 3rd level — selected stock item voucher detail
   const [selectedItem, setSelectedItem] = useState<StockItem | null>(null)
@@ -63,6 +67,64 @@ export default function StocksPage() {
   const [voucherSearch, setVoucherSearch] = useState('')
   const [voucherTypeFilter, setVoucherTypeFilter] = useState('All Vouchers')
   const [voucherFlowFilter, setVoucherFlowFilter] = useState('All Flows')
+
+  // Synchronize selectedGroup from URL parameter (supports browser back/forward)
+  useEffect(() => {
+    setSelectedGroup(groupParam || null)
+  }, [groupParam])
+
+  // Synchronize selectedItem from URL parameter once items catalog is loaded
+  useEffect(() => {
+    if (!itemParam) {
+      setSelectedItem(null)
+      return
+    }
+    if (items.length > 0) {
+      const found = items.find(
+        i => String(i.item_id) === itemParam || i.name.toLowerCase() === itemParam.toLowerCase()
+      )
+      if (found) {
+        setSelectedItem(found)
+        if (!groupParam && found.group_name) {
+          setSelectedGroup(found.group_name)
+        }
+      }
+    }
+  }, [itemParam, items, groupParam])
+
+  // Navigation handlers that update URL to maintain browser history hierarchy
+  const handleSelectGroup = (groupName: string) => {
+    setSelectedGroup(groupName)
+    setSelectedItem(null)
+    setSearch('')
+    router.push(`/stocks?group=${encodeURIComponent(groupName)}`)
+  }
+
+  const handleSelectItem = (item: StockItem) => {
+    setSelectedItem(item)
+    setVoucherSearch('')
+    const grp = selectedGroup || item.group_name || ''
+    router.push(`/stocks?group=${encodeURIComponent(grp)}&item=${encodeURIComponent(item.item_id)}`)
+  }
+
+  const handleBackFromItem = () => {
+    setSelectedItem(null)
+    setVoucherSearch('')
+    setVoucherTypeFilter('All Vouchers')
+    setVoucherFlowFilter('All Flows')
+    if (selectedGroup) {
+      router.push(`/stocks?group=${encodeURIComponent(selectedGroup)}`)
+    } else {
+      router.push('/stocks')
+    }
+  }
+
+  const handleBackFromGroup = () => {
+    setSelectedGroup(null)
+    setSelectedItem(null)
+    setSearch('')
+    router.push('/stocks')
+  }
 
   // Filters State
   const [stockStatus, setStockStatus] = useState('All Items')
@@ -267,7 +329,7 @@ export default function StocksPage() {
             {activeCompanyName}
           </span>
           <button
-            onClick={() => { setSelectedItem(null); setVoucherSearch(''); setVoucherTypeFilter('All Vouchers'); setVoucherFlowFilter('All Flows') }}
+            onClick={handleBackFromItem}
             className="text-green-300 hover:text-white font-bold text-lg leading-none focus:outline-none"
           >
             ✕
@@ -287,7 +349,7 @@ export default function StocksPage() {
             {activeCompanyName}
           </span>
           <button
-            onClick={() => setSelectedGroup(null)}
+            onClick={handleBackFromGroup}
             className="text-blue-100 hover:text-white font-bold text-lg leading-none focus:outline-none"
           >
             ✕
@@ -295,7 +357,15 @@ export default function StocksPage() {
         </div>
       )}
 
-      {selectedGroup === null ? (
+      {/* If an item is requested via URL and items are still loading, show smooth loader */}
+      {itemParam && loading ? (
+        <div className="flex-1 flex items-center justify-center py-20 bg-background">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-8 h-8 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs font-bold text-muted-foreground">Loading product details...</span>
+          </div>
+        </div>
+      ) : selectedGroup === null ? (
         // SUMMARY VIEW
         <div className="flex-1 flex flex-col min-h-0">
           <div className="shrink-0 px-4 py-4 flex items-start justify-between">
@@ -341,10 +411,7 @@ export default function StocksPage() {
                     <button
                       key={row.group_name}
                       type="button"
-                      onClick={() => {
-                        setSelectedGroup(row.group_name)
-                        setSearch('')
-                      }}
+                      onClick={() => handleSelectGroup(row.group_name)}
                       className="w-full grid grid-cols-2 text-left font-medium text-sm transition-colors text-foreground focus:outline-none hover:bg-muted/30"
                     >
                       <span className="px-4 py-3.5 font-extrabold text-foreground uppercase tracking-wide border-r border-border">
@@ -376,7 +443,7 @@ export default function StocksPage() {
             {/* Search Block */}
             <div className="flex items-center gap-4 flex-1 min-w-0 max-w-md">
               <button
-                onClick={() => setSelectedGroup(null)}
+                onClick={handleBackFromGroup}
                 className="text-sm font-extrabold text-blue-600 dark:text-blue-400 hover:text-blue-800 flex items-center gap-1.5 focus:outline-none shrink-0"
               >
                 <ArrowLeft className="h-4 w-4 stroke-[3]" />
@@ -495,7 +562,7 @@ export default function StocksPage() {
                 return (
                   <div
                     key={item.item_id}
-                    onClick={() => { setSelectedItem(item); setVoucherSearch('') }}
+                    onClick={() => handleSelectItem(item)}
                     style={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '16px', marginBottom: '0', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer' }}
                   >
                     {/* Title & Brand */}
@@ -847,7 +914,7 @@ export default function StocksPage() {
                       return (
                         <tr
                           key={item.item_id}
-                          onClick={() => { setSelectedItem(item); setVoucherSearch('') }}
+                          onClick={() => handleSelectItem(item)}
                           className="hover:bg-muted/30 cursor-pointer transition-colors text-foreground bg-card"
                         >
                           {/* Particulars */}
@@ -968,7 +1035,7 @@ export default function StocksPage() {
           <div style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '12px 16px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
               <button
-                onClick={() => { setSelectedItem(null); setVoucherSearch(''); setVoucherTypeFilter('All Vouchers'); setVoucherFlowFilter('All Flows') }}
+                onClick={handleBackFromItem}
                 style={{ color: '#059669', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
               >
                 <ArrowLeft style={{ width: 14, height: 14, strokeWidth: 3 }} />
@@ -1097,5 +1164,22 @@ export default function StocksPage() {
         </div>
       ) : null}
     </div>
+  )
+}
+
+export default function StocksPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center h-full py-20 bg-background">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-8 h-8 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs font-bold text-muted-foreground">Loading Stock Summary...</span>
+          </div>
+        </div>
+      }
+    >
+      <StocksContent />
+    </Suspense>
   )
 }

@@ -47,6 +47,13 @@ class AdminUserCreate(BaseModel):
     password: str
     role_id: int
 
+class AdminUserUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    role_id: Optional[int] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
 from sqlalchemy import delete, func
 
 class UserRoleUpdate(BaseModel):
@@ -200,6 +207,11 @@ async def create_user(
     await db.commit()
     await db.refresh(user)
     
+    # Ensure default company access
+    access = UserCompanyAccess(user_id=user.user_id, company_id=user.company_id)
+    db.add(access)
+    await db.commit()
+    
     toggles = await get_user_permission_toggles(user.user_id, user.role_id, role.name, db)
     return AdminUserResponse(
         user_id=user.user_id,
@@ -227,6 +239,141 @@ async def create_user(
         allowedLedgerGroups=user.allowed_ledger_groups,
         allowedReportCategories=user.allowed_report_categories,
     )
+
+
+@router.put("/users/{user_id}", response_model=AdminUserResponse)
+async def update_user(
+    user_id: int,
+    payload: AdminUserUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    # Verify user belongs to same company
+    user_q = await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
+    )
+    user = user_q.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+
+    # 1. Update email if changed
+    if payload.email is not None and payload.email.strip():
+        new_email = payload.email.strip().lower()
+        if new_email != user.email.lower():
+            exists_q = await db.execute(
+                select(User).where(User.email == new_email, User.user_id != user_id)
+            )
+            if exists_q.scalars().first():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A user with this email address already exists."
+                )
+            user.email = new_email
+
+    # 2. Update username if changed
+    if payload.username is not None and payload.username.strip():
+        user.username = payload.username.strip()
+
+    # 3. Update role_id if changed
+    if payload.role_id is not None and payload.role_id != user.role_id:
+        if user_id == admin.user_id:
+            target_role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id))
+            target_role = target_role_q.scalars().first()
+            if not target_role or target_role.name.lower() not in ("admin", "superadmin", "owner"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="You cannot remove your own administrator role."
+                )
+            user.role_id = payload.role_id
+        else:
+            role_check = (await db.execute(select(Role).where(Role.role_id == payload.role_id))).scalars().first()
+            if not role_check:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Selected role does not exist."
+                )
+            user.role_id = payload.role_id
+
+    # 4. Update active status if changed
+    if payload.is_active is not None:
+        if user_id == admin.user_id and not payload.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot deactivate your own administrator account."
+            )
+        user.is_active = payload.is_active
+
+    # 5. Update password if provided
+    if payload.password and payload.password.strip():
+        if len(payload.password.strip()) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password must be at least 6 characters long."
+            )
+        user.password_hash = get_password_hash(payload.password.strip())
+
+    await db.commit()
+    await db.refresh(user)
+
+    # Fetch role info for response
+    role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
+    role = role_q.scalars().first()
+    r_name = role.name if role else "Unknown"
+    toggles = await get_user_permission_toggles(user.user_id, user.role_id, r_name, db)
+
+    return AdminUserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        email=user.email,
+        is_active=user.is_active,
+        role_id=user.role_id,
+        role_name=r_name,
+        showLedger=toggles["showLedger"],
+        showSalesLedgers=toggles["showSalesLedgers"],
+        showPurchaseLedgers=toggles["showPurchaseLedgers"],
+        showReceipts=toggles["showReceipts"],
+        showPayments=toggles["showPayments"],
+        showExpenses=toggles["showExpenses"],
+        showAttendance=toggles["showAttendance"],
+        showStocks=toggles["showStocks"],
+        showReports=toggles["showReports"],
+        showOrders=toggles["showOrders"],
+        showCheckIn=toggles["showCheckIn"],
+        showGst=toggles["showGst"],
+        showCustomers=toggles.get("showCustomers", True),
+        ledgerScope=user.ledger_scope,
+        stockScope=user.stock_scope,
+        allowedStockGroups=user.allowed_stock_groups,
+        allowedLedgerGroups=user.allowed_ledger_groups,
+        allowedReportCategories=user.allowed_report_categories,
+    )
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    if user_id == admin.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete your own administrator account."
+        )
+    user_q = await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
+    )
+    user = user_q.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+    await db.delete(user)
+    await db.commit()
+    return {"success": True, "message": f"User {user.username} deleted successfully."}
 
 
 class UserPasswordReset(BaseModel):
@@ -544,6 +691,19 @@ async def update_role_permissions(
             )
             db.add(new_perm)
             
+    # Clean up stale toggle overrides for users belonging to this role for updated modules
+    user_ids_q = await db.execute(select(User.user_id).where(User.role_id == role_id))
+    user_ids = user_ids_q.scalars().all()
+    if user_ids:
+        updated_module_ids = [item.module_id for item in payload]
+        await db.execute(
+            delete(UserPermissionOverride).where(
+                UserPermissionOverride.user_id.in_(user_ids),
+                UserPermissionOverride.module_id.in_(updated_module_ids),
+                UserPermissionOverride.reason == "Admin Panel Toggle"
+            )
+        )
+
     await db.commit()
     return {"success": True, "detail": f"Permissions for role '{role.name}' updated successfully."}
 
@@ -594,6 +754,21 @@ async def update_permissions(
             )
             db.add(new_perm)
             
+    # Clean up stale toggle overrides for affected roles
+    role_ids = list(set([item.role_id for item in payload if item.role_id]))
+    if role_ids:
+        user_ids_q = await db.execute(select(User.user_id).where(User.role_id.in_(role_ids)))
+        user_ids = user_ids_q.scalars().all()
+        if user_ids:
+            updated_module_ids = list(set([item.module_id for item in payload]))
+            await db.execute(
+                delete(UserPermissionOverride).where(
+                    UserPermissionOverride.user_id.in_(user_ids),
+                    UserPermissionOverride.module_id.in_(updated_module_ids),
+                    UserPermissionOverride.reason == "Admin Panel Toggle"
+                )
+            )
+
     await db.commit()
     return {"detail": "Permissions matrix updated successfully."}
 
