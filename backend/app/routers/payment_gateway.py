@@ -6,8 +6,11 @@ from typing import List, Optional
 from datetime import datetime, date, timezone
 from decimal import Decimal
 import json
+import hmac
+import hashlib
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.models.tally_core import TrnBill, BillAllocation
@@ -116,18 +119,41 @@ async def razorpay_webhook(
     db: AsyncSession = Depends(get_db)
 ):
     payload_bytes = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature", "")
+    
+    conf_query = await db.execute(
+        select(PaymentGatewayConfig).where(PaymentGatewayConfig.gateway == "Razorpay", PaymentGatewayConfig.is_active == True)
+    )
+    config = conf_query.scalars().first()
+    if not config:
+        conf_query = await db.execute(
+            select(PaymentGatewayConfig).where(PaymentGatewayConfig.gateway == "Razorpay")
+        )
+        config = conf_query.scalars().first()
+    if not config:
+        raise HTTPException(status_code=400, detail="No Razorpay config registered.")
+        
+    webhook_secret = config.webhook_secret_ref or getattr(settings, "RAZORPAY_WEBHOOK_SECRET", None)
+    signature_verified = False
+    if webhook_secret:
+        if not signature:
+            raise HTTPException(status_code=400, detail="Missing X-Razorpay-Signature header.")
+        expected = hmac.new(
+            webhook_secret.encode("utf-8"),
+            payload_bytes,
+            hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, signature):
+            raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+        signature_verified = True
+    elif signature:
+        raise HTTPException(status_code=500, detail="Webhook secret not configured on server.")
+
     payload = json.loads(payload_bytes.decode('utf-8'))
     
     event_id = payload.get("id")
     event_type = payload.get("event")
     
-    conf_query = await db.execute(
-        select(PaymentGatewayConfig).where(PaymentGatewayConfig.gateway == "Razorpay")
-    )
-    config = conf_query.scalars().first()
-    if not config:
-        raise HTTPException(status_code=400, detail="No Razorpay config registered.")
-        
     dup_query = await db.execute(
         select(WebhookEvent).where(
             WebhookEvent.gateway_config_id == config.gateway_config_id,
@@ -142,7 +168,7 @@ async def razorpay_webhook(
         gateway_event_id=event_id,
         event_type=event_type,
         payload=payload,
-        signature_verified=True,
+        signature_verified=signature_verified,
         processed=True,
         processed_at=datetime.now(timezone.utc)
     )

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate, formatToIST } from '@/lib/utils'
-import { MapPin, History, ArrowLeft, RefreshCw, Calendar, CalendarCheck, Search, User as UserIcon, X } from 'lucide-react'
+import { MapPin, History, ArrowLeft, RefreshCw, Calendar, CalendarCheck, Search, User as UserIcon, X, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type VisitLog = {
@@ -14,6 +14,9 @@ type VisitLog = {
   salesperson?: string
   shopName: string | null
   customShopName: string | null
+  ledger_id?: number | null
+  customer_key?: string | null
+  is_registered?: boolean
   latitude: number | null
   longitude: number | null
   comments: string | null
@@ -30,8 +33,17 @@ type UserOption = {
 }
 
 export default function CheckInHistoryPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
+
+  const canAccessCustomer = Boolean(
+    permissions?.isAdmin ||
+    permissions?.showCustomers ||
+    user?.role?.toLowerCase() === 'admin' ||
+    user?.role?.toLowerCase() === 'superadmin' ||
+    user?.role?.toLowerCase() === 'owner' ||
+    can?.('customers', 'read')
+  )
   
   const [visits, setVisits] = useState<VisitLog[]>([])
   const [salespersons, setSalespersons] = useState<UserOption[]>([])
@@ -273,7 +285,20 @@ export default function CheckInHistoryPage() {
 
                           {/* Shop Name */}
                           <td className="py-3.5 px-4 font-extrabold text-foreground min-w-[180px]">
-                            {v.shopName || v.customShopName || 'Custom Shop'}
+                            {canAccessCustomer && (v.is_registered || v.ledger_id || v.customer_key) && (v.customer_key || v.ledger_id) ? (
+                              <Link
+                                href={`/customers/${v.customer_key || `tally_${v.ledger_id}`}`}
+                                className="inline-flex items-center gap-1.5 group text-foreground hover:text-primary transition-colors cursor-pointer"
+                                title={`Open 360° Profile for ${v.shopName || v.customShopName || 'Customer'}`}
+                              >
+                                <span className="group-hover:underline underline-offset-2">
+                                  {v.shopName || v.customShopName || 'Custom Shop'}
+                                </span>
+                                <ExternalLink className="w-3 h-3 text-muted-foreground group-hover:text-primary opacity-60 group-hover:opacity-100 transition-all shrink-0" />
+                              </Link>
+                            ) : (
+                              <span>{v.shopName || v.customShopName || 'Custom Shop'}</span>
+                            )}
                           </td>
 
                           {/* Location */}
@@ -331,13 +356,28 @@ export default function CheckInHistoryPage() {
               {filteredVisits.map(v => {
                 const initial = (v.salesperson || user?.username || 'U').charAt(0).toLowerCase()
                 const timeStr = formatToIST(v.createdAt)
+                const isReg = Boolean(v.is_registered || v.ledger_id || v.customer_key)
+                const custTarget = v.customer_key || (v.ledger_id ? `tally_${v.ledger_id}` : null)
                 return (
                   <div key={v.id} className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3">
                     <div className="flex items-start justify-between gap-3 border-b border-border/50 pb-2">
                       <div className="min-w-0">
-                        <h3 className="font-extrabold text-sm text-foreground truncate">
-                          {v.shopName || v.customShopName || 'Custom Shop'}
-                        </h3>
+                        {canAccessCustomer && isReg && custTarget ? (
+                          <Link
+                            href={`/customers/${custTarget}`}
+                            className="inline-flex items-center gap-1.5 group font-extrabold text-sm text-foreground hover:text-primary transition-colors cursor-pointer truncate max-w-full"
+                            title={`Open 360° Profile for ${v.shopName || v.customShopName || 'Customer'}`}
+                          >
+                            <span className="group-hover:underline underline-offset-2 truncate">
+                              {v.shopName || v.customShopName || 'Custom Shop'}
+                            </span>
+                            <ExternalLink className="w-3 h-3 text-muted-foreground group-hover:text-primary opacity-60 group-hover:opacity-100 transition-all shrink-0" />
+                          </Link>
+                        ) : (
+                          <h3 className="font-extrabold text-sm text-foreground truncate">
+                            {v.shopName || v.customShopName || 'Custom Shop'}
+                          </h3>
+                        )}
                         <p className="text-[10px] text-muted-foreground mt-0.5 font-semibold">
                           {formatDate(v.createdAt)} • {timeStr}
                         </p>

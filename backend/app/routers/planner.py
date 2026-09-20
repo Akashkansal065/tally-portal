@@ -452,7 +452,7 @@ async def update_beat_stop_status(
     Update a stop status (e.g., mark 'skipped' with reason, or manually 'visited').
     """
     stmt = (
-        select(BeatPlanStop)
+        select(BeatPlanStop, BeatPlan)
         .join(BeatPlan, BeatPlan.id == BeatPlanStop.beat_plan_id)
         .where(
             BeatPlanStop.id == stop_id,
@@ -460,10 +460,14 @@ async def update_beat_stop_status(
         )
     )
     res = await db.execute(stmt)
-    stop = res.scalars().first()
+    row = res.first()
 
-    if not stop:
+    if not row:
         raise HTTPException(status_code=404, detail="Beat stop not found")
+
+    stop, plan = row
+    if plan.user_id != user.user_id and not check_is_admin(user):
+        raise HTTPException(status_code=403, detail="You can only update stops on your own beat plans.")
 
     stop.status = payload.status
     if payload.status == "skipped":

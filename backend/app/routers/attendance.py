@@ -315,12 +315,18 @@ async def get_team_attendance_for_admin(
     res_users = await db.execute(users_stmt)
     all_users = res_users.scalars().all()
     
-    # Get all attendance logs for the target date
+    if not all_users:
+        return {"success": True, "data": []}
+
+    user_ids = [u.user_id for u in all_users]
+
+    # Get all attendance logs for the target date for this company's users
     start_of_target = datetime.combine(target_date, datetime.min.time())
     end_of_target = datetime.combine(target_date, datetime.max.time())
     
     stmt = select(Attendance).where(
         and_(
+            Attendance.user_id.in_(user_ids),
             Attendance.check_in_time >= start_of_target,
             Attendance.check_in_time <= end_of_target
         )
@@ -370,12 +376,19 @@ async def get_full_team_attendance_history(
     start_date = datetime.strptime(startDateStr, "%Y-%m-%d")
     end_date = datetime.strptime(endDateStr, "%Y-%m-%d") + timedelta(days=1)
     
-    stmt = select(Attendance).options(selectinload(Attendance.user)).where(
-        and_(
-            Attendance.check_in_time >= start_date,
-            Attendance.check_in_time < end_date
+    stmt = (
+        select(Attendance)
+        .options(selectinload(Attendance.user))
+        .join(User, Attendance.user_id == User.user_id)
+        .where(
+            and_(
+                User.company_id == user.company_id,
+                Attendance.check_in_time >= start_date,
+                Attendance.check_in_time < end_date
+            )
         )
-    ).order_by(desc(Attendance.check_in_time))
+        .order_by(desc(Attendance.check_in_time))
+    )
     
     res = await db.execute(stmt)
     history = res.scalars().all()

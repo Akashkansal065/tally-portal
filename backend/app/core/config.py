@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     
     # UPI / Payment Settings
     DEFAULT_UPI_VPA: str = "***@upi"
+    RAZORPAY_WEBHOOK_SECRET: Optional[str] = None
     
     @property
     def PORTAL_DATABASE_NAME(self) -> str:

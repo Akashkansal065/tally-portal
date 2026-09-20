@@ -7,13 +7,16 @@ import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '
 import { stampPhoto } from '@/lib/photo-stamping'
 import { queueOfflineCheckIn, getPendingCheckIns, syncPendingCheckIns, OfflineCheckIn } from '@/lib/offline-storage'
 import Link from 'next/link'
-import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw, History, CalendarCheck } from 'lucide-react'
+import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw, History, CalendarCheck, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type RecentVisit = {
   id: number
   customShopName: string | null
   shopName: string | null
+  ledger_id?: number | null
+  customer_key?: string | null
+  is_registered?: boolean
   status: string
   createdAt: string
   comments: string | null
@@ -32,9 +35,18 @@ type ShopOption = {
 }
 
 export default function CheckInPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
   const searchParams = useSearchParams()
+
+  const canAccessCustomer = Boolean(
+    permissions?.isAdmin ||
+    permissions?.showCustomers ||
+    user?.role?.toLowerCase() === 'admin' ||
+    user?.role?.toLowerCase() === 'superadmin' ||
+    user?.role?.toLowerCase() === 'owner' ||
+    can?.('customers', 'read')
+  )
 
   const [shops, setShops] = useState<ShopOption[]>([])
   const [recentVisits, setRecentVisits] = useState<RecentVisit[]>([])
@@ -527,7 +539,7 @@ export default function CheckInPage() {
                 {gpsStatus === 'ok' && (
                   <>
                     <CheckCircle className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span className="text-emerald-600">GPS verified: {coords?.lat.toFixed(5)}°, {coords?.lng.toFixed(5)}°</span>
+                    <span className="text-emerald-600">GPS verified: {coords?.lat}°, {coords?.lng}°</span>
                   </>
                 )}
                 {gpsStatus === 'error' && (
@@ -568,7 +580,20 @@ export default function CheckInPage() {
                       <MapPin className="h-4 w-4 text-rose-500" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="font-bold text-xs text-foreground truncate">{v.shopName || v.customShopName || 'Unknown Shop'}</p>
+                      {canAccessCustomer && (v.is_registered || v.ledger_id || v.customer_key) && (v.customer_key || v.ledger_id) ? (
+                        <Link
+                          href={`/customers/${v.customer_key || `tally_${v.ledger_id}`}`}
+                          className="group inline-flex items-center gap-1 font-bold text-xs text-foreground hover:text-primary transition-colors cursor-pointer truncate max-w-full"
+                          title={`Open 360° Profile for ${v.shopName || v.customShopName || 'Shop'}`}
+                        >
+                          <span className="group-hover:underline underline-offset-2 truncate">
+                            {v.shopName || v.customShopName || 'Unknown Shop'}
+                          </span>
+                          <ExternalLink className="w-2.5 h-2.5 text-muted-foreground group-hover:text-primary opacity-60 group-hover:opacity-100 transition-all shrink-0" />
+                        </Link>
+                      ) : (
+                        <p className="font-bold text-xs text-foreground truncate">{v.shopName || v.customShopName || 'Unknown Shop'}</p>
+                      )}
                       <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(v.createdAt)}</p>
                     </div>
                     {v.photoUrl && (

@@ -230,11 +230,7 @@ export function GlobalHeader() {
 
     // Contextual redirection to destination screen
     if (notif.type === 'check_in' || notif.reference_type === 'visit') {
-      if (isAdmin) {
-        router.push('/admin?tab=visits')
-      } else {
-        router.push('/check-in/history')
-      }
+      router.push('/check-in/history')
     } else if (notif.type?.startsWith('order') || notif.reference_type === 'order') {
       router.push('/temporders')
     } else if (notif.type?.startsWith('expense') || notif.reference_type === 'expense') {

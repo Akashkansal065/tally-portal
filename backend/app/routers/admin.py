@@ -812,7 +812,11 @@ async def get_companies(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    query = await db.execute(select(Company))
+    query = await db.execute(
+        select(Company)
+        .join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id)
+        .where(UserCompanyAccess.user_id == admin.user_id)
+    )
     return query.scalars().all()
 
 @router.get("/users/{user_id}/companies", response_model=List[int])
@@ -821,8 +825,22 @@ async def get_user_companies(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
+    target_user = (await db.execute(select(User).where(User.user_id == user_id))).scalars().first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    admin_companies_res = await db.execute(
+        select(UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == admin.user_id)
+    )
+    admin_company_ids = set(admin_companies_res.scalars().all())
+    if target_user.company_id not in admin_company_ids:
+        raise HTTPException(status_code=403, detail="You do not have access to manage this user.")
+
     query = await db.execute(
-        select(UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == user_id)
+        select(UserCompanyAccess.company_id).where(
+            UserCompanyAccess.user_id == user_id,
+            UserCompanyAccess.company_id.in_(admin_company_ids)
+        )
     )
     return query.scalars().all()
 
@@ -833,10 +851,29 @@ async def update_user_companies(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    # Clear existing
-    await db.execute(
-        UserCompanyAccess.__table__.delete().where(UserCompanyAccess.user_id == user_id)
+    target_user = (await db.execute(select(User).where(User.user_id == user_id))).scalars().first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    admin_companies_res = await db.execute(
+        select(UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == admin.user_id)
     )
+    admin_company_ids = set(admin_companies_res.scalars().all())
+    if target_user.company_id not in admin_company_ids:
+        raise HTTPException(status_code=403, detail="You do not have access to manage this user.")
+
+    for cid in payload.company_ids:
+        if cid not in admin_company_ids:
+            raise HTTPException(status_code=403, detail=f"You do not have access to company {cid}.")
+
+    # Clear existing within admin's accessible companies
+    if admin_company_ids:
+        await db.execute(
+            UserCompanyAccess.__table__.delete().where(
+                UserCompanyAccess.user_id == user_id,
+                UserCompanyAccess.company_id.in_(admin_company_ids)
+            )
+        )
     
     # Insert new
     for cid in payload.company_ids:
@@ -844,8 +881,7 @@ async def update_user_companies(
         db.add(access)
         
     # Ensure target user active company_id is valid
-    target_user = (await db.execute(select(User).where(User.user_id == user_id))).scalars().first()
-    if target_user and payload.company_ids:
+    if payload.company_ids:
         if target_user.company_id not in payload.company_ids:
             target_user.company_id = payload.company_ids[0]
 

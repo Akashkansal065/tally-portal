@@ -248,6 +248,8 @@ async def list_all_orders(
 
     result = await db.execute(
         select(TempOrder)
+        .join(User, TempOrder.user_id == User.user_id)
+        .where(User.company_id == current_user.company_id)
         .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group), selectinload(TempOrder.ledger))
         .order_by(desc(TempOrder.created_at))
         .limit(500)
@@ -301,7 +303,8 @@ async def get_order(
 
     result = await db.execute(
         select(TempOrder)
-        .where(TempOrder.id == order_id)
+        .join(User, TempOrder.user_id == User.user_id)
+        .where(TempOrder.id == order_id, User.company_id == user.company_id)
         .options(selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group), selectinload(TempOrder.ledger))
     )
     order = result.scalars().first()
@@ -365,7 +368,8 @@ async def edit_order(
 
     result = await db.execute(
         select(TempOrder)
-        .where(TempOrder.id == order_id)
+        .join(User, TempOrder.user_id == User.user_id)
+        .where(TempOrder.id == order_id, User.company_id == user.company_id)
         .options(selectinload(TempOrder.items))
     )
     order = result.scalars().first()
@@ -441,7 +445,11 @@ async def update_order_status(
     user: User = Depends(require_permission("admin", "update")),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(TempOrder).where(TempOrder.id == order_id))
+    result = await db.execute(
+        select(TempOrder)
+        .join(User, TempOrder.user_id == User.user_id)
+        .where(TempOrder.id == order_id, User.company_id == user.company_id)
+    )
     order = result.scalars().first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")

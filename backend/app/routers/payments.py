@@ -10,7 +10,8 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.permissions import get_current_user
+from app.core.config import settings
+from app.core.permissions import get_current_user, require_permission
 from app.models.portal_core import User, Company
 from app.models.tally_core import TrnVoucher, TrnPaymentLink, TrnAccounting, TrnBankAllocation
 
@@ -43,7 +44,7 @@ class PaylinkResponse(BaseModel):
 @router.post("/generate-link", response_model=PaylinkResponse)
 async def generate_payment_link(
     req: GeneratePaylinkRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("payments", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -64,12 +65,19 @@ async def generate_payment_link(
     company = (await db.execute(comp_stmt)).scalars().first()
     company_name = req.merchant_name or (company.name if company else "Merchant")
     
-    # UPI VPA fallback: Request -> Company features -> Settings -> Default
+    # UPI VPA fallback: Request (Admin only) -> Company features -> Settings -> Default
+    is_admin = user.role and user.role.name.lower() in ("admin", "superadmin", "owner")
+    if req.upi_vpa and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can specify a custom UPI VPA."
+        )
+
     company_upi = None
     if company and company.features and isinstance(company.features, dict):
         company_upi = company.features.get("upi_id") or company.features.get("upi_vpa")
         
-    vpa = req.upi_vpa or company_upi or settings.DEFAULT_UPI_VPA or ""
+    vpa = (req.upi_vpa if is_admin else None) or company_upi or settings.DEFAULT_UPI_VPA or ""
     amount_to_pay = Decimal(str(req.amount)) if req.amount else voucher.total_amount
     note = req.note or f"Invoice {voucher.voucher_number}"
     
@@ -114,7 +122,7 @@ async def generate_payment_link(
 @router.get("/{voucher_id}/paylink", response_model=Optional[PaylinkResponse])
 async def get_voucher_paylink(
     voucher_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("payments", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """

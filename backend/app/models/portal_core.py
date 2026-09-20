@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Date, Boolean, DateTime, ForeignKey, Enum, Numeric, Text, TEXT, JSON, Float
+from sqlalchemy import Column, Integer, BigInteger, String, Date, Boolean, DateTime, ForeignKey, Enum, Numeric, Text, TEXT, JSON, Float, Double
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -894,8 +894,8 @@ class CustomerProfile(Base):
     email = Column(String(150), nullable=True)
     
     # Established Master Coordinates
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
+    latitude = Column(Double, nullable=True)
+    longitude = Column(Double, nullable=True)
     location_verified = Column(Boolean, default=False)
     location_verified_at = Column(DateTime, nullable=True)
     
@@ -943,8 +943,8 @@ class CustomerLocationLog(Base):
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     
     # Captured GPS coordinates
-    latitude = Column(Float, nullable=False)
-    longitude = Column(Float, nullable=False)
+    latitude = Column(Double, nullable=False)
+    longitude = Column(Double, nullable=False)
     accuracy_meters = Column(Float, nullable=True)
     
     # Distance comparison against shop's established location
@@ -983,8 +983,8 @@ class CustomerPhoto(Base):
     imagekit_file_path = Column(String(500), nullable=True)
 
     caption = Column(String(255), nullable=True)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
+    latitude = Column(Double, nullable=True)
+    longitude = Column(Double, nullable=True)
     is_primary = Column(Boolean, default=False)
 
     uploaded_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
@@ -1077,8 +1077,8 @@ class BeatPlanStop(Base):
     shop_name = Column(String(255), nullable=False)
     locality = Column(String(200), nullable=True)
     address = Column(Text, nullable=True)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
+    latitude = Column(Double, nullable=True)
+    longitude = Column(Double, nullable=True)
     sequence_order = Column(Integer, nullable=False, default=1)
     status = Column(String(32), default="pending")  # pending, visited, skipped
     visit_id = Column(Integer, nullable=True)

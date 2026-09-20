@@ -146,9 +146,13 @@ async def list_all_expenses(
     current_user: User = Depends(require_permission("admin", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Admin: list all expenses."""
+    """Admin: list all expenses for current company."""
     result = await db.execute(
-        select(Expense).order_by(desc(Expense.created_at)).limit(500)
+        select(Expense)
+        .join(User, Expense.user_id == User.user_id)
+        .where(User.company_id == current_user.company_id)
+        .order_by(desc(Expense.created_at))
+        .limit(500)
     )
     return result.scalars().all()
 
@@ -160,7 +164,11 @@ async def approve_expense(
     current_user: User = Depends(require_permission("admin", "update")),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(Expense).where(Expense.id == expense_id))
+    result = await db.execute(
+        select(Expense)
+        .join(User, Expense.user_id == User.user_id)
+        .where(Expense.id == expense_id, User.company_id == current_user.company_id)
+    )
     expense = result.scalars().first()
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")

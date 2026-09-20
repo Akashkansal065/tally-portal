@@ -5,7 +5,7 @@ Stores GPS check-in records for sales visits.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, desc
+from sqlalchemy import Column, Integer, String, Float, Double, DateTime, ForeignKey, Text, desc, or_
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -13,9 +13,11 @@ from typing import Optional, List
 from datetime import datetime
 
 from app.core.database import get_db, Base
-from app.core.permissions import require_permission
-from app.models.portal_core import User
 from app.core.config import settings
+from app.models.portal_core import User, CustomerProfile
+from app.core.permissions import get_current_user, require_permission
+
+router = APIRouter(prefix="/visits", tags=["visits"])
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 
@@ -27,8 +29,8 @@ class SalesVisit(Base):
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=True)
     custom_shop_name = Column(String(256), nullable=True)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
+    latitude = Column(Double, nullable=True)
+    longitude = Column(Double, nullable=True)
     photo_url = Column(Text, nullable=True)
     comments = Column(String(1024), nullable=True)
     status = Column(String(32), default="check-in")
@@ -316,13 +318,127 @@ async def check_in(
     }
 
 
+async def enrich_visit_records(visits: list, company_id: int, db: AsyncSession) -> list:
+    if not visits:
+        return []
+
+    from app.models.tally_core import MstLedger
+    from app.models.portal_core import CustomerProfile
+
+    # Collect ledger IDs and shop names
+    ledger_ids = {v.ledger_id for v in visits if v.ledger_id}
+    names = {v.custom_shop_name.strip() for v in visits if v.custom_shop_name and v.custom_shop_name.strip()}
+
+    ledgers_by_id = {}
+    ledgers_by_name = {}
+    if ledger_ids or names:
+        ledger_conditions = []
+        if ledger_ids:
+            ledger_conditions.append(MstLedger.ledger_id.in_(ledger_ids))
+        if names:
+            ledger_conditions.append(MstLedger.name.in_(names))
+        ledger_stmt = select(MstLedger).where(
+            MstLedger.company_id == company_id,
+            or_(*ledger_conditions)
+        )
+        l_res = await db.execute(ledger_stmt)
+        for l in l_res.scalars().all():
+            ledgers_by_id[l.ledger_id] = l
+            if l.name:
+                ledgers_by_name[l.name.strip().lower()] = l
+
+    profiles_by_ledger = {}
+    profiles_by_name = {}
+    if ledger_ids or names:
+        prof_conditions = []
+        if ledger_ids:
+            prof_conditions.append(CustomerProfile.ledger_id.in_(ledger_ids))
+        if names:
+            prof_conditions.append(CustomerProfile.custom_name.in_(names))
+        prof_stmt = select(CustomerProfile).where(
+            CustomerProfile.company_id == company_id,
+            or_(*prof_conditions)
+        )
+        p_res = await db.execute(prof_stmt)
+        for p in p_res.scalars().all():
+            if p.ledger_id:
+                profiles_by_ledger[p.ledger_id] = p
+            if p.custom_name:
+                profiles_by_name[p.custom_name.strip().lower()] = p
+
+    user_ids = {v.user_id for v in visits if getattr(v, "user_id", None) and ("user" not in v.__dict__ or not v.user)}
+    users_by_id = {}
+    if user_ids:
+        u_res = await db.execute(select(User).where(User.user_id.in_(user_ids)))
+        for u in u_res.scalars().all():
+            users_by_id[u.user_id] = u.username or u.email
+
+    output = []
+    for v in visits:
+        shop_name = v.custom_shop_name
+        ledger_id = v.ledger_id
+        customer_key = None
+        is_registered = False
+
+        if ledger_id:
+            is_registered = True
+            customer_key = f"tally_{ledger_id}"
+            if not shop_name and ledger_id in ledgers_by_id:
+                shop_name = ledgers_by_id[ledger_id].name
+        elif v.custom_shop_name:
+            norm_name = v.custom_shop_name.strip().lower()
+            if norm_name in ledgers_by_name:
+                matched_ledger = ledgers_by_name[norm_name]
+                ledger_id = matched_ledger.ledger_id
+                is_registered = True
+                customer_key = f"tally_{matched_ledger.ledger_id}"
+                shop_name = matched_ledger.name
+            elif norm_name in profiles_by_name:
+                matched_profile = profiles_by_name[norm_name]
+                ledger_id = matched_profile.ledger_id
+                is_registered = True
+                customer_key = f"tally_{matched_profile.ledger_id}" if matched_profile.ledger_id else f"profile_{matched_profile.id}"
+                shop_name = matched_profile.custom_name
+
+        salesperson = None
+        if "user" in v.__dict__ and v.user:
+            salesperson = v.user.username or v.user.email
+        elif getattr(v, "user_id", None) in users_by_id:
+            salesperson = users_by_id[v.user_id]
+        elif getattr(v, "user_id", None):
+            salesperson = f"User #{v.user_id}"
+
+        item = {
+            "id": v.id,
+            "shopName": shop_name or "Custom Shop",
+            "customShopName": v.custom_shop_name,
+            "ledger_id": ledger_id,
+            "customer_key": customer_key,
+            "is_registered": is_registered,
+            "latitude": v.latitude,
+            "longitude": v.longitude,
+            "comments": v.comments,
+            "status": v.status,
+            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
+            "photoUrl": v.photo_url,
+        }
+        if hasattr(v, "user_id"):
+            item["user_id"] = v.user_id
+            item["salesperson"] = salesperson
+        if hasattr(v, "ip_address"):
+            item["ip_address"] = v.ip_address or "152.59.87.245"
+
+        output.append(item)
+
+    return output
+
+
 @router.get("/recent")
 async def get_recent_visits(
     user: User = Depends(require_permission("visits", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """Return last 15 visits for current user."""
-    from app.models.tally_core import MstLedger
     result = await db.execute(
         select(SalesVisit)
         .where(SalesVisit.user_id == user.user_id)
@@ -330,28 +446,7 @@ async def get_recent_visits(
         .limit(15)
     )
     visits = result.scalars().all()
-
-    # Enrich with ledger names
-    output = []
-    for v in visits:
-        shop_name = v.custom_shop_name
-        if v.ledger_id and not shop_name:
-            lr = await db.execute(select(MstLedger).where(MstLedger.ledger_id == v.ledger_id))
-            l = lr.scalars().first()
-            if l:
-                shop_name = l.name
-        output.append({
-            "id": v.id,
-            "shopName": shop_name,
-            "customShopName": v.custom_shop_name,
-            "latitude": v.latitude,
-            "longitude": v.longitude,
-            "comments": v.comments,
-            "status": v.status,
-            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
-            "photoUrl": v.photo_url,
-        })
-    return output
+    return await enrich_visit_records(visits, user.company_id, db)
 
 
 @router.get("/history")
@@ -361,7 +456,6 @@ async def get_user_visit_history(
     db: AsyncSession = Depends(get_db),
 ):
     """Return past check-in visit history for the logged-in user."""
-    from app.models.tally_core import MstLedger
     result = await db.execute(
         select(SalesVisit)
         .where(SalesVisit.user_id == user.user_id)
@@ -369,27 +463,7 @@ async def get_user_visit_history(
         .limit(limit)
     )
     visits = result.scalars().all()
-
-    output = []
-    for v in visits:
-        shop_name = v.custom_shop_name
-        if v.ledger_id and not shop_name:
-            lr = await db.execute(select(MstLedger).where(MstLedger.ledger_id == v.ledger_id))
-            l = lr.scalars().first()
-            if l:
-                shop_name = l.name
-        output.append({
-            "id": v.id,
-            "shopName": shop_name,
-            "customShopName": v.custom_shop_name,
-            "latitude": v.latitude,
-            "longitude": v.longitude,
-            "comments": v.comments,
-            "status": v.status,
-            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
-            "photoUrl": v.photo_url,
-        })
-    return output
+    return await enrich_visit_records(visits, user.company_id, db)
 
 
 @router.get("/logs")
@@ -400,10 +474,14 @@ async def get_visit_logs(
     db: AsyncSession = Depends(get_db),
 ):
     """Admin: get all check-ins with date and salesperson filter."""
-    from app.models.tally_core import MstLedger
     from sqlalchemy.orm import selectinload
     
-    query = select(SalesVisit).options(selectinload(SalesVisit.user))
+    query = (
+        select(SalesVisit)
+        .options(selectinload(SalesVisit.user))
+        .join(User, SalesVisit.user_id == User.user_id)
+        .where(User.company_id == current_user.company_id)
+    )
     if date:
         from datetime import date as dt
         try:
@@ -417,29 +495,4 @@ async def get_visit_logs(
     query = query.order_by(desc(SalesVisit.created_at)).limit(150)
     result = await db.execute(query)
     visits = result.scalars().all()
-
-    output = []
-    for v in visits:
-        shop_name = v.custom_shop_name
-        if v.ledger_id and not shop_name:
-            lr = await db.execute(select(MstLedger).where(MstLedger.ledger_id == v.ledger_id))
-            l = lr.scalars().first()
-            if l:
-                shop_name = l.name
-
-        salesperson = v.user.username if (v.user and v.user.username) else (v.user.email if v.user else f"User #{v.user_id}")
-        output.append({
-            "id": v.id,
-            "user_id": v.user_id,
-            "salesperson": salesperson,
-            "shopName": shop_name or "Custom Shop",
-            "customShopName": v.custom_shop_name,
-            "latitude": v.latitude,
-            "longitude": v.longitude,
-            "comments": v.comments,
-            "status": v.status,
-            "ip_address": v.ip_address or "152.59.87.245",
-            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
-            "photoUrl": v.photo_url,
-        })
-    return output
+    return await enrich_visit_records(visits, current_user.company_id, db)

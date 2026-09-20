@@ -819,6 +819,17 @@ async def get_ledger_by_id(
             detail="Ledger not found."
         )
 
+    # Check permissions dynamically
+    is_debtor = await is_ancestor_group(ledger.group_id, "Sundry Debtors", user.company_id, db)
+    is_creditor = await is_ancestor_group(ledger.group_id, "Sundry Creditors", user.company_id, db)
+    module_code = "ledger_customer" if is_debtor else "ledger_supplier" if is_creditor else "ledgers"
+    perms = await get_effective_permission(user.user_id, module_code, db)
+    if not perms.get("can_read", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You do not have permission to view {module_code}."
+        )
+
     output = {
         "ledger_id": ledger.ledger_id,
         "company_id": ledger.company_id,

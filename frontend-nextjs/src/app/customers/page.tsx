@@ -656,8 +656,8 @@ export default function CustomersPage() {
       (pos) => {
         setTagForm((prev) => ({
           ...prev,
-          latitude: pos.coords.latitude.toFixed(6),
-          longitude: pos.coords.longitude.toFixed(6),
+          latitude: String(pos.coords.latitude),
+          longitude: String(pos.coords.longitude),
         }))
       },
       () => alert('Could not get current coordinates. Check GPS permissions.'),
@@ -1982,7 +1982,7 @@ export default function CustomersPage() {
                                 title="Click to recalibrate shop coordinates"
                               >
                                 <Compass className="w-3 h-3 shrink-0" />
-                                <span>{cust.latitude?.toFixed(4)}, {cust.longitude?.toFixed(4)}</span>
+                                <span>{cust.latitude}, {cust.longitude}</span>
                               </button>
                             ) : (
                               <button
@@ -2673,7 +2673,7 @@ export default function CustomersPage() {
                           title="Click to recalibrate shop coordinates"
                         >
                           <Compass className="w-3 h-3" />
-                          <span>{cust.latitude?.toFixed(4)}, {cust.longitude?.toFixed(4)}</span>
+                          <span>{cust.latitude}, {cust.longitude}</span>
                         </button>
                       ) : (
                         <button
@@ -3084,8 +3084,8 @@ export default function CustomersPage() {
                       navigator.geolocation.getCurrentPosition((pos) => {
                         setAddForm((prev) => ({
                           ...prev,
-                          latitude: pos.coords.latitude.toFixed(6),
-                          longitude: pos.coords.longitude.toFixed(6),
+                          latitude: String(pos.coords.latitude),
+                          longitude: String(pos.coords.longitude),
                         }))
                       })
                     }}

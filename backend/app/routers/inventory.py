@@ -832,7 +832,7 @@ async def create_stock_item(
 @router.get("/items/{item_id}", response_model=StockItemResponse)
 async def get_stock_item(
     item_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
@@ -1119,7 +1119,7 @@ async def delete_stock_item(
 
 @router.get("/items", response_model=List[StockItemResponse])
 async def get_stock_items(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_permission("inventory", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     from decimal import Decimal

@@ -66,36 +66,9 @@ class CompanyResponse(BaseModel):
 @router.post("", response_model=CompanyResponse)
 async def create_company(
     req: CompanyCreate,
-    request: Request,
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Determine if a user is currently logged in
-    current_user_id = None
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-        try:
-            payload = decode_access_token(token)
-            if payload and payload.get("sub"):
-                current_user_id = int(payload.get("sub"))
-        except Exception:
-            pass
-
-    # If not logged in, ensure user fields are provided
-    if not current_user_id:
-        if not req.username or not req.user_email or not req.password:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Must provide username, user_email, and password for initial registration."
-            )
-        # Check if email already exists
-        user_exists_query = await db.execute(select(User).where(User.email == req.user_email))
-        if user_exists_query.scalars().first():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A user with this email already exists."
-            )
-
     try:
         fy_start = datetime.strptime(req.financial_year_start, "%Y-%m-%d").date()
         books_begin = datetime.strptime(req.books_begin_date, "%Y-%m-%d").date()
@@ -133,35 +106,9 @@ async def create_company(
         seed_company_defaults(sync_session, company.company_id)
     await db.run_sync(run_seeding)
 
-    # 2. Create or link user
-    if not current_user_id:
-        role_query = await db.execute(select(Role).where(Role.name == "Admin"))
-        admin_role = role_query.scalars().first()
-        if not admin_role:
-            admin_role = Role(name="Admin", description="Full access")
-            db.add(admin_role)
-            await db.commit()
-            await db.refresh(admin_role)
-            
-        password_hash = get_password_hash(req.password)
-        user = User(
-            company_id=company.company_id, # Default company
-            username=req.username,
-            email=req.user_email,
-            password_hash=password_hash,
-            role_id=admin_role.role_id,
-            is_active=True,
-            ledger_scope='full',
-            stock_scope='full'
-        )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-        current_user_id = user.user_id
-
-    # 3. Grant access
+    # 2. Grant access to current authenticated user
     access = UserCompanyAccess(
-        user_id=current_user_id,
+        user_id=user.user_id,
         company_id=company.company_id
     )
     db.add(access)
@@ -175,15 +122,14 @@ async def list_companies(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List all companies the current user has access to."""
-    stmt = (
+    """List all companies accessible to the currently logged in user."""
+    query = (
         select(Company)
-        .join(UserCompanyAccess, UserCompanyAccess.company_id == Company.company_id)
+        .join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id)
         .where(UserCompanyAccess.user_id == user.user_id)
-        .order_by(Company.name)
     )
-    res = await db.execute(stmt)
-    return res.scalars().all()
+    result = await db.execute(query)
+    return result.scalars().all()
 
 
 class CompanyUpdate(BaseModel):
@@ -212,8 +158,15 @@ async def update_company_features(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update features for a specific company."""
-    # Check access
+    """Update features for a specific company. Restricted to Admin users only."""
+    # 1. Admin Role Restriction
+    if not user.role or user.role.name.lower() not in ("admin", "owner", "superadmin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Admin users are permitted to edit company features."
+        )
+
+    # 2. Check access
     access_query = await db.execute(
         select(UserCompanyAccess)
         .where(UserCompanyAccess.user_id == user.user_id, UserCompanyAccess.company_id == company_id)

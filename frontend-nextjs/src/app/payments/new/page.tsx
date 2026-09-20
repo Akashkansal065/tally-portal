@@ -329,7 +329,7 @@ export default function NewPaymentPage() {
                 {gpsStatus === 'ok' && (
                   <>
                     <CheckCircle className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span className="text-emerald-600">GPS verified: {coords?.lat.toFixed(5)}°, {coords?.lng.toFixed(5)}°</span>
+                    <span className="text-emerald-600">GPS verified: {coords?.lat}°, {coords?.lng}°</span>
                   </>
                 )}
                 {gpsStatus === 'error' && (

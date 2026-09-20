@@ -2105,7 +2105,7 @@ function CustomerProfileContent() {
 
                         {v.latitude && v.longitude && (
                           <div className="text-[10px] text-muted-foreground font-mono">
-                            📍 {v.latitude.toFixed(5)}, {v.longitude.toFixed(5)}
+                            📍 {v.latitude}, {v.longitude}
                           </div>
                         )}
                       </div>
@@ -2472,7 +2472,7 @@ function CustomerProfileContent() {
                   <span className="text-muted-foreground block text-[11px]">Master Coordinates</span>
                   {customer.has_location ? (
                     <div className="flex items-center gap-2 mt-0.5 font-mono text-sm font-semibold text-foreground">
-                      <span>{customer.latitude?.toFixed(6)}, {customer.longitude?.toFixed(6)}</span>
+                      <span>{customer.latitude}, {customer.longitude}</span>
                       <button
                         onClick={() => copyToClipboard(`${customer.latitude},${customer.longitude}`, 'coords')}
                         className="p-1 text-muted-foreground hover:text-foreground"
@@ -2811,7 +2811,7 @@ function CustomerProfileContent() {
                     {v.latitude && v.longitude && (
                       <div className="text-[11px] text-muted-foreground font-mono flex items-center gap-1">
                         <MapPin className="w-3.5 h-3.5 text-primary" />
-                        <span>GPS: {v.latitude.toFixed(5)}, {v.longitude.toFixed(5)}</span>
+                        <span>GPS: {v.latitude}, {v.longitude}</span>
                       </div>
                     )}
 
@@ -3075,7 +3075,7 @@ function CustomerProfileContent() {
                 <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center gap-2 text-[11px]">
                   <Compass className="w-4 h-4 flex-shrink-0" />
                   <span>
-                    GPS Geotag captured: <b>{uploadCoords.lat.toFixed(5)}, {uploadCoords.lon.toFixed(5)}</b>
+                    GPS Geotag captured: <b>{uploadCoords.lat}, {uploadCoords.lon}</b>
                   </span>
                 </div>
               )}
@@ -3467,8 +3467,8 @@ function CustomerProfileContent() {
                     (pos) => {
                       setTagForm((prev) => ({
                         ...prev,
-                        latitude: pos.coords.latitude.toFixed(6),
-                        longitude: pos.coords.longitude.toFixed(6),
+                        latitude: String(pos.coords.latitude),
+                        longitude: String(pos.coords.longitude),
                       }))
                     },
                     (err) => alert(`GPS Error: ${err.message}`),

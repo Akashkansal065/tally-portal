@@ -40,8 +40,9 @@ async def get_bootstrap_status(db: AsyncSession = Depends(get_db)):
 
         return {"need_bootstrap": not has_admin}
     except Exception as e:
-        import traceback
-        return {"error": str(e), "traceback": traceback.format_exc()}
+        import logging
+        logging.getLogger(__name__).error(f"Error during bootstrap check: {e}", exc_info=True)
+        return {"error": "Internal server error during bootstrap check.", "need_bootstrap": False}
 
 class RegisterCompanyRequest(BaseModel):
     company_name: str

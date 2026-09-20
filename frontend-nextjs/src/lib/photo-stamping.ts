@@ -216,7 +216,7 @@ export async function stampPhoto(file: File): Promise<StampingResult> {
           // Lat/Lng info
           ctx.fillStyle = '#a1a1aa'
           ctx.font = '11px sans-serif'
-          ctx.fillText(`Latitude: ${lat.toFixed(6)}°  Longitude: ${lng.toFixed(6)}°`, textX, textY)
+          ctx.fillText(`Latitude: ${lat}°  Longitude: ${lng}°`, textX, textY)
 
           // Date time
           textY += 16
