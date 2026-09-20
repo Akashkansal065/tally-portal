@@ -7,7 +7,13 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc, func, update, delete
-from pywebpush import webpush, WebPushException
+try:
+    from pywebpush import webpush, WebPushException
+    PYWEBPUSH_AVAILABLE = True
+except ImportError:
+    webpush = None
+    WebPushException = Exception
+    PYWEBPUSH_AVAILABLE = False
 
 from app.core.database import get_db, AsyncSessionLocal
 from app.core.permissions import get_current_user
@@ -62,6 +68,9 @@ class VapidKeyResponse(BaseModel):
 
 def _sync_webpush_call(sub_info: dict, payload_str: str) -> tuple[bool, Optional[int]]:
     """Synchronous webpush network call meant to run in an async thread."""
+    if not PYWEBPUSH_AVAILABLE or webpush is None:
+        print("[WebPush] pywebpush package is not installed.")
+        return False, None
     if not settings.VAPID_PRIVATE_KEY or not settings.VAPID_CLAIM_EMAIL:
         print("[WebPush] Missing VAPID_PRIVATE_KEY or VAPID_CLAIM_EMAIL")
         return False, None
