@@ -73,17 +73,25 @@ export default function TempOrdersPage() {
           fetch(`${API_BASE}/admin/users`, { headers }).catch(() => null)
         ])
         
-        const ordersData = await ordersRes.json()
-        setOrders(Array.isArray(ordersData) ? ordersData : [])
+        if (ordersRes.ok) {
+          const ordersData = await ordersRes.json()
+          setOrders(Array.isArray(ordersData) ? ordersData : [])
+        } else {
+          setOrders([])
+        }
 
-        if (usersRes) {
+        if (usersRes && usersRes.ok) {
           const usersData = await usersRes.json()
           setSalespersons(Array.isArray(usersData) ? usersData : [])
         }
       } else {
         const res = await fetch(ordersUrl, { headers })
-        const data = await res.json()
-        setOrders(Array.isArray(data) ? data : [])
+        if (res.ok) {
+          const data = await res.json()
+          setOrders(Array.isArray(data) ? data : [])
+        } else {
+          setOrders([])
+        }
       }
     } catch (e) {
       console.error(e)
