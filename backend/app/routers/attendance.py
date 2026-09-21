@@ -17,18 +17,7 @@ from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.portal_core import User, Role
 from app.core.config import settings
-
-IST = ZoneInfo("Asia/Kolkata")
-
-def get_ist_now() -> datetime:
-    """Returns the current datetime in Indian Standard Time (naive for MySQL storage)"""
-    return datetime.now(IST).replace(tzinfo=None)
-
-def to_ist_iso(dt: Optional[datetime]) -> Optional[str]:
-    """Returns ISO 8601 string with explicit IST +05:30 offset for frontend consumers"""
-    if not dt:
-        return None
-    return f"{dt.strftime('%Y-%m-%dT%H:%M:%S')}+05:30"
+from app.core.datetime_utils import IST, get_ist_now, get_ist_date, to_ist_iso
 
 
 # ─── Model ───────────────────────────────────────────────────────────────────
@@ -308,7 +297,7 @@ async def get_team_attendance_for_admin(
     if not role or role.name != "Admin":
         raise HTTPException(status_code=403, detail="Unauthorized")
         
-    target_date = datetime.strptime(dateStr, "%Y-%m-%d").date() if dateStr else get_ist_now().date()
+    target_date = datetime.strptime(dateStr, "%Y-%m-%d").date() if dateStr else get_ist_date()
     
     # Get all users in the company
     users_stmt = select(User).where(User.company_id == user.company_id).order_by(User.username)

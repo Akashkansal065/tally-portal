@@ -15,6 +15,7 @@ from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.core.config import settings
+from app.core.datetime_utils import get_ist_now, to_ist_iso
 
 def check_is_admin(user: User) -> bool:
     if not user:
@@ -33,18 +34,13 @@ def check_order_editable(order: "TempOrder", user: User) -> bool:
         return False
     if not order.created_at:
         return True
-    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-    created_utc = order.created_at.replace(tzinfo=None) if order.created_at.tzinfo else order.created_at
-    elapsed_seconds = (now_utc - created_utc).total_seconds()
+    now_ist = get_ist_now()
+    created = order.created_at.replace(tzinfo=None) if order.created_at.tzinfo else order.created_at
+    elapsed_seconds = (now_ist - created).total_seconds()
     return elapsed_seconds <= 1800  # 30 minutes
 
 def format_datetime_utc(dt: Optional[datetime]) -> Optional[str]:
-    if not dt:
-        return None
-    iso = dt.isoformat()
-    if not iso.endswith("Z") and "+" not in iso:
-        iso += "Z"
-    return iso
+    return to_ist_iso(dt)
 
 # ─── Models ──────────────────────────────────────────────────────────────────
 
@@ -137,6 +133,8 @@ async def create_order(
         ledger_id=req.ledger_id,
         custom_customer_name=req.custom_customer_name[:256] if req.custom_customer_name else None,
         status="pending",
+        created_at=get_ist_now(),
+        updated_at=get_ist_now(),
     )
     db.add(order)
     await db.commit()
@@ -441,6 +439,7 @@ async def edit_order(
         )
         db.add(order_item)
 
+    order.updated_at = get_ist_now()
     await db.commit()
     return {"success": True, "message": "Order updated successfully"}
 
@@ -470,6 +469,7 @@ async def update_order_status(
         raise HTTPException(status_code=400, detail="Status must be 'done', 'cancelled', or 'pending'")
 
     order.status = req.status
+    order.updated_at = get_ist_now()
     await db.commit()
 
     # Notify order creator (salesperson)

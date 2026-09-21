@@ -9,9 +9,10 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy import or_, and_, func, desc, cast, Date
 from pydantic import BaseModel
-from typing import Optional, List
 from datetime import datetime, date
 import math
+
+from app.core.datetime_utils import get_ist_now, get_ist_date, to_ist_iso
 
 from app.core.database import get_db
 from app.core.permissions import get_current_user
@@ -196,7 +197,7 @@ async def get_daily_beat_plans(
     - If Salesperson: Returns their assigned beat plan for that date.
     - If Admin: Returns all beat plans for that date (or filtered by user_id).
     """
-    target_date = plan_date if isinstance(plan_date, date) else datetime.now().date()
+    target_date = plan_date if isinstance(plan_date, date) else get_ist_date()
     is_admin = check_is_admin(user)
     filter_user_id = user_id if isinstance(user_id, int) else None
 
@@ -250,7 +251,7 @@ async def get_daily_beat_plans(
                 "sequence_order": stop.sequence_order,
                 "status": stop.status,
                 "visit_id": stop.visit_id,
-                "visited_at": stop.visited_at.isoformat() if stop.visited_at else None,
+                "visited_at": to_ist_iso(stop.visited_at) if stop.visited_at else None,
                 "skip_reason": stop.skip_reason,
                 "notes": stop.notes,
             })
@@ -268,7 +269,7 @@ async def get_daily_beat_plans(
             "notes": plan.notes,
             "status": plan.status,
             "created_by": plan.creator.username if plan.creator else None,
-            "created_at": plan.created_at.isoformat() if plan.created_at else None,
+            "created_at": to_ist_iso(plan.created_at) if plan.created_at else None,
             "total_stops": total_stops,
             "visited_stops": visited_count,
             "skipped_stops": skipped_count,
@@ -473,7 +474,7 @@ async def update_beat_stop_status(
     if payload.status == "skipped":
         stop.skip_reason = payload.skip_reason or "Skipped by salesperson"
     elif payload.status == "visited" and not stop.visited_at:
-        stop.visited_at = datetime.now()
+        stop.visited_at = get_ist_now()
 
     if payload.notes:
         stop.notes = payload.notes
@@ -496,7 +497,7 @@ async def get_end_of_day_summary(
     - Orders taken (count, items, total ₹)
     - Payments collected (count, payment modes, total ₹)
     """
-    target_date = date_val if isinstance(date_val, date) else datetime.now().date()
+    target_date = date_val if isinstance(date_val, date) else get_ist_date()
     is_admin = check_is_admin(user)
     target_user_id = user_id if (is_admin and isinstance(user_id, int)) else user.user_id
 
@@ -533,7 +534,7 @@ async def get_end_of_day_summary(
                 "locality": s.locality,
                 "sequence_order": s.sequence_order,
                 "status": s.status,
-                "visited_at": s.visited_at.isoformat() if s.visited_at else None,
+                "visited_at": to_ist_iso(s.visited_at) if s.visited_at else None,
                 "skip_reason": s.skip_reason
             }
             for s in (plan.stops if plan else [])
@@ -568,7 +569,7 @@ async def get_end_of_day_summary(
             "photo_url": v.photo_url,
             "status": v.status,
             "time": v.created_at.strftime("%I:%M %p") if v.created_at else None,
-            "created_at": v.created_at.isoformat() if v.created_at else None,
+            "created_at": to_ist_iso(v.created_at) if v.created_at else None,
         })
 
     # 3. Temp Orders taken today
@@ -605,7 +606,7 @@ async def get_end_of_day_summary(
             "status": o.status,
             "items_count": o_items_count,
             "total_amount": round(o_amount, 2),
-            "created_at": o.created_at.isoformat() if o.created_at else None,
+            "created_at": to_ist_iso(o.created_at) if o.created_at else None,
             "time": o.created_at.strftime("%I:%M %p") if o.created_at else None,
         })
 

@@ -25,6 +25,9 @@ if settings.DB_SSL:
             
     connect_args["ssl"] = ctx
 
+# Enforce Indian Standard Time (IST / UTC+05:30) on all MySQL sessions
+connect_args["init_command"] = "SET time_zone = '+05:30'"
+
 engine = create_async_engine(
     settings.DATABASE_URL, 
     connect_args=connect_args, 

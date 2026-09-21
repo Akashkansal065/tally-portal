@@ -28,6 +28,7 @@ def log_gst_portal(title: str, request_data: dict, response_data: dict) -> str:
     return log_text
 
 from app.core.database import get_db
+from app.core.datetime_utils import get_ist_now
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.models.tally_core import TrnVoucher, TrnAccounting
@@ -857,7 +858,7 @@ async def verify_gstr2b_otp_and_fetch(
         raw_archive = {
             "rtnprd": f"{period.period_month:02d}{period.period_year}",
             "gstin": "09GAHPK5367P1ZR",
-            "fetched_at": str(datetime.now())
+            "fetched_at": str(get_ist_now())
         }
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(raw_archive, f, indent=2)
@@ -1676,7 +1677,7 @@ async def generate_einvoice_irn(
     
     # Mock Acknowledgement Details
     ack_no = "".join([str(random.randint(0, 9)) for _ in range(15)])
-    ack_date = datetime.now()
+    ack_date = get_ist_now()
     
     # Mock E-Way Bill Number if voucher amount is >= 50,000
     total_amount = float(voucher.total_amount or 0)
@@ -1684,7 +1685,7 @@ async def generate_einvoice_irn(
     eway_bill_date = None
     if total_amount >= 50000.00:
         eway_bill_no = "12" + "".join([str(random.randint(0, 9)) for _ in range(10)])
-        eway_bill_date = datetime.now()
+        eway_bill_date = get_ist_now()
         
     meta = EinvoiceMetadata(
         voucher_id=voucher_id,

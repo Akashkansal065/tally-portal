@@ -5,12 +5,17 @@ Guaranteed zero accounting alteration.
 """
 from datetime import datetime, date
 from typing import Optional, Dict, Any
+from app.core.datetime_utils import IST, get_ist_now, get_ist_date, to_ist_datetime
 
 
 def calculate_visit_recency(last_visit_at: Optional[datetime], now: Optional[datetime] = None) -> Dict[str, Any]:
-    """Calculate days since last visit and categorization badge."""
+    """Calculate days since last visit and categorization badge based on IST calendar days."""
     if not now:
-        now = datetime.now()
+        now = datetime.now(IST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=IST)
+    else:
+        now = now.astimezone(IST)
 
     if not last_visit_at:
         return {
@@ -20,12 +25,22 @@ def calculate_visit_recency(last_visit_at: Optional[datetime], now: Optional[dat
             "color": "rose",
         }
 
-    days = max(0, (now - last_visit_at).days)
+    visit_ist = to_ist_datetime(last_visit_at)
+    # Compare calendar dates in IST, NOT 24-hour timedelta chunks
+    days = max(0, (now.date() - visit_ist.date()).days)
+
     if days == 0:
         return {
             "days": 0,
             "category": "today",
             "label": "Visited Today",
+            "color": "emerald",
+        }
+    elif days == 1:
+        return {
+            "days": 1,
+            "category": "recent",
+            "label": "Yesterday",
             "color": "emerald",
         }
     elif days <= 7:
@@ -76,7 +91,11 @@ def calculate_customer_health(
     4. Profile & Verification Completeness: 15 pts
     """
     if not now:
-        now = datetime.now()
+        now = datetime.now(IST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=IST)
+    else:
+        now = now.astimezone(IST)
     today_date = now.date()
 
     # 1. Visit Cadence Score (Max 25 pts)
@@ -86,10 +105,16 @@ def calculate_customer_health(
     visit_score = 0
     visit_label = "Never Visited"
     if last_visit_at:
-        days_since_visit = max(0, (now - last_visit_at).days)
+        visit_ist = to_ist_datetime(last_visit_at)
+        days_since_visit = max(0, (today_date - visit_ist.date()).days)
         if days_since_visit <= target_days:
             visit_score = 25
-            visit_label = f"On Schedule ({days_since_visit}d ago)"
+            if days_since_visit == 0:
+                visit_label = "Visited Today"
+            elif days_since_visit == 1:
+                visit_label = "Yesterday"
+            else:
+                visit_label = f"On Schedule ({days_since_visit}d ago)"
         elif days_since_visit <= target_days * 2:
             visit_score = 16
             visit_label = f"Slightly Overdue ({days_since_visit}d ago)"

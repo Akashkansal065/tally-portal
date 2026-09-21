@@ -16,6 +16,7 @@ from app.core.database import get_db, Base
 from app.core.config import settings
 from app.models.portal_core import User, CustomerProfile
 from app.core.permissions import get_current_user, require_permission
+from app.core.datetime_utils import get_ist_now, get_ist_date, to_ist_iso
 
 router = APIRouter(prefix="/visits", tags=["visits"])
 
@@ -88,6 +89,7 @@ async def check_in(
         photo_url=None,
         comments=req.comments[:1024] if req.comments else None,
         status="check-in",
+        created_at=get_ist_now(),
     )
     db.add(visit)
     await db.flush()
@@ -144,18 +146,18 @@ async def check_in(
             # If coordinates were not previously verified, verify them now upon successful on-site check-in (<=20m)
             if not profile.location_verified and verification_status == "VERIFIED_ON_SITE":
                 profile.location_verified = True
-                profile.location_verified_at = func.now()
+                profile.location_verified_at = get_ist_now()
         else:
             # Auto-establish and verify master GPS coordinates for this shop
             profile.latitude = req.latitude
             profile.longitude = req.longitude
             profile.location_verified = True
-            profile.location_verified_at = func.now()
+            profile.location_verified_at = get_ist_now()
             dist_meters = 0.0
             verification_status = "ESTABLISHED_BASE"
             location_established = True
         
-        profile.last_visit_at = func.now()
+        profile.last_visit_at = get_ist_now()
         profile.total_visits = (profile.total_visits or 0) + 1
     else:
         # Create new customer profile in portal database (Zero Tally accounting impact)
@@ -166,10 +168,12 @@ async def check_in(
             latitude=req.latitude,
             longitude=req.longitude,
             location_verified=True,
-            location_verified_at=func.now(),
+            location_verified_at=get_ist_now(),
             total_visits=1,
-            last_visit_at=func.now(),
+            last_visit_at=get_ist_now(),
             created_by=user.user_id,
+            created_at=get_ist_now(),
+            updated_at=get_ist_now(),
         )
         db.add(profile)
         await db.flush()
@@ -232,14 +236,15 @@ async def check_in(
         verification_status=verification_status,
         source="check_in",
         visit_id=visit.id,
-        notes=f"Check-in by user #{user.user_id} ({user.username})"
+        notes=f"Check-in by user #{user.user_id} ({user.username})",
+        created_at=get_ist_now(),
     )
     db.add(loc_log)
 
     # 5. Auto-mark matching stop in today's active beat plan
     try:
         from app.models.portal_core import BeatPlan, BeatPlanStop
-        today_date = datetime.now().date()
+        today_date = get_ist_date()
         stop_conds = []
         if visit.ledger_id:
             stop_conds.append(BeatPlanStop.ledger_id == visit.ledger_id)
@@ -265,7 +270,7 @@ async def check_in(
             if active_stop:
                 active_stop.status = "visited"
                 active_stop.visit_id = visit.id
-                active_stop.visited_at = func.now()
+                active_stop.visited_at = get_ist_now()
                 # Update plan status to in_progress if it was assigned
                 plan_res = await db.execute(select(BeatPlan).where(BeatPlan.id == active_stop.beat_plan_id))
                 bp = plan_res.scalars().first()
@@ -419,7 +424,7 @@ async def enrich_visit_records(visits: list, company_id: int, db: AsyncSession) 
             "longitude": v.longitude,
             "comments": v.comments,
             "status": v.status,
-            "createdAt": f"{v.created_at.isoformat()}Z" if v.created_at else None,
+            "createdAt": to_ist_iso(v.created_at) if v.created_at else None,
             "photoUrl": v.photo_url,
         }
         if hasattr(v, "user_id"):
@@ -486,7 +491,7 @@ async def get_visit_logs(
         from datetime import date as dt
         try:
             d = dt.fromisoformat(date)
-            query = query.where(func.date(func.convert_tz(SalesVisit.created_at, '+00:00', '+05:30')) == d)
+            query = query.where(func.date(SalesVisit.created_at) == d)
         except Exception:
             pass
     if user_id:

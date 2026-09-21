@@ -20,6 +20,7 @@ from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting
 from app.services.geo_service import calculate_haversine_distance, evaluate_checkin_proximity
 from app.services.imagekit_service import upload_customer_photo, delete_imagekit_file
 from app.services.customer_health_service import calculate_visit_recency, calculate_customer_health
+from app.core.datetime_utils import IST, get_ist_now, get_ist_date, to_ist_iso
 
 router = APIRouter(prefix="/customers", tags=["Customer Directory"])
 
@@ -194,7 +195,7 @@ async def list_customers(
     Zero accounting modification. Includes GPS coords, verification audit status,
     Customer Health Score, Days Since Last Visit badges, and Nearby Radius filters.
     """
-    now = datetime.now()
+    now = get_ist_now()
 
     # 1. Fetch all groups to identify Sundry Debtors
     grp_res = await db.execute(
@@ -382,7 +383,7 @@ async def list_customers(
             "location_verified": p.location_verified if p else False,
             "maps_url": build_maps_url(lat, lon, addr_clean),
             "distance_from_me_meters": dist_from_me,
-            "last_visit_at": p.last_visit_at.isoformat() if (p and p.last_visit_at) else None,
+            "last_visit_at": to_ist_iso(p.last_visit_at) if (p and p.last_visit_at) else None,
             "days_since_last_visit": recency["days"],
             "visit_recency_category": recency["category"],
             "visit_recency_label": recency["label"],
@@ -398,8 +399,8 @@ async def list_customers(
                 else (latest_log.distance_from_base_meters if latest_log else None)
             ),
             "latest_checkin_at": (
-                latest_checkin_by_profile.get(p.id).created_at.isoformat() if (p and latest_checkin_by_profile.get(p.id) and latest_checkin_by_profile.get(p.id).created_at)
-                else (latest_log.created_at.isoformat() if (latest_log and latest_log.created_at) else None)
+                to_ist_iso(latest_checkin_by_profile.get(p.id).created_at) if (p and latest_checkin_by_profile.get(p.id) and latest_checkin_by_profile.get(p.id).created_at)
+                else (to_ist_iso(latest_log.created_at) if (latest_log and latest_log.created_at) else None)
             ),
             "owners": owners_by_profile.get(p.id, []) if p else [],
             "owners_count": len(owners_by_profile.get(p.id, [])) if p else 0,
@@ -460,7 +461,7 @@ async def list_customers(
             "location_verified": p.location_verified,
             "maps_url": build_maps_url(p.latitude, p.longitude, p.address),
             "distance_from_me_meters": dist_from_me,
-            "last_visit_at": p.last_visit_at.isoformat() if p.last_visit_at else None,
+            "last_visit_at": to_ist_iso(p.last_visit_at) if p.last_visit_at else None,
             "days_since_last_visit": recency["days"],
             "visit_recency_category": recency["category"],
             "visit_recency_label": recency["label"],
@@ -476,8 +477,8 @@ async def list_customers(
                 else (latest_log.distance_from_base_meters if latest_log else None)
             ),
             "latest_checkin_at": (
-                latest_checkin_by_profile.get(p.id).created_at.isoformat() if (latest_checkin_by_profile.get(p.id) and latest_checkin_by_profile.get(p.id).created_at)
-                else (latest_log.created_at.isoformat() if (latest_log and latest_log.created_at) else None)
+                to_ist_iso(latest_checkin_by_profile.get(p.id).created_at) if (latest_checkin_by_profile.get(p.id) and latest_checkin_by_profile.get(p.id).created_at)
+                else (to_ist_iso(latest_log.created_at) if (latest_log and latest_log.created_at) else None)
             ),
             "owners": owners_by_profile.get(p.id, []),
             "owners_count": len(owners_by_profile.get(p.id, [])),
@@ -1482,7 +1483,7 @@ async def get_customer_profile_detail(
             "created_at": None,
         })
 
-    now = datetime.now()
+    now = get_ist_now()
     recency = calculate_visit_recency(profile.last_visit_at if profile else None, now)
 
     v_date, v_count = (None, 0)
@@ -1710,7 +1711,7 @@ async def get_customer_profile_detail(
         "longitude": lon,
         "has_location": lat is not None and lon is not None,
         "location_verified": profile.location_verified if profile else False,
-        "location_verified_at": profile.location_verified_at.isoformat() if (profile and profile.location_verified_at) else None,
+        "location_verified_at": to_ist_iso(profile.location_verified_at) if (profile and profile.location_verified_at) else None,
         "maps_url": build_maps_url(lat, lon, addr_clean),
         "days_since_last_visit": recency["days"],
         "visit_recency_category": recency["category"],
@@ -1728,9 +1729,9 @@ async def get_customer_profile_detail(
             else (latest_general_log.distance_from_base_meters if latest_general_log else None))
         ),
         "latest_checkin_at": (
-            latest_checkin_log.created_at.isoformat() if (latest_checkin_log and latest_checkin_log.created_at)
+            to_ist_iso(latest_checkin_log.created_at) if (latest_checkin_log and latest_checkin_log.created_at)
             else (visits[0]["created_at"] if (visits and visits[0].get("created_at"))
-            else (latest_general_log.created_at.isoformat() if (latest_general_log and latest_general_log.created_at) else None))
+            else (to_ist_iso(latest_general_log.created_at) if (latest_general_log and latest_general_log.created_at) else None))
         ),
         "owners": owners_list,
         "photos": photos,
