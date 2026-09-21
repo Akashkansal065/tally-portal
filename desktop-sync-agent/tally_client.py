@@ -1,10 +1,29 @@
+import os
+import time
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 import logging
 from typing import Dict, Any, Optional, Tuple, List
 
+from config import get_logs_dir
+
 logger = logging.getLogger("TallyClient")
+
+def has_collection_records(resp_xml: str, obj_type: str) -> bool:
+    """
+    Checks whether a Tally XML response contains at least one actual entity record inside <DATA>.
+    Prevents pushing empty XML collections (e.g. <DATA><COLLECTION></COLLECTION></DATA>)
+    during incremental sync.
+    """
+    if not resp_xml or "<ENVELOPE>" not in resp_xml:
+        return False
+    upper_xml = resp_xml.upper()
+    if "<DATA>" not in upper_xml:
+        return False
+    data_content = upper_xml.split("<DATA>", 1)[1]
+    target_tag = f"<{obj_type.upper()}"
+    return target_tag in data_content
 
 class TallyClient:
     def __init__(self, tally_url: str = "http://127.0.0.1:9000", timeout: int = 6):
@@ -186,14 +205,14 @@ class TallyClient:
             ("StockGroups", "StockGroup", "NAME,PARENT,ALTERID", True),
             ("UOMs", "Unit", "NAME,ORIGINALNAME,DECIMALPLACES", False),
             ("Godowns", "Godown", "NAME,GUID,ALTERID,PARENT", False),
-            ("StockItems", "StockItem", "NAME,GUID,ALTERID,PARENT,CATEGORY,BASEUNITS,OPENINGBALANCE,OPENINGVALUE,OPENINGRATE,DESCRIPTION,NARRATION,BATCHALLOCATIONS.LIST", False),
+            ("StockItems", "StockItem", "NAME,GUID,ALTERID,PARENT,CATEGORY,BASEUNITS,OPENINGBALANCE,OPENINGVALUE,OPENINGRATE,DESCRIPTION,NARRATION,BATCHALLOCATIONS.LIST", True),
             ("Vouchers", "Voucher", "GUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST", True)
         ]
         
         results = []
         for label, obj_type, fetch_fields, supports_alter_filter in collections:
-            # If incremental sync, only query collections that support ALTERID filtering, unless it's Company
-            if min_alter_id > 0 and not supports_alter_filter and obj_type != "Company":
+            # If incremental sync, only query collections that support ALTERID filtering
+            if min_alter_id > 0 and not supports_alter_filter:
                 continue
 
             date_filters = ""
@@ -235,30 +254,48 @@ class TallyClient:
     </DESC>
   </BODY>
 </ENVELOPE>"""
-            try:
-                req = urllib.request.Request(
-                    self.tally_url,
-                    data=xml_req.encode("utf-8"),
-                    headers={"Content-Type": "text/xml;charset=utf-8"}
-                )
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    resp_xml = resp.read().decode("utf-8", errors="replace")
-                    if "<ENVELOPE>" in resp_xml:
-                        results.append((label, resp_xml))
-            except Exception as e:
-                logger.warning(f"Failed to export collection '{label}' from Tally: {e}")
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    req = urllib.request.Request(
+                        self.tally_url,
+                        data=xml_req.encode("utf-8"),
+                        headers={"Content-Type": "text/xml;charset=utf-8"}
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        resp_xml = resp.read().decode("utf-8", errors="replace")
+                        if "<ENVELOPE>" in resp_xml:
+                            # On incremental passes, check if any actual objects exist in collection to avoid sending empty payloads
+                            if min_alter_id > 0 and not has_collection_records(resp_xml, obj_type):
+                                break
+                            results.append((label, resp_xml))
+                            break
+                except Exception as e:
+                    if attempt < max_retries:
+                        logger.debug(f"Retrying export '{label}' from Tally (attempt {attempt + 1}/{max_retries}): {e}")
+                        time.sleep(1)
+                    else:
+                        logger.warning(f"Failed to export collection '{label}' from Tally after {max_retries + 1} attempts: {e}")
 
         return results
 
     def _log_traffic(self, direction: str, title: str, content: str):
-        """Logs exact traffic to a dedicated log file and console logger."""
+        """Logs exact traffic to a dedicated rotating log file and console logger."""
         try:
-            import os
             from datetime import datetime
-            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-            os.makedirs(log_dir, exist_ok=True)
+            log_dir = get_logs_dir()
             log_file = os.path.join(log_dir, "tally_traffic.log")
             
+            # Simple rotation: keep up to 5MB, rotate to .1
+            if os.path.exists(log_file) and os.path.getsize(log_file) > 5 * 1024 * 1024:
+                backup = log_file + ".1"
+                try:
+                    if os.path.exists(backup):
+                        os.remove(backup)
+                    os.rename(log_file, backup)
+                except Exception:
+                    pass
+
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             header = f"\n{'=' * 80}\n[{ts}] {direction}: {title}\n{'=' * 80}\n"
             with open(log_file, "a", encoding="utf-8") as f:

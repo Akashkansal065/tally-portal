@@ -1,9 +1,10 @@
 @echo off
 REM ===========================================================================
-REM  MyTally Windows Sync Agent - Disable Auto-Start on System Boot
+REM  SnehDistribuors Windows Sync Agent - Disable Auto-Start on System Boot
 REM ===========================================================================
 
-echo Removing MyTally Sync Agent from Windows Startup...
+echo Removing SnehDistribuors Sync Agent from Windows Startup...
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "SnehDistribuorsSyncAgent" /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "MyTallySyncAgent" /f >nul 2>&1
 
 echo.

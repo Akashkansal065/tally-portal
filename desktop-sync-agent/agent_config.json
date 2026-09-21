@@ -1,14 +1,15 @@
 {
     "backend_url": "http://192.168.71.1:8000",
     "tally_url": "http://127.0.0.1:9000",
-    "auth_token": "a.a.TqB5VF-a",
+    "auth_token": "enc:fn:gAAAAABqsXC34SNlwO8ySZVyyf7VkZWyZlZ0cSLy254nhhe0mh1kv_suhSutO68B3cv7qBfed53Ee8YKewcYhndX0vG1H042Mg==",
     "email": "a",
     "username": "",
-    "password": "a@a.a",
+    "password": "enc:fn:gAAAAABqsXC3hzoQ8VUroB9WZR6uaVbuCm4rYmxA_GwEW0WjJY2ezWnZODrohykIBnYitxLvEE0OKLJpd0kYDD1N0GycLAyOuA==",
     "company_name": "Bhrama Enterprises",
     "sync_interval_seconds": 5,
     "inbound_interval_seconds": 60,
     "tally_app_path": null,
     "tally_data_path": null,
-    "auto_discover_paths": true
+    "auto_discover_paths": true,
+    "autostart_enabled": false
 }

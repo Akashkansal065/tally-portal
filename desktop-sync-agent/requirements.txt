@@ -1,0 +1,6 @@
+customtkinter>=5.2.0
+pystray>=0.19.5
+pillow>=9.5.0
+pyinstaller>=5.13.0
+requests>=2.31.0
+cryptography>=41.0.0

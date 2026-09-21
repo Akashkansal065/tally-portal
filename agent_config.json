@@ -1,0 +1,16 @@
+{
+    "backend_url": "http://MacBook-Air.local:8000",
+    "tally_url": "http://127.0.0.1:9000",
+    "auth_token": "",
+    "email": "",
+    "username": "",
+    "password": "",
+    "company_name": "Bhrama Enterprises",
+    "sync_interval_seconds": 5,
+    "inbound_interval_seconds": 60,
+    "tally_app_path": null,
+    "tally_data_path": null,
+    "auto_discover_paths": true,
+    "autostart_enabled": false,
+    "force_full_sync": false
+}

@@ -1,25 +1,25 @@
 @echo off
 REM ===========================================================================
-REM  MyTally Windows Sync Agent - Enable Auto-Start on System Boot
+REM  SnehDistribuors Windows Sync Agent - Enable Auto-Start on System Boot
 REM ===========================================================================
 
 echo ===========================================================================
-echo  Setting up MyTally Sync Agent to start automatically on Windows boot...
+echo  Setting up SnehDistribuors Sync Agent to start automatically on Windows boot...
 echo ===========================================================================
 echo.
 
-set "EXE_PATH=%~dp0..\dist\MyTallySyncAgent.exe"
+set "EXE_PATH=%~dp0..\dist\SnehDistribuorsSync.exe"
 
 if exist "%EXE_PATH%" (
-    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "MyTallySyncAgent" /t REG_SZ /d "\"%EXE_PATH%\"" /f
+    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "SnehDistribuorsSyncAgent" /t REG_SZ /d "\"%EXE_PATH%\" --tray" /f
     echo.
     echo ===========================================================================
-    echo  🎉 SUCCESS! MyTallySyncAgent.exe will now start automatically whenever Windows boots!
+    echo  🎉 SUCCESS! SnehDistribuorsSync.exe will now start automatically whenever Windows boots!
     echo ===========================================================================
 ) else (
-    echo [INFO] dist\MyTallySyncAgent.exe not found. Setting up Python script startup...
+    echo [INFO] dist\SnehDistribuorsSync.exe not found. Setting up Python GUI script startup...
     cd /d "%~dp0\.."
-    python agent.py --install-startup
+    python -c "from config import install_startup; install_startup()"
 )
 
 echo.

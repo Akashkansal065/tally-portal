@@ -1,7 +1,10 @@
 import urllib.request
 import urllib.error
+import urllib.parse
 import json
 import logging
+import time
+import socket
 from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("CloudClient")
@@ -155,9 +158,6 @@ class CloudClient:
 
     def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None) -> Tuple[bool, Dict[str, Any]]:
         """Uploads exported Tally XML to MyTally backend to update the database with comprehensive diagnostics."""
-        import time
-        import socket
-        
         headers = {
             "Content-Type": "text/xml;charset=utf-8"
         }
@@ -316,21 +316,29 @@ class CloudClient:
         return False, last_diag
 
     def get_last_alter_id(self) -> Tuple[int, int]:
-        """Fetches the latest alter IDs from the cloud backend (last_ledger_alter_id, last_voucher_alter_id)."""
+        """Fetches the latest alter IDs from the cloud backend (max_alter_id across ledgers, vouchers, items)."""
         for endpoint in ["/sync/last-alter-id", "/api/v1/sync/last-alter-id"]:
             url = f"{self.backend_url}{endpoint}"
             try:
                 req = urllib.request.Request(url, headers=self._get_headers())
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                    return int(data.get("last_ledger_alter_id", 0)), int(data.get("last_voucher_alter_id", 0))
+                    max_alt = int(data.get("last_alter_id", 0))
+                    led_alt = int(data.get("last_ledger_alter_id", 0))
+                    vch_alt = int(data.get("last_voucher_alter_id", 0))
+                    stk_alt = int(data.get("last_stock_item_alter_id", 0))
+                    return max(max_alt, led_alt, vch_alt, stk_alt), vch_alt
             except urllib.error.HTTPError as e:
                 if e.code == 401 and self.reauthenticate():
                     try:
                         req_retry = urllib.request.Request(url, headers=self._get_headers())
                         with urllib.request.urlopen(req_retry, timeout=self.timeout) as resp:
                             data = json.loads(resp.read().decode("utf-8"))
-                            return int(data.get("last_ledger_alter_id", 0)), int(data.get("last_voucher_alter_id", 0))
+                            max_alt = int(data.get("last_alter_id", 0))
+                            led_alt = int(data.get("last_ledger_alter_id", 0))
+                            vch_alt = int(data.get("last_voucher_alter_id", 0))
+                            stk_alt = int(data.get("last_stock_item_alter_id", 0))
+                            return max(max_alt, led_alt, vch_alt, stk_alt), vch_alt
                     except Exception:
                         pass
                 if e.code != 404:

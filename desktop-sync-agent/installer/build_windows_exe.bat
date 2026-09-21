@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 REM ===========================================================================
-REM  MyTally Windows Desktop Sync Agent - Standalone Executable Builder
+REM  SnehDistribuors Windows Desktop Sync Agent - Standalone Executable Builder
 REM ===========================================================================
 
 echo ===========================================================================
@@ -63,7 +63,7 @@ if not exist "%INSTALLER_PATH%" (
 )
 
 echo  [Step 2/2] Installing Python silently in background (takes ~15-20 seconds)...
-start /wait "" "%INSTALLER_PATH%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_tcltk=0 SimpleInstall=1
+start /wait "" "%INSTALLER_PATH%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Include_tcltk=1 SimpleInstall=1
 
 del "%INSTALLER_PATH%" >nul 2>&1
 
@@ -86,31 +86,41 @@ echo  ✅ Found Python: %PYTHON_EXE%
 echo.
 
 echo ===========================================================================
-echo  [2/3] Installing / Updating PyInstaller...
+echo  [2/3] Installing / Updating Dependencies (CustomTkinter, PyInstaller, Pillow)...
 echo ===========================================================================
-%PYTHON_EXE% -m pip install --upgrade pip pyinstaller
+%PYTHON_EXE% -m pip install --upgrade pip pyinstaller customtkinter pystray pillow requests cryptography
 
 echo.
 echo ===========================================================================
-echo  [3/3] Bundling MyTallySyncAgent.exe...
+echo  [3/3] Bundling SnehDistribuorsSync.exe...
 echo ===========================================================================
 cd /d "%~dp0\.."
 
-%PYTHON_EXE% -m PyInstaller --onefile --name "MyTallySyncAgent" ^
+%PYTHON_EXE% -m PyInstaller --onefile --windowed --name "SnehDistribuorsSync" ^
+    --icon "assets\icon.ico" ^
+    --collect-all customtkinter ^
+    --copy-metadata customtkinter ^
+    --add-data "assets;assets" ^
+    --add-data "security.py;." ^
     --add-data "config.py;." ^
+    --add-data "agent.py;." ^
     --add-data "tally_client.py;." ^
     --add-data "cloud_client.py;." ^
-    agent.py
+    gui_app.py
 
 if exist "%~dp0\..\agent_config.json" (
     copy /y "%~dp0\..\agent_config.json" "%~dp0\..\dist\agent_config.json" >nul 2>&1
 )
 
+if exist "%~dp0\..\assets" (
+    xcopy /e /i /y "%~dp0\..\assets" "%~dp0\..\dist\assets" >nul 2>&1
+)
+
 echo.
 echo ===========================================================================
 echo  🎉 BUILD SUCCESSFUL!
-echo  Your standalone executable is ready in:
-echo  📂 desktop-sync-agent\dist\MyTallySyncAgent.exe
+echo  Your standalone GUI executable is ready in:
+echo  📂 desktop-sync-agent\dist\SnehDistribuorsSync.exe
 echo  📄 desktop-sync-agent\dist\agent_config.json
 echo ===========================================================================
 pause
