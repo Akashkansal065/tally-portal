@@ -50,11 +50,21 @@ class DesktopSyncAgent:
         self.config_path = config_path
         self.config: AgentConfig = load_config(config_path)
         self.tally = TallyClient(tally_url=self.config.tally_url)
-        self.cloud = CloudClient(backend_url=self.config.backend_url, token=self.config.auth_token)
+        self.cloud = CloudClient(
+            backend_url=self.config.backend_url,
+            token=self.config.auth_token,
+            email=self.config.email or self.config.username,
+            password=self.config.password,
+            on_token_refreshed=self._on_token_refreshed
+        )
         self.last_inbound_time = 0
         self.active_company_name = self.config.company_name
         self.active_company_guid = ""
         self.open_companies_count = 0
+
+    def _on_token_refreshed(self, new_token: str):
+        self.config.auth_token = new_token
+        save_config(self.config, self.config_path)
 
     def discover_and_report(self):
         print(f"🔍 Contacting Tally XML Server at {self.config.tally_url}...")
@@ -248,7 +258,7 @@ class DesktopSyncAgent:
                     f"   ║ • Error Classification: {err_type}\n"
                     f"   ║ • Error Details:        {err_msg}\n"
                     f"   ║ • HTTP Status Code:     {status_code or 'None (Connection/Timeout Issue)'}\n"
-                    f"   ║ • Target Endpoint:      {self.config.backend_url}{endpoint}\n"
+                    f"   ║ • Target Endpoint:      {self.config.backend_url.rstrip('/')}{endpoint}\n"
                     f"   ║ • Payload Size:         {size_kb:.1f} KB\n"
                     f"   ║ • Request Duration:     {dur:.2f} seconds\n"
                     f"   ║ • Possible Cause:       {'Network timeout or server took too long to process XML' if 'TIMEOUT' in err_type else 'Server code exception or invalid credentials' if '500' in str(status_code) or 'AUTH' in err_type else 'Tunnel/network drop'}\n"

@@ -7,10 +7,21 @@ from typing import Dict, Any, List, Optional, Tuple
 logger = logging.getLogger("CloudClient")
 
 class CloudClient:
-    def __init__(self, backend_url: str = "http://127.0.0.1:8000", token: str = "", timeout: int = 10):
+    def __init__(
+        self,
+        backend_url: str = "http://127.0.0.1:8000",
+        token: str = "",
+        timeout: int = 10,
+        email: str = "",
+        password: str = "",
+        on_token_refreshed: Optional[Any] = None
+    ):
         self.backend_url = backend_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.email = email
+        self.password = password
+        self.on_token_refreshed = on_token_refreshed
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
@@ -33,6 +44,8 @@ class CloudClient:
                     token = data.get("access_token") or data.get("token")
                     if token:
                         self.token = token
+                        self.email = username_or_email
+                        self.password = password
                         return True, self.token
             except urllib.error.HTTPError as e:
                 try:
@@ -44,6 +57,24 @@ class CloudClient:
             except Exception as e:
                 logger.debug(f"Auth attempt on {endpoint} failed: {e}")
         return False, "Incorrect email/username or password"
+
+    def reauthenticate(self) -> bool:
+        """Attempts to obtain a fresh access token if credentials are saved."""
+        if not self.email or not self.password:
+            return False
+        logger.info(f"🔄 Access token expired. Auto-reauthenticating as '{self.email}'...")
+        ok, res = self.authenticate(self.email, self.password)
+        if ok:
+            logger.info("🔑 Auto-reauthenticated successfully with fresh token.")
+            if self.on_token_refreshed:
+                try:
+                    self.on_token_refreshed(self.token)
+                except Exception as ex:
+                    logger.debug(f"Error calling on_token_refreshed: {ex}")
+            return True
+        else:
+            logger.error(f"❌ Auto-reauthentication failed: {res}")
+            return False
 
     def check_health(self) -> Tuple[bool, str]:
         """Checks if the cloud backend is reachable."""
@@ -74,9 +105,22 @@ class CloudClient:
                         return items, None
             except urllib.error.HTTPError as e:
                 if e.code == 401:
-                    last_error = f"Authentication Required (HTTP 401). Please add 'auth_token' or 'username'/'password' in agent_config.json"
+                    logger.warning("⚠️ Received HTTP 401 on outbound-queue. Attempting auto-reauth...")
+                    if self.reauthenticate():
+                        try:
+                            req_retry = urllib.request.Request(url, headers=self._get_headers())
+                            with urllib.request.urlopen(req_retry, timeout=self.timeout) as resp:
+                                items = json.loads(resp.read().decode("utf-8"))
+                                if isinstance(items, list):
+                                    return items, None
+                        except Exception as retry_ex:
+                            logger.error(f"Retry after reauth failed: {retry_ex}")
+                    last_error = f"Authentication Required (HTTP 401). Please check email/password in config."
+                    break  # Do not fallback to /api/v1 when auth fails
                 else:
                     last_error = f"HTTP {e.code} on {endpoint}: {e.reason}"
+                if e.code != 404:
+                    break
             except urllib.error.URLError as e:
                 last_error = f"Cannot connect to {self.backend_url} ({e.reason})"
             except Exception as e:
@@ -95,6 +139,16 @@ class CloudClient:
                 req = urllib.request.Request(url, data=payload, headers=self._get_headers())
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return resp.status == 200
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and self.reauthenticate():
+                    try:
+                        req_retry = urllib.request.Request(url, data=payload, headers=self._get_headers())
+                        with urllib.request.urlopen(req_retry, timeout=self.timeout) as resp:
+                            return resp.status == 200
+                    except Exception:
+                        pass
+                if e.code != 404:
+                    break
             except Exception as e:
                 logger.debug(f"Acknowledge on {endpoint} failed: {e}")
         return False
@@ -153,6 +207,26 @@ class CloudClient:
 
             except urllib.error.HTTPError as e:
                 dur = time.time() - start_t
+
+                # Handle 401 token expiration with auto-reauthentication
+                if e.code == 401:
+                    logger.warning(f"⚠️ Inbound push returned HTTP 401 (token expired). Auto-reauthenticating...")
+                    if self.reauthenticate():
+                        headers["Authorization"] = f"Bearer {self.token}"
+                        retry_start = time.time()
+                        try:
+                            req_retry = urllib.request.Request(url, data=payload_bytes, headers=headers)
+                            with urllib.request.urlopen(req_retry, timeout=300) as retry_resp:
+                                retry_dur = time.time() - retry_start
+                                raw_retry = retry_resp.read().decode("utf-8", errors="replace")
+                                res_json = json.loads(raw_retry)
+                                res_json["duration_seconds"] = retry_dur
+                                is_success = (res_json.get("status") == "success" or res_json.get("imported_vouchers", 0) >= 0)
+                                logger.info(f"✅ Inbound push retry succeeded after token refresh!")
+                                return is_success, res_json
+                        except Exception as retry_ex:
+                            logger.error(f"Inbound push retry failed after re-auth: {retry_ex}")
+
                 try:
                     err_body = e.read().decode("utf-8", errors="ignore")
                     try:
@@ -185,6 +259,10 @@ class CloudClient:
                 }
                 logger.error(f"❌ Inbound push on {endpoint} returned {err_type}: {last_diag['error']} (took {dur:.1f}s)")
 
+                # If the endpoint exists and gave an error (not a 404), do not try fallback endpoint
+                if e.code != 404:
+                    break
+
             except (socket.timeout, TimeoutError):
                 dur = time.time() - start_t
                 last_diag = {
@@ -196,6 +274,7 @@ class CloudClient:
                     "payload_size_kb": payload_size_kb
                 }
                 logger.error(f"⏱️ Inbound push on {endpoint} timed out after {dur:.1f}s (Payload: {payload_size_kb:.1f} KB)")
+                break
 
             except urllib.error.URLError as e:
                 dur = time.time() - start_t
@@ -219,6 +298,7 @@ class CloudClient:
                     "payload_size_kb": payload_size_kb
                 }
                 logger.error(f"🌐 Inbound push on {endpoint} failed with {err_type}: {err_msg}")
+                break
 
             except Exception as e:
                 dur = time.time() - start_t
@@ -231,6 +311,7 @@ class CloudClient:
                     "payload_size_kb": payload_size_kb
                 }
                 logger.error(f"⚠️ Inbound push on {endpoint} encountered unexpected exception: {e}")
+                break
 
         return False, last_diag
 
@@ -243,6 +324,17 @@ class CloudClient:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     return int(data.get("last_ledger_alter_id", 0)), int(data.get("last_voucher_alter_id", 0))
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and self.reauthenticate():
+                    try:
+                        req_retry = urllib.request.Request(url, headers=self._get_headers())
+                        with urllib.request.urlopen(req_retry, timeout=self.timeout) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            return int(data.get("last_ledger_alter_id", 0)), int(data.get("last_voucher_alter_id", 0))
+                    except Exception:
+                        pass
+                if e.code != 404:
+                    break
             except Exception as e:
                 logger.debug(f"Failed to fetch last alter id from {endpoint}: {e}")
         return 0, 0
