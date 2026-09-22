@@ -36,11 +36,7 @@ export function MobileBottomNav() {
   const isAdmin = permissions.isAdmin || user.role === 'admin' || user.role === 'Admin'
   const hasVouchersAccess = Boolean(permissions.showVouchers ?? permissions.showReceipts)
 
-  const hasCustomersAccess =
-    permissions.showCustomers ||
-    permissions.showLedger ||
-    permissions.showCheckIn ||
-    permissions.showSalesLedgers
+  const hasCustomersAccess = Boolean(permissions.showCustomers || isAdmin)
 
   const tabs: NavTab[] = [
     { href: '/', label: 'Home', icon: Home },

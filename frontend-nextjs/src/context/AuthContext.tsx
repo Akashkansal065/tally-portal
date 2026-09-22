@@ -20,6 +20,8 @@ export interface UserPermissions {
   showCustomers: boolean
   ledgerScope: 'all' | 'dr_only' | 'restricted'
   stockScope: 'full' | 'restricted' | 'catalog_only'
+  voucherActionScope: 'view_only' | 'can_create' | 'full'
+  allowedVoucherTypeIds: number[] | null
   isAdmin: boolean
 }
 
@@ -90,6 +92,8 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   showCustomers: true,
   ledgerScope: 'dr_only',
   stockScope: 'full',
+  voucherActionScope: 'full',
+  allowedVoucherTypeIds: null,
   isAdmin: false,
 }
 
@@ -148,6 +152,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           showCustomers: isAdmin ? true : (data.showCustomers ?? true),
           ledgerScope: isAdmin ? 'all' : (data.ledgerScope ?? 'dr_only'),
           stockScope: isAdmin ? 'full' : (data.stockScope ?? 'full'),
+          voucherActionScope: isAdmin ? 'full' : (data.voucherActionScope ?? 'full'),
+          allowedVoucherTypeIds: isAdmin ? null : (data.allowedVoucherTypeIds ?? null),
           isAdmin,
         },
       })

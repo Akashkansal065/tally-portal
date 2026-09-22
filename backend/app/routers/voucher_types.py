@@ -6,7 +6,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.core.permissions import require_permission, get_current_user
+from app.core.permissions import require_permission, get_current_user, get_user_allowed_voucher_type_ids
 from app.models.portal_core import User, SyncQueue
 from app.models.tally_core import (
     MstVoucherType, MstVoucherTypePrefix, MstVoucherTypeSuffix, 
@@ -115,6 +115,10 @@ async def list_voucher_types(
     
     if parent_type:
         stmt = stmt.where(MstVoucherType.parent_type == parent_type)
+        
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None:
+        stmt = stmt.where(MstVoucherType.voucher_type_id.in_(allowed_ids))
         
     if search:
         stmt = stmt.where(MstVoucherType.name.ilike(f"%{search}%"))

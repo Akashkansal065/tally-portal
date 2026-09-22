@@ -475,15 +475,24 @@ async def get_recent_visits(
 @router.get("/history")
 async def get_user_visit_history(
     limit: int = 50,
+    date: Optional[str] = None,
     user: User = Depends(require_permission("visits", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """Return past check-in visit history for the logged-in user."""
-    result = await db.execute(
+    query = (
         select(SalesVisit)
         .where(SalesVisit.user_id == user.user_id)
-        .order_by(desc(SalesVisit.created_at))
-        .limit(limit)
+    )
+    if date:
+        from datetime import date as dt
+        try:
+            d = dt.fromisoformat(date)
+            query = query.where(func.date(SalesVisit.created_at) == d)
+        except Exception:
+            pass
+    result = await db.execute(
+        query.order_by(desc(SalesVisit.created_at)).limit(limit)
     )
     visits = result.scalars().all()
     return await enrich_visit_records(visits, user.company_id, db)

@@ -38,43 +38,87 @@ export function useLocationPermission(options: UseLocationPermissionOptions = {}
   const [showModal, setShowModal] = useState<boolean>(false)
   const [platform, setPlatform] = useState<DevicePlatformInfo>(() => detectDevicePlatform())
 
+  // Keep latest options in a Ref so callbacks remain referentially stable across renders
+  const optionsRef = useRef({
+    activityName,
+    shopName,
+    referenceType,
+    referenceId,
+    token,
+    platform,
+  })
+  optionsRef.current = {
+    activityName,
+    shopName,
+    referenceType,
+    referenceId,
+    token,
+    platform,
+  }
+
+  // Detect platform once after hydration/mount
+  useEffect(() => {
+    setPlatform(detectDevicePlatform())
+  }, [])
+
   // Ref to track last alert timestamp to avoid spamming alerts in the same session
   const lastAlertTimeRef = useRef<number>(0)
 
-  // Report denial to admins
-  const sendAdminAlert = useCallback(
-    async (customDetails?: string) => {
-      const now = Date.now()
-      // Minimum 60s client throttle between reports
-      if (now - lastAlertTimeRef.current < 60000) return
-      lastAlertTimeRef.current = now
+  // Report denial to admins (referentially stable)
+  const sendAdminAlert = useCallback(async (customDetails?: string) => {
+    const now = Date.now()
+    // Minimum 60s client throttle between reports
+    if (now - lastAlertTimeRef.current < 60000) return
+    lastAlertTimeRef.current = now
 
-      await reportLocationDeniedAlert(API_BASE, token, {
-        activity: activityName,
-        shop_name: shopName,
-        details: customDetails || 'User denied location permission in browser.',
-        reference_type: referenceType,
-        reference_id: referenceId,
-      })
-    },
-    [activityName, shopName, referenceType, referenceId, token]
-  )
+    const current = optionsRef.current
+    await reportLocationDeniedAlert(API_BASE, current.token, {
+      activity: current.activityName,
+      shop_name: current.shopName,
+      details: customDetails || 'User denied location permission in browser.',
+      reference_type: current.referenceType,
+      reference_id: current.referenceId,
+      browser_name: current.platform.browserName,
+      is_mobile: current.platform.isMobile,
+    })
+  }, [])
 
   // Check permission state and subscribe to changes
   useEffect(() => {
     let pStatus: PermissionStatus | null = null
-    setPlatform(detectDevicePlatform())
+    let isMounted = true
 
     queryLocationPermissionState().then((res) => {
+      if (!isMounted) return
       setPermissionState(res.state)
+
       if (res.state === 'denied' && autoRequestOnMount) {
         setShowModal(true)
         sendAdminAlert('Location permission was found denied upon loading activity.')
+      } else if (res.state === 'granted' && autoRequestOnMount) {
+        // Initial GPS warm-up on mount if permission is granted
+        setIsAcquiring(true)
+        requestCoordinates({ enableHighAccuracy: true })
+          .then((c) => {
+            if (isMounted) {
+              setCoords(c)
+              setError(null)
+            }
+          })
+          .catch((err) => {
+            if (isMounted) {
+              setError(err.message || 'Failed to acquire location.')
+            }
+          })
+          .finally(() => {
+            if (isMounted) setIsAcquiring(false)
+          })
       }
 
       if (res.permissionStatus) {
         pStatus = res.permissionStatus
         pStatus.onchange = () => {
+          if (!isMounted) return
           const nextState = pStatus?.state as LocationPermissionState
           setPermissionState(nextState)
           if (nextState === 'granted') {
@@ -82,7 +126,9 @@ export function useLocationPermission(options: UseLocationPermissionOptions = {}
             setError(null)
             // Auto acquire coords when permission changes to granted
             requestCoordinates({ enableHighAccuracy: true })
-              .then((c) => setCoords(c))
+              .then((c) => {
+                if (isMounted) setCoords(c)
+              })
               .catch(() => {})
           } else if (nextState === 'denied') {
             setShowModal(true)
@@ -93,31 +139,12 @@ export function useLocationPermission(options: UseLocationPermissionOptions = {}
     })
 
     return () => {
+      isMounted = false
       if (pStatus) {
         pStatus.onchange = null
       }
     }
   }, [autoRequestOnMount, sendAdminAlert])
-
-  // Initial GPS warm-up on mount if permission is granted
-  useEffect(() => {
-    if (autoRequestOnMount) {
-      queryLocationPermissionState().then((res) => {
-        if (res.state === 'granted') {
-          setIsAcquiring(true)
-          requestCoordinates({ enableHighAccuracy: true })
-            .then((c) => {
-              setCoords(c)
-              setError(null)
-            })
-            .catch((err) => {
-              setError(err.message || 'Failed to acquire location.')
-            })
-            .finally(() => setIsAcquiring(false))
-        }
-      })
-    }
-  }, [autoRequestOnMount])
 
   // Explicitly request location (triggers browser prompt if promptable, or opens modal if denied)
   const requestLocation = useCallback(

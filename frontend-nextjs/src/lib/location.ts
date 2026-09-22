@@ -171,6 +171,8 @@ export async function reportLocationDeniedAlert(
     details?: string
     reference_id?: string
     reference_type?: string
+    browser_name?: string
+    is_mobile?: boolean
   }
 ): Promise<boolean> {
   if (!token) return false
@@ -187,6 +189,8 @@ export async function reportLocationDeniedAlert(
         details: data.details || null,
         reference_id: data.reference_id || null,
         reference_type: data.reference_type || 'visit',
+        browser_name: data.browser_name || null,
+        is_mobile: typeof data.is_mobile === 'boolean' ? data.is_mobile : null,
       }),
     })
     return res.ok

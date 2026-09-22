@@ -85,6 +85,12 @@ interface DashboardCard {
 
 export default function DashboardPage() {
   const { user, token, permissions, isLoading } = useAuth()
+  const isAdmin = Boolean(
+    permissions?.isAdmin ||
+    user?.role?.toLowerCase() === 'admin' ||
+    user?.role?.toLowerCase() === 'owner' ||
+    user?.role?.toLowerCase() === 'superadmin'
+  )
   const { startDate: globalFrom, endDate: globalTo, setPeriod } = usePeriod()
   const router = useRouter()
 
@@ -301,7 +307,7 @@ export default function DashboardPage() {
       icon: Users,
       color: 'text-violet-600',
       bgColor: 'bg-violet-500/10 border-violet-500/20',
-      show: permissions.showLedger || permissions.showCheckIn || permissions.showSalesLedgers,
+      show: Boolean(permissions.showCustomers || isAdmin),
     },
     {
       href: '/stocks',
@@ -745,13 +751,15 @@ export default function DashboardPage() {
                   Debtors ranked by total sales turnover for this period
                 </p>
               </div>
-              <Link
-                href="/customers"
-                className="text-[11px] font-bold text-emerald-600 hover:underline flex items-center gap-0.5 self-start sm:self-auto"
-              >
-                <span>Directory</span>
-                <ArrowRight className="w-3 h-3" />
-              </Link>
+              {Boolean(permissions.showCustomers || isAdmin) && (
+                <Link
+                  href="/customers"
+                  className="text-[11px] font-bold text-emerald-600 hover:underline flex items-center gap-0.5 self-start sm:self-auto"
+                >
+                  <span>Directory</span>
+                  <ArrowRight className="w-3 h-3" />
+                </Link>
+              )}
             </div>
 
             <div className="h-72 sm:h-80 w-full pt-2">

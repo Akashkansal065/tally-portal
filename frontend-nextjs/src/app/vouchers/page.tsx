@@ -133,24 +133,54 @@ export default function VouchersPage() {
     return new Date(dateStr)
   }, [])
 
+  const allowedVoucherTypeNames = useMemo(() => {
+    if (!permissions.allowedVoucherTypeIds) return null
+    const allowedSet = new Set(permissions.allowedVoucherTypeIds)
+    const allowedTypes = voucherTypes.filter(vt => allowedSet.has(vt.voucher_type_id))
+    const names = new Set<string>()
+    allowedTypes.forEach(vt => {
+      if (vt.name) names.add(vt.name.toLowerCase())
+      if (vt.parent_type) names.add(vt.parent_type.toLowerCase())
+    })
+    return names
+  }, [permissions.allowedVoucherTypeIds, voucherTypes])
+
   const isVoucherAllowed = useCallback((vType: string) => {
     if (!vType) return false
     const t = vType.toLowerCase()
     if (t === 'sales' && !permissions.showSalesLedgers) return false
     if (t === 'purchase' && !permissions.showPurchaseLedgers) return false
+    if (allowedVoucherTypeNames !== null) {
+      if (!allowedVoucherTypeNames.has(t)) {
+        return false
+      }
+    }
     return true
-  }, [permissions])
+  }, [permissions, allowedVoucherTypeNames])
 
   const hasAnyVoucherPermission = 
     Boolean(permissions.showVouchers ?? permissions.showReceipts)
 
   const allowedCategories = useMemo(() => {
-    const cats = ['All']
-    if (permissions.showSalesLedgers) cats.push('Sales')
-    if (permissions.showPurchaseLedgers) cats.push('Purchase')
-    cats.push('Receipt', 'Payment', 'Journal', 'Contra')
-    return cats
-  }, [permissions])
+    const baseCats: string[] = []
+    if (permissions.showSalesLedgers) baseCats.push('Sales')
+    if (permissions.showPurchaseLedgers) baseCats.push('Purchase')
+    baseCats.push('Receipt', 'Payment', 'Journal', 'Contra')
+
+    let filteredCats = baseCats
+    if (allowedVoucherTypeNames !== null) {
+      filteredCats = baseCats.filter(cat => {
+        const catLower = cat.toLowerCase()
+        return Array.from(allowedVoucherTypeNames).some(name => name.includes(catLower) || catLower.includes(name))
+      })
+    }
+
+    return ['All', ...filteredCats]
+  }, [permissions, allowedVoucherTypeNames])
+
+  const canCreateVoucher = permissions.voucherActionScope !== 'view_only'
+  const canEditVoucher = permissions.voucherActionScope === 'full'
+  const canDeleteVoucher = permissions.voucherActionScope === 'full'
 
   // Fetch all vouchers, ledgers, and voucherTypes on mount
   useEffect(() => {
@@ -160,7 +190,7 @@ export default function VouchersPage() {
     Promise.all([
       fetch(`${API_BASE}/vouchers`, { headers: authHeaders(token) }).then(r => r.json()),
       fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()),
-      fetch(`${API_BASE}/voucher-type`, { headers: authHeaders(token) }).then(r => r.json())
+      fetch(`${API_BASE}/vouchers/types`, { headers: authHeaders(token) }).then(r => r.json())
     ])
       .then(([vouchersData, ledgersData, vtData]) => {
         setAllVouchers(Array.isArray(vouchersData) ? vouchersData : [])
@@ -574,14 +604,16 @@ export default function VouchersPage() {
                   >
                     <FileDown className="h-4.5 w-4.5" />
                   </button>
-                  <button 
-                    onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
-                    className="h-8 px-2 sm:px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-lg shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
-                    title="Create Voucher"
-                  >
-                    <Plus className="h-4 w-4 stroke-[2.5]" />
-                    <span className="hidden sm:inline">Create Voucher</span>
-                  </button>
+                  {canCreateVoucher && (
+                    <button 
+                      onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
+                      className="h-8 px-2 sm:px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-lg shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
+                      title="Create Voucher"
+                    >
+                      <Plus className="h-4 w-4 stroke-[2.5]" />
+                      <span className="hidden sm:inline">Create Voucher</span>
+                    </button>
+                  )}
                 </div>
               </>
             )}
@@ -788,31 +820,37 @@ export default function VouchersPage() {
                         </button>
 
                         {/* Compare with Tally */}
-                        <button
-                          onClick={(e) => handleOpenCompare(e, voucher.voucher_id)}
-                          className="h-7 w-7 flex items-center justify-center rounded-full border border-purple-500/30 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/40 cursor-pointer transition-colors shadow-2xs"
-                          title="Compare live with Tally Prime (Detect Conflicts)"
-                        >
-                          <GitCompare className="h-3.5 w-3.5" />
-                        </button>
+                        {canEditVoucher && (
+                          <button
+                            onClick={(e) => handleOpenCompare(e, voucher.voucher_id)}
+                            className="h-7 w-7 flex items-center justify-center rounded-full border border-purple-500/30 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/40 cursor-pointer transition-colors shadow-2xs"
+                            title="Compare live with Tally Prime (Detect Conflicts)"
+                          >
+                            <GitCompare className="h-3.5 w-3.5" />
+                          </button>
+                        )}
 
                         {/* Edit / Alter Voucher */}
-                        <button
-                          onClick={(e) => handleOpenEdit(e, voucher)}
-                          className="h-7 w-7 flex items-center justify-center rounded-full border border-blue-500/20 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 cursor-pointer transition-colors"
-                          title="Alter / Edit Voucher"
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </button>
+                        {canEditVoucher && (
+                          <button
+                            onClick={(e) => handleOpenEdit(e, voucher)}
+                            className="h-7 w-7 flex items-center justify-center rounded-full border border-blue-500/20 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 cursor-pointer transition-colors"
+                            title="Alter / Edit Voucher"
+                          >
+                            <Edit3 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
 
                         {/* Delete Voucher */}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setDeletingVoucher(voucher) }}
-                          className="h-7 w-7 flex items-center justify-center rounded-full border border-rose-500/20 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer transition-colors"
-                          title="Delete Voucher (Syncs to Tally)"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        {canDeleteVoucher && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDeletingVoucher(voucher) }}
+                            className="h-7 w-7 flex items-center justify-center rounded-full border border-rose-500/20 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer transition-colors"
+                            title="Delete Voucher (Syncs to Tally)"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
 
                         {/* WhatsApp share */}
                         <button
@@ -846,13 +884,15 @@ export default function VouchersPage() {
       {/* Sticky Floating CTA Buttons on Mobile */}
       <div className="fixed bottom-20 left-0 right-0 z-40 px-3 md:hidden pointer-events-none">
         <div className="max-w-lg mx-auto flex items-center gap-2 pointer-events-auto">
-          <button
-            onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
-            className="flex-1 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs shadow-xl rounded-xl h-12 border border-emerald-400/40 cursor-pointer flex items-center justify-center gap-2 transition-all active:scale-95 ring-2 ring-emerald-500/20"
-          >
-            <Plus className="h-5 w-5 stroke-[2.5]" />
-            <span>Create Voucher</span>
-          </button>
+          {canCreateVoucher && (
+            <button
+              onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-black text-xs shadow-xl rounded-xl h-12 border border-emerald-400/40 cursor-pointer flex items-center justify-center gap-2 transition-all active:scale-95 ring-2 ring-emerald-500/20"
+            >
+              <Plus className="h-5 w-5 stroke-[2.5]" />
+              <span>Create Voucher</span>
+            </button>
+          )}
           <button
             onClick={() => router.push('/temporders/new')}
             className="bg-card hover:bg-muted text-foreground font-bold text-xs shadow-md rounded-xl h-12 px-3 border border-border cursor-pointer flex items-center justify-center gap-1.5 transition-all active:scale-95 shrink-0"

@@ -9,8 +9,6 @@ import {
   X,
   Smartphone,
   Laptop,
-  CheckCircle2,
-  ExternalLink,
 } from 'lucide-react'
 import { DevicePlatformInfo } from '@/lib/location'
 import { cn } from '@/lib/utils'

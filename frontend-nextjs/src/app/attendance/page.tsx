@@ -20,9 +20,11 @@ import {
   XCircle,
   FileText,
   LogOut,
-  ExternalLink
+  ExternalLink,
+  AlertTriangle
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 
 type AttendanceRecord = {
   id: number
@@ -69,6 +71,8 @@ export default function AttendancePage() {
   const [stampedCoords, setStampedCoords] = useState<{ lat: number | null, lng: number | null } | null>(null)
   const [processingPhoto, setProcessingPhoto] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [showPhotoRequiredModal, setShowPhotoRequiredModal] = useState(false)
+  const [photoRequiredAction, setPhotoRequiredAction] = useState<'in' | 'out'>('out')
   
   // Clock states
   const [currentTime, setCurrentTime] = useState<Date | null>(null)
@@ -215,7 +219,9 @@ export default function AttendancePage() {
 
   const handlePunch = async (punchType: 'in' | 'out') => {
     if (!photo) {
-      alert('Selfie photo is required to punch attendance.')
+      setPhotoRequiredAction(punchType)
+      setShowPhotoRequiredModal(true)
+      toast.error(`Verification photo is required to punch ${punchType === 'out' ? 'out' : 'in'}.`)
       return
     }
     setSubmitting(true)
@@ -479,8 +485,8 @@ export default function AttendancePage() {
                       {!todayAttendance ? (
                         <button
                           onClick={() => handlePunch('in')}
-                          disabled={submitting || !photo}
-                          className="w-full py-3 bg-sky-500 hover:bg-sky-600 disabled:bg-muted disabled:text-muted-foreground font-bold text-white rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+                          disabled={submitting || processingPhoto}
+                          className="w-full py-3 bg-sky-500 hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-white rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.99]"
                         >
                           {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Clock className="h-3.5 w-3.5" />}
                           Punch-In Today
@@ -488,8 +494,8 @@ export default function AttendancePage() {
                       ) : (
                         <button
                           onClick={() => handlePunch('out')}
-                          disabled={submitting || !photo}
-                          className="w-full py-3 bg-rose-500 hover:bg-rose-600 disabled:bg-muted disabled:text-muted-foreground font-bold text-white rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+                          disabled={submitting || processingPhoto}
+                          className="w-full py-3 bg-rose-500 hover:bg-rose-600 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-white rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.99]"
                         >
                           {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LogOut className="h-3.5 w-3.5" />}
                           Punch-Out Session
@@ -793,6 +799,56 @@ export default function AttendancePage() {
           </div>
         )}
       </div>
+
+      {/* Photo Required Error Popup Modal */}
+      {showPhotoRequiredModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-card border border-border/80 rounded-3xl p-6 shadow-2xl max-w-sm w-full space-y-5 animate-in zoom-in-95 duration-200 relative overflow-hidden">
+            {/* Top accent glow */}
+            <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-rose-500 via-amber-500 to-rose-500" />
+            
+            <div className="flex items-start gap-4">
+              <div className="h-12 w-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-500 shrink-0 shadow-inner">
+                <Camera className="h-6 w-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-extrabold text-base text-foreground tracking-tight">Photo Required</h3>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  You cannot {photoRequiredAction === 'out' ? 'punch out' : 'punch in'} without taking a selfie verification photo.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-2xl flex items-center gap-3 text-xs text-amber-800 dark:text-amber-300 font-medium">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+              <span>Stamps your live GPS address and timestamp for proof of attendance.</span>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPhotoRequiredModal(false)
+                  setTimeout(() => {
+                    fileInputRef.current?.click()
+                  }, 120)
+                }}
+                className="w-full py-3 bg-rose-500 hover:bg-rose-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer"
+              >
+                <Camera className="h-4 w-4" />
+                Take Selfie Now
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowPhotoRequiredModal(false)}
+                className="w-full py-2.5 bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

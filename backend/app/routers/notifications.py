@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -70,9 +71,18 @@ class LocationDeniedAlertRequest(BaseModel):
     details: Optional[str] = None
     reference_id: Optional[str] = None
     reference_type: Optional[str] = "visit"
+    browser_name: Optional[str] = None
+    is_mobile: Optional[bool] = None
 
 
 _LOCATION_ALERT_CACHE: dict = {}
+ONE_WEEK_SECONDS = 7 * 86400  # 7 days (604,800s)
+
+def _cleanup_location_alert_cache(now: float):
+    """Evict entries older than 1 week from the location alert debounce cache."""
+    expired_keys = [k for k, ts in _LOCATION_ALERT_CACHE.items() if (now - ts) > ONE_WEEK_SECONDS]
+    for k in expired_keys:
+        _LOCATION_ALERT_CACHE.pop(k, None)
 
 
 # ─── Web Push Dispatcher ─────────────────────────────────────────────────────
@@ -430,8 +440,8 @@ async def report_location_denied_alert(
     Alerts all company admins whenever a user denies location access during a required activity.
     Debounces notifications to once per 2 minutes per user+activity to avoid notification flooding.
     """
-    import time
     now = time.time()
+    _cleanup_location_alert_cache(now)
     cache_key = (current_user.company_id, current_user.user_id, req.activity)
     last_sent = _LOCATION_ALERT_CACHE.get(cache_key, 0)
     
@@ -449,9 +459,14 @@ async def report_location_denied_alert(
     if req.shop_name:
         activity_desc += f" at '{req.shop_name}'"
 
+    device_info = ""
+    if req.browser_name:
+        dev_type = "mobile" if req.is_mobile else "desktop"
+        device_info = f" on {req.browser_name} ({dev_type})"
+
     title = f"⚠️ Location Denied: {user_display}"
     message = (
-        f"{user_display} ({current_user.email}) denied browser location access during {activity_desc}. "
+        f"{user_display} ({current_user.email}) denied browser location access during {activity_desc}{device_info}. "
         f"The action was blocked until GPS access is granted."
     )
 

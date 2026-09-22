@@ -10,7 +10,7 @@ import json
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission
+from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission, get_user_allowed_voucher_type_ids
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
 from app.models.tally_core import (
@@ -44,7 +44,11 @@ async def get_voucher_types(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
-    res = await db.execute(select(MstVoucherType).where(MstVoucherType.company_id == user.company_id))
+    stmt = select(MstVoucherType).where(MstVoucherType.company_id == user.company_id)
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None:
+        stmt = stmt.where(MstVoucherType.voucher_type_id.in_(allowed_ids))
+    res = await db.execute(stmt)
     return res.scalars().all()
 
 # --- Voucher Posting Logic ---
@@ -327,6 +331,13 @@ async def create_voucher(
     if not req.entries and not req.inventory_entries:
         raise HTTPException(status_code=400, detail="Voucher must have at least one entry.")
         
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None and req.voucher_type_id not in allowed_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to create vouchers of this type."
+        )
+        
     total_debits = sum((e.debit_amount for e in req.entries), Decimal('0.00')) if req.entries else Decimal('0.00')
     total_credits = sum((e.credit_amount for e in req.entries), Decimal('0.00')) if req.entries else Decimal('0.00')
     
@@ -561,6 +572,14 @@ async def update_voucher(
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
         
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None:
+        if voucher.voucher_type_id not in allowed_ids or req.voucher_type_id not in allowed_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to modify vouchers of this type."
+            )
+        
     vtype_query = await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == req.voucher_type_id))
     vtype = vtype_query.scalars().first()
 
@@ -625,6 +644,10 @@ async def rollback_voucher_alter(
     voucher = (await db.execute(v_stmt)).scalars().first()
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None and voucher.voucher_type_id not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to modify vouchers of this type.")
         
     sq_query = select(SyncQueue).where(
         SyncQueue.company_id == user.company_id,
@@ -797,6 +820,10 @@ async def retry_voucher_sync(
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
         
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None and voucher.voucher_type_id not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to modify vouchers of this type.")
+        
     sq_query = (
         select(SyncQueue)
         .where(
@@ -833,6 +860,13 @@ async def delete_voucher(
     voucher = v_query.scalars().first()
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None and voucher.voucher_type_id not in allowed_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete vouchers of this type."
+        )
         
     # Reverse stock if confirmed
     if voucher.status == 'confirmed':
@@ -908,6 +942,10 @@ async def cancel_voucher(
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
         
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None and voucher.voucher_type_id not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to modify vouchers of this type.")
+        
     old_status = voucher.status
     if old_status == 'cancelled':
         return {"detail": "Voucher is already cancelled", "tally_synced": True, "tally_status": "SUCCESS", "tally_message": None}
@@ -959,6 +997,10 @@ async def update_voucher_status(
     voucher = v_query.scalars().first()
     if not voucher:
         raise HTTPException(status_code=404, detail="Voucher not found")
+        
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None and voucher.voucher_type_id not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to modify vouchers of this type.")
         
     old_status = voucher.status
     if old_status == status_val:
@@ -1050,7 +1092,10 @@ async def get_vouchers(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
     cache_key = f"vouchers_list_{status}_{from_date}_{to_date}_{date}_{ledger_id}_{party_name}_{voucher_type}"
+    if allowed_ids is not None:
+        cache_key += f"_user_{user.user_id}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None: return cached
 
@@ -1058,6 +1103,9 @@ async def get_vouchers(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
     ).where(TrnVoucher.company_id == user.company_id)
+
+    if allowed_ids is not None:
+        stmt = stmt.where(TrnVoucher.voucher_type_id.in_(allowed_ids))
 
     if status: stmt = stmt.where(TrnVoucher.status == status)
     if date: stmt = stmt.where(TrnVoucher.voucher_date == datetime.strptime(date, "%Y-%m-%d").date())
@@ -1107,6 +1155,13 @@ async def get_voucher_detail(
     res = await db.execute(stmt)
     voucher = res.scalars().first()
     if not voucher: raise HTTPException(status_code=404, detail="Voucher not found")
+
+    allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    if allowed_ids is not None and voucher.voucher_type_id not in allowed_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view vouchers of this type."
+        )
 
     party_name, amount, party_ledger_id = _resolve_party_and_amount(voucher.entries)
     if voucher.party_ledger_id:

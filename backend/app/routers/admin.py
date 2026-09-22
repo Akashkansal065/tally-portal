@@ -1,19 +1,28 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import delete, func
+from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from datetime import date
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.core.permissions import get_current_user, get_user_permission_toggles
+from app.core.permissions import (
+    get_current_user,
+    get_all_user_permissions,
+    get_user_permission_toggles,
+    get_effective_permission,
+    get_user_allowed_voucher_type_ids
+)
 from app.core.security import get_password_hash
-from app.models.portal_core import User, Role, Permission, Module, UserPermissionOverride
-from app.models.portal_core import AuditLog
+from app.models.portal_core import (
+    User, Role, Permission, Module, UserPermissionOverride, UserDataScope, AuditLog,
+    Company, UserCompanyAccess
+)
 
 router = APIRouter(prefix="/admin", tags=["Admin Panel"])
 
-from typing import Optional
 
 class AdminUserResponse(BaseModel):
     user_id: int
@@ -41,6 +50,8 @@ class AdminUserResponse(BaseModel):
     allowedStockGroups: Optional[str] = None
     allowedLedgerGroups: Optional[str] = None
     allowedReportCategories: Optional[str] = None
+    voucherActionScope: str = "full"
+    allowedVoucherTypeIds: Optional[List[int]] = None
 
 class AdminUserCreate(BaseModel):
     username: str
@@ -55,7 +66,6 @@ class AdminUserUpdate(BaseModel):
     is_active: Optional[bool] = None
     password: Optional[str] = None
 
-from sqlalchemy import delete, func
 
 class UserRoleUpdate(BaseModel):
     role_id: Optional[int] = None
@@ -131,17 +141,15 @@ async def get_users(
     admin: User = Depends(require_admin)
 ):
     query = await db.execute(
-        select(User).where(User.company_id == admin.company_id)
+        select(User).options(selectinload(User.role)).where(User.company_id == admin.company_id)
     )
     users = query.scalars().all()
     
     response = []
     for u in users:
-        # Load role details
-        role_q = await db.execute(select(Role).where(Role.role_id == u.role_id))
-        role = role_q.scalars().first()
-        r_name = role.name if role else "Unknown"
-        toggles = await get_user_permission_toggles(u.user_id, u.role_id, r_name, db)
+        r_name = u.role.name if u.role else "Unknown"
+        user_perms = await get_all_user_permissions(u.user_id, u.role_id, r_name, db)
+        toggles = user_perms["toggles"]
         response.append(AdminUserResponse(
             user_id=u.user_id,
             username=u.username,
@@ -168,6 +176,8 @@ async def get_users(
             allowedStockGroups=u.allowed_stock_groups,
             allowedLedgerGroups=u.allowed_ledger_groups,
             allowedReportCategories=u.allowed_report_categories,
+            voucherActionScope=user_perms["voucher_action_scope"],
+            allowedVoucherTypeIds=user_perms["allowed_voucher_type_ids"],
         ))
     return response
 
@@ -215,7 +225,8 @@ async def create_user(
     db.add(access)
     await db.commit()
     
-    toggles = await get_user_permission_toggles(user.user_id, user.role_id, role.name, db)
+    user_perms = await get_all_user_permissions(user.user_id, user.role_id, role.name, db)
+    toggles = user_perms["toggles"]
     return AdminUserResponse(
         user_id=user.user_id,
         username=user.username,
@@ -242,6 +253,8 @@ async def create_user(
         allowedStockGroups=user.allowed_stock_groups,
         allowedLedgerGroups=user.allowed_ledger_groups,
         allowedReportCategories=user.allowed_report_categories,
+        voucherActionScope=user_perms["voucher_action_scope"],
+        allowedVoucherTypeIds=user_perms["allowed_voucher_type_ids"],
     )
 
 
@@ -326,7 +339,8 @@ async def update_user(
     role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
     role = role_q.scalars().first()
     r_name = role.name if role else "Unknown"
-    toggles = await get_user_permission_toggles(user.user_id, user.role_id, r_name, db)
+    user_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
+    toggles = user_perms["toggles"]
 
     return AdminUserResponse(
         user_id=user.user_id,
@@ -354,6 +368,8 @@ async def update_user(
         allowedStockGroups=user.allowed_stock_groups,
         allowedLedgerGroups=user.allowed_ledger_groups,
         allowedReportCategories=user.allowed_report_categories,
+        voucherActionScope=user_perms["voucher_action_scope"],
+        allowedVoucherTypeIds=user_perms["allowed_voucher_type_ids"],
     )
 
 @router.delete("/users/{user_id}")
@@ -812,9 +828,6 @@ async def update_permissions(
     return {"detail": "Permissions matrix updated successfully."}
 
 
-from app.models.portal_core import Company
-from app.models.portal_core import UserCompanyAccess, UserPermissionOverride
-
 class CompanyResponse(BaseModel):
     company_id: int
     name: str
@@ -961,6 +974,10 @@ class UserScopesToggle(BaseModel):
     allowedStockGroups: Optional[str] = None
     allowedReportCategories: Optional[str] = None
 
+class VoucherScopesPayload(BaseModel):
+    actionScope: str  # 'view_only' | 'can_create' | 'full'
+    allowedVoucherTypeIds: Optional[List[int]] = None
+
 class UserStatusToggle(BaseModel):
     isActive: bool
 
@@ -1087,6 +1104,77 @@ async def update_user_scopes(
     user.allowed_stock_groups = payload.allowedStockGroups
     user.allowed_report_categories = payload.allowedReportCategories
     
+    await db.commit()
+    return {"success": True}
+
+@router.put("/users/{user_id}/voucher-scopes")
+async def update_user_voucher_scopes(
+    user_id: int,
+    payload: VoucherScopesPayload,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    user_q = await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
+    )
+    user = user_q.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+
+    # 1. Update action control in user_permission_overrides for module 'vouchers'
+    mod_q = await db.execute(select(Module).where(Module.code == 'vouchers'))
+    module = mod_q.scalars().first()
+    if module:
+        ov_q = await db.execute(
+            select(UserPermissionOverride).where(
+                UserPermissionOverride.user_id == user_id,
+                UserPermissionOverride.module_id == module.module_id
+            )
+        )
+        override = ov_q.scalars().first()
+        if not override:
+            override = UserPermissionOverride(
+                user_id=user_id,
+                module_id=module.module_id,
+                granted_by=admin.user_id,
+                reason="Admin Voucher Scope Configuration"
+            )
+            db.add(override)
+
+        if payload.actionScope == 'view_only':
+            override.can_read = True
+            override.can_create = False
+            override.can_update = False
+            override.can_delete = False
+        elif payload.actionScope == 'can_create':
+            override.can_read = True
+            override.can_create = True
+            override.can_update = False
+            override.can_delete = False
+        else:  # 'full'
+            override.can_read = True
+            override.can_create = True
+            override.can_update = True
+            override.can_delete = True
+
+    # 2. Update allowed voucher types in user_data_scopes
+    await db.execute(
+        delete(UserDataScope).where(
+            UserDataScope.user_id == user_id,
+            UserDataScope.scope_type == 'VoucherType'
+        )
+    )
+    if payload.allowedVoucherTypeIds is not None:
+        for vid in payload.allowedVoucherTypeIds:
+            db.add(UserDataScope(
+                user_id=user_id,
+                scope_type='VoucherType',
+                scope_ref_id=vid
+            ))
+
     await db.commit()
     return {"success": True}
 

@@ -3,18 +3,17 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from datetime import datetime, timedelta, timezone, date
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import hashlib
 
 from app.core.database import get_db
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_access_token
-from app.core.permissions import get_current_user, oauth2_scheme, get_user_permission_toggles
+from app.core.permissions import get_current_user, oauth2_scheme, get_all_user_permissions, get_user_permission_toggles
 from app.core.seed import seed_company_defaults
 from app.models.portal_core import Company
 from app.models.portal_core import User, Role, UserSession
 from app.schemas.user import UserLogin, Token, UserResponse
 from pydantic import BaseModel
-from typing import Optional
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -295,6 +294,7 @@ class UserMeResponse(BaseModel):
     showLedger: bool
     showSalesLedgers: bool
     showPurchaseLedgers: bool
+    showVouchers: bool = False
     showReceipts: bool
     showPayments: bool
     showExpenses: bool
@@ -302,6 +302,7 @@ class UserMeResponse(BaseModel):
     showReports: bool
     showOrders: bool
     showCheckIn: bool
+    showAttendance: bool = True
     showGst: bool
     showCustomers: bool
     capabilities: Optional[dict] = None
@@ -310,6 +311,8 @@ class UserMeResponse(BaseModel):
     allowedStockGroups: Optional[str] = None
     allowedLedgerGroups: Optional[str] = None
     allowedReportCategories: Optional[str] = None
+    voucherActionScope: str = "full"
+    allowedVoucherTypeIds: Optional[List[int]] = None
 
 @router.get("/me", response_model=UserMeResponse)
 async def get_me(
@@ -319,13 +322,11 @@ async def get_me(
     # Eagerly load role
     await db.refresh(user, ["role"])
     r_name = user.role.name if user.role else "User"
-    toggles = await get_user_permission_toggles(user.user_id, user.role_id, r_name, db)
-    
-    # Resolve granular action capabilities
-    from app.core.permissions import get_effective_permission
-    capabilities = {}
-    for mod in ["customers", "visits", "orders", "attendance", "inventory", "ledger_customer", "vouchers", "payments"]:
-        capabilities[mod] = await get_effective_permission(user.user_id, mod, db)
+    user_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
+    toggles = user_perms["toggles"]
+    capabilities = user_perms["capabilities"]
+    voucher_action_scope = user_perms["voucher_action_scope"]
+    allowed_vt_ids = user_perms["allowed_voucher_type_ids"]
 
     return {
         "user_id": user.user_id,
@@ -337,9 +338,11 @@ async def get_me(
         "showLedger": toggles["showLedger"],
         "showSalesLedgers": toggles["showSalesLedgers"],
         "showPurchaseLedgers": toggles["showPurchaseLedgers"],
+        "showVouchers": toggles.get("showVouchers", toggles["showReceipts"]),
         "showReceipts": toggles["showReceipts"],
         "showPayments": toggles["showPayments"],
         "showExpenses": toggles["showExpenses"],
+        "showAttendance": toggles.get("showAttendance", True),
         "showStocks": toggles["showStocks"],
         "showReports": toggles["showReports"],
         "showOrders": toggles["showOrders"],
@@ -352,6 +355,8 @@ async def get_me(
         "allowedStockGroups": user.allowed_stock_groups,
         "allowedLedgerGroups": user.allowed_ledger_groups,
         "allowedReportCategories": user.allowed_report_categories,
+        "voucherActionScope": voucher_action_scope,
+        "allowedVoucherTypeIds": allowed_vt_ids,
     }
 
 

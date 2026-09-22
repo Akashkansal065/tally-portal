@@ -218,6 +218,16 @@ export default function CheckInPage() {
 
   const handleCameraTrigger = async (e: React.MouseEvent) => {
     e.preventDefault()
+    e.stopPropagation()
+
+    if (processingPhoto) return
+
+    // If coordinates are already active, open camera input immediately to preserve user gesture
+    if (coords || locationCoords) {
+      fileInputRef.current?.click()
+      return
+    }
+
     // Enforce location permission before opening camera
     const activeCoords = await ensureLocation('Geocoded Photo Capture')
     if (!activeCoords) {
@@ -578,9 +588,11 @@ export default function CheckInPage() {
                 </button>
               </div>
             ) : (
-              <div
+              <button
+                type="button"
                 onClick={handleCameraTrigger}
-                className="mt-2 w-full flex flex-col items-center justify-center gap-2 py-8 rounded-2xl border-2 border-dashed border-border hover:border-emerald-500/50 cursor-pointer text-xs text-muted-foreground transition-all hover:bg-muted/20 active:scale-[0.99]"
+                disabled={processingPhoto}
+                className="mt-2 w-full flex flex-col items-center justify-center gap-2 py-8 rounded-2xl border-2 border-dashed border-border hover:border-emerald-500/50 cursor-pointer text-xs text-muted-foreground transition-all hover:bg-muted/20 active:scale-[0.99] disabled:opacity-60 bg-transparent"
               >
                 {processingPhoto ? (
                   <>
@@ -592,18 +604,21 @@ export default function CheckInPage() {
                     <Camera className="h-7 w-7 text-muted-foreground opacity-70" />
                     <span className="font-bold text-foreground">Take Geocoded Check-In Photo</span>
                     <span className="text-[10px] text-muted-foreground">Mandatory on-site GPS photo</span>
-                    <input 
-                      ref={fileInputRef}
-                      type="file" 
-                      accept="image/*" 
-                      capture="environment" 
-                      className="hidden" 
-                      onChange={handlePhotoCapture} 
-                    />
                   </>
                 )}
-              </div>
+              </button>
             )}
+
+            {/* Hidden native camera file input - Placed outside trigger element to prevent recursive event bubbling */}
+            <input 
+              ref={fileInputRef}
+              type="file" 
+              accept="image/*" 
+              capture="environment" 
+              className="hidden" 
+              onChange={handlePhotoCapture} 
+              onClick={(e) => e.stopPropagation()}
+            />
 
             {/* Interactive GPS Indicator */}
             <div className="mt-2.5 flex items-center justify-between px-3.5 py-2.5 bg-muted/40 border border-border rounded-xl text-xs">

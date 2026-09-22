@@ -58,7 +58,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import {
   isPushNotificationSupported,
@@ -73,6 +73,12 @@ import {
 
 export function GlobalHeader() {
   const { user, token, logout, permissions, switchCompany } = useAuth()
+  const isAdmin = Boolean(
+    permissions?.isAdmin ||
+    user?.role?.toLowerCase() === 'admin' ||
+    user?.role?.toLowerCase() === 'owner' ||
+    user?.role?.toLowerCase() === 'superadmin'
+  )
   const { dark, toggle } = useTheme()
   const pathname = usePathname()
   const router = useRouter()
@@ -90,12 +96,16 @@ export function GlobalHeader() {
     pending_queue_count: number
   } | null>(null)
 
+  const isAdminRef = useRef(isAdmin)
+  isAdminRef.current = isAdmin
+
   useEffect(() => {
-    if (!token) return
+    if (!token || !isAdminRef.current) return
     const fetchSyncHealth = async () => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
         return
       }
+      if (!isAdminRef.current) return
       try {
         const res = await fetch(`${API_BASE}/sync/health`, {
           headers: authHeaders(token)
@@ -381,7 +391,6 @@ export function GlobalHeader() {
   if (!user) return null
 
   const isHome = pathname === '/'
-  const isAdmin = permissions.isAdmin || user.role?.toLowerCase() === 'admin' || user.role?.toLowerCase() === 'owner' || user.role?.toLowerCase() === 'superadmin'
   const activeCompany = user.allowedCompanies?.find(c => c.company_id === user.company_id)
 
   const handleOpenCompanyModal = () => {
@@ -538,7 +547,7 @@ export function GlobalHeader() {
 
           {/* Right: theme + menu */}
           <div className="flex items-center gap-1.5">
-            {syncHealth && (
+            {syncHealth && isAdmin && (
               <Link
                 href="/admin?tab=sync"
                 className={cn(
@@ -895,9 +904,9 @@ export function GlobalHeader() {
                 </CollapsibleMenu>
               )}
 
-              {(permissions.showCustomers || permissions.showCheckIn || permissions.showLedger || permissions.showSalesLedgers) && (
+              {(permissions.showCustomers || permissions.showCheckIn) && (
                 <CollapsibleMenu label="Field Operations" icon={MapPin} defaultOpen={true}>
-                  {(permissions.showCustomers || permissions.showCheckIn || permissions.showSalesLedgers || permissions.showLedger) && (
+                  {(permissions.showCustomers || isAdmin) && (
                     <DrawerLink href="/customers" icon={Users} label="Customer Directory" onClick={() => setDrawerOpen(false)} />
                   )}
                   {permissions.showCheckIn && (

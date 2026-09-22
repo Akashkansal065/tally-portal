@@ -70,6 +70,8 @@ type UserItem = {
   allowedStockGroups: string | null
   allowedLedgerGroups: string | null
   allowedReportCategories: string | null
+  voucherActionScope?: 'view_only' | 'can_create' | 'full'
+  allowedVoucherTypeIds?: number[] | null
 }
 
 type AuditLog = {
@@ -456,6 +458,7 @@ export default function AdminPage() {
   const [permissionsModalUser, setPermissionsModalUser] = useState<UserItem | null>(null)
   const [availableStockGroups, setAvailableStockGroups] = useState<string[]>([])
   const [availableLedgerGroups, setAvailableLedgerGroups] = useState<string[]>([])
+  const [availableVoucherTypes, setAvailableVoucherTypes] = useState<{ voucher_type_id: number; name: string; parent_type?: string }[]>([])
   
   // Create user form state
   const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role_id: 2 })
@@ -586,13 +589,14 @@ export default function AdminPage() {
     setLoading(true)
     try {
       if (tab === 'users' || tab === 'roles') {
-        const [uRes, rRes, cRes, mRes, sgRes, lgRes] = await Promise.all([
+        const [uRes, rRes, cRes, mRes, sgRes, lgRes, vtRes] = await Promise.all([
           fetch(`${API_BASE}/admin/users`, { headers: authHeaders(token) }),
           fetch(`${API_BASE}/admin/roles`, { headers: authHeaders(token) }),
           fetch(`${API_BASE}/admin/companies`, { headers: authHeaders(token) }),
           fetch(`${API_BASE}/admin/modules`, { headers: authHeaders(token) }),
           fetch(`${API_BASE}/inventory/groups`, { headers: authHeaders(token) }),
-          fetch(`${API_BASE}/ledgers/groups`, { headers: authHeaders(token) })
+          fetch(`${API_BASE}/ledgers/groups`, { headers: authHeaders(token) }),
+          fetch(`${API_BASE}/vouchers/types`, { headers: authHeaders(token) })
         ])
         const uData = await uRes.json()
         const rData = await rRes.json()
@@ -600,6 +604,7 @@ export default function AdminPage() {
         const mData = await mRes.json()
         const sgData = await sgRes.json()
         const lgData = await lgRes.json()
+        const vtData = await vtRes.json()
         
         setUsers(Array.isArray(uData) ? uData : [])
         setRoles(Array.isArray(rData) ? rData : [])
@@ -608,6 +613,7 @@ export default function AdminPage() {
         
         if (Array.isArray(sgData)) setAvailableStockGroups(sgData.map((g: any) => g.name))
         if (Array.isArray(lgData)) setAvailableLedgerGroups(lgData.map((g: any) => g.name))
+        if (Array.isArray(vtData)) setAvailableVoucherTypes(vtData)
       } else if (tab === 'logs') {
         const res = await fetch(`${API_BASE}/admin/audit-logs`, { headers: authHeaders(token) })
         const data = await res.json()
@@ -805,6 +811,37 @@ export default function AdminPage() {
         body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error('Failed to update allowed list')
+    } catch (e: any) {
+      alert(e.message)
+      setUsers(prev => prev.map(u => u.user_id === userId ? user : u))
+      setPermissionsModalUser(prev => prev && prev.user_id === userId ? user : prev)
+    }
+  }
+
+  const handleVoucherScopeChange = async (
+    userId: number,
+    actionScope: 'view_only' | 'can_create' | 'full',
+    allowedVoucherTypeIds: number[] | null
+  ) => {
+    const user = users.find(u => u.user_id === userId)
+    if (!user) return
+
+    const updatedUser = { ...user, voucherActionScope: actionScope, allowedVoucherTypeIds }
+    const payload = {
+      actionScope,
+      allowedVoucherTypeIds,
+    }
+
+    setUsers(prev => prev.map(u => u.user_id === userId ? updatedUser : u))
+    setPermissionsModalUser(prev => prev && prev.user_id === userId ? updatedUser : prev)
+
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/voucher-scopes`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error('Failed to update voucher scopes')
     } catch (e: any) {
       alert(e.message)
       setUsers(prev => prev.map(u => u.user_id === userId ? user : u))
@@ -2722,11 +2759,13 @@ const handleSavePermissions = async () => {
           isPending={false}
           availableLedgerGroups={availableLedgerGroups}
           availableStockGroups={availableStockGroups}
+          availableVoucherTypes={availableVoucherTypes}
           availableRoles={roles}
           onRoleChange={handleRoleChange}
           onPermissionToggle={handlePermissionToggle}
           onScopeChange={handleScopeChange}
           onAllowedGroupsChange={handleAllowedGroupsChange}
+          onVoucherScopeChange={handleVoucherScopeChange}
           onStatusChange={handleStatusChange}
           onResetPassword={handleResetPassword}
         />

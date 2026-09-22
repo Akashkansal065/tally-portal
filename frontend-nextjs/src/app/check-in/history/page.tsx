@@ -36,12 +36,16 @@ export default function CheckInHistoryPage() {
   const { user, token, permissions, can } = useAuth()
   const router = useRouter()
 
-  const canAccessCustomer = Boolean(
+  const isAdmin = Boolean(
     permissions?.isAdmin ||
-    permissions?.showCustomers ||
     user?.role?.toLowerCase() === 'admin' ||
     user?.role?.toLowerCase() === 'superadmin' ||
-    user?.role?.toLowerCase() === 'owner' ||
+    user?.role?.toLowerCase() === 'owner'
+  )
+
+  const canAccessCustomer = Boolean(
+    isAdmin ||
+    permissions?.showCustomers ||
     can?.('customers', 'read')
   )
   
@@ -64,34 +68,39 @@ export default function CheckInHistoryPage() {
     if (!token) return
     setLoading(true)
     try {
-      let url = `${API_BASE}/visits/logs`
-      const params = new URLSearchParams()
-      if (visitDate) params.append('date', visitDate)
-      if (visitSalesperson) params.append('user_id', visitSalesperson)
-      if (params.toString()) url += `?${params.toString()}`
+      if (isAdmin) {
+        let url = `${API_BASE}/visits/logs`
+        const params = new URLSearchParams()
+        if (visitDate) params.append('date', visitDate)
+        if (visitSalesperson) params.append('user_id', visitSalesperson)
+        if (params.toString()) url += `?${params.toString()}`
 
-      const res = await fetch(url, { headers: authHeaders(token) })
-      if (res.ok) {
-        const data = await res.json()
-        setVisits(Array.isArray(data) ? data : [])
-      } else {
-        // Fallback to user endpoint if non-admin
-        const userRes = await fetch(`${API_BASE}/visits/history?limit=100`, { headers: authHeaders(token) })
-        if (userRes.ok) {
-          const uData = await userRes.json()
-          setVisits(Array.isArray(uData) ? uData : [])
+        const res = await fetch(url, { headers: authHeaders(token) })
+        if (res.ok) {
+          const data = await res.json()
+          setVisits(Array.isArray(data) ? data : [])
+          return
         }
+      }
+
+      // Non-admin: directly fetch user's own history
+      let url = `${API_BASE}/visits/history?limit=100`
+      if (visitDate) url += `&date=${encodeURIComponent(visitDate)}`
+      const userRes = await fetch(url, { headers: authHeaders(token) })
+      if (userRes.ok) {
+        const uData = await userRes.json()
+        setVisits(Array.isArray(uData) ? uData : [])
       }
     } catch (err) {
       console.error('Failed to fetch check-in history:', err)
     } finally {
       setLoading(false)
     }
-  }, [token, visitDate, visitSalesperson])
+  }, [token, isAdmin, visitDate, visitSalesperson])
 
-  // Fetch salespersons list for filter dropdown
+  // Fetch salespersons list for filter dropdown only for admins
   useEffect(() => {
-    if (!token) return
+    if (!token || !isAdmin) return
     fetch(`${API_BASE}/admin/users`, { headers: authHeaders(token) })
       .then(r => r.ok ? r.json() : [])
       .then(data => {
@@ -100,7 +109,7 @@ export default function CheckInHistoryPage() {
         }
       })
       .catch(() => {})
-  }, [token])
+  }, [token, isAdmin])
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
@@ -198,22 +207,24 @@ export default function CheckInHistoryPage() {
               )}
             </div>
 
-            {/* Salesperson Filter */}
-            <div className="flex items-center gap-2 bg-background border border-border rounded-xl px-3 py-2">
-              <UserIcon className="h-4 w-4 text-muted-foreground shrink-0" />
-              <select
-                value={visitSalesperson}
-                onChange={e => setVisitSalesperson(e.target.value)}
-                className="bg-transparent text-xs font-semibold text-foreground focus:outline-none cursor-pointer pr-2"
-              >
-                <option value="">All Salespersons</option>
-                {salespersons.map(u => (
-                  <option key={u.user_id} value={String(u.user_id)}>
-                    {u.username || u.email}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* Salesperson Filter (Admin only) */}
+            {isAdmin && (
+              <div className="flex items-center gap-2 bg-background border border-border rounded-xl px-3 py-2">
+                <UserIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+                <select
+                  value={visitSalesperson}
+                  onChange={e => setVisitSalesperson(e.target.value)}
+                  className="bg-transparent text-xs font-semibold text-foreground focus:outline-none cursor-pointer pr-2"
+                >
+                  <option value="">All Salespersons</option>
+                  {salespersons.map(u => (
+                    <option key={u.user_id} value={String(u.user_id)}>
+                      {u.username || u.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Search Input Filter */}
             <div className="flex items-center gap-2 bg-background border border-border rounded-xl px-3 py-2 min-w-[200px]">

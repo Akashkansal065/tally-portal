@@ -58,10 +58,11 @@ type VoucherDetail = {
 }
 
 export default function VoucherDetailPage() {
-  const { user, token } = useAuth()
+  const { user, token, permissions } = useAuth()
   const router = useRouter()
   const params = useParams()
   const id = params?.id as string
+  const canEditVoucher = permissions.voucherActionScope === 'full'
 
   const [voucher, setVoucher] = useState<VoucherDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -438,24 +439,28 @@ export default function VoucherDetailPage() {
           </button>
 
           {/* Alter / Edit Voucher Button */}
-          <button
-            type="button"
-            onClick={() => setIsEditModalOpen(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-sm rounded-xl h-10 px-4 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-          >
-            <Edit3 className="h-3.5 w-3.5" />
-            Alter / Edit
-          </button>
+          {canEditVoucher && (
+            <button
+              type="button"
+              onClick={() => setIsEditModalOpen(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-sm rounded-xl h-10 px-4 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+            >
+              <Edit3 className="h-3.5 w-3.5" />
+              Alter / Edit
+            </button>
+          )}
 
           {/* Delete Voucher Button */}
-          <button
-            type="button"
-            onClick={() => setIsDeleteDialogOpen(true)}
-            className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 font-bold text-xs shadow-xs rounded-xl h-10 px-3.5 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            Delete
-          </button>
+          {canEditVoucher && (
+            <button
+              type="button"
+              onClick={() => setIsDeleteDialogOpen(true)}
+              className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 font-bold text-xs shadow-xs rounded-xl h-10 px-3.5 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </button>
+          )}
 
           {/* Download PDF button */}
           <button

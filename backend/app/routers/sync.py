@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.core.permissions import require_permission
 from app.core.config import settings
 from app.routers.admin import require_admin
+from app.routers.auth import get_current_user
 from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, DeletedRecordAudit
 from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting, MstStockItem, MstVoucherType
 from app.services.tally_xml_importer import import_tally_xml
@@ -3606,7 +3607,7 @@ async def query_vouchers_from_tally(
 
 @router.get("/health")
 async def get_sync_health(
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """

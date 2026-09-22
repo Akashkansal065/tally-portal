@@ -41,6 +41,8 @@ type UserItem = {
   allowedStockGroups: string | null;
   allowedLedgerGroups: string | null;
   allowedReportCategories: string | null;
+  voucherActionScope?: 'view_only' | 'can_create' | 'full';
+  allowedVoucherTypeIds?: number[] | null;
   isActive: boolean;
   createdAt: Date;
 };
@@ -52,6 +54,7 @@ interface AdminUserPermissionsModalProps {
   isPending: boolean;
   availableLedgerGroups: string[];
   availableStockGroups: string[];
+  availableVoucherTypes?: { voucher_type_id: number; name: string; parent_type?: string }[];
   availableRoles?: {
     role_id: number;
     name: string;
@@ -75,8 +78,57 @@ interface AdminUserPermissionsModalProps {
     groupName: string,
     isChecked: boolean
   ) => void;
+  onVoucherScopeChange?: (
+    userId: number,
+    actionScope: 'view_only' | 'can_create' | 'full',
+    allowedVoucherTypeIds: number[] | null
+  ) => void;
   onStatusChange: (userId: number, currentStatus: boolean) => void;
   onResetPassword: (userId: number, password: string) => Promise<{ success?: boolean; error?: string }>;
+}
+
+function VoucherTypeCheckboxes({
+  types,
+  selectedIds,
+  onChange,
+  disabled,
+}: {
+  types: { voucher_type_id: number; name: string; parent_type?: string }[];
+  selectedIds: number[] | null;
+  onChange: (typeId: number, checked: boolean) => void;
+  disabled: boolean;
+}) {
+  const selectedSet = new Set(selectedIds || []);
+
+  return (
+    <div className="mt-2 max-h-40 overflow-y-auto border border-border rounded-md p-2 bg-background/50 text-sm space-y-1 no-scrollbar">
+      {types.length === 0 && <span className="text-muted-foreground italic text-xs">No voucher types available</span>}
+      {types.map((vt) => {
+        const isSelected = selectedSet.has(vt.voucher_type_id);
+        return (
+          <label key={vt.voucher_type_id} className="flex items-center justify-between cursor-pointer py-1.5 px-2 hover:bg-muted/50 rounded transition-colors">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="w-4 h-4 rounded text-primary focus:ring-primary border-border"
+                checked={isSelected}
+                onChange={(e) => onChange(vt.voucher_type_id, e.target.checked)}
+                disabled={disabled}
+              />
+              <span className="truncate text-xs font-medium text-foreground" title={vt.name}>
+                {vt.name}
+              </span>
+            </div>
+            {vt.parent_type && vt.parent_type !== vt.name && (
+              <span className="text-[10px] text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded">
+                {vt.parent_type}
+              </span>
+            )}
+          </label>
+        );
+      })}
+    </div>
+  );
 }
 
 function GroupCheckboxes({
@@ -123,11 +175,13 @@ export function AdminUserPermissionsModal({
   isPending,
   availableLedgerGroups,
   availableStockGroups,
+  availableVoucherTypes = [],
   availableRoles = [],
   onRoleChange,
   onPermissionToggle,
   onScopeChange,
   onAllowedGroupsChange,
+  onVoucherScopeChange,
   onStatusChange,
   onResetPassword,
 }: AdminUserPermissionsModalProps) {
@@ -420,12 +474,12 @@ export function AdminUserPermissionsModal({
                       <div className="flex items-center gap-2">
                         <Clock className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
                         <Label htmlFor="tab-visits-toggle" className="text-xs font-bold text-foreground cursor-pointer">
-                          Tab 4: Field Visits
+                          Shop Check-In & Field Visits
                         </Label>
-                        <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-extrabold bg-emerald-500/10 text-emerald-600">Visits</Badge>
+                        <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-extrabold bg-emerald-500/10 text-emerald-600">Check-In</Badge>
                       </div>
                       <p className="text-[11px] text-muted-foreground">
-                        Salesperson shop GPS check-ins, timestamps & visit camera snapshots
+                        Shop GPS check-ins (/check-in), beat planner (/planner) & visit history
                       </p>
                     </div>
                     <Switch
@@ -477,6 +531,68 @@ export function AdminUserPermissionsModal({
                     onCheckedChange={(checked: boolean) => onPermissionToggle(user.id, "showReceipts", checked)}
                     disabled={isPending}
                   />
+                </div>
+              )}
+
+              {showVouchersToggle && (user.showVouchers ?? user.showReceipts) && (
+                <div className="pl-6 space-y-3 pt-1 border-l-2 border-border/60 ml-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-muted-foreground">Voucher Action Scope</Label>
+                    <select
+                      value={user.voucherActionScope || "full"}
+                      onChange={(e) => {
+                        const val = e.target.value as 'view_only' | 'can_create' | 'full';
+                        onVoucherScopeChange?.(user.id, val, user.allowedVoucherTypeIds ?? null);
+                      }}
+                      disabled={isPending}
+                      className="w-full text-xs bg-muted/40 border border-border rounded-md px-2 py-1.5 focus:outline-none font-medium"
+                    >
+                      <option value="view_only">View Only (Read vouchers only, cannot create/edit/delete)</option>
+                      <option value="can_create">Can Create (View & create vouchers; no edit/delete)</option>
+                      <option value="full">Full Access (View, create, edit & delete vouchers)</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-semibold text-muted-foreground">Voucher Type Scope</Label>
+                    <select
+                      value={user.allowedVoucherTypeIds !== null && user.allowedVoucherTypeIds !== undefined ? "restricted" : "all"}
+                      onChange={(e) => {
+                        if (e.target.value === "all") {
+                          onVoucherScopeChange?.(user.id, user.voucherActionScope || "full", null);
+                        } else {
+                          const allIds = availableVoucherTypes.map(vt => vt.voucher_type_id);
+                          onVoucherScopeChange?.(user.id, user.voucherActionScope || "full", allIds);
+                        }
+                      }}
+                      disabled={isPending}
+                      className="w-full text-xs bg-muted/40 border border-border rounded-md px-2 py-1.5 focus:outline-none font-medium"
+                    >
+                      <option value="all">All Voucher Types (Default)</option>
+                      <option value="restricted">Restricted Voucher Types</option>
+                    </select>
+
+                    {user.allowedVoucherTypeIds !== null && user.allowedVoucherTypeIds !== undefined && (
+                      <VoucherTypeCheckboxes
+                        types={availableVoucherTypes}
+                        selectedIds={user.allowedVoucherTypeIds}
+                        onChange={(typeId, checked) => {
+                          const current = new Set(user.allowedVoucherTypeIds || []);
+                          if (checked) {
+                            current.add(typeId);
+                          } else {
+                            current.delete(typeId);
+                          }
+                          onVoucherScopeChange?.(
+                            user.id,
+                            user.voucherActionScope || "full",
+                            Array.from(current)
+                          );
+                        }}
+                        disabled={isPending}
+                      />
+                    )}
+                  </div>
                 </div>
               )}
 

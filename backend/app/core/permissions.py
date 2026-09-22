@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import decode_access_token
-from app.models.portal_core import User, UserSession, UserPermissionOverride, Permission, Module
+from app.models.portal_core import User, UserSession, UserPermissionOverride, Permission, Module, UserDataScope
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login")
 
@@ -79,119 +79,117 @@ async def get_current_user(
 
     return user
 
-async def get_effective_permission(
-    user_id: int, 
-    module_code: str, 
-    db: AsyncSession
-) -> dict:
-    """
-    Resolves the effective permission for a user on a given module.
-    Queries the database roles, permissions, and user_permission_overrides tables.
-    """
-    from sqlalchemy.orm import selectinload
-    from sqlalchemy import func
-    
-    effective = {
-        "can_create": False,
-        "can_read": False,
-        "can_update": False,
-        "can_delete": False
-    }
-    
-    # Eagerly load user and role
-    user_query = await db.execute(
-        select(User).options(selectinload(User.role)).where(User.user_id == user_id)
-    )
-    user = user_query.scalars().first()
-    
-    if not user:
-        return effective
+MODULE_TOGGLE_MAPPING = {
+    "ledgers": "showLedger",
+    "ledger_customer": "showSalesLedgers",
+    "ledger_supplier": "showPurchaseLedgers",
+    "vouchers": "showVouchers",
+    "payments": "showPayments",
+    "expenses": "showExpenses",
+    "attendance": "showAttendance",
+    "inventory": "showStocks",
+    "reports": "showReports",
+    "orders": "showOrders",
+    "visits": "showCheckIn",
+    "gst": "showGst",
+    "customers": "showCustomers",
+}
 
-    # Admin role gets full access to everything
-    if user.role and user.role.name.lower() in ("admin", "superadmin", "owner"):
-        return {
-            "can_create": True,
-            "can_read": True,
-            "can_update": True,
-            "can_delete": True
-        }
+ALL_KNOWN_MODULES = [
+    "ledgers",
+    "ledger_customer",
+    "ledger_supplier",
+    "vouchers",
+    "payments",
+    "expenses",
+    "attendance",
+    "inventory",
+    "reports",
+    "orders",
+    "visits",
+    "gst",
+    "customers",
+    "users",
+    "roles",
+    "settings",
+    "payroll",
+    "admin",
+]
 
-    # Find the module by code
-    module_query = await db.execute(select(Module).where(func.lower(Module.code) == module_code.lower()))
-    module = module_query.scalars().first()
-    if not module:
-        # Fallback if module is not found
-        return effective
-
-    # Get role permission for this module
-    perm_query = await db.execute(
-        select(Permission).where(
-            Permission.role_id == user.role_id,
-            Permission.module_id == module.module_id
-        )
-    )
-    perm = perm_query.scalars().first()
-    if perm:
-        effective["can_create"] = perm.can_create
-        effective["can_read"] = perm.can_read
-        effective["can_update"] = perm.can_update
-        effective["can_delete"] = perm.can_delete
-
-    # Master role ceiling: If role has completely disabled this module (can_read == False),
-    # individual user overrides cannot grant access to it.
-    if not (perm and perm.can_read):
-        return effective
-
-    # Check for user-specific overrides (can further restrict or customize permitted modules)
-    override_query = await db.execute(
-        select(UserPermissionOverride).where(
-            UserPermissionOverride.user_id == user_id,
-            UserPermissionOverride.module_id == module.module_id
-        )
-    )
-    override = override_query.scalars().first()
-    if override:
-        if override.can_create is not None:
-            effective["can_create"] = override.can_create
-        if override.can_read is not None:
-            effective["can_read"] = override.can_read
-        if override.can_update is not None:
-            effective["can_update"] = override.can_update
-        if override.can_delete is not None:
-            effective["can_delete"] = override.can_delete
-
-    return effective
-
-async def get_user_permission_toggles(
+async def get_all_user_permissions(
     user_id: int,
     role_id: int,
     role_name: str,
     db: AsyncSession
 ) -> dict:
     """
-    Returns the UI visibility toggles dynamically resolved for a given user.
-    Admin unconditionally gets full access to all features.
+    Single unified method to resolve all permissions for a user:
+    - UI visibility toggles
+    - Module CRUD capabilities
+    - Voucher action scope ('full', 'can_create', 'view_only')
+    - Allowed voucher type IDs (from UserDataScope)
+
+    Admin/Superadmin/Owner queries database permissions and user overrides too,
+    allowing granular removal/customization of permissions for admin users if desired.
     """
-    # Unconditional full access bypass for Admin
-    if role_name and role_name.lower() in ("admin", "superadmin", "owner"):
-        return {
-            "showLedger": True,
-            "showSalesLedgers": True,
-            "showPurchaseLedgers": True,
-            "showVouchers": True,
-            "showReceipts": True,
-            "showPayments": True,
-            "showExpenses": True,
-            "showAttendance": True,
-            "showStocks": True,
-            "showReports": True,
-            "showOrders": True,
-            "showCheckIn": True,
-            "showGst": True,
-            "showCustomers": True,
-            "isAdmin": True
+    is_admin = bool(role_name and role_name.lower() in ("admin", "superadmin", "owner"))
+
+    # Initialize capabilities with defaults (admin defaults to True, others to False)
+    capabilities = {}
+    default_bool = True if is_admin else False
+    for mod in ALL_KNOWN_MODULES:
+        capabilities[mod] = {
+            "can_create": default_bool,
+            "can_read": default_bool,
+            "can_update": default_bool,
+            "can_delete": default_bool,
         }
 
+    # 1. Fetch role permissions joined with Module
+    perm_q = await db.execute(
+        select(Permission, Module.code)
+        .join(Module, Permission.module_id == Module.module_id)
+        .where(Permission.role_id == role_id)
+    )
+    for perm, mod_code in perm_q.all():
+        m_code = mod_code.lower()
+        capabilities[m_code] = {
+            "can_create": bool(perm.can_create),
+            "can_read": bool(perm.can_read),
+            "can_update": bool(perm.can_update),
+            "can_delete": bool(perm.can_delete),
+        }
+
+    # 2. Fetch user-specific overrides joined with Module
+    override_q = await db.execute(
+        select(UserPermissionOverride, Module.code)
+        .join(Module, UserPermissionOverride.module_id == Module.module_id)
+        .where(UserPermissionOverride.user_id == user_id)
+    )
+    for override, mod_code in override_q.all():
+        m_code = mod_code.lower()
+        if m_code not in capabilities:
+            capabilities[m_code] = {
+                "can_create": False,
+                "can_read": False,
+                "can_update": False,
+                "can_delete": False,
+            }
+
+        # Role ceiling: non-admin users cannot have access granted if master role has can_read=False
+        # For admin users, or if role allowed read, or if override explicitly restricts (can_read=False):
+        role_allowed_read = capabilities[m_code].get("can_read", False)
+        if is_admin or role_allowed_read or override.can_read is False:
+            if override.can_create is not None:
+                capabilities[m_code]["can_create"] = bool(override.can_create)
+            if override.can_read is not None:
+                capabilities[m_code]["can_read"] = bool(override.can_read)
+            if override.can_update is not None:
+                capabilities[m_code]["can_update"] = bool(override.can_update)
+            if override.can_delete is not None:
+                capabilities[m_code]["can_delete"] = bool(override.can_delete)
+
+    # 3. Derive UI toggles
     toggles = {
         "showLedger": False,
         "showSalesLedgers": False,
@@ -207,65 +205,106 @@ async def get_user_permission_toggles(
         "showCheckIn": False,
         "showGst": False,
         "showCustomers": False,
-        "isAdmin": False
+        "isAdmin": is_admin,
     }
 
-    # Mapping of module codes to toggles
-    mapping = {
-        "ledgers": "showLedger",
-        "ledger_customer": "showSalesLedgers",
-        "ledger_supplier": "showPurchaseLedgers",
-        "vouchers": "showVouchers",
-        "payments": "showPayments",
-        "expenses": "showExpenses",
-        "attendance": "showAttendance",
-        "inventory": "showStocks",
-        "reports": "showReports",
-        "orders": "showOrders",
-        "visits": "showCheckIn",
-        "gst": "showGst",
-        "customers": "showCustomers"
-    }
-    
-    # 1. Fetch role permissions joined with Module
-    perm_q = await db.execute(
-        select(Permission, Module.code)
-        .join(Module, Permission.module_id == Module.module_id)
-        .where(Permission.role_id == role_id)
-    )
-    role_allowed = {}
-    for perm, mod_code in perm_q.all():
-        m_code = mod_code.lower()
-        role_allowed[m_code] = bool(perm.can_read)
-        if m_code in mapping:
-            toggle_key = mapping[m_code]
-            toggles[toggle_key] = bool(perm.can_read)
-        if m_code == "vouchers":
-            toggles["showReceipts"] = bool(perm.can_read)
+    for m_code, toggle_key in MODULE_TOGGLE_MAPPING.items():
+        if m_code in capabilities:
+            toggles[toggle_key] = bool(capabilities[m_code]["can_read"])
 
-    # 2. Fetch user overrides joined with Module (only applied if permitted by master role)
-    override_q = await db.execute(
-        select(UserPermissionOverride, Module.code)
-        .join(Module, UserPermissionOverride.module_id == Module.module_id)
-        .where(UserPermissionOverride.user_id == user_id)
-    )
-    for override, mod_code in override_q.all():
-        m_code = mod_code.lower()
-        if role_allowed.get(m_code, False):
-            if m_code in mapping:
-                toggle_key = mapping[m_code]
-                if override.can_read is not None:
-                    toggles[toggle_key] = bool(override.can_read)
-            if m_code == "vouchers" and override.can_read is not None:
-                toggles["showReceipts"] = bool(override.can_read)
-                
-    # 3. Derive showLedger
-    toggles["showLedger"] = (
+    if "vouchers" in capabilities:
+        toggles["showReceipts"] = bool(capabilities["vouchers"]["can_read"])
+
+    toggles["showLedger"] = bool(
         toggles.get("showLedger", False) or
-        toggles["showSalesLedgers"] or 
-        toggles["showPurchaseLedgers"]
+        toggles.get("showSalesLedgers", False) or
+        toggles.get("showPurchaseLedgers", False)
     )
-    return toggles
+
+    # 4. Resolve voucher action scope
+    v_perms = capabilities.get("vouchers", {})
+    if v_perms.get("can_update") and v_perms.get("can_delete"):
+        voucher_action_scope = "full"
+    elif v_perms.get("can_create"):
+        voucher_action_scope = "can_create"
+    else:
+        voucher_action_scope = "view_only"
+
+    # 5. Query user_data_scopes for VoucherType scope rows
+    scope_query = await db.execute(
+        select(UserDataScope.scope_ref_id).where(
+            UserDataScope.user_id == user_id,
+            UserDataScope.scope_type == 'VoucherType'
+        )
+    )
+    allowed_ids = scope_query.scalars().all()
+    allowed_voucher_type_ids = list(allowed_ids) if allowed_ids else None
+
+    return {
+        "toggles": toggles,
+        "capabilities": capabilities,
+        "voucher_action_scope": voucher_action_scope,
+        "allowed_voucher_type_ids": allowed_voucher_type_ids,
+    }
+
+
+async def get_effective_permission(
+    user_id: int, 
+    module_code: str, 
+    db: AsyncSession
+) -> dict:
+    """
+    Resolves the effective permission for a user on a given module.
+    Delegates to get_all_user_permissions for consistent logic across roles and overrides.
+    """
+    user_query = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.user_id == user_id)
+    )
+    user = user_query.scalars().first()
+    if not user:
+        return {
+            "can_create": False,
+            "can_read": False,
+            "can_update": False,
+            "can_delete": False
+        }
+
+    r_name = user.role.name if user.role else "Unknown"
+    is_admin = bool(r_name and r_name.lower() in ("admin", "superadmin", "owner"))
+
+    # "admin" virtual module check: if checking "admin" access, any admin user passes
+    if module_code.lower() == "admin":
+        return {
+            "can_create": is_admin,
+            "can_read": is_admin,
+            "can_update": is_admin,
+            "can_delete": is_admin,
+        }
+
+    all_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
+    default_access = is_admin
+    return all_perms["capabilities"].get(
+        module_code.lower(),
+        {
+            "can_create": default_access,
+            "can_read": default_access,
+            "can_update": default_access,
+            "can_delete": default_access,
+        }
+    )
+
+
+async def get_user_permission_toggles(
+    user_id: int,
+    role_id: int,
+    role_name: str,
+    db: AsyncSession
+) -> dict:
+    """
+    Returns the UI visibility toggles dynamically resolved for a given user.
+    """
+    all_perms = await get_all_user_permissions(user_id, role_id, role_name, db)
+    return all_perms["toggles"]
 
 def require_permission(module_code: str, action: str):
     """
@@ -322,4 +361,28 @@ async def require_customer_read_permission(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="You do not have permission to access the customer directory or profile."
     )
+
+
+async def get_user_allowed_voucher_type_ids(
+    user_id: int,
+    db: AsyncSession,
+    user: User | None = None
+) -> list[int] | None:
+    """
+    Returns the list of allowed voucher_type_ids for the given user from user_data_scopes.
+    Returns None if the user has unrestricted access to all voucher types (no scope configured).
+    """
+    # Query user_data_scopes for VoucherType scope rows
+    scope_query = await db.execute(
+        select(UserDataScope.scope_ref_id).where(
+            UserDataScope.user_id == user_id,
+            UserDataScope.scope_type == 'VoucherType'
+        )
+    )
+    allowed_ids = scope_query.scalars().all()
+    if not allowed_ids:
+        # None means no restrictions configured -> all voucher types allowed
+        return None
+
+    return list(allowed_ids)
 

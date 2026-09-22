@@ -484,11 +484,19 @@ export default function CustomersPage() {
 
   useEffect(() => {
     if (!filtersLoaded) return
+    const hasAccess = Boolean(isAdmin || permissions?.showCustomers)
+    if (!hasAccess) {
+      setAccessDenied(true)
+      setLoading(false)
+      return
+    }
     fetchCustomers()
     fetchLocalities()
   }, [
     filtersLoaded,
     token,
+    isAdmin,
+    permissions?.showCustomers,
     locationFilter,
     selectedLocality,
     selectedCity,
