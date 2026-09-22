@@ -7,6 +7,7 @@ export interface UserPermissions {
   showLedger: boolean
   showSalesLedgers: boolean
   showPurchaseLedgers: boolean
+  showVouchers: boolean
   showReceipts: boolean
   showPayments: boolean
   showExpenses: boolean
@@ -18,7 +19,7 @@ export interface UserPermissions {
   showGst: boolean
   showCustomers: boolean
   ledgerScope: 'all' | 'dr_only' | 'restricted'
-  stockScope: 'full' | 'restricted'
+  stockScope: 'full' | 'restricted' | 'catalog_only'
   isAdmin: boolean
 }
 
@@ -76,6 +77,7 @@ const DEFAULT_PERMISSIONS: UserPermissions = {
   showLedger: true,
   showSalesLedgers: true,
   showPurchaseLedgers: false,
+  showVouchers: true,
   showReceipts: true,
   showPayments: true,
   showExpenses: false,
@@ -133,6 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           showLedger: isAdmin ? true : (data.showLedger ?? true),
           showSalesLedgers: isAdmin ? true : (data.showSalesLedgers ?? true),
           showPurchaseLedgers: isAdmin ? true : (data.showPurchaseLedgers ?? false),
+          showVouchers: isAdmin ? true : (data.showVouchers ?? data.showReceipts ?? true),
           showReceipts: isAdmin ? true : (data.showReceipts ?? true),
           showPayments: isAdmin ? true : (data.showPayments ?? true),
           showExpenses: isAdmin ? true : (data.showExpenses ?? false),

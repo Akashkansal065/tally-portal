@@ -138,24 +138,17 @@ export default function VouchersPage() {
     const t = vType.toLowerCase()
     if (t === 'sales' && !permissions.showSalesLedgers) return false
     if (t === 'purchase' && !permissions.showPurchaseLedgers) return false
-    if (t === 'receipt' && !permissions.showReceipts) return false
-    if (t === 'payment' && !permissions.showPayments) return false
     return true
   }, [permissions])
 
   const hasAnyVoucherPermission = 
-    permissions.showSalesLedgers || 
-    permissions.showPurchaseLedgers || 
-    permissions.showReceipts || 
-    permissions.showPayments
+    Boolean(permissions.showVouchers ?? permissions.showReceipts)
 
   const allowedCategories = useMemo(() => {
     const cats = ['All']
     if (permissions.showSalesLedgers) cats.push('Sales')
     if (permissions.showPurchaseLedgers) cats.push('Purchase')
-    if (permissions.showReceipts) cats.push('Receipt')
-    if (permissions.showPayments) cats.push('Payment')
-    cats.push('Journal', 'Contra')
+    cats.push('Receipt', 'Payment', 'Journal', 'Contra')
     return cats
   }, [permissions])
 
@@ -859,14 +852,6 @@ export default function VouchersPage() {
           >
             <Plus className="h-5 w-5 stroke-[2.5]" />
             <span>Create Voucher</span>
-          </button>
-          <button
-            onClick={() => router.push('/payments/new')}
-            className="bg-card hover:bg-muted text-foreground font-bold text-xs shadow-md rounded-xl h-12 px-3 border border-border cursor-pointer flex items-center justify-center gap-1.5 transition-all active:scale-95 shrink-0"
-            title="Collect Payment"
-          >
-            <BellRing className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-            <span>Payment</span>
           </button>
           <button
             onClick={() => router.push('/temporders/new')}

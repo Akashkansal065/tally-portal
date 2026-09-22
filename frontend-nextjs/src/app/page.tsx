@@ -135,13 +135,13 @@ export default function DashboardPage() {
       if (queryParams.length > 0) {
         url += `?${queryParams.join('&')}`
       }
-      const res = await fetch(url, { headers: authHeaders(token) })
-      if (res.ok) {
-        const data = await res.json()
-        setDashboardData(data)
+      const res = await fetch(url, { headers: authHeaders(token) }).catch(() => null)
+      if (res && res.ok) {
+        const data = await res.json().catch(() => null)
+        if (data) setDashboardData(data)
       }
     } catch (e) {
-      console.error('Failed to load dashboard:', e)
+      console.warn('Dashboard summary temporarily unavailable:', e)
     } finally {
       setFetchingSummary(false)
     }
@@ -159,20 +159,20 @@ export default function DashboardPage() {
       const qs = queryParams.length > 0 ? `?${queryParams.join('&')}` : ''
 
       const [resAnalytics, resTopCustomers] = await Promise.all([
-        fetch(`${API_BASE}/reports/executive-analytics${qs}`, { headers: authHeaders(token) }),
-        fetch(`${API_BASE}/reports/top-customers${qs}`, { headers: authHeaders(token) }),
+        fetch(`${API_BASE}/reports/executive-analytics${qs}`, { headers: authHeaders(token) }).catch(() => null),
+        fetch(`${API_BASE}/reports/top-customers${qs}`, { headers: authHeaders(token) }).catch(() => null),
       ])
 
-      if (resAnalytics.ok) {
-        const data = await resAnalytics.json()
-        setAnalyticsData(data)
+      if (resAnalytics && resAnalytics.ok) {
+        const data = await resAnalytics.json().catch(() => null)
+        if (data) setAnalyticsData(data)
       }
-      if (resTopCustomers.ok) {
-        const data = await resTopCustomers.json()
-        setTopCustomersData(Array.isArray(data) ? data : [])
+      if (resTopCustomers && resTopCustomers.ok) {
+        const data = await resTopCustomers.json().catch(() => null)
+        if (Array.isArray(data)) setTopCustomersData(data)
       }
     } catch (e) {
-      console.error('Failed to load executive analytics:', e)
+      console.warn('Executive analytics temporarily unavailable:', e)
     } finally {
       setAnalyticsLoading(false)
     }
@@ -244,13 +244,13 @@ export default function DashboardPage() {
     try {
       const res = await fetch(`${API_BASE}/reports/dashboard-details?category=${category}`, {
         headers: authHeaders(token)
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setDetailData(data)
+      }).catch(() => null)
+      if (res && res.ok) {
+        const data = await res.json().catch(() => null)
+        if (data) setDetailData(data)
       }
     } catch (e) {
-      console.error(e)
+      console.warn('Dashboard detail category temporarily unavailable:', e)
     } finally {
       setDetailLoading(false)
     }
@@ -283,7 +283,7 @@ export default function DashboardPage() {
       icon: FileText,
       color: 'text-blue-600',
       bgColor: 'bg-blue-500/10 border-blue-500/20',
-      show: permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments,
+      show: Boolean(permissions.showVouchers ?? permissions.showReceipts),
     },
     {
       href: '/ledgers',
@@ -310,7 +310,7 @@ export default function DashboardPage() {
       icon: Layers,
       color: 'text-emerald-600',
       bgColor: 'bg-emerald-500/10 border-emerald-500/20',
-      show: permissions.showStocks,
+      show: permissions.showStocks && permissions.stockScope !== 'catalog_only',
     },
     {
       href: '/inventory/bom',
@@ -319,7 +319,7 @@ export default function DashboardPage() {
       icon: Layers,
       color: 'text-cyan-600',
       bgColor: 'bg-cyan-500/10 border-cyan-500/20',
-      show: permissions.showStocks,
+      show: permissions.showStocks && permissions.stockScope !== 'catalog_only',
     },
     {
       href: '/temporders',

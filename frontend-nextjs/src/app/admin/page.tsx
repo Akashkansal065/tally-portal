@@ -54,6 +54,7 @@ type UserItem = {
   showLedger: boolean
   showSalesLedgers: boolean
   showPurchaseLedgers: boolean
+  showVouchers?: boolean
   showReceipts: boolean
   showPayments: boolean
   showExpenses: boolean
@@ -705,7 +706,8 @@ export default function AdminPage() {
     const payload = {
       showSalesLedgers: field === 'showSalesLedgers' ? value : user.showSalesLedgers,
       showPurchaseLedgers: field === 'showPurchaseLedgers' ? value : user.showPurchaseLedgers,
-      showReceipts: field === 'showReceipts' ? value : user.showReceipts,
+      showVouchers: (field === 'showVouchers' || field === 'showReceipts') ? value : (user.showVouchers ?? user.showReceipts),
+      showReceipts: (field === 'showReceipts' || field === 'showVouchers') ? value : user.showReceipts,
       showPayments: field === 'showPayments' ? value : user.showPayments,
       showExpenses: field === 'showExpenses' ? value : user.showExpenses,
       showAttendance: field === 'showAttendance' ? value : user.showAttendance,

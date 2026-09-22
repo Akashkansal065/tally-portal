@@ -854,7 +854,7 @@ export function GlobalHeader() {
                 </CollapsibleMenu>
               )}
 
-              {permissions.showStocks && (
+              {permissions.showStocks && permissions.stockScope !== 'catalog_only' && (
                 <CollapsibleMenu label="Inventory Masters" icon={Package} defaultOpen={true}>
                   <DrawerLink href="/masters/stock-groups" icon={FolderTree} label="Stock Group" onClick={() => setDrawerOpen(false)} />
                   <DrawerLink href="/masters/stock-categories" icon={Tag} label="Stock Category" onClick={() => setDrawerOpen(false)} />
@@ -866,9 +866,9 @@ export function GlobalHeader() {
                 </CollapsibleMenu>
               )}
 
-              {(permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments || permissions.showOrders || permissions.showExpenses) && (
+              {((permissions.showVouchers ?? permissions.showReceipts) || permissions.showPayments || permissions.showOrders || permissions.showExpenses) && (
                 <CollapsibleMenu label="Transactions" icon={FileText} defaultOpen={true}>
-                  {(permissions.showSalesLedgers || permissions.showPurchaseLedgers || permissions.showReceipts || permissions.showPayments) && (
+                  {(permissions.showVouchers ?? permissions.showReceipts) && (
                     <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
                   )}
                   {permissions.showOrders && (

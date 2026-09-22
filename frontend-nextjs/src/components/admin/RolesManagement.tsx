@@ -34,6 +34,7 @@ export interface RoleItem {
   description?: string
   user_count: number
   is_system: boolean
+  permissions?: PermissionItem[]
 }
 
 export interface PermissionItem {

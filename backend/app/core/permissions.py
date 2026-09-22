@@ -137,7 +137,12 @@ async def get_effective_permission(
         effective["can_update"] = perm.can_update
         effective["can_delete"] = perm.can_delete
 
-    # Check for user-specific overrides
+    # Master role ceiling: If role has completely disabled this module (can_read == False),
+    # individual user overrides cannot grant access to it.
+    if not (perm and perm.can_read):
+        return effective
+
+    # Check for user-specific overrides (can further restrict or customize permitted modules)
     override_query = await db.execute(
         select(UserPermissionOverride).where(
             UserPermissionOverride.user_id == user_id,
@@ -173,6 +178,7 @@ async def get_user_permission_toggles(
             "showLedger": True,
             "showSalesLedgers": True,
             "showPurchaseLedgers": True,
+            "showVouchers": True,
             "showReceipts": True,
             "showPayments": True,
             "showExpenses": True,
@@ -190,6 +196,7 @@ async def get_user_permission_toggles(
         "showLedger": False,
         "showSalesLedgers": False,
         "showPurchaseLedgers": False,
+        "showVouchers": False,
         "showReceipts": False,
         "showPayments": False,
         "showExpenses": False,
@@ -208,7 +215,7 @@ async def get_user_permission_toggles(
         "ledgers": "showLedger",
         "ledger_customer": "showSalesLedgers",
         "ledger_supplier": "showPurchaseLedgers",
-        "vouchers": "showReceipts",
+        "vouchers": "showVouchers",
         "payments": "showPayments",
         "expenses": "showExpenses",
         "attendance": "showAttendance",
@@ -226,13 +233,17 @@ async def get_user_permission_toggles(
         .join(Module, Permission.module_id == Module.module_id)
         .where(Permission.role_id == role_id)
     )
+    role_allowed = {}
     for perm, mod_code in perm_q.all():
         m_code = mod_code.lower()
+        role_allowed[m_code] = bool(perm.can_read)
         if m_code in mapping:
             toggle_key = mapping[m_code]
             toggles[toggle_key] = bool(perm.can_read)
+        if m_code == "vouchers":
+            toggles["showReceipts"] = bool(perm.can_read)
 
-    # 2. Fetch user overrides joined with Module
+    # 2. Fetch user overrides joined with Module (only applied if permitted by master role)
     override_q = await db.execute(
         select(UserPermissionOverride, Module.code)
         .join(Module, UserPermissionOverride.module_id == Module.module_id)
@@ -240,10 +251,13 @@ async def get_user_permission_toggles(
     )
     for override, mod_code in override_q.all():
         m_code = mod_code.lower()
-        if m_code in mapping:
-            toggle_key = mapping[m_code]
-            if override.can_read is not None:
-                toggles[toggle_key] = bool(override.can_read)
+        if role_allowed.get(m_code, False):
+            if m_code in mapping:
+                toggle_key = mapping[m_code]
+                if override.can_read is not None:
+                    toggles[toggle_key] = bool(override.can_read)
+            if m_code == "vouchers" and override.can_read is not None:
+                toggles["showReceipts"] = bool(override.can_read)
                 
     # 3. Derive showLedger
     toggles["showLedger"] = (

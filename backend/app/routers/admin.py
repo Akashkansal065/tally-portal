@@ -25,6 +25,7 @@ class AdminUserResponse(BaseModel):
     showLedger: bool
     showSalesLedgers: bool
     showPurchaseLedgers: bool
+    showVouchers: bool = False
     showReceipts: bool
     showPayments: bool
     showExpenses: bool
@@ -60,22 +61,6 @@ class UserRoleUpdate(BaseModel):
     role_id: Optional[int] = None
     role: Optional[str] = None
 
-class RoleResponse(BaseModel):
-    role_id: int
-    name: str
-    description: Optional[str] = None
-    user_count: int = 0
-    is_system: bool = False
-
-class RoleCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    clone_from_role_id: Optional[int] = None
-
-class RoleUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-
 class RolePermissionItem(BaseModel):
     module_id: int
     code: str
@@ -85,6 +70,23 @@ class RolePermissionItem(BaseModel):
     can_read: bool
     can_update: bool
     can_delete: bool
+
+class RoleResponse(BaseModel):
+    role_id: int
+    name: str
+    description: Optional[str] = None
+    user_count: int = 0
+    is_system: bool = False
+    permissions: List[RolePermissionItem] = []
+
+class RoleCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    clone_from_role_id: Optional[int] = None
+
+class RoleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
 
 class ModuleResponse(BaseModel):
     module_id: int
@@ -150,6 +152,7 @@ async def get_users(
             showLedger=toggles["showLedger"],
             showSalesLedgers=toggles["showSalesLedgers"],
             showPurchaseLedgers=toggles["showPurchaseLedgers"],
+            showVouchers=toggles.get("showVouchers", toggles["showReceipts"]),
             showReceipts=toggles["showReceipts"],
             showPayments=toggles["showPayments"],
             showExpenses=toggles["showExpenses"],
@@ -223,6 +226,7 @@ async def create_user(
         showLedger=toggles["showLedger"],
         showSalesLedgers=toggles["showSalesLedgers"],
         showPurchaseLedgers=toggles["showPurchaseLedgers"],
+        showVouchers=toggles.get("showVouchers", toggles["showReceipts"]),
         showReceipts=toggles["showReceipts"],
         showPayments=toggles["showPayments"],
         showExpenses=toggles["showExpenses"],
@@ -334,6 +338,7 @@ async def update_user(
         showLedger=toggles["showLedger"],
         showSalesLedgers=toggles["showSalesLedgers"],
         showPurchaseLedgers=toggles["showPurchaseLedgers"],
+        showVouchers=toggles.get("showVouchers", toggles["showReceipts"]),
         showReceipts=toggles["showReceipts"],
         showPayments=toggles["showPayments"],
         showExpenses=toggles["showExpenses"],
@@ -467,16 +472,50 @@ async def get_roles(
         select(User.role_id, func.count(User.user_id)).group_by(User.role_id)
     )
     counts = {r[0]: r[1] for r in counts_q.all()}
+
+    # Eagerly load all modules and permissions for all roles
+    all_mods = (await db.execute(select(Module).order_by(Module.module_id.asc()))).scalars().all()
+    all_perms = (await db.execute(select(Permission))).scalars().all()
+    perm_by_role_mod = {(p.role_id, p.module_id): p for p in all_perms}
     
     result = []
     for r in roles:
         is_sys = r.name.lower() in ("admin", "sales")
+        is_adm = r.name.lower() in ("admin", "superadmin", "owner")
+
+        role_perms = []
+        for m in all_mods:
+            if is_adm:
+                role_perms.append(RolePermissionItem(
+                    module_id=m.module_id,
+                    code=m.code,
+                    name=m.name,
+                    description=m.description,
+                    can_create=True,
+                    can_read=True,
+                    can_update=True,
+                    can_delete=True
+                ))
+            else:
+                p = perm_by_role_mod.get((r.role_id, m.module_id))
+                role_perms.append(RolePermissionItem(
+                    module_id=m.module_id,
+                    code=m.code,
+                    name=m.name,
+                    description=m.description,
+                    can_create=bool(p.can_create) if p else False,
+                    can_read=bool(p.can_read) if p else False,
+                    can_update=bool(p.can_update) if p else False,
+                    can_delete=bool(p.can_delete) if p else False
+                ))
+
         result.append(RoleResponse(
             role_id=r.role_id,
             name=r.name,
             description=r.description or "",
             user_count=counts.get(r.role_id, 0),
-            is_system=is_sys
+            is_system=is_sys,
+            permissions=role_perms
         ))
     return result
 
@@ -903,6 +942,7 @@ async def get_user_permissions(
 class UserPermissionsToggle(BaseModel):
     showSalesLedgers: bool
     showPurchaseLedgers: bool
+    showVouchers: Optional[bool] = None
     showReceipts: bool
     showPayments: bool
     showExpenses: bool
@@ -941,10 +981,11 @@ async def update_user_permissions(
             detail="User not found."
         )
         
+    vouchers_toggle_val = payload.showVouchers if payload.showVouchers is not None else payload.showReceipts
     mapping = {
         "ledger_customer": payload.showSalesLedgers,
         "ledger_supplier": payload.showPurchaseLedgers,
-        "vouchers": payload.showReceipts,
+        "vouchers": vouchers_toggle_val,
         "payments": payload.showPayments,
         "expenses": payload.showExpenses,
         "attendance": payload.showAttendance,
@@ -973,7 +1014,21 @@ async def update_user_permissions(
         )
         perm = perm_q.scalars().first()
         default_read = perm.can_read if perm else False
-        
+
+        # Master Role authority: If the master role has disabled this module (default_read == False),
+        # individual user overrides cannot enable it. Clean up any stale overrides.
+        if not default_read:
+            ov_q = await db.execute(
+                select(UserPermissionOverride).where(
+                    UserPermissionOverride.user_id == user_id,
+                    UserPermissionOverride.module_id == module.module_id
+                )
+            )
+            override = ov_q.scalars().first()
+            if override:
+                await db.delete(override)
+            continue
+
         # Upsert or Delete override
         if requested_val != default_read:
             ov_q = await db.execute(

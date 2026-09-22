@@ -55,7 +55,7 @@ function StocksContent() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showStocks && !permissions.isAdmin) { router.replace('/'); return }
+    if ((!permissions.showStocks || permissions.stockScope === 'catalog_only') && !permissions.isAdmin) { router.replace('/'); return }
   }, [user, permissions, router])
 
   const [search, setSearch] = useState('')

@@ -34,11 +34,7 @@ export function MobileBottomNav() {
   if (!user) return null
 
   const isAdmin = permissions.isAdmin || user.role === 'admin' || user.role === 'Admin'
-  const hasVouchersAccess =
-    permissions.showSalesLedgers ||
-    permissions.showPurchaseLedgers ||
-    permissions.showReceipts ||
-    permissions.showPayments
+  const hasVouchersAccess = Boolean(permissions.showVouchers ?? permissions.showReceipts)
 
   const hasCustomersAccess =
     permissions.showCustomers ||
@@ -57,7 +53,7 @@ export function MobileBottomNav() {
     ...(permissions.showLedger
       ? [{ href: '/ledgers', label: 'Ledgers', icon: BookOpen }]
       : []),
-    ...(permissions.showStocks
+    ...(permissions.showStocks && permissions.stockScope !== 'catalog_only'
       ? [{ href: '/stocks', label: 'Stocks', icon: Layers }]
       : []),
     ...(permissions.showOrders

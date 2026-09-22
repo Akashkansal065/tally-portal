@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.permissions import require_permission, get_current_user
+from app.core.permissions import require_permission, get_current_user, get_effective_permission
 from app.models.portal_core import User, DeletedRecordAudit, SyncQueue
 from app.models.tally_core import MstUom, MstStockGroup, StockGroupAlias, MstStockCategory, MstGodown, MstStockItem, Batch, MstPriceLevel
 from app.models.portal_core import BillOfMaterials, BomItem, SerialNumber
@@ -1119,10 +1119,32 @@ async def delete_stock_item(
 
 @router.get("/items", response_model=List[StockItemResponse])
 async def get_stock_items(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     from decimal import Decimal
+
+    # Permission check:
+    # 1. Admin/owner gets full access
+    # 2. Users with 'inventory:read' get access
+    # 3. Users with 'orders:read' or 'orders:create' get catalog-level access for booking orders
+    is_admin = bool(user.role and user.role.name and user.role.name.lower() in ("admin", "superadmin", "owner"))
+    inv_perms = await get_effective_permission(user.user_id, "inventory", db)
+    orders_perms = await get_effective_permission(user.user_id, "orders", db)
+
+    can_read_inv = is_admin or inv_perms.get("can_read", False)
+    can_order = is_admin or orders_perms.get("can_read", False) or orders_perms.get("can_create", False)
+
+    if not (can_read_inv or can_order):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view inventory items or products."
+        )
+
+    # Determine whether user has access to full financial stock details (quantities, values, GP%)
+    user_stock_scope = getattr(user, "stock_scope", "full") or "full"
+    has_full_stock_access = is_admin or (can_read_inv and user_stock_scope != "catalog_only")
+
     stmt = (
         select(MstStockItem)
         .options(selectinload(MstStockItem.unit), selectinload(MstStockItem.group))
@@ -1130,6 +1152,42 @@ async def get_stock_items(
     )
     res = await db.execute(stmt)
     items = res.scalars().all()
+
+    # If user does NOT have full stock access (e.g. Sales user or catalog_only), return sanitized catalog
+    if not has_full_stock_access:
+        out = []
+        for item in items:
+            out.append(StockItemResponse(
+                stock_item_id=item.stock_item_id,
+                item_id=item.stock_item_id,
+                company_id=item.company_id,
+                name=item.name,
+                stock_group_id=item.stock_group_id,
+                stock_category_id=item.stock_category_id,
+                unit_id=item.unit_id,
+                hsn_code=item.hsn_code,
+                gst_rate_percent=item.gst_rate_percent,
+                opening_qty=Decimal("0.000"),
+                opening_rate=Decimal("0.00"),
+                reorder_level=Decimal("0.000"),
+                tracking_type=item.tracking_type,
+                shelf_life_days=item.shelf_life_days,
+                is_active=item.is_active,
+                group_name=item.group_name,
+                company_name=item.group_name,
+                uom=item.uom,
+                closing_balance=Decimal("0.000"),
+                closing_rate=Decimal("0.00"),
+                closing_value=Decimal("0.00"),
+                inward_qty=Decimal("0.000"),
+                inward_value=Decimal("0.00"),
+                outward_qty=Decimal("0.000"),
+                outward_value=Decimal("0.00"),
+                cons_value=Decimal("0.00"),
+                gp_value=Decimal("0.00"),
+                gp_percent=Decimal("0.00")
+            ))
+        return out
 
     # Fetch all stock entries for this company
     from app.models.tally_core import TrnInventory
@@ -1223,6 +1281,13 @@ async def get_item_vouchers(
 ):
     """Return individual stock transaction vouchers for a specific stock item,
     including party name (Sundry Debtors / Sundry Creditors ledger on the voucher)."""
+    is_admin = bool(user.role and user.role.name and user.role.name.lower() in ("admin", "superadmin", "owner"))
+    user_stock_scope = getattr(user, "stock_scope", "full") or "full"
+    if not is_admin and user_stock_scope == "catalog_only":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view stock transaction vouchers."
+        )
     from sqlalchemy import text as sa_text
     
     date_filter = ""
