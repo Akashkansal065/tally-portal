@@ -746,6 +746,7 @@ async def get_payment_history(
             "payment_mode": p.payment_mode,
             "cheque_date": p.cheque_date.isoformat() if p.cheque_date else None,
             "comments": p.comments,
+            "review_comment": p.review_comment,
             "status": p.status,
             "photo_url": p.photo_url,
             "created_at": p.created_at.isoformat() if p.created_at else None,
@@ -776,6 +777,7 @@ async def get_all_payments(
             "payment_mode": p.payment_mode,
             "cheque_date": p.cheque_date.isoformat() if p.cheque_date else None,
             "comments": p.comments,
+            "review_comment": p.review_comment,
             "status": p.status,
             "photo_url": p.photo_url,
             "created_at": p.created_at.isoformat() if p.created_at else None,
@@ -786,8 +788,9 @@ async def get_all_payments(
 
 
 class PaymentStatusUpdate(BaseModel):
-    status: str  # success | cancelled
+    status: str  # success | cancelled | pending
     reason: Optional[str] = None
+    review_comment: Optional[str] = None
 
 
 @router.put("/{payment_id}/status")
@@ -805,7 +808,16 @@ async def update_payment_status(
     if req.status not in {"success", "cancelled", "pending"}:
         raise HTTPException(status_code=400, detail="Status must be 'success', 'cancelled', or 'pending'")
 
+    comment = (req.review_comment or req.reason or "").strip()
+    if req.status in {"success", "cancelled"} and not comment:
+        raise HTTPException(
+            status_code=400,
+            detail="A review comment is required when approving or rejecting a payment."
+        )
+
     payment.status = req.status
+    if comment:
+        payment.review_comment = comment
     await db.commit()
-    return {"success": True, "status": payment.status}
+    return {"success": True, "status": payment.status, "review_comment": payment.review_comment}
 

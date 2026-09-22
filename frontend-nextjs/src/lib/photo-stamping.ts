@@ -37,48 +37,60 @@ const drawFallbackMap = (ctx: CanvasRenderingContext2D, x: number, y: number, w:
   ctx.fill()
 }
 
-export async function stampPhoto(file: File): Promise<StampingResult> {
+export async function stampPhoto(
+  file: File,
+  preloadedCoords?: { lat: number; lng: number } | null
+): Promise<StampingResult> {
   let lat: number | null = null
   let lng: number | null = null
   let addressInfo: any = null
   let displayAddress: string | null = null
 
-  // Geolocation wrapper
-  const getCoords = () => {
-    return new Promise<GeolocationPosition>((resolve, reject) => {
-      if (!navigator.geolocation) {
-        reject(new Error('Geolocation not supported'))
-        return
-      }
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 60000
-      })
-    })
-  }
-
-  try {
-    const pos = await getCoords()
-    lat = pos.coords.latitude
-    lng = pos.coords.longitude
-  } catch (err) {
-    console.warn('High accuracy geolocation failed, trying low accuracy...', err)
-    try {
+  if (preloadedCoords && preloadedCoords.lat && preloadedCoords.lng) {
+    lat = preloadedCoords.lat
+    lng = preloadedCoords.lng
+  } else {
+    // Geolocation wrapper
+    const getCoords = () => {
       return new Promise<GeolocationPosition>((resolve, reject) => {
+        if (typeof window === 'undefined' || !navigator.geolocation) {
+          reject(new Error('Geolocation not supported'))
+          return
+        }
         navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: false,
-          timeout: 8000
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60000
         })
-      }).then(pos => {
-        lat = pos.coords.latitude
-        lng = pos.coords.longitude
-        return pos
-      }).catch(err2 => {
-        console.warn('Low accuracy geolocation failed too', err2)
-        return null as any
       })
-    } catch (_) {}
+    }
+
+    try {
+      const pos = await getCoords()
+      lat = pos.coords.latitude
+      lng = pos.coords.longitude
+    } catch (err) {
+      console.warn('High accuracy geolocation failed, trying low accuracy...', err)
+      try {
+        const lowPos = await new Promise<GeolocationPosition | null>((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve(pos),
+            (err2) => {
+              console.warn('Low accuracy geolocation failed too', err2)
+              resolve(null)
+            },
+            {
+              enableHighAccuracy: false,
+              timeout: 8000
+            }
+          )
+        })
+        if (lowPos) {
+          lat = lowPos.coords.latitude
+          lng = lowPos.coords.longitude
+        }
+      } catch (_) {}
+    }
   }
 
   // Get reverse geocoding if coords are captured

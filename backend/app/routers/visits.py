@@ -80,6 +80,24 @@ async def check_in(
     - Automatically captures & verifies GPS coordinates on customer profile if missing or unverified.
     - Seamlessly pipes check-in photo into ImageKit and CustomerPhoto gallery.
     """
+    # Enforce non-zero GPS coordinates for shop check-in
+    if abs(req.latitude) < 0.0001 and abs(req.longitude) < 0.0001:
+        from app.routers.notifications import notify_admins
+        shop_title = req.custom_shop_name or "Customer Shop"
+        await notify_admins(
+            db,
+            company_id=user.company_id,
+            type="location_denied",
+            title=f"🚨 Check-In Blocked: Zero GPS ({user.username})",
+            message=f"{user.username} attempted to submit a shop check-in with 0,0 coordinates for '{shop_title}'. The request was rejected.",
+            reference_type="visit",
+            auto_commit=True,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Valid GPS coordinates are required for check-in. Please enable location access in your device/browser settings."
+        )
+
     visit = SalesVisit(
         user_id=user.user_id,
         ledger_id=req.ledger_id,

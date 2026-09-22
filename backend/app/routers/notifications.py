@@ -64,6 +64,17 @@ class VapidKeyResponse(BaseModel):
     public_key: str
 
 
+class LocationDeniedAlertRequest(BaseModel):
+    activity: str  # e.g., "Shop Check-In", "Attendance Punch", "Payment Collection"
+    shop_name: Optional[str] = None
+    details: Optional[str] = None
+    reference_id: Optional[str] = None
+    reference_type: Optional[str] = "visit"
+
+
+_LOCATION_ALERT_CACHE: dict = {}
+
+
 # ─── Web Push Dispatcher ─────────────────────────────────────────────────────
 
 def _sync_webpush_call(sub_info: dict, payload_str: str) -> tuple[bool, Optional[int]]:
@@ -406,6 +417,60 @@ async def send_test_push(
         "success": True,
         "message": f"Test alert successfully sent to {count} device(s)!",
         "devices_notified": count,
+    }
+
+
+@router.post("/location-denied-alert")
+async def report_location_denied_alert(
+    req: LocationDeniedAlertRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Alerts all company admins whenever a user denies location access during a required activity.
+    Debounces notifications to once per 2 minutes per user+activity to avoid notification flooding.
+    """
+    import time
+    now = time.time()
+    cache_key = (current_user.company_id, current_user.user_id, req.activity)
+    last_sent = _LOCATION_ALERT_CACHE.get(cache_key, 0)
+    
+    if now - last_sent < 120:
+        return {
+            "success": True,
+            "debounced": True,
+            "message": "Alert was already dispatched recently to admins."
+        }
+    
+    _LOCATION_ALERT_CACHE[cache_key] = now
+
+    user_display = current_user.username or current_user.email
+    activity_desc = req.activity
+    if req.shop_name:
+        activity_desc += f" at '{req.shop_name}'"
+
+    title = f"⚠️ Location Denied: {user_display}"
+    message = (
+        f"{user_display} ({current_user.email}) denied browser location access during {activity_desc}. "
+        f"The action was blocked until GPS access is granted."
+    )
+
+    notifs = await notify_admins(
+        db=db,
+        company_id=current_user.company_id,
+        type="location_denied",
+        title=title,
+        message=message,
+        reference_id=req.reference_id,
+        reference_type=req.reference_type or "visit",
+        auto_commit=True,
+    )
+
+    return {
+        "success": True,
+        "debounced": False,
+        "admins_notified": len(notifs),
+        "message": f"Alert dispatched to {len(notifs)} admin(s)."
     }
 
 

@@ -1,13 +1,15 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
 import { stampPhoto } from '@/lib/photo-stamping'
 import { queueOfflineCheckIn, getPendingCheckIns, syncPendingCheckIns, OfflineCheckIn } from '@/lib/offline-storage'
+import { useLocationPermission } from '@/hooks/useLocationPermission'
+import { LocationPermissionModal } from '@/components/LocationPermissionModal'
 import Link from 'next/link'
-import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw, History, CalendarCheck, ExternalLink } from 'lucide-react'
+import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw, History, CalendarCheck, ExternalLink, MapPinOff, Compass } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type RecentVisit = {
@@ -75,6 +77,30 @@ export default function CheckInPage() {
   const [processingPhoto, setProcessingPhoto] = useState(false)
   const [previewPhoto, setPreviewPhoto] = useState<RecentVisit | null>(null)
   const [expandedProofId, setExpandedProofId] = useState<number | null>(null)
+
+  const currentShopTitle = selectedShopName || customShop || searchQuery || searchParams.get('name') || ''
+
+  // Location Permission & Real-Time Admin Alert Hook
+  const {
+    permissionState,
+    coords: locationCoords,
+    isAcquiring: isAcquiringGps,
+    error: locationError,
+    showModal: showLocationModal,
+    setShowModal: setShowLocationModal,
+    platform: devicePlatform,
+    ensureLocation,
+    retryLocation,
+    closeModal: closeLocationModal,
+  } = useLocationPermission({
+    activityName: 'Shop Check-In',
+    shopName: currentShopTitle,
+    autoRequestOnMount: true,
+    referenceType: 'visit',
+    referenceId: selectedLedger || undefined,
+  })
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Pre-fill from query params (e.g. from Customer Directory or Route Planner)
   useEffect(() => {
@@ -190,14 +216,27 @@ export default function CheckInPage() {
     }).finally(() => setLoading(false))
   }, [user, token, router, permissions.showCheckIn])
 
+  const handleCameraTrigger = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    // Enforce location permission before opening camera
+    const activeCoords = await ensureLocation('Geocoded Photo Capture')
+    if (!activeCoords) {
+      // Permission denied or prompt rejected, modal is now open, abort camera
+      return
+    }
+    fileInputRef.current?.click()
+  }
+
   const handlePhotoCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
     setProcessingPhoto(true)
     setGpsStatus('loading')
+    setError('')
     try {
-      const result = await stampPhoto(file)
+      const activeCoords = locationCoords || coords || (await ensureLocation('Geocoded Photo Capture'))
+      const result = await stampPhoto(file, activeCoords)
       setPhoto(result.photoBase64)
       if (result.lat && result.lng) {
         setCoords({ lat: result.lat, lng: result.lng })
@@ -210,6 +249,7 @@ export default function CheckInPage() {
       setGpsStatus('error')
     } finally {
       setProcessingPhoto(false)
+      if (e.target) e.target.value = ''
     }
   }
 
@@ -232,6 +272,18 @@ export default function CheckInPage() {
       setError('Select a shop or enter custom shop name.')
       return
     }
+
+    // Guardrail: must have valid non-zero GPS coords
+    let activeCoords = coords || locationCoords
+    if (!activeCoords || (activeCoords.lat === 0 && activeCoords.lng === 0)) {
+      const fresh = await ensureLocation('Check-In Submission')
+      if (!fresh) {
+        setError('Accurate GPS Location is required for check-in. Please allow location access.')
+        return
+      }
+      activeCoords = fresh
+    }
+
     if (!photo) {
       setError('Please capture a watermarked photo first.')
       return
@@ -241,12 +293,22 @@ export default function CheckInPage() {
     setError('')
     setSuccess('')
 
+    const effectiveLat = activeCoords?.lat || 0
+    const effectiveLng = activeCoords?.lng || 0
+
+    if (effectiveLat === 0 && effectiveLng === 0) {
+      setError('Location coordinates are missing. Please allow location access.')
+      setSubmitting(false)
+      setShowLocationModal(true)
+      return
+    }
+
     const payload = {
       ledger_id: selectedLedger ? parseInt(selectedLedger) : null,
       customer_profile_id: selectedProfileId || null,
       custom_shop_name: customShop || selectedShopName || searchQuery || null,
-      latitude: coords?.lat || 0,
-      longitude: coords?.lng || 0,
+      latitude: effectiveLat,
+      longitude: effectiveLng,
       comments,
       photo_base64: photo,
     }
@@ -380,8 +442,19 @@ export default function CheckInPage() {
           </div>
         )}
 
-        {success && <div className="p-3.5 rounded-2xl bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-bold">{success}</div>}
-        {error && <div className="p-3.5 rounded-2xl bg-destructive/10 text-destructive text-xs font-bold">{error}</div>}
+        {/* Persistent Location Denied Warning Banner */}
+        {permissionState === 'denied' && (
+          <div 
+            onClick={() => setShowLocationModal(true)}
+            className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-rose-700 dark:text-rose-400 text-xs font-bold flex items-center justify-between gap-2 cursor-pointer hover:bg-rose-500/15 transition-all shadow-xs"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <MapPinOff className="h-4 w-4 shrink-0 text-rose-600" />
+              <span className="truncate">Location access is blocked in your browser. Tap to unblock check-in.</span>
+            </div>
+            <span className="shrink-0 text-[11px] underline font-extrabold text-rose-600">Fix Access</span>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
           {/* Shop selection */}
@@ -505,17 +578,22 @@ export default function CheckInPage() {
                 </button>
               </div>
             ) : (
-              <label className="mt-2 w-full flex flex-col items-center justify-center gap-2 py-8 rounded-2xl border-2 border-dashed border-border hover:border-emerald-500/50 cursor-pointer text-xs text-muted-foreground transition-all">
+              <div
+                onClick={handleCameraTrigger}
+                className="mt-2 w-full flex flex-col items-center justify-center gap-2 py-8 rounded-2xl border-2 border-dashed border-border hover:border-emerald-500/50 cursor-pointer text-xs text-muted-foreground transition-all hover:bg-muted/20 active:scale-[0.99]"
+              >
                 {processingPhoto ? (
                   <>
                     <div className="w-6 h-6 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                    <span className="font-bold">Watermarking Map & Address...</span>
+                    <span className="font-bold text-foreground">Watermarking Map & Address...</span>
                   </>
                 ) : (
                   <>
                     <Camera className="h-7 w-7 text-muted-foreground opacity-70" />
-                    <span className="font-bold">Take Geocoded Check-In Photo</span>
+                    <span className="font-bold text-foreground">Take Geocoded Check-In Photo</span>
+                    <span className="text-[10px] text-muted-foreground">Mandatory on-site GPS photo</span>
                     <input 
+                      ref={fileInputRef}
                       type="file" 
                       accept="image/*" 
                       capture="environment" 
@@ -524,32 +602,52 @@ export default function CheckInPage() {
                     />
                   </>
                 )}
-              </label>
+              </div>
             )}
 
-            {/* GPS Indicator */}
-            {gpsStatus !== 'idle' && (
-              <div className="mt-2.5 flex items-center gap-2.5 px-3 py-2 border rounded-xl text-[11px] font-semibold">
-                {gpsStatus === 'loading' && (
+            {/* Interactive GPS Indicator */}
+            <div className="mt-2.5 flex items-center justify-between px-3.5 py-2.5 bg-muted/40 border border-border rounded-xl text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                {isAcquiringGps ? (
                   <>
-                    <div className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                    <span className="text-muted-foreground">Getting accurate location...</span>
+                    <div className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                    <span className="text-muted-foreground font-medium">Acquiring accurate GPS...</span>
                   </>
-                )}
-                {gpsStatus === 'ok' && (
+                ) : (coords || locationCoords) ? (
                   <>
-                    <CheckCircle className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span className="text-emerald-600">GPS verified: {coords?.lat}°, {coords?.lng}°</span>
+                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold font-mono text-[11px] truncate">
+                      GPS Verified: {(coords || locationCoords)?.lat.toFixed(5)}°, {(coords || locationCoords)?.lng.toFixed(5)}°
+                      {locationCoords?.accuracy ? ` (±${locationCoords.accuracy}m)` : ''}
+                    </span>
                   </>
-                )}
-                {gpsStatus === 'error' && (
+                ) : permissionState === 'denied' ? (
                   <>
-                    <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
-                    <span className="text-amber-600">Location captured without precise GPS coordinates.</span>
+                    <MapPinOff className="h-4 w-4 text-rose-500 shrink-0" />
+                    <span className="text-rose-600 dark:text-rose-400 font-bold text-[11px]">
+                      Location Blocked in Browser
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Compass className="h-4 w-4 text-amber-500 shrink-0" />
+                    <span className="text-amber-600 dark:text-amber-400 font-medium text-[11px]">
+                      Location permission required
+                    </span>
                   </>
                 )}
               </div>
-            )}
+
+              {permissionState === 'denied' && (
+                <button
+                  type="button"
+                  onClick={() => setShowLocationModal(true)}
+                  className="text-[11px] font-extrabold text-rose-600 hover:text-rose-700 underline cursor-pointer shrink-0 ml-2"
+                >
+                  Unblock
+                </button>
+              )}
+            </div>
           </div>
 
           <button
@@ -650,6 +748,18 @@ export default function CheckInPage() {
           </div>
         </div>
       )}
+
+      {/* Location Permission Modal (Persistent until access granted) */}
+      <LocationPermissionModal
+        isOpen={showLocationModal}
+        onClose={closeLocationModal}
+        onRetry={retryLocation}
+        isRetrying={isAcquiringGps}
+        error={locationError}
+        platform={devicePlatform}
+        activityName="Shop Check-In"
+        shopName={currentShopTitle}
+      />
     </div>
   )
 }

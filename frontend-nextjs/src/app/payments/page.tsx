@@ -14,7 +14,12 @@ import {
   Eye, 
   ChevronLeft, 
   User as UserIcon,
-  Calendar
+  Calendar,
+  MessageSquare,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  Loader2
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -26,6 +31,7 @@ type Payment = {
   cheque_date?: string
   status: 'pending' | 'success' | 'cancelled'
   comments?: string
+  review_comment?: string
   created_at: string
   user_name: string
   photo_url?: string
@@ -39,6 +45,12 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'pending' | 'success' | 'cancelled'>('pending')
   const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null)
+
+  // Review modal states
+  const [reviewTarget, setReviewTarget] = useState<{ payment: Payment; action: 'success' | 'cancelled' } | null>(null)
+  const [reviewComment, setReviewComment] = useState('')
+  const [reviewSubmitting, setReviewSubmitting] = useState(false)
+  const [reviewError, setReviewError] = useState('')
 
   const fetchData = async () => {
     setLoading(true)
@@ -63,17 +75,53 @@ export default function PaymentsPage() {
     fetchData()
   }, [user, token, router, permissions])
 
-  const handleStatusChange = async (paymentId: number, nextStatus: 'success' | 'cancelled') => {
+  const openReviewModal = (payment: Payment, action: 'success' | 'cancelled') => {
+    setReviewTarget({ payment, action })
+    setReviewComment('')
+    setReviewError('')
+  }
+
+  const closeReviewModal = () => {
+    if (reviewSubmitting) return
+    setReviewTarget(null)
+    setReviewComment('')
+    setReviewError('')
+  }
+
+  const handleConfirmReview = async () => {
+    if (!reviewTarget) return
+    const trimmed = reviewComment.trim()
+    if (!trimmed) {
+      setReviewError('A review comment is required.')
+      return
+    }
+
+    setReviewSubmitting(true)
+    setReviewError('')
     try {
-      const res = await fetch(`${API_BASE}/payment/${paymentId}/status`, {
+      const res = await fetch(`${API_BASE}/payment/${reviewTarget.payment.id}/status`, {
         method: 'PUT',
         headers: authHeaders(token),
-        body: JSON.stringify({ status: nextStatus })
+        body: JSON.stringify({ 
+          status: reviewTarget.action,
+          review_comment: trimmed
+        })
       })
-      if (!res.ok) throw new Error('Failed to update status')
-      setPayments(prev => prev.map(p => p.id === paymentId ? { ...p, status: nextStatus } : p))
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to update status')
+      }
+      setPayments(prev => prev.map(p => 
+        p.id === reviewTarget.payment.id 
+          ? { ...p, status: reviewTarget.action, review_comment: trimmed } 
+          : p
+      ))
+      setReviewTarget(null)
+      setReviewComment('')
     } catch (err: any) {
-      alert(err.message)
+      setReviewError(err.message || 'Something went wrong')
+    } finally {
+      setReviewSubmitting(false)
     }
   }
 
@@ -285,8 +333,24 @@ export default function PaymentsPage() {
                         </td>
 
                         {/* Shop */}
-                        <td className="py-4 px-5 font-extrabold text-foreground min-w-[200px]">
-                          {p.ledger_name || 'Unknown Party'}
+                        <td className="py-4 px-5 min-w-[220px]">
+                          <div className="font-extrabold text-foreground">
+                            {p.ledger_name || 'Unknown Party'}
+                          </div>
+                          {p.comments && (
+                            <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1 italic">
+                              Note: "{p.comments}"
+                            </p>
+                          )}
+                          {p.review_comment && (
+                            <div className="mt-1.5 inline-flex items-start gap-1.5 text-[11px] bg-muted/60 border border-border/80 px-2.5 py-1 rounded-lg text-foreground max-w-sm">
+                              <MessageSquare className="h-3 w-3 mt-0.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                              <span className="break-words">
+                                <strong className="text-[10px] uppercase font-bold text-muted-foreground mr-1">Review:</strong>
+                                {p.review_comment}
+                              </span>
+                            </div>
+                          )}
                         </td>
 
                         {/* Amount */}
@@ -325,14 +389,15 @@ export default function PaymentsPage() {
                           {permissions.isAdmin && p.status === 'pending' ? (
                             <div className="inline-flex items-center gap-1.5">
                               <button
-                                onClick={() => handleStatusChange(p.id, 'success')}
-                                className="border border-border bg-card hover:bg-emerald-500 hover:text-white hover:border-emerald-500 rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                                onClick={() => openReviewModal(p, 'success')}
+                                className="border border-emerald-500/30 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-600 dark:hover:text-white rounded-xl px-3 py-1.5 text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1"
+                                title="Approve Payment"
                               >
-                                Review
+                                <Check className="h-3.5 w-3.5" /> Approve
                               </button>
                               <button
-                                onClick={() => handleStatusChange(p.id, 'cancelled')}
-                                className="border border-rose-500/20 text-rose-600 hover:bg-rose-500 hover:text-white rounded-xl px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer"
+                                onClick={() => openReviewModal(p, 'cancelled')}
+                                className="border border-rose-500/20 text-rose-600 hover:bg-rose-500 hover:text-white dark:border-rose-500/30 dark:hover:bg-rose-600 rounded-xl px-2.5 py-1.5 text-xs font-bold transition-all cursor-pointer"
                                 title="Reject Payment"
                               >
                                 <X className="h-3.5 w-3.5" />
@@ -402,6 +467,16 @@ export default function PaymentsPage() {
                     </p>
                   )}
 
+                  {p.review_comment && (
+                    <div className="text-[11px] bg-muted/50 border border-border/80 text-foreground p-2.5 rounded-xl leading-relaxed flex items-start gap-2">
+                      <MessageSquare className="h-3.5 w-3.5 mt-0.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <span className="font-bold text-[10px] uppercase tracking-wider text-muted-foreground block mb-0.5">Review Comment</span>
+                        <p className="text-foreground font-medium break-words">{p.review_comment}</p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Bottom Action / Proof Row */}
                   <div className="flex items-center justify-between border-t border-border/40 pt-2.5 text-xs">
                     {p.photo_url ? (
@@ -418,14 +493,15 @@ export default function PaymentsPage() {
                     {permissions.isAdmin && p.status === 'pending' ? (
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => handleStatusChange(p.id, 'success')}
-                          className="border border-border bg-card hover:bg-emerald-500 hover:text-white rounded-xl px-3 py-1 text-xs font-bold transition-all cursor-pointer shadow-2xs"
+                          onClick={() => openReviewModal(p, 'success')}
+                          className="border border-emerald-500/30 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-xl px-3 py-1 text-xs font-bold transition-all cursor-pointer shadow-xs flex items-center gap-1"
                         >
-                          Review
+                          <Check className="h-3 w-3" /> Approve
                         </button>
                         <button
-                          onClick={() => handleStatusChange(p.id, 'cancelled')}
+                          onClick={() => openReviewModal(p, 'cancelled')}
                           className="border border-rose-500/20 text-rose-600 hover:bg-rose-500 hover:text-white rounded-xl px-2 py-1 text-xs font-bold transition-all cursor-pointer"
+                          title="Reject Payment"
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>
@@ -447,6 +523,141 @@ export default function PaymentsPage() {
 
         <div className="h-16" />
       </div>
+
+      {/* Review Comment Modal (Mandatory for Approval and Rejection) */}
+      {reviewTarget && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-card border border-border rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  'w-10 h-10 rounded-2xl flex items-center justify-center shrink-0',
+                  reviewTarget.action === 'success' 
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400' 
+                    : 'bg-rose-500/10 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400'
+                )}>
+                  {reviewTarget.action === 'success' ? (
+                    <CheckCircle2 className="h-5 w-5" />
+                  ) : (
+                    <XCircle className="h-5 w-5" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-foreground">
+                    {reviewTarget.action === 'success' ? 'Approve Payment' : 'Reject Payment'}
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {reviewTarget.action === 'success' 
+                      ? 'Confirm collection verification with a comment' 
+                      : 'State the rejection reason for this payment'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={closeReviewModal}
+                disabled={reviewSubmitting}
+                className="text-muted-foreground hover:text-foreground p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Payment Summary Box */}
+            <div className="bg-muted/40 border border-border/80 rounded-2xl p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground font-medium">Party:</span>
+                <span className="font-bold text-foreground truncate max-w-[200px]">
+                  {reviewTarget.payment.ledger_name || 'Unknown Party'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground font-medium">Amount:</span>
+                <span className="font-black text-sm text-emerald-600 dark:text-emerald-400 font-mono">
+                  ₹{reviewTarget.payment.amount.toLocaleString('en-IN')}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground font-medium">Mode:</span>
+                <span className="font-semibold text-foreground">
+                  {reviewTarget.payment.payment_mode}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground font-medium">Collected By:</span>
+                <span className="font-semibold text-foreground">
+                  {reviewTarget.payment.user_name || 'Salesperson'}
+                </span>
+              </div>
+              {reviewTarget.payment.comments && (
+                <div className="pt-2 border-t border-border/60 text-[11px] text-muted-foreground italic">
+                  Note: "{reviewTarget.payment.comments}"
+                </div>
+              )}
+            </div>
+
+            {/* Review Comment Input */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-foreground">
+                Review Comment <span className="text-rose-500">*</span>
+              </label>
+              <textarea
+                rows={3}
+                value={reviewComment}
+                onChange={(e) => {
+                  setReviewComment(e.target.value)
+                  if (reviewError) setReviewError('')
+                }}
+                placeholder={
+                  reviewTarget.action === 'success'
+                    ? 'e.g. Verified in bank statement / Cheque deposited in HDFC'
+                    : 'e.g. Cheque bounced / Amount mismatch with bank entry'
+                }
+                className="w-full bg-background border border-border rounded-xl p-3 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary resize-none"
+                autoFocus
+              />
+              <div className="flex items-center justify-between text-[11px]">
+                {reviewError ? (
+                  <span className="text-rose-500 font-semibold flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" /> {reviewError}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">Mandatory for approval & rejection</span>
+                )}
+                <span className="text-muted-foreground/80 font-mono">
+                  {reviewComment.trim().length} chars
+                </span>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={closeReviewModal}
+                disabled={reviewSubmitting}
+                className="px-4 py-2 border border-border hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReview}
+                disabled={reviewSubmitting || reviewComment.trim().length === 0}
+                className={cn(
+                  'px-5 py-2 rounded-xl text-xs font-bold text-white transition-all shadow-md cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed',
+                  reviewTarget.action === 'success'
+                    ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/20'
+                    : 'bg-rose-600 hover:bg-rose-700 shadow-rose-500/20'
+                )}
+              >
+                {reviewSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {reviewTarget.action === 'success' ? 'Confirm Approval' : 'Confirm Rejection'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Selected Photo Viewer Modal */}
       {selectedPhoto && (

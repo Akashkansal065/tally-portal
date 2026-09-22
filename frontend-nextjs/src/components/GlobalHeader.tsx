@@ -14,6 +14,7 @@ import {
   ShoppingCart,
   IndianRupee,
   MapPin,
+  MapPinOff,
   LogOut,
   Sun,
   Moon,
@@ -319,7 +320,15 @@ export function GlobalHeader() {
     setShowNotifications(false)
 
     // Contextual redirection to destination screen
-    if (notif.type === 'check_in' || notif.reference_type === 'visit') {
+    if (notif.type === 'location_denied') {
+      if (notif.reference_type === 'attendance') {
+        router.push('/attendance')
+      } else if (notif.reference_type === 'payment') {
+        router.push('/payments')
+      } else {
+        router.push('/check-in/history')
+      }
+    } else if (notif.type === 'check_in' || notif.reference_type === 'visit') {
       router.push('/check-in/history')
     } else if (notif.type?.startsWith('order') || notif.reference_type === 'order') {
       router.push('/temporders')
@@ -1361,6 +1370,8 @@ function getNotifIcon(type: string, title?: string) {
     return <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
   }
   switch (type) {
+    case 'location_denied':
+      return <MapPinOff className="w-4 h-4 text-rose-600 dark:text-rose-400" />
     case 'check_in':
       return <MapPin className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
     case 'order_created':
@@ -1384,6 +1395,8 @@ function getNotifIconBg(type: string, title?: string) {
     return 'bg-rose-500/15'
   }
   switch (type) {
+    case 'location_denied':
+      return 'bg-rose-500/15'
     case 'check_in':
       return 'bg-emerald-500/15'
     case 'order_created':

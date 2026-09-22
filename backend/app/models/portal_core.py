@@ -830,6 +830,7 @@ class ShopPayment(Base):
     payment_mode = Column(String(64), nullable=False)  # Cash, Cheque, Online, etc.
     cheque_date = Column(Date, nullable=True, index=True)
     comments = Column(String(1024), nullable=True)
+    review_comment = Column(String(1024), nullable=True)
     photo_url = Column(Text, nullable=True)
     status = Column(String(32), default="pending")  # pending, success, cancelled
     created_at = Column(DateTime, server_default=func.now(), index=True)
