@@ -125,10 +125,18 @@ export default function PaymentsPage() {
     }
   }
 
-  // Grouped payments
-  const pendingPayments = useMemo(() => payments.filter(p => p.status === 'pending'), [payments])
-  const successPayments = useMemo(() => payments.filter(p => p.status === 'success'), [payments])
-  const cancelledPayments = useMemo(() => payments.filter(p => p.status === 'cancelled'), [payments])
+  // Grouped payments (sorted by date desc)
+  const sortedPayments = useMemo(() => {
+    return [...payments].sort((a, b) => {
+      const dateA = a.created_at ? new Date(a.created_at).getTime() : 0
+      const dateB = b.created_at ? new Date(b.created_at).getTime() : 0
+      return dateB - dateA
+    })
+  }, [payments])
+
+  const pendingPayments = useMemo(() => sortedPayments.filter(p => p.status === 'pending'), [sortedPayments])
+  const successPayments = useMemo(() => sortedPayments.filter(p => p.status === 'success'), [sortedPayments])
+  const cancelledPayments = useMemo(() => sortedPayments.filter(p => p.status === 'cancelled'), [sortedPayments])
 
   const currentList = useMemo(() => {
     if (activeTab === 'success') return successPayments
@@ -155,11 +163,8 @@ export default function PaymentsPage() {
     return `${day} ${month} ${year}`
   }
 
-  // Filter states (Date defaults to current date)
-  const [paymentDate, setPaymentDate] = useState(() => {
-    const d = new Date()
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  })
+  // Filter states (No date filter by default)
+  const [paymentDate, setPaymentDate] = useState('')
   const [paymentSalesperson, setPaymentSalesperson] = useState('')
   const [salespersons, setSalespersons] = useState<{ user_id: number; username: string; email: string }[]>([])
 
@@ -174,11 +179,17 @@ export default function PaymentsPage() {
   }, [token, permissions])
 
   const filteredList = useMemo(() => {
-    return currentList.filter(p => {
-      const matchesDate = !paymentDate || (p.created_at && p.created_at.startsWith(paymentDate))
-      const matchesUser = !paymentSalesperson || (p.user_name && p.user_name.toLowerCase() === paymentSalesperson.toLowerCase())
-      return matchesDate && matchesUser
-    })
+    return currentList
+      .filter(p => {
+        const matchesDate = !paymentDate || (p.created_at && p.created_at.startsWith(paymentDate))
+        const matchesUser = !paymentSalesperson || (p.user_name && p.user_name.toLowerCase() === paymentSalesperson.toLowerCase())
+        return matchesDate && matchesUser
+      })
+      .sort((a, b) => {
+        const dateA = a.created_at ? new Date(a.created_at).getTime() : 0
+        const dateB = b.created_at ? new Date(b.created_at).getTime() : 0
+        return dateB - dateA
+      })
   }, [currentList, paymentDate, paymentSalesperson])
 
   return (

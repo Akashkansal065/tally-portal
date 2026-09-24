@@ -136,13 +136,19 @@ export default function TempOrdersPage() {
     }
   }
 
-  // Filter orders
+  // Filter orders (sorted by date desc)
   const filteredOrders = useMemo(() => {
-    return orders.filter(o => {
-      if (statusFilter !== 'all' && o.status !== statusFilter) return false
-      if (salespersonFilter !== 'all' && String(o.user_id) !== salespersonFilter) return false
-      return true
-    })
+    return orders
+      .filter(o => {
+        if (statusFilter !== 'all' && o.status !== statusFilter) return false
+        if (salespersonFilter !== 'all' && String(o.user_id) !== salespersonFilter) return false
+        return true
+      })
+      .sort((a, b) => {
+        const timeA = a.created_at ? new Date(a.created_at).getTime() : 0
+        const timeB = b.created_at ? new Date(b.created_at).getTime() : 0
+        return timeB - timeA
+      })
   }, [orders, statusFilter, salespersonFilter])
 
   const checkIsEditable = (order: Order) => {
