@@ -422,7 +422,7 @@ export default function LedgersPage() {
                       {ledger.gstin && (
                         <div className="flex items-center gap-1.5">
                           <span className="text-[10px] font-semibold text-muted-foreground uppercase w-12">GSTIN:</span>
-                          <span className="font-bold text-foreground font-mono">{ledger.gstin}</span>
+                          <span className="font-bold text-foreground font-mono uppercase">{ledger.gstin.toUpperCase()}</span>
                         </div>
                       )}
                       {ledger.state && (

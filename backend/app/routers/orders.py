@@ -52,6 +52,7 @@ class TempOrder(Base):
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=True)
     custom_customer_name = Column(String(256), nullable=True)
+    custom_customer_gstin = Column(String(15), nullable=True)
     status = Column(String(32), default="pending")  # pending, done, cancelled
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -97,6 +98,7 @@ class OrderItemCreate(BaseModel):
 class OrderCreateRequest(BaseModel):
     ledger_id: Optional[int] = None
     custom_customer_name: Optional[str] = None
+    custom_customer_gstin: Optional[str] = None
     items: List[OrderItemCreate]
 
 # ─── Router ──────────────────────────────────────────────────────────────────
@@ -128,10 +130,17 @@ async def create_order(
     if not req.items:
         raise HTTPException(status_code=400, detail="At least one item is required.")
 
+    clean_gstin = (
+        req.custom_customer_gstin.strip().upper()[:15]
+        if req.custom_customer_gstin and req.custom_customer_gstin.strip()
+        else None
+    )
+
     order = TempOrder(
         user_id=user.user_id,
         ledger_id=req.ledger_id,
         custom_customer_name=req.custom_customer_name[:256] if req.custom_customer_name else None,
+        custom_customer_gstin=clean_gstin if not req.ledger_id else None,
         status="pending",
         created_at=get_ist_now(),
         updated_at=get_ist_now(),
@@ -226,16 +235,21 @@ async def list_orders(
                 "is_custom": bool(item.custom_item_name and not item.stock_item_id),
             })
 
-        output.append({
-            "id": o.id,
-            "user_id": o.user_id,
-            "salesperson": o.user.username if o.user else "Salesperson",
-            "customer_name": o.ledger.name if o.ledger else o.custom_customer_name or "Unknown Customer",
-            "status": o.status,
-            "created_at": format_datetime_utc(o.created_at),
-            "total": round(total, 2),
-            "items": items_list,
-        })
+            raw_gstin = o.ledger.gstin if o.ledger else o.custom_customer_gstin
+            customer_gstin = raw_gstin.strip().upper() if raw_gstin else None
+            output.append({
+                "id": o.id,
+                "user_id": o.user_id,
+                "salesperson": o.user.username if o.user else "Salesperson",
+                "customer_name": o.ledger.name if o.ledger else o.custom_customer_name or "Unknown Customer",
+                "custom_customer_name": o.custom_customer_name,
+                "custom_customer_gstin": o.custom_customer_gstin.strip().upper() if o.custom_customer_gstin else None,
+                "customer_gstin": customer_gstin,
+                "status": o.status,
+                "created_at": format_datetime_utc(o.created_at),
+                "total": round(total, 2),
+                "items": items_list,
+            })
     return output
 
 
@@ -284,11 +298,16 @@ async def list_all_orders(
                 "is_custom": bool(item.custom_item_name and not item.stock_item_id),
             })
 
+        raw_gstin = o.ledger.gstin if o.ledger else o.custom_customer_gstin
+        customer_gstin = raw_gstin.strip().upper() if raw_gstin else None
         output.append({
             "id": o.id,
             "user_id": o.user_id,
             "salesperson": o.user.username if o.user else "Salesperson",
             "customer_name": o.ledger.name if o.ledger else o.custom_customer_name or "Unknown Customer",
+            "custom_customer_name": o.custom_customer_name,
+            "custom_customer_gstin": o.custom_customer_gstin.strip().upper() if o.custom_customer_gstin else None,
+            "customer_gstin": customer_gstin,
             "status": o.status,
             "created_at": format_datetime_utc(o.created_at),
             "total": round(total, 2),
@@ -350,12 +369,16 @@ async def get_order(
             "is_custom": bool(item.custom_item_name and not item.stock_item_id),
         })
 
+    raw_order_gstin = order.ledger.gstin if order.ledger else order.custom_customer_gstin
+    customer_gstin = raw_order_gstin.strip().upper() if raw_order_gstin else None
     return {
         "id": order.id,
         "user_id": order.user_id,
         "salesperson": order.user.username if order.user else "Salesperson",
         "ledger_id": order.ledger_id,
         "custom_customer_name": order.custom_customer_name,
+        "custom_customer_gstin": order.custom_customer_gstin.strip().upper() if order.custom_customer_gstin else None,
+        "customer_gstin": customer_gstin,
         "customer_name": order.ledger.name if order.ledger else order.custom_customer_name or "Unknown Customer",
         "status": order.status,
         "created_at": format_datetime_utc(order.created_at),
@@ -399,6 +422,12 @@ async def edit_order(
     if not req.ledger_id and not req.custom_customer_name:
         raise HTTPException(status_code=400, detail="Either ledger_id or custom_customer_name is required")
 
+    clean_gstin = (
+        req.custom_customer_gstin.strip().upper()[:15]
+        if req.custom_customer_gstin and req.custom_customer_gstin.strip()
+        else None
+    )
+
     if req.ledger_id:
         ledger_query = await db.execute(
             select(MstLedger).where(MstLedger.ledger_id == req.ledger_id, MstLedger.company_id == user.company_id)
@@ -408,9 +437,11 @@ async def edit_order(
             raise HTTPException(status_code=400, detail="Customer ledger not found")
         order.ledger_id = req.ledger_id
         order.custom_customer_name = None
+        order.custom_customer_gstin = None
     else:
         order.ledger_id = None
         order.custom_customer_name = req.custom_customer_name[:256]
+        order.custom_customer_gstin = clean_gstin
 
     # Delete existing items
     for item in order.items:

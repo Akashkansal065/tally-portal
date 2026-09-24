@@ -73,6 +73,7 @@ export default function AttendancePage() {
   const [submitting, setSubmitting] = useState(false)
   const [showPhotoRequiredModal, setShowPhotoRequiredModal] = useState(false)
   const [photoRequiredAction, setPhotoRequiredAction] = useState<'in' | 'out'>('out')
+  const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(null)
   
   // Clock states
   const [currentTime, setCurrentTime] = useState<Date | null>(null)
@@ -315,14 +316,14 @@ export default function AttendancePage() {
 
       <div className="max-w-4xl mx-auto px-4 mt-6 space-y-6">
         {/* Title */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-black tracking-tight text-foreground">Daily Attendance</h1>
+            <h1 className="text-xl sm:text-2xl font-black tracking-tight text-foreground">Daily Attendance</h1>
             <p className="text-xs text-muted-foreground mt-0.5">Punch-in or checkout with secure GPS maps and selfie verification</p>
           </div>
 
           {user?.permissions?.isAdmin && (
-            <div className="flex bg-muted/60 p-0.5 rounded-xl border border-border">
+            <div className="flex bg-muted/60 p-1 rounded-xl border border-border shrink-0 self-start sm:self-auto">
               <button
                 onClick={() => setActiveTab('punch')}
                 className={cn(
@@ -335,7 +336,7 @@ export default function AttendancePage() {
               <button
                 onClick={() => setActiveTab('admin')}
                 className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1",
+                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5",
                   activeTab === 'admin' ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                 )}
               >
@@ -563,12 +564,12 @@ export default function AttendancePage() {
           <div className="space-y-5">
             {/* Filter controls */}
             <div className="bg-card border border-border rounded-2xl p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex bg-muted/65 p-0.5 rounded-lg border">
+              <div className="grid grid-cols-2 sm:flex bg-muted/65 p-1 rounded-xl border border-border w-full sm:w-auto">
                 <button
                   onClick={() => setAdminSubTab('today')}
                   className={cn(
-                    "px-3 py-1.5 rounded-md text-[11px] font-bold transition-all",
-                    adminSubTab === 'today' ? "bg-card text-foreground shadow" : "text-muted-foreground"
+                    "px-3 py-2 sm:py-1.5 rounded-lg text-xs font-bold transition-all text-center",
+                    adminSubTab === 'today' ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                   )}
                 >
                   Daily Status Overview
@@ -576,52 +577,52 @@ export default function AttendancePage() {
                 <button
                   onClick={() => setAdminSubTab('history')}
                   className={cn(
-                    "px-3 py-1.5 rounded-md text-[11px] font-bold transition-all",
-                    adminSubTab === 'history' ? "bg-card text-foreground shadow" : "text-muted-foreground"
+                    "px-3 py-2 sm:py-1.5 rounded-lg text-xs font-bold transition-all text-center",
+                    adminSubTab === 'history' ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                   )}
                 >
                   Historical Team logs
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
                 {adminSubTab === 'today' ? (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-muted-foreground">Date:</span>
+                    <span className="text-xs font-semibold text-muted-foreground shrink-0">Date:</span>
                     <input 
                       type="date"
                       value={filterDate}
                       onChange={e => setFilterDate(e.target.value)}
-                      className="px-2 py-1.5 border border-border rounded-lg bg-background text-xs font-bold text-foreground focus:outline-none"
+                      className="px-2.5 py-1.5 border border-border rounded-lg bg-background text-xs font-bold text-foreground focus:outline-none flex-1 sm:flex-none"
                     />
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-muted-foreground">Range:</span>
+                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                    <span className="text-xs font-semibold text-muted-foreground shrink-0">Range:</span>
                     <input 
                       type="date"
                       value={rangeStart}
                       onChange={e => setRangeStart(e.target.value)}
-                      className="px-2 py-1 border border-border rounded-lg bg-background text-xs font-bold text-foreground focus:outline-none"
+                      className="px-2 py-1.5 border border-border rounded-lg bg-background text-xs font-bold text-foreground focus:outline-none flex-1 sm:flex-none"
                     />
                     <span className="text-xs font-semibold text-muted-foreground">to</span>
                     <input 
                       type="date"
                       value={rangeEnd}
                       onChange={e => setRangeEnd(e.target.value)}
-                      className="px-2 py-1 border border-border rounded-lg bg-background text-xs font-bold text-foreground focus:outline-none"
+                      className="px-2 py-1.5 border border-border rounded-lg bg-background text-xs font-bold text-foreground focus:outline-none flex-1 sm:flex-none"
                     />
                   </div>
                 )}
 
-                <div className="relative">
+                <div className="relative flex-1 sm:w-56">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                   <input 
                     type="text"
                     placeholder="Search salesperson..."
                     value={searchTerm}
                     onChange={e => setSearchTerm(e.target.value)}
-                    className="pl-8 pr-3 py-1.5 w-40 border border-border rounded-lg bg-background text-xs focus:outline-none"
+                    className="pl-8 pr-3 py-1.5 w-full border border-border rounded-lg bg-background text-xs focus:outline-none"
                   />
                 </div>
               </div>
@@ -629,176 +630,501 @@ export default function AttendancePage() {
 
             {/* Admin Grid View */}
             {adminSubTab === 'today' ? (
-              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-muted/40 border-b border-border text-[10px] text-muted-foreground uppercase font-black tracking-wider">
-                        <th className="p-4">Salesperson</th>
-                        <th className="p-4">Punch In</th>
-                        <th className="p-4">Punch Out</th>
-                        <th className="p-4">GPS In</th>
-                        <th className="p-4">GPS Out</th>
-                        <th className="p-4">Duration</th>
-                        <th className="p-4 text-center">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/60 text-xs">
-                      {filteredTeamToday.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="p-8 text-center text-muted-foreground">No records matched</td>
-                        </tr>
-                      ) : (
-                        filteredTeamToday.map(item => (
-                          <tr key={item.userId} className="hover:bg-muted/10">
-                            <td className="p-4 font-bold text-foreground">{item.username}</td>
-                            <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}</td>
-                            <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}</td>
-                            
-                            {/* GPS In */}
-                            <td className="p-4 text-muted-foreground">
-                              {item.attendance && item.attendance.checkInLatitude && item.attendance.checkInLongitude ? (
+              <div className="space-y-4">
+                {/* Mobile Cards View (< md) */}
+                <div className="block md:hidden space-y-3">
+                  {filteredTeamToday.length === 0 ? (
+                    <div className="p-8 text-center text-muted-foreground bg-card border border-border rounded-2xl shadow-sm text-xs">
+                      No records matched
+                    </div>
+                  ) : (
+                    filteredTeamToday.map(item => (
+                      <div key={item.userId} className="p-4 border border-border rounded-2xl bg-card shadow-sm space-y-3">
+                        {/* Header: User & Status Badge */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div className="h-9 w-9 rounded-full bg-primary/10 text-primary font-bold text-xs flex items-center justify-center uppercase shadow-inner">
+                              {item.username.charAt(0)}
+                            </div>
+                            <div>
+                              <h4 className="font-bold text-sm text-foreground leading-tight">{item.username}</h4>
+                              <span className="text-[10px] text-muted-foreground">User #{item.userId}</span>
+                            </div>
+                          </div>
+                          {item.attendance ? (
+                            item.attendance.checkOutTime ? (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                Present
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 text-sky-600 border border-sky-500/20">
+                                <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+                                In Progress
+                              </span>
+                            )
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20">
+                              Absent
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Punch In / Out Grid */}
+                        <div className="grid grid-cols-2 gap-2 bg-muted/30 border border-border/50 rounded-xl p-3 text-xs">
+                          {/* Punch In */}
+                          <div className="space-y-1">
+                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">Punch In</span>
+                            <span className="font-bold text-foreground text-xs block">
+                              {item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}
+                            </span>
+                            {item.attendance?.checkInLatitude && item.attendance?.checkInLongitude ? (
+                              <div className="pt-0.5">
                                 <a
                                   href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkInLatitude},${item.attendance.checkInLongitude}`)}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group"
-                                  title="Open Punch-In location in Google Maps"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:underline"
+                                  title="Open GPS location in Google Maps"
                                 >
-                                  <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                  <span>{item.attendance.checkInLatitude.substring(0, 8)}, {item.attendance.checkInLongitude.substring(0, 8)}</span>
-                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  <MapPin className="h-3 w-3 text-sky-500 shrink-0" />
+                                  <span>{item.attendance.checkInLatitude.substring(0, 7)}, {item.attendance.checkInLongitude.substring(0, 7)}</span>
+                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                                 </a>
-                              ) : item.attendance ? (
-                                <span className="text-muted-foreground/60 italic text-[11px]">GPS Unavailable</span>
-                              ) : (
-                                <span className="text-muted-foreground/40 italic text-[11px]">Not Checked In</span>
-                              )}
-                            </td>
+                              </div>
+                            ) : item.attendance ? (
+                              <span className="text-[10px] text-muted-foreground/60 italic block">GPS Unavailable</span>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground/40 italic block">Not Checked In</span>
+                            )}
 
-                            {/* GPS Out */}
-                            <td className="p-4 text-muted-foreground">
-                              {item.attendance && item.attendance.checkOutLatitude && item.attendance.checkOutLongitude ? (
+                            {item.attendance?.checkInPhotoUrl && (
+                              <div className="pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewPhotoUrl(item.attendance?.checkInPhotoUrl || null)}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 bg-sky-500/10 px-2 py-0.5 rounded-md hover:bg-sky-500/20 transition-colors cursor-pointer"
+                                >
+                                  <Camera className="h-2.5 w-2.5" /> View Selfie
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Punch Out */}
+                          <div className="space-y-1 border-l border-border/60 pl-3">
+                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">Punch Out</span>
+                            <span className="font-bold text-foreground text-xs block">
+                              {item.attendance?.checkOutTime ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}
+                            </span>
+                            {item.attendance?.checkOutLatitude && item.attendance?.checkOutLongitude ? (
+                              <div className="pt-0.5">
                                 <a
                                   href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkOutLatitude},${item.attendance.checkOutLongitude}`)}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group"
-                                  title="Open Punch-Out location in Google Maps"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
+                                  title="Open GPS location in Google Maps"
                                 >
-                                  <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                  <span>{item.attendance.checkOutLatitude.substring(0, 8)}, {item.attendance.checkOutLongitude.substring(0, 8)}</span>
-                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  <MapPin className="h-3 w-3 text-emerald-500 shrink-0" />
+                                  <span>{item.attendance.checkOutLatitude.substring(0, 7)}, {item.attendance.checkOutLongitude.substring(0, 7)}</span>
+                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                                 </a>
-                              ) : item.attendance && !item.attendance.checkOutTime ? (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
-                                  In Progress
-                                </span>
-                              ) : (
-                                <span className="text-muted-foreground/40">--</span>
-                              )}
-                            </td>
+                              </div>
+                            ) : item.attendance && !item.attendance.checkOutTime ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
+                                In Progress
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground/40 block">--</span>
+                            )}
 
-                            <td className="p-4 font-semibold text-foreground">
-                              {item.attendance ? getWorkingDuration(item.attendance.checkInTime, item.attendance.checkOutTime) : '--'}
-                            </td>
-                            <td className="p-4 text-center">
-                              {item.attendance ? (
-                                <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                                  Present
-                                </span>
-                              ) : (
-                                <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20">
-                                  Absent
-                                </span>
-                              )}
-                            </td>
+                            {item.attendance?.checkOutPhotoUrl && (
+                              <div className="pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewPhotoUrl(item.attendance?.checkOutPhotoUrl || null)}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-md hover:bg-emerald-500/20 transition-colors cursor-pointer"
+                                >
+                                  <Camera className="h-2.5 w-2.5" /> View Selfie
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Working Duration & Remarks */}
+                        {item.attendance && (
+                          <div className="flex items-center justify-between pt-1 border-t border-border/50 text-[11px]">
+                            <span className="text-muted-foreground font-medium">Working Duration:</span>
+                            <span className="font-bold text-foreground bg-muted/60 px-2 py-0.5 rounded-md">
+                              {getWorkingDuration(item.attendance.checkInTime, item.attendance.checkOutTime)}
+                            </span>
+                          </div>
+                        )}
+                        {item.attendance?.checkInComments && (
+                          <p className="text-[10px] italic text-muted-foreground/80 bg-muted/20 p-2 rounded-lg border border-border/40">
+                            Note: {item.attendance.checkInComments}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Desktop Table View (>= md) */}
+                <div className="hidden md:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-muted/40 border-b border-border text-[10px] text-muted-foreground uppercase font-black tracking-wider">
+                          <th className="p-4">Salesperson</th>
+                          <th className="p-4">Punch In</th>
+                          <th className="p-4">Punch Out</th>
+                          <th className="p-4">GPS In</th>
+                          <th className="p-4">GPS Out</th>
+                          <th className="p-4">Duration</th>
+                          <th className="p-4 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60 text-xs">
+                        {filteredTeamToday.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="p-8 text-center text-muted-foreground">No records matched</td>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                        ) : (
+                          filteredTeamToday.map(item => (
+                            <tr key={item.userId} className="hover:bg-muted/10">
+                              <td className="p-4 font-bold text-foreground">
+                                <div className="flex items-center gap-2">
+                                  <span>{item.username}</span>
+                                  {item.attendance?.checkInPhotoUrl && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setPreviewPhotoUrl(item.attendance?.checkInPhotoUrl || null)}
+                                      className="text-sky-500 hover:text-sky-600 transition-colors p-0.5 cursor-pointer"
+                                      title="View punch-in selfie"
+                                    >
+                                      <Camera className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}</td>
+                              <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}</td>
+                              
+                              {/* GPS In */}
+                              <td className="p-4 text-muted-foreground">
+                                {item.attendance && item.attendance.checkInLatitude && item.attendance.checkInLongitude ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkInLatitude},${item.attendance.checkInLongitude}`)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                    title="Open Punch-In location in Google Maps"
+                                  >
+                                    <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                    <span>{item.attendance.checkInLatitude.substring(0, 8)}, {item.attendance.checkInLongitude.substring(0, 8)}</span>
+                                    <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  </a>
+                                ) : item.attendance ? (
+                                  <span className="text-muted-foreground/60 italic text-[11px]">GPS Unavailable</span>
+                                ) : (
+                                  <span className="text-muted-foreground/40 italic text-[11px]">Not Checked In</span>
+                                )}
+                              </td>
+
+                              {/* GPS Out */}
+                              <td className="p-4 text-muted-foreground">
+                                {item.attendance && item.attendance.checkOutLatitude && item.attendance.checkOutLongitude ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkOutLatitude},${item.attendance.checkOutLongitude}`)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                    title="Open Punch-Out location in Google Maps"
+                                  >
+                                    <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                    <span>{item.attendance.checkOutLatitude.substring(0, 8)}, {item.attendance.checkOutLongitude.substring(0, 8)}</span>
+                                    <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  </a>
+                                ) : item.attendance && !item.attendance.checkOutTime ? (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
+                                    In Progress
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground/40">--</span>
+                                )}
+                              </td>
+
+                              <td className="p-4 font-semibold text-foreground">
+                                {item.attendance ? getWorkingDuration(item.attendance.checkInTime, item.attendance.checkOutTime) : '--'}
+                              </td>
+                              <td className="p-4 text-center">
+                                {item.attendance ? (
+                                  <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                    Present
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20">
+                                    Absent
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             ) : (
               /* History lists */
-              <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-muted/40 border-b border-border text-[10px] text-muted-foreground uppercase font-black tracking-wider">
-                        <th className="p-4">Date</th>
-                        <th className="p-4">Username</th>
-                        <th className="p-4">In Time</th>
-                        <th className="p-4">Out Time</th>
-                        <th className="p-4">GPS In</th>
-                        <th className="p-4">GPS Out</th>
-                        <th className="p-4">Working hours</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/60 text-xs">
-                      {filteredTeamHistory.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="p-8 text-center text-muted-foreground">No records in selected date range</td>
-                        </tr>
-                      ) : (
-                        filteredTeamHistory.map(item => (
-                          <tr key={item.id} className="hover:bg-muted/10">
-                            <td className="p-4 font-bold text-foreground">{formatDate(item.checkInTime.split('T')[0])}</td>
-                            <td className="p-4 font-semibold text-foreground">{item.username}</td>
-                            <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkInTime)}</td>
-                            <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkOutTime)}</td>
-                            
-                            {/* GPS In */}
-                            <td className="p-4 text-muted-foreground">
-                              {item.checkInLatitude && item.checkInLongitude ? (
+              <div className="space-y-4">
+                {/* Mobile Cards View (< md) */}
+                <div className="block md:hidden space-y-3">
+                  {filteredTeamHistory.length === 0 ? (
+                    <div className="p-8 text-center text-muted-foreground bg-card border border-border rounded-2xl shadow-sm text-xs">
+                      No records in selected date range
+                    </div>
+                  ) : (
+                    filteredTeamHistory.map(item => (
+                      <div key={item.id} className="p-4 border border-border rounded-2xl bg-card shadow-sm space-y-3">
+                        {/* Top row: Salesperson, Date, and Duration */}
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div className="h-9 w-9 rounded-full bg-primary/10 text-primary font-bold text-xs flex items-center justify-center uppercase shadow-inner">
+                              {(item.username || 'U').charAt(0)}
+                            </div>
+                            <div>
+                              <h4 className="font-bold text-sm text-foreground leading-tight">{item.username}</h4>
+                              <span className="text-[10px] text-muted-foreground font-medium">
+                                {formatDate(item.checkInTime.split('T')[0])}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-bold text-emerald-600 bg-emerald-500/10 border border-emerald-500/20 py-0.5 px-2.5 rounded-full">
+                            {getWorkingDuration(item.checkInTime, item.checkOutTime)}
+                          </span>
+                        </div>
+
+                        {/* In Time / Out Time Grid */}
+                        <div className="grid grid-cols-2 gap-2 bg-muted/30 border border-border/50 rounded-xl p-3 text-xs">
+                          <div className="space-y-1">
+                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">In Time</span>
+                            <span className="font-bold text-foreground text-xs block">{formatTimeStr(item.checkInTime)}</span>
+                            {item.checkInLatitude && item.checkInLongitude ? (
+                              <div className="pt-0.5">
                                 <a
                                   href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkInLatitude},${item.checkInLongitude}`)}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group"
-                                  title="Open Punch-In location in Google Maps"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:underline"
+                                  title="Open GPS location in Google Maps"
                                 >
-                                  <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                  <span>{item.checkInLatitude.substring(0, 8)}, {item.checkInLongitude.substring(0, 8)}</span>
-                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  <MapPin className="h-3 w-3 text-sky-500 shrink-0" />
+                                  <span>{item.checkInLatitude.substring(0, 7)}, {item.checkInLongitude.substring(0, 7)}</span>
+                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                                 </a>
-                              ) : (
-                                <span className="text-muted-foreground/50">--</span>
-                              )}
-                            </td>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground/40 block">--</span>
+                            )}
 
-                            {/* GPS Out */}
-                            <td className="p-4 text-muted-foreground">
-                              {item.checkOutLatitude && item.checkOutLongitude ? (
+                            {item.checkInPhotoUrl && (
+                              <div className="pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewPhotoUrl(item.checkInPhotoUrl)}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 bg-sky-500/10 px-2 py-0.5 rounded-md hover:bg-sky-500/20 transition-colors cursor-pointer"
+                                >
+                                  <Camera className="h-2.5 w-2.5" /> View Selfie
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="space-y-1 border-l border-border/60 pl-3">
+                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">Out Time</span>
+                            <span className="font-bold text-foreground text-xs block">{formatTimeStr(item.checkOutTime)}</span>
+                            {item.checkOutLatitude && item.checkOutLongitude ? (
+                              <div className="pt-0.5">
                                 <a
                                   href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkOutLatitude},${item.checkOutLongitude}`)}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group"
-                                  title="Open Punch-Out location in Google Maps"
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
+                                  title="Open GPS location in Google Maps"
                                 >
-                                  <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                  <span>{item.checkOutLatitude.substring(0, 8)}, {item.checkOutLongitude.substring(0, 8)}</span>
-                                  <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  <MapPin className="h-3 w-3 text-emerald-500 shrink-0" />
+                                  <span>{item.checkOutLatitude.substring(0, 7)}, {item.checkOutLongitude.substring(0, 7)}</span>
+                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                                 </a>
-                              ) : (
-                                <span className="text-muted-foreground/50">--</span>
-                              )}
-                            </td>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground/40 block">--</span>
+                            )}
 
-                            <td className="p-4 font-bold text-foreground">{getWorkingDuration(item.checkInTime, item.checkOutTime)}</td>
+                            {item.checkOutPhotoUrl && (
+                              <div className="pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewPhotoUrl(item.checkOutPhotoUrl)}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-md hover:bg-emerald-500/20 transition-colors cursor-pointer"
+                                >
+                                  <Camera className="h-2.5 w-2.5" /> View Selfie
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {item.checkInComments && (
+                          <p className="text-[10px] italic text-muted-foreground/80 bg-muted/20 p-2 rounded-lg border border-border/40">
+                            Note: {item.checkInComments}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Desktop Table View (>= md) */}
+                <div className="hidden md:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-muted/40 border-b border-border text-[10px] text-muted-foreground uppercase font-black tracking-wider">
+                          <th className="p-4">Date</th>
+                          <th className="p-4">Username</th>
+                          <th className="p-4">In Time</th>
+                          <th className="p-4">Out Time</th>
+                          <th className="p-4">GPS In</th>
+                          <th className="p-4">GPS Out</th>
+                          <th className="p-4">Working hours</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60 text-xs">
+                        {filteredTeamHistory.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="p-8 text-center text-muted-foreground">No records in selected date range</td>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                        ) : (
+                          filteredTeamHistory.map(item => (
+                            <tr key={item.id} className="hover:bg-muted/10">
+                              <td className="p-4 font-bold text-foreground">{formatDate(item.checkInTime.split('T')[0])}</td>
+                              <td className="p-4 font-semibold text-foreground">
+                                <div className="flex items-center gap-2">
+                                  <span>{item.username}</span>
+                                  {item.checkInPhotoUrl && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setPreviewPhotoUrl(item.checkInPhotoUrl)}
+                                      className="text-sky-500 hover:text-sky-600 transition-colors p-0.5 cursor-pointer"
+                                      title="View punch-in selfie"
+                                    >
+                                      <Camera className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkInTime)}</td>
+                              <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkOutTime)}</td>
+                              
+                              {/* GPS In */}
+                              <td className="p-4 text-muted-foreground">
+                                {item.checkInLatitude && item.checkInLongitude ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkInLatitude},${item.checkInLongitude}`)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                    title="Open Punch-In location in Google Maps"
+                                  >
+                                    <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                    <span>{item.checkInLatitude.substring(0, 8)}, {item.checkInLongitude.substring(0, 8)}</span>
+                                    <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  </a>
+                                ) : (
+                                  <span className="text-muted-foreground/50">--</span>
+                                )}
+                              </td>
+
+                              {/* GPS Out */}
+                              <td className="p-4 text-muted-foreground">
+                                {item.checkOutLatitude && item.checkOutLongitude ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkOutLatitude},${item.checkOutLongitude}`)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group"
+                                    title="Open Punch-Out location in Google Maps"
+                                  >
+                                    <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                    <span>{item.checkOutLatitude.substring(0, 8)}, {item.checkOutLongitude.substring(0, 8)}</span>
+                                    <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                  </a>
+                                ) : (
+                                  <span className="text-muted-foreground/50">--</span>
+                                )}
+                              </td>
+
+                              <td className="p-4 font-bold text-foreground">{getWorkingDuration(item.checkInTime, item.checkOutTime)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
           </div>
         )}
       </div>
+
+      {/* Selfie Preview Modal */}
+      {previewPhotoUrl && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setPreviewPhotoUrl(null)}
+        >
+          <div 
+            className="bg-card border border-border rounded-3xl p-4 shadow-2xl max-w-sm w-full space-y-4 animate-in zoom-in-95 duration-200 relative overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b pb-3">
+              <div className="flex items-center gap-2">
+                <Camera className="h-4 w-4 text-sky-500" />
+                <h3 className="font-extrabold text-sm text-foreground">Selfie Verification</h3>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setPreviewPhotoUrl(null)}
+                className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted transition-colors cursor-pointer"
+              >
+                <XCircle className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl overflow-hidden border border-border bg-black/10 flex items-center justify-center max-h-[60vh]">
+              <img 
+                src={previewPhotoUrl} 
+                alt="Verification selfie" 
+                className="w-full max-h-[60vh] object-contain rounded-2xl" 
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setPreviewPhotoUrl(null)}
+              className="w-full py-2.5 bg-muted/60 hover:bg-muted text-foreground font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+            >
+              Close Preview
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Photo Required Error Popup Modal */}
       {showPhotoRequiredModal && (

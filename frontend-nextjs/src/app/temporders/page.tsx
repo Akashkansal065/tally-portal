@@ -37,6 +37,9 @@ type Order = {
   user_id: number
   salesperson: string
   customer_name: string
+  custom_customer_name?: string
+  custom_customer_gstin?: string
+  customer_gstin?: string
   status: 'pending' | 'done' | 'cancelled'
   created_at: string
   total: number
@@ -227,7 +230,18 @@ export default function TempOrdersPage() {
                 <div key={o.id} className="bg-card border border-border rounded-2xl p-4 shadow-sm hover:border-emerald-500/30 transition-all flex flex-col gap-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h3 className="font-extrabold text-sm text-foreground break-words">{o.customer_name}</h3>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-extrabold text-sm text-foreground break-words">{o.customer_name}</h3>
+                        {o.customer_gstin ? (
+                          <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
+                            GST: {o.customer_gstin.toUpperCase()}
+                          </span>
+                        ) : o.custom_customer_name ? (
+                          <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border">
+                            No GST
+                          </span>
+                        ) : null}
+                      </div>
                       <div className="flex gap-2 items-center mt-1 text-[10px] text-muted-foreground font-semibold">
                         <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {formatDate(o.created_at)}</span>
                         {permissions.isAdmin && (
@@ -312,6 +326,15 @@ export default function TempOrdersPage() {
               <div>
                 <span className="text-[9px] font-extrabold text-muted-foreground uppercase tracking-widest block">Customer</span>
                 <span className="font-extrabold text-base text-foreground mt-0.5 block">{expandedOrder.customer_name}</span>
+                {expandedOrder.customer_gstin ? (
+                  <span className="inline-flex items-center gap-1 mt-1 text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
+                    GSTIN: {expandedOrder.customer_gstin.toUpperCase()}
+                  </span>
+                ) : expandedOrder.custom_customer_name ? (
+                  <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold px-2 py-0.5 rounded bg-muted text-muted-foreground border border-border">
+                    GST: Unregistered Consumer
+                  </span>
+                ) : null}
                 <span className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1"><Calendar className="h-3 w-3" /> Ordered at {formatDate(expandedOrder.created_at)}</span>
               </div>
 

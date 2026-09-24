@@ -17,7 +17,8 @@ import {
   ChevronLeft,
   Package,
   AlertCircle,
-  Sparkles
+  Sparkles,
+  FileText
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -85,6 +86,8 @@ export default function NewOrderPage() {
   const [shopQuery, setShopQuery] = useState('')
   const [selectedShop, setSelectedShop] = useState<Ledger | null>(null)
   const [customShopName, setCustomShopName] = useState('')
+  const [customShopHasGst, setCustomShopHasGst] = useState(false)
+  const [customShopGstin, setCustomShopGstin] = useState('')
   const [showShopDropdown, setShowShopDropdown] = useState(false)
   const shopDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -255,6 +258,7 @@ export default function NewOrderPage() {
       const payload = {
         ledger_id: isCustomShop ? null : selectedShop?.ledger_id,
         custom_customer_name: isCustomShop ? customShopName.trim() : null,
+        custom_customer_gstin: isCustomShop && customShopHasGst && customShopGstin.trim() ? customShopGstin.trim().toUpperCase() : null,
         items: cart.map(item => ({
           stock_item_id: item.stock_item_id || null,
           custom_item_name: item.is_custom ? item.name : (item.custom_item_name || null),
@@ -337,10 +341,13 @@ export default function NewOrderPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setIsCustomShop(!isCustomShop)
+                    const next = !isCustomShop
+                    setIsCustomShop(next)
                     setSelectedShop(null)
                     setShopQuery('')
                     setCustomShopName('')
+                    setCustomShopHasGst(false)
+                    setCustomShopGstin('')
                   }}
                   className={cn(
                     'w-9 h-5 rounded-full transition-all relative',
@@ -352,15 +359,105 @@ export default function NewOrderPage() {
               </div>
 
               {isCustomShop ? (
-                <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Shop Name</label>
-                  <input
-                    type="text"
-                    placeholder="Enter customer shop name..."
-                    value={customShopName}
-                    onChange={e => setCustomShopName(e.target.value)}
-                    className="w-full px-3 py-2.5 bg-muted/40 border border-border rounded-xl text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Shop / Customer Name</label>
+                    <input
+                      type="text"
+                      placeholder="Enter customer shop name..."
+                      value={customShopName}
+                      onChange={e => setCustomShopName(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-muted/40 border border-border rounded-xl text-sm font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  {/* GST Option for Unregistered Customer */}
+                  <div className="space-y-2 border-t border-border/40 pt-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                          <FileText className="h-3.5 w-3.5 text-emerald-500" /> GST Option
+                        </label>
+                        <p className="text-[10px] text-muted-foreground">Does this new customer have a GSTIN?</p>
+                      </div>
+                      <span className={cn(
+                        "text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all",
+                        customShopHasGst 
+                          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20" 
+                          : "bg-muted text-muted-foreground border-border"
+                      )}>
+                        {customShopHasGst ? 'Has GSTIN' : 'Unregistered'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomShopHasGst(false)
+                          setCustomShopGstin('')
+                        }}
+                        className={cn(
+                          "py-2 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]",
+                          !customShopHasGst
+                            ? "bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-500/20"
+                            : "bg-muted/40 border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                        )}
+                      >
+                        <CheckCircle2 className={cn("h-3.5 w-3.5", !customShopHasGst ? "text-white" : "opacity-0")} />
+                        Unregistered (No GST)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomShopHasGst(true)
+                          setIsBillRequired(true)
+                        }}
+                        className={cn(
+                          "py-2 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]",
+                          customShopHasGst
+                            ? "bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-500/20"
+                            : "bg-muted/40 border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                        )}
+                      >
+                        <CheckCircle2 className={cn("h-3.5 w-3.5", customShopHasGst ? "text-white" : "opacity-0")} />
+                        Registered (Has GSTIN)
+                      </button>
+                    </div>
+
+                    {customShopHasGst && (
+                      <div className="space-y-1.5 pt-1 animate-in fade-in slide-in-from-top-1 duration-200">
+                        <label className="text-xs font-bold text-muted-foreground uppercase tracking-wide">
+                          Customer GSTIN (15 Digits)
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={15}
+                          placeholder="e.g. 07AAAAA0000A1Z5"
+                          value={customShopGstin}
+                          onChange={e => setCustomShopGstin(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                          className="w-full px-3 py-2 bg-muted/40 border border-border rounded-xl text-xs font-mono font-bold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 tracking-wider placeholder:font-normal placeholder:tracking-normal uppercase"
+                        />
+                        {customShopGstin.trim().length > 0 && (
+                          <div className="flex items-center gap-1.5 text-[11px] mt-1 font-semibold">
+                            {customShopGstin.length === 15 && /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(customShopGstin) ? (
+                              <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> Valid 15-digit GSTIN Format
+                              </span>
+                            ) : customShopGstin.length === 15 ? (
+                              <span className="text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                                <AlertCircle className="h-3.5 w-3.5" /> Check format (expected: 2 digits + 10-char PAN + entity + Z + check digit)
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                {15 - customShopGstin.length} more character{15 - customShopGstin.length > 1 ? 's' : ''} required
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-1.5 relative" ref={shopDropdownRef}>
@@ -770,6 +867,19 @@ export default function NewOrderPage() {
               <div>
                 <span className="text-[9px] font-extrabold text-muted-foreground uppercase tracking-widest block">Customer</span>
                 <span className="font-extrabold text-base text-foreground mt-0.5 block">{isCustomShop ? customShopName : selectedShop?.name}</span>
+                {isCustomShop ? (
+                  <div className="flex items-center gap-1.5 mt-1">
+                    {customShopHasGst && customShopGstin.trim() ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[11px] font-mono font-bold">
+                        GSTIN: {customShopGstin.trim().toUpperCase()}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border text-[10px] font-semibold">
+                        Unregistered Consumer (No GST)
+                      </span>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
               <div className="border-t border-border pt-4">
