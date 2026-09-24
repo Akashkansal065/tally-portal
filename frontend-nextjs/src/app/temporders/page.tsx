@@ -78,7 +78,12 @@ export default function TempOrdersPage() {
         
         if (ordersRes.ok) {
           const ordersData = await ordersRes.json()
-          setOrders(Array.isArray(ordersData) ? ordersData : [])
+          const raw = Array.isArray(ordersData) ? ordersData : []
+          const uniqueMap = new Map<number, Order>()
+          raw.forEach((item: Order) => {
+            if (item && item.id != null) uniqueMap.set(item.id, item)
+          })
+          setOrders(Array.from(uniqueMap.values()))
         } else {
           setOrders([])
         }
@@ -91,7 +96,12 @@ export default function TempOrdersPage() {
         const res = await fetch(ordersUrl, { headers })
         if (res.ok) {
           const data = await res.json()
-          setOrders(Array.isArray(data) ? data : [])
+          const raw = Array.isArray(data) ? data : []
+          const uniqueMap = new Map<number, Order>()
+          raw.forEach((item: Order) => {
+            if (item && item.id != null) uniqueMap.set(item.id, item)
+          })
+          setOrders(Array.from(uniqueMap.values()))
         } else {
           setOrders([])
         }

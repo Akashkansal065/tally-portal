@@ -235,21 +235,21 @@ async def list_orders(
                 "is_custom": bool(item.custom_item_name and not item.stock_item_id),
             })
 
-            raw_gstin = o.ledger.gstin if o.ledger else o.custom_customer_gstin
-            customer_gstin = raw_gstin.strip().upper() if raw_gstin else None
-            output.append({
-                "id": o.id,
-                "user_id": o.user_id,
-                "salesperson": o.user.username if o.user else "Salesperson",
-                "customer_name": o.ledger.name if o.ledger else o.custom_customer_name or "Unknown Customer",
-                "custom_customer_name": o.custom_customer_name,
-                "custom_customer_gstin": o.custom_customer_gstin.strip().upper() if o.custom_customer_gstin else None,
-                "customer_gstin": customer_gstin,
-                "status": o.status,
-                "created_at": format_datetime_utc(o.created_at),
-                "total": round(total, 2),
-                "items": items_list,
-            })
+        raw_gstin = o.ledger.gstin if o.ledger else o.custom_customer_gstin
+        customer_gstin = raw_gstin.strip().upper() if raw_gstin else None
+        output.append({
+            "id": o.id,
+            "user_id": o.user_id,
+            "salesperson": o.user.username if o.user else "Salesperson",
+            "customer_name": o.ledger.name if o.ledger else o.custom_customer_name or "Unknown Customer",
+            "custom_customer_name": o.custom_customer_name,
+            "custom_customer_gstin": o.custom_customer_gstin.strip().upper() if o.custom_customer_gstin else None,
+            "customer_gstin": customer_gstin,
+            "status": o.status,
+            "created_at": format_datetime_utc(o.created_at),
+            "total": round(total, 2),
+            "items": items_list,
+        })
     return output
 
 
