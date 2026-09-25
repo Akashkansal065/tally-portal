@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 import logging
 import re
 import uuid
+import difflib
 from decimal import Decimal
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -171,7 +172,11 @@ def sanitize_xml(xml_data: str) -> str:
     return sanitized
 
 async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstStockGroup:
-    stmt = select(MstStockGroup).where(MstStockGroup.company_id == company_id, MstStockGroup.name == name)
+    clean_name = name.strip()
+    stmt = select(MstStockGroup).where(
+        MstStockGroup.company_id == company_id,
+        func.lower(func.trim(MstStockGroup.name)) == clean_name.lower()
+    )
     res = await db.execute(stmt)
     group = res.scalars().first()
     
@@ -179,6 +184,16 @@ async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str
     if parent_name:
         parent_group = await get_or_create_stock_group(db, company_id, parent_name)
         parent_id = parent_group.stock_group_id
+    elif clean_name.lower() != "primary":
+        # Check if Primary group exists in this company to maintain Tally group hierarchy
+        prim_stmt = select(MstStockGroup).where(
+            MstStockGroup.company_id == company_id,
+            func.lower(func.trim(MstStockGroup.name)) == "primary"
+        )
+        prim_res = await db.execute(prim_stmt)
+        prim_group = prim_res.scalars().first()
+        if prim_group:
+            parent_id = prim_group.stock_group_id
         
     if group:
         if parent_id is not None and group.parent_id != parent_id:
@@ -188,12 +203,142 @@ async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str
         
     group = MstStockGroup(
         company_id=company_id,
-        name=name,
+        name=clean_name,
         parent_id=parent_id
     )
     db.add(group)
     await db.flush()
     return group
+
+async def resolve_stock_group_dynamically(
+    db: AsyncSession,
+    company_id: int,
+    candidate_group: Optional[str] = None,
+    item_name: Optional[str] = None,
+    party_name: Optional[str] = None
+) -> MstStockGroup:
+    """
+    Dynamically resolves the appropriate MstStockGroup for a stock item without
+    hardcoding any brand names or keywords.
+    
+    Resolution hierarchy:
+    1. Candidate group match (exact case-insensitive, substring/containment, fuzzy typo match ratio >= 0.85).
+    2. If candidate is a novel group from Tally, auto-creates it dynamically.
+    3. Match party ledger name against active database stock groups.
+    4. Match item name against active database stock groups.
+    5. Sibling item match: checks if existing items in DB share leading tokens/prefix.
+    6. Default fallback to 'General' (or existing default group).
+    """
+    # 1. Fetch active non-Primary groups for this company
+    stmt = select(MstStockGroup).where(
+        MstStockGroup.company_id == company_id,
+        func.trim(MstStockGroup.name) != "Primary"
+    )
+    res = await db.execute(stmt)
+    existing_groups = list(res.scalars().all())
+
+    # 2. Check candidate_group if provided (e.g. from GSTSTOCKGROUPSOURCE / HSNSTOCKGROUPSOURCE)
+    if candidate_group:
+        cand_clean = candidate_group.strip()
+        cand_lower = cand_clean.lower()
+        if cand_clean:
+            # a) Case-insensitive exact match
+            for g in existing_groups:
+                if g.name.strip().lower() == cand_lower:
+                    return g
+
+            # b) Substring / containment match (e.g. 'SURAJ POLY PLAST' matches 'SURAJ POLY PLAST (JOYWARE)')
+            for g in existing_groups:
+                g_lower = g.name.strip().lower()
+                if len(cand_lower) >= 4 and (cand_lower in g_lower or g_lower in cand_lower):
+                    return g
+
+            # c) Fuzzy match for typos / spelling variants (e.g. 'NIRVAAN METALIKAS' vs 'NIRVAAN METALIKS')
+            cand_norm = re.sub(r'[^a-zA-Z0-9]', '', cand_lower)
+            best_match = None
+            best_ratio = 0.0
+            for g in existing_groups:
+                g_norm = re.sub(r'[^a-zA-Z0-9]', '', g.name.lower())
+                ratio = difflib.SequenceMatcher(None, cand_norm, g_norm).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_match = g
+            if best_match and best_ratio >= 0.85:
+                return best_match
+
+            # d) Novel brand/group: create dynamically
+            return await get_or_create_stock_group(db, company_id, cand_clean)
+
+    # 3. Match against existing groups via party_name
+    generic_words = {"limited", "appliances", "electricals", "india", "pvt", "ltd", "corp", "group", "enterprises", "plast", "poly"}
+    if party_name:
+        party_lower = party_name.strip().lower()
+        for g in existing_groups:
+            g_lower = g.name.strip().lower()
+            if len(g_lower) >= 3 and g_lower in party_lower:
+                return g
+        for g in existing_groups:
+            words = [w.lower() for w in re.findall(r'[a-zA-Z0-9]+', g.name) if len(w) >= 4]
+            sig_words = [w for w in words if w not in generic_words]
+            if any(w in party_lower for w in sig_words):
+                return g
+
+    # 4. Match against existing groups via item_name
+    if item_name:
+        item_lower = item_name.strip().lower()
+        for g in existing_groups:
+            g_lower = g.name.strip().lower()
+            if len(g_lower) >= 3 and g_lower in item_lower:
+                return g
+        for g in existing_groups:
+            words = [w.lower() for w in re.findall(r'[a-zA-Z0-9]+', g.name) if len(w) >= 4]
+            sig_words = [w for w in words if w not in generic_words]
+            if any(w in item_lower for w in sig_words):
+                return g
+
+    # 5. Sibling item matching: look up existing DB items sharing prefix tokens
+    if item_name:
+        words = [w for w in re.findall(r'[a-zA-Z0-9.\-/]+', item_name) if len(w) >= 2]
+        matched_group_id = None
+        if len(words) >= 2:
+            prefix_pattern = f"{words[0]} {words[1]}%"
+            res_similar = await db.execute(
+                select(MstStockItem.stock_group_id)
+                .where(
+                    MstStockItem.company_id == company_id,
+                    MstStockItem.stock_group_id.isnot(None),
+                    MstStockItem.name.ilike(prefix_pattern)
+                )
+                .limit(1)
+            )
+            matched_group_id = res_similar.scalar_one_or_none()
+
+        if not matched_group_id and len(words) >= 1 and len(words[0]) >= 4:
+            token_pattern = f"{words[0]}%"
+            res_similar = await db.execute(
+                select(MstStockItem.stock_group_id)
+                .where(
+                    MstStockItem.company_id == company_id,
+                    MstStockItem.stock_group_id.isnot(None),
+                    MstStockItem.name.ilike(token_pattern)
+                )
+                .limit(1)
+            )
+            matched_group_id = res_similar.scalar_one_or_none()
+
+        if matched_group_id:
+            for g in existing_groups:
+                if g.stock_group_id == matched_group_id:
+                    return g
+            group_by_id = await db.get(MstStockGroup, matched_group_id)
+            if group_by_id:
+                return group_by_id
+
+    # 6. Fallback to 'General' (or existing default group)
+    for g in existing_groups:
+        if g.name.strip().lower() in ["general", "others", "miscellaneous"]:
+            return g
+    return await get_or_create_stock_group(db, company_id, "General")
 
 async def get_or_create_stock_category(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstStockCategory:
     stmt = select(MstStockCategory).where(MstStockCategory.company_id == company_id, MstStockCategory.name == name)
@@ -2148,13 +2293,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     db.add(uom)
                     await db.flush()
                     
-                # Determine stock group name (brand)
-                group_name = inv_node.findtext("GSTSTOCKGROUPSOURCE") or inv_node.findtext("HSNSTOCKGROUPSOURCE")
-                if group_name:
-                    if group_name == "SURAJ POLY PLAST":
-                        group_name = "SURAJ POLY PLAST (JOYWARE)"
-                    elif group_name == "Nirvaan Metaliks" or group_name == "NIRVAAN METALIKS":
-                        group_name = "NIRVAAN METALIKAS"
+                # Determine stock group candidate and party context
+                cand_group_raw = inv_node.findtext("GSTSTOCKGROUPSOURCE") or inv_node.findtext("HSNSTOCKGROUPSOURCE")
+                party_context = v_node.findtext("PARTYLEDGERNAME") or v_node.findtext("PARTYNAME") or buyer_name or ""
 
                 # Get or create MstStockItem
                 is_deemed_pos = inv_node.findtext("ISDEEMEDPOSITIVE") or "No"
@@ -2163,22 +2304,15 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 item_stmt = select(MstStockItem).where(MstStockItem.company_id == company_id, MstStockItem.name == item_name)
                 item_res = await db.execute(item_stmt)
                 item = item_res.scalars().first()
-                
+
                 if not item:
-                    if not group_name:
-                        name_upper = item_name.upper()
-                        if any(x in name_upper for x in ["BAJAJ", "BAJA", "PROMIX", "ICX", "IRX", "AT 402", "HB 2", "MX 4", "NEW POPULAR", "40RCAD", "KTX", "SWX", "BURNER", "COOKTOP", "GAS STOVE", "OTG", "MORPHY", "OVEN", "PROCESSOR", "MWO", "DRY IRON", "STEAM IRON", "MR "]):
-                            group_name = "BAJAJ ELECTRICALS LIMITED"
-                        elif any(x in name_upper for x in ["KGOC", "KRYSTA", "OMEGA", "1101.1", "1135.1", "1235.2", "4150.1", "PC-1125.1", "KB-811/B", "GR-11C", "GR-21C", "21 SS", "21SS", "1131.1", "1138.1", "1148.1", "4130.1", "4144.1", "4244.3", "4148.2", "4166.1", "41106", "41107", "41108", "1201.2", "1102.1", "1103.1", "1303.2", "LR-", "KS-", "SL-", "GL-", "GS-", "M-STAR", "CR-"]):
-                            group_name = "KGOC"
-                        elif any(x in name_upper for x in ["SURAJ", "JOYWARE", "RUBY", "LINER", "LOCK &", "LOCK", "DUSTBIN", "MODU", "NESTO", "PATLA", "STRAINER", "BOWL", "MUG", "MASALA", "CASE", "PEDAL BIN", "SPINNER MOP", "SWEET BOX", "FOOD FRESH", "BHOJAN THALI", "KITCHEN TOKRA", "SWING BIN", "BATHROOM 8 PCS", "PHANTOM MULTI BOX", "OMEGA TUB", "AQUA GLASS", "TULIP TRAY", "STOOL"]):
-                            group_name = "SURAJ POLY PLAST (JOYWARE)"
-                        elif any(x in name_upper for x in ["CELLTONE", "DELUXE", "2 IN 1 BLENDMASTER", "EUROPA", "SMART", "STEELO", "SWX 5", "20MS", "20MWS BLACK", "5L CLASSIC", "PRINTED BATHROOM", "VEGETABLE", "CHEESE", "SHARP KNIFE", "PROMOTIONAL ZOOM", "SAFE LASER KNIFE", "SAFE TOMATO KNIFE", "F2O CLEAR LOOK", "SPATULA", "WOODEN CHEF KNIFE", "WOODEN CLEAVER KNIFE", "WOODEN LASER KNIFE", "WOODEN PARING KNIFE", "WOODEN POINT KNIFE", "WOODEN UTILITY KNIFE", "PROMOTIONAL BAGS", "STRAINER & GRATER"]):
-                            group_name = "CELLTONE HOME APPLIANCES"
-                        else:
-                            group_name = "NIRVAAN METALIKAS"
-                    
-                    stock_group = await get_or_create_stock_group(db, company_id, group_name)
+                    stock_group = await resolve_stock_group_dynamically(
+                        db=db,
+                        company_id=company_id,
+                        candidate_group=cand_group_raw,
+                        item_name=item_name,
+                        party_name=party_context
+                    )
                     init_qty = qty_val if is_inward else -qty_val
                     init_val = inv_amt if is_inward else -inv_amt
                     item = MstStockItem(
@@ -2197,22 +2331,14 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     db.add(item)
                     await db.flush()
                 else:
-                    if group_name:
-                        stock_group = await get_or_create_stock_group(db, company_id, group_name)
-                        item.stock_group_id = stock_group.stock_group_id
-                    elif item.stock_group_id is None:
-                        name_upper = item_name.upper()
-                        if any(x in name_upper for x in ["BAJAJ", "BAJA", "PROMIX", "ICX", "IRX", "AT 402", "HB 2", "MX 4", "NEW POPULAR", "40RCAD", "KTX", "SWX", "BURNER", "COOKTOP", "GAS STOVE", "OTG", "MORPHY", "OVEN", "PROCESSOR", "MWO", "DRY IRON", "STEAM IRON", "MR "]):
-                            fallback_group = "BAJAJ ELECTRICALS LIMITED"
-                        elif any(x in name_upper for x in ["KGOC", "KRYSTA", "OMEGA", "1101.1", "1135.1", "1235.2", "4150.1", "PC-1125.1", "KB-811/B", "GR-11C", "GR-21C", "21 SS", "21SS", "1131.1", "1138.1", "1148.1", "4130.1", "4144.1", "4244.3", "4148.2", "4166.1", "41106", "41107", "41108", "1201.2", "1102.1", "1103.1", "1303.2", "LR-", "KS-", "SL-", "GL-", "GS-", "M-STAR", "CR-"]):
-                            fallback_group = "KGOC"
-                        elif any(x in name_upper for x in ["SURAJ", "JOYWARE", "RUBY", "LINER", "LOCK &", "LOCK", "DUSTBIN", "MODU", "NESTO", "PATLA", "STRAINER", "BOWL", "MUG", "MASALA", "CASE", "PEDAL BIN", "SPINNER MOP", "SWEET BOX", "FOOD FRESH", "BHOJAN THALI", "KITCHEN TOKRA", "SWING BIN", "BATHROOM 8 PCS", "PHANTOM MULTI BOX", "OMEGA TUB", "AQUA GLASS", "TULIP TRAY", "STOOL"]):
-                            fallback_group = "SURAJ POLY PLAST (JOYWARE)"
-                        elif any(x in name_upper for x in ["CELLTONE", "DELUXE", "2 IN 1 BLENDMASTER", "EUROPA", "SMART", "STEELO", "SWX 5", "20MS", "20MWS BLACK", "5L CLASSIC", "PRINTED BATHROOM", "VEGETABLE", "CHEESE", "SHARP KNIFE", "PROMOTIONAL ZOOM", "SAFE LASER KNIFE", "SAFE TOMATO KNIFE", "F2O CLEAR LOOK", "SPATULA", "WOODEN CHEF KNIFE", "WOODEN CLEAVER KNIFE", "WOODEN LASER KNIFE", "WOODEN PARING KNIFE", "WOODEN POINT KNIFE", "WOODEN UTILITY KNIFE", "PROMOTIONAL BAGS", "STRAINER & GRATER"]):
-                            fallback_group = "CELLTONE HOME APPLIANCES"
-                        else:
-                            fallback_group = "NIRVAAN METALIKAS"
-                        stock_group = await get_or_create_stock_group(db, company_id, fallback_group)
+                    if item.stock_group_id is None:
+                        stock_group = await resolve_stock_group_dynamically(
+                            db=db,
+                            company_id=company_id,
+                            candidate_group=cand_group_raw,
+                            item_name=item_name,
+                            party_name=party_context
+                        )
                         item.stock_group_id = stock_group.stock_group_id
                     if is_inward:
                         item.closing_qty = (item.closing_qty or Decimal("0.000")) + qty_val

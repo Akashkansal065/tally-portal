@@ -138,6 +138,7 @@ export const getProductDetails = (name: string, groupName: string) => {
     else if (groupName.includes('CELLTONE')) brand = 'CELLTONE'
     else if (groupName.includes('KGOC')) brand = 'KOHE'
     else if (groupName.includes('NIRVAAN')) brand = 'NIRVAAN'
+    else if (groupName.toUpperCase().includes('RAMSON')) brand = 'RAMSON'
   }
 
   return { brand, subtitle: name }
