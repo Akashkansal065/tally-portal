@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
 import { getProductDetails } from '@/lib/kgoc-mapping'
+import { filterAndSortBySearch } from '@/lib/search'
 import { 
   ArrowLeft, 
   Search, 
@@ -34,7 +35,7 @@ interface CartItem {
   is_custom?: boolean
 }
 
-type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
+type Ledger = { ledger_id: number; name: string; is_customer?: boolean; alias?: string; parent?: string }
 type StockItem = {
   item_id: number
   name: string
@@ -69,7 +70,7 @@ const formatProductNameWithCompany = (name: string, company?: string): string =>
 }
 
 export default function NewOrderPage() {
-  const { user, token } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
   
   // Wizards steps: 1 = Customer select, 2 = Add items, 3 = Summary & checkout
@@ -110,6 +111,7 @@ export default function NewOrderPage() {
   // Fetch initial ledgers & stock items cache
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
+    if (!can('orders', 'create')) { router.replace('/temporders'); return }
 
     Promise.all([
       fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()),
@@ -122,7 +124,7 @@ export default function NewOrderPage() {
       })
       .catch(err => console.error('Failed to load initial cache:', err))
       .finally(() => setLoading(false))
-  }, [user, token, router])
+  }, [user, token, router, can])
 
   // Handle clicking outside dropdowns
   useEffect(() => {
@@ -141,33 +143,23 @@ export default function NewOrderPage() {
   // Filtered Shops & Products
   const filteredShops = useMemo(() => {
     if (shopQuery.trim().length < 1) return []
-    const q = shopQuery.toLowerCase().trim()
-    return cachedShops.filter(s =>
-      s.name.toLowerCase().includes(q)
-    ).slice(0, 15)
+    return filterAndSortBySearch(cachedShops, shopQuery, s => [s.name, s.alias, s.parent]).slice(0, 15)
   }, [shopQuery, cachedShops])
 
   const filteredProducts = useMemo(() => {
     if (productQuery.trim().length < 1) return []
-    const q = productQuery.toLowerCase().trim()
-    return cachedProducts.filter(p => {
+    return filterAndSortBySearch(cachedProducts, productQuery, p => {
       const company = getCompanySuffix(p)
       const mapping = p.name ? getProductDetails(p.name, company || p.parent || '') : null
-      const brandStr = mapping?.brand?.toLowerCase() || ''
-      const subtitleStr = mapping?.subtitle?.toLowerCase() || ''
-      const parentStr = p.parent?.toLowerCase() || ''
-      const groupStr = company.toLowerCase()
-      const nameStr = p.name ? p.name.toLowerCase() : ''
-      const partStr = p.part_number ? p.part_number.toLowerCase() : ''
-      const hsnStr = p.hsn_code ? p.hsn_code.toLowerCase() : ''
-
-      return nameStr.includes(q) || 
-             brandStr.includes(q) || 
-             subtitleStr.includes(q) || 
-             parentStr.includes(q) || 
-             groupStr.includes(q) ||
-             partStr.includes(q) ||
-             hsnStr.includes(q)
+      return [
+        p.name,
+        mapping?.brand,
+        mapping?.subtitle,
+        p.parent,
+        company,
+        p.part_number,
+        p.hsn_code
+      ]
     }).slice(0, 30)
   }, [productQuery, cachedProducts])
 

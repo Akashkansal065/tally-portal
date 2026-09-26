@@ -48,12 +48,17 @@ async def lifespan(app: FastAPI):
 
     # 4. Start background DB keep-alive worker task (pings every 2 minutes)
     keep_alive_task = asyncio.create_task(db_keep_alive_task(120))
+
+    # 5. Start background Attendance Auto Punch-Out worker task (checks every 60 seconds)
+    from app.services.attendance_worker import attendance_auto_checkout_worker
+    attendance_worker_task = asyncio.create_task(attendance_auto_checkout_worker(60))
                 
     try:
         yield
     finally:
         keep_alive_task.cancel()
-        await asyncio.gather(keep_alive_task, return_exceptions=True)
+        attendance_worker_task.cancel()
+        await asyncio.gather(keep_alive_task, attendance_worker_task, return_exceptions=True)
 
 app = FastAPI(title="Open Tally-Clone API", version="1.0.0", lifespan=lifespan)
 
@@ -95,6 +100,14 @@ app.include_router(masters.router)
 app.include_router(customers.router)
 app.include_router(notifications.router)
 app.include_router(planner.router)
+
+# Mount isolated Backup & Restore module
+try:
+    from backup_module.router import backup_router
+    app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"])
+except Exception as e:
+    import logging
+    logging.getLogger("uvicorn.error").warning(f"Could not load backup_module: {e}")
 
 @app.get("/")
 def read_root():

@@ -102,7 +102,7 @@ class VoucherTypeResponse(VoucherTypeBase):
 async def list_voucher_types(
     parent_type: Optional[str] = None,
     search: Optional[str] = None,
-    user: User = Depends(require_permission("settings", "read")),
+    user: User = Depends(require_permission("voucher_types", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     from sqlalchemy.orm import selectinload
@@ -130,7 +130,7 @@ async def list_voucher_types(
 @router.post("", response_model=VoucherTypeResponse, status_code=status.HTTP_201_CREATED)
 async def create_voucher_type(
     req: VoucherTypeCreate,
-    user: User = Depends(require_permission("settings", "create")),
+    user: User = Depends(require_permission("voucher_types", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     # Check if name already exists
@@ -193,7 +193,7 @@ async def create_voucher_type(
 async def update_voucher_type(
     vt_id: int,
     req: VoucherTypeUpdate,
-    user: User = Depends(require_permission("settings", "update")),
+    user: User = Depends(require_permission("voucher_types", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     vt = (await db.execute(
@@ -269,7 +269,7 @@ async def update_voucher_type(
 @router.delete("/{vt_id}", status_code=status.HTTP_200_OK)
 async def delete_voucher_type(
     vt_id: int,
-    user: User = Depends(require_permission("settings", "delete")),
+    user: User = Depends(require_permission("voucher_types", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     vt = (await db.execute(
@@ -380,7 +380,7 @@ async def get_voucher_type_configuration(
 async def update_voucher_type_configuration(
     vt_id: int,
     req: VoucherConfigurationUpdate,
-    user: User = Depends(require_permission("settings", "update")),
+    user: User = Depends(require_permission("voucher_types", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     vt_stmt = select(MstVoucherType).where(

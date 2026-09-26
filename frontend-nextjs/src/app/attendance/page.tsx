@@ -42,6 +42,8 @@ type AttendanceRecord = {
   checkOutComments: string | null
   checkInIpAddress: string | null
   checkOutIpAddress: string | null
+  isAutoPunchOut?: boolean
+  autoPunchOutReason?: string | null
 }
 
 type TeamAttendanceItem = {
@@ -49,6 +51,14 @@ type TeamAttendanceItem = {
   username: string
   isActive: boolean
   attendance: AttendanceRecord | null
+}
+
+type AutoPunchOutInfo = {
+  targetTimeStr: string
+  remainingText: string
+  remainingSeconds: number
+  reason: '9h' | 'midnight'
+  urgency: 'normal' | 'warning' | 'urgent'
 }
 
 export default function AttendancePage() {
@@ -75,9 +85,10 @@ export default function AttendancePage() {
   const [photoRequiredAction, setPhotoRequiredAction] = useState<'in' | 'out'>('out')
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(null)
   
-  // Clock states
+  // Clock & Auto Punch-Out countdown states
   const [currentTime, setCurrentTime] = useState<Date | null>(null)
   const [elapsedTime, setElapsedTime] = useState('00:00:00')
+  const [autoPunchOutInfo, setAutoPunchOutInfo] = useState<AutoPunchOutInfo | null>(null)
 
   // Admin filter states
   const [filterDate, setFilterDate] = useState<string>(new Date().toISOString().split('T')[0])
@@ -131,16 +142,19 @@ export default function AttendancePage() {
     return new Date(normalized).getTime()
   }
 
-  // Calculate elapsed time
+  // Calculate elapsed time and auto punch-out countdown
   useEffect(() => {
     if (!todayAttendance || todayAttendance.checkOutTime) {
       setElapsedTime('00:00:00')
+      setAutoPunchOutInfo(null)
       return
     }
 
-    const interval = setInterval(() => {
+    const updateTimes = () => {
       const checkIn = parseTimeMs(todayAttendance.checkInTime)
-      const diff = Date.now() - checkIn
+      if (!checkIn) return
+      const now = Date.now()
+      const diff = Math.max(0, now - checkIn)
       
       const hrs = Math.max(0, Math.floor(diff / 3600000))
       const mins = Math.max(0, Math.floor((diff % 3600000) / 60000))
@@ -148,8 +162,65 @@ export default function AttendancePage() {
       
       const pad = (n: number) => String(n).padStart(2, '0')
       setElapsedTime(`${pad(hrs)}:${pad(mins)}:${pad(secs)}`)
-    }, 1000)
 
+      // Auto punch-out target:
+      // Target 1: 9 hours after check-in
+      const nineHoursTarget = checkIn + 9 * 60 * 60 * 1000
+
+      // Target 2: 23:58:00 IST on check-in date
+      const checkInDate = new Date(checkIn)
+      const dayEnd = new Date(checkInDate.getFullYear(), checkInDate.getMonth(), checkInDate.getDate(), 23, 58, 0, 0)
+      const dayEndTarget = dayEnd.getTime()
+
+      let targetMs = nineHoursTarget
+      let reason: '9h' | 'midnight' = '9h'
+      if (dayEndTarget < nineHoursTarget) {
+        targetMs = dayEndTarget
+        reason = 'midnight'
+      }
+
+      const remainingMs = targetMs - now
+      const remainingSeconds = Math.max(0, Math.floor(remainingMs / 1000))
+
+      let urgency: 'normal' | 'warning' | 'urgent' = 'normal'
+      if (remainingSeconds <= 5 * 60) {
+        urgency = 'urgent'
+      } else if (remainingSeconds <= 15 * 60) {
+        urgency = 'warning'
+      }
+
+      const remHrs = Math.floor(remainingSeconds / 3600)
+      const remMins = Math.floor((remainingSeconds % 3600) / 60)
+      const remSecs = remainingSeconds % 60
+
+      let remainingText = ''
+      if (remHrs > 0) {
+        remainingText = `${remHrs}h ${remMins}m`
+      } else if (remMins > 0) {
+        remainingText = `${remMins}m ${remSecs}s`
+      } else {
+        remainingText = `${remSecs}s`
+      }
+
+      const targetDate = new Date(targetMs)
+      const targetTimeStr = targetDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })
+
+      setAutoPunchOutInfo({
+        targetTimeStr,
+        remainingText,
+        remainingSeconds,
+        reason,
+        urgency
+      })
+
+      // If timer hits 0, trigger refresh
+      if (remainingSeconds === 0) {
+        fetchTodayStatus()
+      }
+    }
+
+    updateTimes()
+    const interval = setInterval(updateTimes, 1000)
     return () => clearInterval(interval)
   }, [todayAttendance])
 
@@ -367,11 +438,65 @@ export default function AttendancePage() {
                   )}
                 </div>
 
+                {/* Imminent / Approaching Auto Punch-Out Warning Banners */}
+                {todayAttendance && !todayAttendance.checkOutTime && autoPunchOutInfo && autoPunchOutInfo.urgency === 'urgent' && (
+                  <div className="bg-rose-500/10 border-2 border-rose-500/40 rounded-xl p-3.5 flex items-start gap-3 animate-pulse shadow-xs">
+                    <AlertTriangle className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="flex-1 text-xs">
+                      <div className="font-bold text-rose-700 dark:text-rose-400 flex items-center justify-between flex-wrap gap-1">
+                        <span>🚨 Auto Punch-Out Imminent ({autoPunchOutInfo.remainingText} remaining)</span>
+                        <span className="text-[10px] font-mono font-bold bg-rose-500/20 text-rose-800 dark:text-rose-200 px-2 py-0.5 rounded">
+                          At {autoPunchOutInfo.targetTimeStr}
+                        </span>
+                      </div>
+                      <p className="text-rose-600/90 dark:text-rose-300/90 text-[11px] mt-1 leading-snug">
+                        {autoPunchOutInfo.reason === 'midnight'
+                          ? "Day-end cutoff (23:58 IST) is almost reached. Take your selfie and punch out now to record your complete shift."
+                          : "Your 9-hour shift limit ends in under 5 minutes. You will be automatically punched out by the system if not clocked out now."}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {todayAttendance && !todayAttendance.checkOutTime && autoPunchOutInfo && autoPunchOutInfo.urgency === 'warning' && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 flex items-start gap-2.5 shadow-xs">
+                    <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="flex-1 text-xs">
+                      <div className="font-bold text-amber-700 dark:text-amber-400 flex items-center justify-between flex-wrap gap-1">
+                        <span>⚠️ Approaching Auto Punch-Out ({autoPunchOutInfo.remainingText} remaining)</span>
+                        <span className="text-[10px] font-mono font-bold bg-amber-500/20 text-amber-800 dark:text-amber-200 px-2 py-0.5 rounded">
+                          At {autoPunchOutInfo.targetTimeStr}
+                        </span>
+                      </div>
+                      <p className="text-amber-600/90 dark:text-amber-300/90 text-[11px] mt-1 leading-snug">
+                        {autoPunchOutInfo.reason === 'midnight'
+                          ? `Day-end boundary cutoff at ${autoPunchOutInfo.targetTimeStr}. Please prepare to punch out.`
+                          : `9-hour auto punch-out scheduled at ${autoPunchOutInfo.targetTimeStr}. Please punch out when done.`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {todayAttendance && !todayAttendance.checkOutTime && (
                   <div className="bg-sky-500/5 border border-sky-500/10 rounded-xl p-4 flex flex-col items-center justify-center gap-1.5">
                     <span className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">Active Working Duration</span>
                     <span className="text-3xl font-black text-sky-600 tracking-tight">{elapsedTime}</span>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
+                    
+                    {autoPunchOutInfo && (
+                      <div className="flex items-center gap-1.5 mt-1 bg-background/80 dark:bg-card/80 border border-border px-3 py-1 rounded-full text-[10px] shadow-xs">
+                        <Clock className="h-3 w-3 text-sky-500 shrink-0" />
+                        <span className="text-muted-foreground">Auto punch-out at</span>
+                        <span className="font-bold text-foreground">{autoPunchOutInfo.targetTimeStr}</span>
+                        <span className="text-muted-foreground font-medium">({autoPunchOutInfo.remainingText} left)</span>
+                        {autoPunchOutInfo.reason === 'midnight' ? (
+                          <span className="text-[9px] font-bold text-purple-600 dark:text-purple-400 bg-purple-500/10 px-1.5 py-0.2 rounded">🌙 Day End</span>
+                        ) : (
+                          <span className="text-[9px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.2 rounded">⚡ 9h Limit</span>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 mt-1.5 flex-wrap justify-center">
                       <span className="text-[10px] text-muted-foreground">Clocked in at {formatTimeStr(todayAttendance.checkInTime)}</span>
                       {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
                         <a
@@ -391,39 +516,71 @@ export default function AttendancePage() {
                 )}
 
                 {todayAttendance?.checkOutTime && (
-                  <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-xl p-4 flex flex-col items-center justify-center gap-1.5">
-                    <span className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">Shift Completed</span>
-                    <span className="text-sm font-bold text-emerald-600">You clocked out at {formatTimeStr(todayAttendance.checkOutTime)}</span>
-                    <span className="text-[10px] text-muted-foreground">Total worked: {getWorkingDuration(todayAttendance.checkInTime, todayAttendance.checkOutTime)}</span>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
-                      {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
-                        <a
-                          href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-700 hover:underline bg-sky-500/10 px-2 py-0.5 rounded-md"
-                          title="Open punch-in location in Google Maps"
-                        >
-                          <MapPin className="h-2.5 w-2.5 text-sky-500" />
-                          <span>Punch-In Map</span>
-                          <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-                        </a>
-                      )}
-                      {todayAttendance.checkOutLatitude && todayAttendance.checkOutLongitude && (
-                        <a
-                          href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkOutLatitude},${todayAttendance.checkOutLongitude}`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 hover:text-emerald-700 hover:underline bg-emerald-500/10 px-2 py-0.5 rounded-md"
-                          title="Open punch-out location in Google Maps"
-                        >
-                          <MapPin className="h-2.5 w-2.5 text-emerald-500" />
-                          <span>Punch-Out Map</span>
-                          <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-                        </a>
-                      )}
+                  todayAttendance.isAutoPunchOut ? (
+                    <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex flex-col items-center justify-center gap-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] py-0.5 px-2.5 rounded-full font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                          ⚡ {todayAttendance.autoPunchOutReason === 'midnight_boundary' ? 'Auto Out: Day-End Cutoff (23:58)' : 'Auto Out: 9-Hour Limit Reached'}
+                        </span>
+                      </div>
+                      <span className="text-sm font-bold text-amber-700 dark:text-amber-300">
+                        System clocked you out at {formatTimeStr(todayAttendance.checkOutTime)}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        Total logged: {getWorkingDuration(todayAttendance.checkInTime, todayAttendance.checkOutTime)}
+                      </span>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
+                        {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
+                          <a
+                            href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-700 hover:underline bg-sky-500/10 px-2 py-0.5 rounded-md"
+                            title="Open punch-in location in Google Maps"
+                          >
+                            <MapPin className="h-2.5 w-2.5 text-sky-500" />
+                            <span>Punch-In Map</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                          </a>
+                        )}
+                        <span className="text-[10px] text-muted-foreground/70 italic">Selfie/GPS out skipped by auto punch</span>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-xl p-4 flex flex-col items-center justify-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground uppercase font-black tracking-widest">Shift Completed</span>
+                      <span className="text-sm font-bold text-emerald-600">You clocked out at {formatTimeStr(todayAttendance.checkOutTime)}</span>
+                      <span className="text-[10px] text-muted-foreground">Total worked: {getWorkingDuration(todayAttendance.checkInTime, todayAttendance.checkOutTime)}</span>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
+                        {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
+                          <a
+                            href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-600 hover:text-sky-700 hover:underline bg-sky-500/10 px-2 py-0.5 rounded-md"
+                            title="Open punch-in location in Google Maps"
+                          >
+                            <MapPin className="h-2.5 w-2.5 text-sky-500" />
+                            <span>Punch-In Map</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                          </a>
+                        )}
+                        {todayAttendance.checkOutLatitude && todayAttendance.checkOutLongitude && (
+                          <a
+                            href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkOutLatitude},${todayAttendance.checkOutLongitude}`)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 hover:text-emerald-700 hover:underline bg-emerald-500/10 px-2 py-0.5 rounded-md"
+                            title="Open punch-out location in Google Maps"
+                          >
+                            <MapPin className="h-2.5 w-2.5 text-emerald-500" />
+                            <span>Punch-Out Map</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )
                 )}
 
                 {!todayAttendance?.checkOutTime && (
@@ -524,13 +681,20 @@ export default function AttendancePage() {
                       <div key={item.id} className="p-3 border border-border rounded-xl bg-muted/20 flex flex-col gap-1 text-xs">
                         <div className="flex justify-between items-center font-bold text-[11px] text-foreground">
                           <span>{formatDate(item.checkInTime.split('T')[0])}</span>
-                          <span className="text-[10px] text-emerald-600 bg-emerald-500/10 py-0.5 px-2 rounded">
-                            {getWorkingDuration(item.checkInTime, item.checkOutTime)}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {item.isAutoPunchOut && (
+                              <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.5 px-1.5 rounded-full flex items-center gap-0.5" title={item.checkOutComments || "Auto Punched Out by System"}>
+                                ⚡ {item.autoPunchOutReason === 'midnight_boundary' ? 'Auto Out (23:58)' : 'Auto Out (9h)'}
+                              </span>
+                            )}
+                            <span className="text-[10px] text-emerald-600 bg-emerald-500/10 py-0.5 px-2 rounded">
+                              {getWorkingDuration(item.checkInTime, item.checkOutTime)}
+                            </span>
+                          </div>
                         </div>
                         <div className="text-[10px] text-muted-foreground flex justify-between mt-1">
                           <span>In: {formatTimeStr(item.checkInTime)}</span>
-                          <span>Out: {formatTimeStr(item.checkOutTime)}</span>
+                          <span>Out: {item.checkOutTime ? formatTimeStr(item.checkOutTime) : '--:--'}</span>
                         </div>
                         {item.checkInLatitude && item.checkInLongitude && (
                           <div className="mt-1 flex items-center justify-between text-[10px]">
@@ -713,9 +877,16 @@ export default function AttendancePage() {
                           {/* Punch Out */}
                           <div className="space-y-1 border-l border-border/60 pl-3">
                             <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">Punch Out</span>
-                            <span className="font-bold text-foreground text-xs block">
-                              {item.attendance?.checkOutTime ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-foreground text-xs block">
+                                {item.attendance?.checkOutTime ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}
+                              </span>
+                              {item.attendance?.isAutoPunchOut && (
+                                <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.2 px-1 rounded-full" title={item.attendance.checkOutComments || "Auto Punched Out by System"}>
+                                  ⚡ Auto
+                                </span>
+                              )}
+                            </div>
                             {item.attendance?.checkOutLatitude && item.attendance?.checkOutLongitude ? (
                               <div className="pt-0.5">
                                 <a
@@ -730,6 +901,8 @@ export default function AttendancePage() {
                                   <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                                 </a>
                               </div>
+                            ) : item.attendance?.isAutoPunchOut ? (
+                              <span className="text-[10px] text-amber-600/90 font-medium italic block pt-0.5">Auto System Out</span>
                             ) : item.attendance && !item.attendance.checkOutTime ? (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
                                 In Progress
@@ -810,7 +983,16 @@ export default function AttendancePage() {
                                 </div>
                               </td>
                               <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}</td>
-                              <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}</td>
+                              <td className="p-4 text-muted-foreground">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span>{item.attendance ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}</span>
+                                  {item.attendance?.isAutoPunchOut && (
+                                    <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.5 px-1.5 rounded-full inline-flex items-center gap-0.5" title={item.attendance.checkOutComments || "Auto Punched Out by System"}>
+                                      ⚡ {item.attendance.autoPunchOutReason === 'midnight_boundary' ? 'Auto 23:58' : 'Auto 9h'}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
                               
                               {/* GPS In */}
                               <td className="p-4 text-muted-foreground">
@@ -847,6 +1029,8 @@ export default function AttendancePage() {
                                     <span>{item.attendance.checkOutLatitude.substring(0, 8)}, {item.attendance.checkOutLongitude.substring(0, 8)}</span>
                                     <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
                                   </a>
+                                ) : item.attendance?.isAutoPunchOut ? (
+                                  <span className="text-amber-600/80 italic text-[11px] font-medium">Auto System Punch</span>
                                 ) : item.attendance && !item.attendance.checkOutTime ? (
                                   <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
                                     In Progress
@@ -1029,7 +1213,16 @@ export default function AttendancePage() {
                                 </div>
                               </td>
                               <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkInTime)}</td>
-                              <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkOutTime)}</td>
+                              <td className="p-4 text-muted-foreground">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span>{formatTimeStr(item.checkOutTime)}</span>
+                                  {item.isAutoPunchOut && (
+                                    <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.5 px-1.5 rounded-full inline-flex items-center gap-0.5" title={item.checkOutComments || "Auto Punched Out by System"}>
+                                      ⚡ {item.autoPunchOutReason === 'midnight_boundary' ? 'Auto 23:58' : 'Auto 9h'}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
                               
                               {/* GPS In */}
                               <td className="p-4 text-muted-foreground">
@@ -1064,6 +1257,8 @@ export default function AttendancePage() {
                                     <span>{item.checkOutLatitude.substring(0, 8)}, {item.checkOutLongitude.substring(0, 8)}</span>
                                     <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
                                   </a>
+                                ) : item.isAutoPunchOut ? (
+                                  <span className="text-amber-600/80 italic text-[11px] font-medium">Auto System Punch</span>
                                 ) : (
                                   <span className="text-muted-foreground/50">--</span>
                                 )}

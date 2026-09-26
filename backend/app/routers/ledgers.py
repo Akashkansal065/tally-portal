@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger("app.routers.ledgers")
 
 from app.core.database import get_db
-from app.core.permissions import require_permission, get_current_user, get_effective_permission
+from app.core.permissions import require_permission, get_current_user, get_effective_permission, get_all_user_permissions
 from app.models.portal_core import User
 from app.models.portal_core import SyncQueue
 from app.models.tally_core import MstGroup, MstLedger, MstLedgerBankDetail, CostCenter, BankTransactionType, MstLedgerMsmeDetail
@@ -85,7 +85,7 @@ async def is_ancestor_group(group_id: int, target_name: str, company_id: int, db
 
 @router.get("/groups", response_model=List[AccountGroupResponse])
 async def get_groups(
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(require_permission("ledger_groups", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     query = await db.execute(
@@ -97,7 +97,7 @@ async def get_groups(
 
 @router.get("/groups/tree", response_model=List[AccountGroupTreeNode])
 async def get_groups_tree(
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(require_permission("ledger_groups", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     query = await db.execute(
@@ -126,7 +126,7 @@ async def get_groups_tree(
 @router.get("/groups/{group_id}", response_model=AccountGroupResponse)
 async def get_group(
     group_id: int,
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(require_permission("ledger_groups", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     query = await db.execute(
@@ -146,7 +146,7 @@ async def get_group(
 @router.post("/groups", response_model=AccountGroupResponse)
 async def create_group(
     req: AccountGroupCreate,
-    user: User = Depends(require_permission("ledgers", "create")),
+    user: User = Depends(require_permission("ledger_groups", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to create group: {req.name}")
@@ -238,7 +238,7 @@ async def create_group(
 async def update_group(
     group_id: int,
     req: AccountGroupUpdate,
-    user: User = Depends(require_permission("ledgers", "update")),
+    user: User = Depends(require_permission("ledger_groups", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to update group ID {group_id}")
@@ -343,7 +343,7 @@ async def update_group(
 @router.delete("/groups/{group_id}")
 async def delete_group(
     group_id: int,
-    user: User = Depends(require_permission("ledgers", "delete")),
+    user: User = Depends(require_permission("ledger_groups", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to delete group ID {group_id}")
@@ -408,10 +408,12 @@ async def get_ledgers(
     if cached is not None:
         return cached
 
-    perms_customer = await get_effective_permission(user.user_id, "ledger_customer", db)
-    perms_supplier = await get_effective_permission(user.user_id, "ledger_supplier", db)
-    perms_general = await get_effective_permission(user.user_id, "ledgers", db)
-    perms_visits = await get_effective_permission(user.user_id, "visits", db)
+    r_name = user.role.name if user.role else "Unknown"
+    all_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
+    perms_customer = await get_effective_permission(user, "ledger_customer", db, user_perms=all_perms)
+    perms_supplier = await get_effective_permission(user, "ledger_supplier", db, user_perms=all_perms)
+    perms_general = await get_effective_permission(user, "ledgers", db, user_perms=all_perms)
+    perms_visits = await get_effective_permission(user, "visits", db, user_perms=all_perms)
     
     if not (perms_customer.get("can_read", False) or perms_supplier.get("can_read", False) or perms_general.get("can_read", False) or perms_visits.get("can_read", False)):
         raise HTTPException(
@@ -528,7 +530,7 @@ async def create_ledger(
     else:
         module_code = "ledgers"
         
-    perms = await get_effective_permission(user.user_id, module_code, db)
+    perms = await get_effective_permission(user, module_code, db)
     if not perms.get("can_create", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -647,8 +649,8 @@ async def update_ledger(
     module_old = "ledger_customer" if is_debtor_old else "ledger_supplier" if is_creditor_old else "ledgers"
     module_new = "ledger_customer" if is_debtor_new else "ledger_supplier" if is_creditor_new else "ledgers"
     
-    perms_old = await get_effective_permission(user.user_id, module_old, db)
-    perms_new = await get_effective_permission(user.user_id, module_new, db)
+    perms_old = await get_effective_permission(user, module_old, db)
+    perms_new = await get_effective_permission(user, module_new, db)
     
     if not perms_old.get("can_update", False) or not perms_new.get("can_update", False):
         raise HTTPException(
@@ -743,7 +745,7 @@ async def delete_ledger(
     is_creditor = await is_ancestor_group(ledger.group_id, "Sundry Creditors", user.company_id, db)
     
     module_code = "ledger_customer" if is_debtor else "ledger_supplier" if is_creditor else "ledgers"
-    perms = await get_effective_permission(user.user_id, module_code, db)
+    perms = await get_effective_permission(user, module_code, db)
     if not perms.get("can_delete", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -823,7 +825,7 @@ async def get_ledger_by_id(
     is_debtor = await is_ancestor_group(ledger.group_id, "Sundry Debtors", user.company_id, db)
     is_creditor = await is_ancestor_group(ledger.group_id, "Sundry Creditors", user.company_id, db)
     module_code = "ledger_customer" if is_debtor else "ledger_supplier" if is_creditor else "ledgers"
-    perms = await get_effective_permission(user.user_id, module_code, db)
+    perms = await get_effective_permission(user, module_code, db)
     if not perms.get("can_read", False):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -877,15 +879,15 @@ async def get_ledger_statement(
     is_creditor = "creditor" in group_name or "supplier" in group_name
     
     if is_debtor:
-        perm = await get_effective_permission(user.user_id, "ledger_customer", db)
+        perm = await get_effective_permission(user, "ledger_customer", db)
         if not perm.get("can_read", False):
             raise HTTPException(status_code=403, detail="You do not have permission to view customer financial statements.")
     elif is_creditor:
-        perm = await get_effective_permission(user.user_id, "ledger_supplier", db)
+        perm = await get_effective_permission(user, "ledger_supplier", db)
         if not perm.get("can_read", False):
             raise HTTPException(status_code=403, detail="You do not have permission to view supplier financial statements.")
     else:
-        perm = await get_effective_permission(user.user_id, "ledgers", db)
+        perm = await get_effective_permission(user, "ledgers", db)
         if not perm.get("can_read", False):
             raise HTTPException(status_code=403, detail="You do not have permission to view ledger statements.")
 

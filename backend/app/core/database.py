@@ -157,6 +157,7 @@ async def auto_sync_all_model_schemas():
     import app.models.tally_core
     import app.models.portal_core
     import app.routers.orders
+    import app.routers.attendance
     
     async with engine.begin() as conn:
         for table_key, table in Base.metadata.tables.items():

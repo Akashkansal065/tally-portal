@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency } from '@/lib/utils'
+import { filterAndSortBySearch } from '@/lib/search'
 import { 
   Factory, Plus, Search, Layers, RefreshCw, ChevronRight, 
   Trash2, Sparkles, CheckCircle2, Box, ArrowRight, ShieldCheck,
@@ -12,7 +13,7 @@ import {
 import { toast } from 'sonner'
 
 export default function BillOfMaterialsPage() {
-  const { user, token } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
 
   const [stockItems, setStockItems] = useState<any[]>([])
@@ -59,13 +60,14 @@ export default function BillOfMaterialsPage() {
   }
 
   useEffect(() => {
+    if (!user) { router.replace('/login'); return }
+    if (!can('bom', 'read')) { router.replace('/'); return }
     fetchItems()
-  }, [token])
+  }, [user, can, router, token])
 
   const filteredItems = useMemo(() => {
     if (!searchQuery.trim()) return stockItems
-    const q = searchQuery.toLowerCase()
-    return stockItems.filter(i => (i.name || '').toLowerCase().includes(q))
+    return filterAndSortBySearch(stockItems, searchQuery, i => [i.name, i.group_name, i.hsn_code])
   }, [stockItems, searchQuery])
 
   const handleSaveNewBom = async (e: React.FormEvent) => {
@@ -279,16 +281,18 @@ export default function BillOfMaterialsPage() {
                 <div className="py-16 text-center space-y-3">
                   <Layers className="w-10 h-10 text-muted-foreground mx-auto opacity-40" />
                   <p className="text-xs text-muted-foreground">No Bill of Materials (BOM) configured for this item.</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewBomTargetItemId(String(selectedItem.stock_item_id))
-                      setIsNewBomOpen(true)
-                    }}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shadow-sm"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Define First BOM Recipe
-                  </button>
+                  {can('bom', 'create') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewBomTargetItemId(String(selectedItem.stock_item_id))
+                        setIsNewBomOpen(true)
+                      }}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Define First BOM Recipe
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-6">
@@ -314,17 +318,19 @@ export default function BillOfMaterialsPage() {
                             </p>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedBomForMfg(bom)
-                              setMfgQty(String(bom.unit_of_manufacture || 1))
-                              setIsMfgJournalOpen(true)
-                            }}
-                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer transition-all"
-                          >
-                            <Factory className="w-3.5 h-3.5" /> Run Manufacturing
-                          </button>
+                          {(can('bom', 'create') || can('vouchers', 'create')) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedBomForMfg(bom)
+                                setMfgQty(String(bom.unit_of_manufacture || 1))
+                                setIsMfgJournalOpen(true)
+                              }}
+                              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl shadow-xs flex items-center gap-1.5 cursor-pointer transition-all"
+                            >
+                              <Factory className="w-3.5 h-3.5" /> Run Manufacturing
+                            </button>
+                          )}
                         </div>
 
                         {/* Raw Material Components Table */}

@@ -21,7 +21,7 @@ type TreeNode = Godown & {
 }
 
 export default function GodownsPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
   
   const [godowns, setGodowns] = useState<Godown[]>([])
@@ -54,9 +54,9 @@ export default function GodownsPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.isAdmin) { router.replace('/'); return }
+    if (!can('godowns', 'read')) { router.replace('/'); return }
     fetchGodowns()
-  }, [user, permissions, router])
+  }, [user, can, router])
 
   const tree = useMemo(() => {
     const map = new Map<number, TreeNode>()
@@ -190,9 +190,15 @@ export default function GodownsPage() {
             </div>
 
             <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-              <button onClick={() => openCreate(node.godown_id)} className="p-1.5 text-muted-foreground hover:text-primary transition-colors"><Plus className="h-4 w-4" /></button>
-              <button onClick={() => openEdit(node)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
-              <button onClick={() => handleDelete(node.godown_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+              {can('godowns', 'create') && (
+                <button onClick={() => openCreate(node.godown_id)} className="p-1.5 text-muted-foreground hover:text-primary transition-colors"><Plus className="h-4 w-4" /></button>
+              )}
+              {can('godowns', 'update') && (
+                <button onClick={() => openEdit(node)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
+              )}
+              {can('godowns', 'delete') && (
+                <button onClick={() => handleDelete(node.godown_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+              )}
             </div>
           </div>
 
@@ -214,12 +220,14 @@ export default function GodownsPage() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">Godowns / Locations</h1>
             <p className="text-sm text-muted-foreground mt-1">Manage warehouses, stores, and hierarchical storage locations.</p>
           </div>
-          <button 
-            onClick={() => openCreate()}
-            className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
-          >
-            <Plus className="h-4 w-4" /> Create Godown
-          </button>
+          {can('godowns', 'create') && (
+            <button 
+              onClick={() => openCreate()}
+              className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
+            >
+              <Plus className="h-4 w-4" /> Create Godown
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -230,7 +238,9 @@ export default function GodownsPage() {
               <div className="text-center py-20 text-muted-foreground flex flex-col items-center">
                 <Building2 className="h-12 w-12 text-muted mb-4" />
                 <p>No godowns found.</p>
-                <button onClick={() => openCreate()} className="text-primary hover:underline mt-2">Create your first godown</button>
+                {can('godowns', 'create') && (
+                  <button onClick={() => openCreate()} className="text-primary hover:underline mt-2">Create your first godown</button>
+                )}
               </div>
             ) : (
               <div className="space-y-1">

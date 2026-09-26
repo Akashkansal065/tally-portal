@@ -27,7 +27,7 @@ router = APIRouter(
 
 @router.get("/cost-categories", response_model=List[CostCategoryResponse])
 async def list_cost_categories(
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(require_permission("cost_categories", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} fetching list of cost categories for company {user.company_id}")
@@ -41,7 +41,7 @@ async def list_cost_categories(
 @router.post("/cost-categories", response_model=CostCategoryResponse)
 async def create_cost_category(
     payload: CostCategoryCreate,
-    user: User = Depends(require_permission("ledgers", "create")),
+    user: User = Depends(require_permission("cost_categories", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     # Check if exists
@@ -76,7 +76,7 @@ async def create_cost_category(
 async def update_cost_category(
     category_id: int,
     payload: CostCategoryUpdate,
-    user: User = Depends(require_permission("ledgers", "update")),
+    user: User = Depends(require_permission("cost_categories", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} updating cost category {category_id} for company {user.company_id}")
@@ -117,7 +117,7 @@ async def update_cost_category(
 @router.delete("/cost-categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_cost_category(
     category_id: int,
-    user: User = Depends(require_permission("ledgers", "delete")),
+    user: User = Depends(require_permission("cost_categories", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} deleting cost category {category_id} for company {user.company_id}")
@@ -148,7 +148,7 @@ async def delete_cost_category(
 
 @router.get("/cost-centres", response_model=List[CostCentreResponse])
 async def list_cost_centres(
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(require_permission("cost_centres", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} fetching list of cost centres for company {user.company_id}")
@@ -178,7 +178,7 @@ async def list_cost_centres(
 
 @router.get("/cost-centres/tree", response_model=List[CostCentreTreeNode])
 async def get_cost_centres_tree(
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(require_permission("cost_centres", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} fetching cost centres tree for company {user.company_id}")
@@ -217,7 +217,7 @@ async def get_cost_centres_tree(
 @router.post("/cost-centres", response_model=CostCentreResponse, status_code=status.HTTP_201_CREATED)
 async def create_cost_centre(
     payload: CostCentreCreate,
-    user: User = Depends(require_permission("ledgers", "create")),
+    user: User = Depends(require_permission("cost_centres", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} creating cost centre: {payload.name} for company {user.company_id}")
@@ -260,7 +260,7 @@ async def create_cost_centre(
 async def update_cost_centre(
     cost_centre_id: int,
     payload: CostCentreUpdate,
-    user: User = Depends(require_permission("ledgers", "update")),
+    user: User = Depends(require_permission("cost_centres", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} updating cost centre {cost_centre_id} for company {user.company_id}")
@@ -296,7 +296,7 @@ async def update_cost_centre(
 @router.delete("/cost-centres/{cost_centre_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_cost_centre(
     cost_centre_id: int,
-    user: User = Depends(require_permission("ledgers", "delete")),
+    user: User = Depends(require_permission("cost_centres", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} deleting cost centre {cost_centre_id} for company {user.company_id}")
@@ -346,7 +346,7 @@ async def get_cost_centre_class_by_id(class_id: int, company_id: int, db: AsyncS
 
 @router.get("/cost-centre-classes", response_model=List[CostCentreClassResponse])
 async def list_cost_centre_classes(
-    user: User = Depends(require_permission("ledgers", "read")),
+    user: User = Depends(require_permission("cost_centre_classes", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     from sqlalchemy.orm import selectinload
@@ -382,7 +382,7 @@ async def list_cost_centre_classes(
 @router.post("/cost-centre-classes", response_model=CostCentreClassResponse, status_code=status.HTTP_201_CREATED)
 async def create_cost_centre_class(
     payload: CostCentreClassCreate,
-    user: User = Depends(require_permission("ledgers", "create")),
+    user: User = Depends(require_permission("cost_centre_classes", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     from app.routers.sync import try_push_cost_centre_class_realtime
@@ -422,7 +422,7 @@ async def create_cost_centre_class(
 async def update_cost_centre_class(
     class_id: int,
     payload: CostCentreClassUpdate,
-    user: User = Depends(require_permission("ledgers", "update")),
+    user: User = Depends(require_permission("cost_centre_classes", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     from app.routers.sync import try_push_cost_centre_class_realtime
@@ -463,7 +463,7 @@ async def update_cost_centre_class(
 @router.delete("/cost-centre-classes/{class_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_cost_centre_class(
     class_id: int,
-    user: User = Depends(require_permission("ledgers", "delete")),
+    user: User = Depends(require_permission("cost_centre_classes", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     from app.routers.sync import try_push_cost_centre_class_realtime

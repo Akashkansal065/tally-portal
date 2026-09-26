@@ -1,10 +1,15 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Plus, Edit2, Trash2, Info } from 'lucide-react'
 import CostCategoryFormModal from '@/components/CostCategoryFormModal'
+import { useAuth } from '@/context/AuthContext'
+import { API_BASE, authHeaders } from '@/lib/utils'
 
 export default function CostCategoriesPage() {
+  const { user, token, can } = useAuth()
+  const router = useRouter()
   const [categories, setCategories] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -12,22 +17,12 @@ export default function CostCategoriesPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingCategory, setEditingCategory] = useState<any>(null)
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000'
 
-  const authHeaders = () => {
-    const token = localStorage.getItem('mytally_token') || localStorage.getItem('token')
-    const activeCompanyId = localStorage.getItem('active_company_id')
-    return {
-      'Authorization': `Bearer ${token}`,
-      'X-Company-ID': activeCompanyId || '',
-      'Content-Type': 'application/json'
-    }
-  }
 
   const fetchCategories = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/masters/cost-categories`, { headers: authHeaders() })
+      const res = await fetch(`${API_BASE}/masters/cost-categories`, { headers: authHeaders(token) })
       if (res.ok) {
         const data = await res.json()
         setCategories(Array.isArray(data) ? data : [])
@@ -42,15 +37,17 @@ export default function CostCategoriesPage() {
   }
 
   useEffect(() => {
+    if (!user) { router.replace('/login'); return }
+    if (!can('cost_categories', 'read')) { router.replace('/'); return }
     fetchCategories()
-  }, [])
+  }, [user, can, router])
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this Cost Category?')) return
     try {
       const res = await fetch(`${API_BASE}/masters/cost-categories/${id}`, {
         method: 'DELETE',
-        headers: authHeaders()
+        headers: authHeaders(token)
       })
       if (res.ok) {
         fetchCategories()
@@ -83,13 +80,15 @@ export default function CostCategoriesPage() {
                 </div>
               </div>
             </div>
-            <button
-              onClick={() => { setEditingCategory(null); setIsModalOpen(true) }}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-sm font-semibold transition-colors flex items-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              Create
-            </button>
+            {can('cost_categories', 'create') && (
+              <button
+                onClick={() => { setEditingCategory(null); setIsModalOpen(true) }}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-sm font-semibold transition-colors flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Create
+              </button>
+            )}
           </div>
 
           {error && (
@@ -133,20 +132,24 @@ export default function CostCategoriesPage() {
                         </td>
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => { setEditingCategory(cat); setIsModalOpen(true) }}
-                              className="p-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-md transition-colors"
-                              title="Edit Cost Category"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleDelete(cat.category_id)}
-                              className="p-1.5 bg-destructive/10 text-destructive hover:bg-destructive/20 rounded-md transition-colors"
-                              title="Delete Cost Category"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            {can('cost_categories', 'update') && (
+                              <button
+                                onClick={() => { setEditingCategory(cat); setIsModalOpen(true) }}
+                                className="p-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-md transition-colors"
+                                title="Edit Cost Category"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                            )}
+                            {can('cost_categories', 'delete') && (
+                              <button
+                                onClick={() => handleDelete(cat.category_id)}
+                                className="p-1.5 bg-destructive/10 text-destructive hover:bg-destructive/20 rounded-md transition-colors"
+                                title="Delete Cost Category"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>

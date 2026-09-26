@@ -25,7 +25,7 @@ type TreeNode = StockGroup & {
 }
 
 export default function StockGroupsPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
   
   const [groups, setGroups] = useState<StockGroup[]>([])
@@ -57,9 +57,9 @@ export default function StockGroupsPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.isAdmin) { router.replace('/'); return }
+    if (!can('stock_groups', 'read')) { router.replace('/'); return }
     fetchGroups()
-  }, [user, permissions, router])
+  }, [user, can, router])
 
   // Build tree
   const tree = useMemo(() => {
@@ -192,25 +192,31 @@ export default function StockGroupsPage() {
             </div>
 
             <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-              <button 
-                onClick={() => openCreate(node.stock_group_id)} 
-                className="p-1.5 text-muted-foreground hover:text-primary transition-colors tooltip"
-                title="Add Subgroup"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-              <button 
-                onClick={() => openEdit(node)} 
-                className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Edit2 className="h-4 w-4" />
-              </button>
-              <button 
-                onClick={() => handleDelete(node.stock_group_id)} 
-                className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+              {can('stock_groups', 'create') && (
+                <button 
+                  onClick={() => openCreate(node.stock_group_id)} 
+                  className="p-1.5 text-muted-foreground hover:text-primary transition-colors tooltip"
+                  title="Add Subgroup"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              )}
+              {can('stock_groups', 'update') && (
+                <button 
+                  onClick={() => openEdit(node)} 
+                  className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Edit2 className="h-4 w-4" />
+                </button>
+              )}
+              {can('stock_groups', 'delete') && (
+                <button 
+                  onClick={() => handleDelete(node.stock_group_id)} 
+                  className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -233,12 +239,14 @@ export default function StockGroupsPage() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">Stock Groups</h1>
             <p className="text-sm text-muted-foreground mt-1">Hierarchical classification of your inventory items.</p>
           </div>
-          <button 
-            onClick={() => openCreate()}
-            className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
-          >
-            <Plus className="h-4 w-4" /> Create Root Group
-          </button>
+          {can('stock_groups', 'create') && (
+            <button 
+              onClick={() => openCreate()}
+              className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
+            >
+              <Plus className="h-4 w-4" /> Create Root Group
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -249,7 +257,9 @@ export default function StockGroupsPage() {
               <div className="text-center py-20 text-muted-foreground flex flex-col items-center">
                 <Folder className="h-12 w-12 text-muted mb-4" />
                 <p>No stock groups found.</p>
-                <button onClick={() => openCreate()} className="text-primary hover:underline mt-2">Create your first group</button>
+                {can('stock_groups', 'create') && (
+                  <button onClick={() => openCreate()} className="text-primary hover:underline mt-2">Create your first group</button>
+                )}
               </div>
             ) : (
               <div className="space-y-1">

@@ -8,7 +8,7 @@ import { Plus, Edit2, Trash2, X, Info, Search, FileText, Tag, Banknote, MapPin, 
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
 
 export default function StockItemsPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
   
   const [items, setItems] = useState<any[]>([])
@@ -99,9 +99,9 @@ export default function StockItemsPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.isAdmin) { router.replace('/'); return }
+    if (!can('stock_items', 'read')) { router.replace('/'); return }
     fetchDependencies()
-  }, [user, permissions, router])
+  }, [user, can, router])
 
   const openCreate = () => {
     setIsEditing(false)
@@ -314,12 +314,14 @@ export default function StockItemsPage() {
           </div>
           <div className="flex items-center gap-3">
             <ResetColumnsButton {...stockItemCols} />
-            <button 
-              onClick={openCreate}
-              className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors shadow-sm"
-            >
-              <Plus className="h-4 w-4" /> Create Item
-            </button>
+            {can('stock_items', 'create') && (
+              <button 
+                onClick={openCreate}
+                className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors shadow-sm"
+              >
+                <Plus className="h-4 w-4" /> Create Item
+              </button>
+            )}
           </div>
         </div>
 
@@ -402,8 +404,12 @@ export default function StockItemsPage() {
                               case 'actions':
                                 return (
                                   <td key="actions" className="px-4 py-3 align-middle text-right space-x-2">
-                                    <button onClick={() => openEdit(item)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
-                                    <button onClick={() => handleDelete(item.stock_item_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                                    {can('stock_items', 'update') && (
+                                      <button onClick={() => openEdit(item)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
+                                    )}
+                                    {can('stock_items', 'delete') && (
+                                      <button onClick={() => handleDelete(item.stock_item_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                                    )}
                                   </td>
                                 )
                               default:

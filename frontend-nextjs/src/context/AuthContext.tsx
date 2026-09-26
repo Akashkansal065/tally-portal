@@ -76,23 +76,23 @@ interface AuthContextValue {
 }
 
 const DEFAULT_PERMISSIONS: UserPermissions = {
-  showLedger: true,
-  showSalesLedgers: true,
+  showLedger: false,
+  showSalesLedgers: false,
   showPurchaseLedgers: false,
-  showVouchers: true,
-  showReceipts: true,
-  showPayments: true,
+  showVouchers: false,
+  showReceipts: false,
+  showPayments: false,
   showExpenses: false,
-  showAttendance: true,
-  showStocks: true,
+  showAttendance: false,
+  showStocks: false,
   showReports: false,
   showOrders: false,
-  showCheckIn: true,
+  showCheckIn: false,
   showGst: false,
-  showCustomers: true,
+  showCustomers: false,
   ledgerScope: 'dr_only',
-  stockScope: 'full',
-  voucherActionScope: 'full',
+  stockScope: 'catalog_only',
+  voucherActionScope: 'view_only',
   allowedVoucherTypeIds: null,
   isAdmin: false,
 }
@@ -129,31 +129,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (compRes.ok) allowedCompanies = await compRes.json()
       } catch (e) { }
 
-      const isAdmin = data.role === 'admin' || data.role === 'Admin'
+      const isAdmin = data.isAdmin ?? (
+        typeof data.role === 'string' && ['admin', 'superadmin', 'owner'].includes(data.role.toLowerCase())
+      )
       setUser({
         ...data,
         allowedCompanies,
         capabilities: data.capabilities || {},
         username: data.email?.split('@')[0] ?? data.email ?? 'User',
         permissions: {
-          showLedger: isAdmin ? true : (data.showLedger ?? true),
-          showSalesLedgers: isAdmin ? true : (data.showSalesLedgers ?? true),
-          showPurchaseLedgers: isAdmin ? true : (data.showPurchaseLedgers ?? false),
-          showVouchers: isAdmin ? true : (data.showVouchers ?? data.showReceipts ?? true),
-          showReceipts: isAdmin ? true : (data.showReceipts ?? true),
-          showPayments: isAdmin ? true : (data.showPayments ?? true),
-          showExpenses: isAdmin ? true : (data.showExpenses ?? false),
-          showAttendance: isAdmin ? true : (data.showAttendance ?? true),
-          showStocks: isAdmin ? true : (data.showStocks ?? true),
-          showReports: isAdmin ? true : (data.showReports ?? false),
-          showOrders: isAdmin ? true : (data.showOrders ?? false),
-          showCheckIn: isAdmin ? true : (data.showCheckIn ?? true),
-          showGst: isAdmin ? true : (data.showGst ?? false),
-          showCustomers: isAdmin ? true : (data.showCustomers ?? true),
-          ledgerScope: isAdmin ? 'all' : (data.ledgerScope ?? 'dr_only'),
-          stockScope: isAdmin ? 'full' : (data.stockScope ?? 'full'),
-          voucherActionScope: isAdmin ? 'full' : (data.voucherActionScope ?? 'full'),
-          allowedVoucherTypeIds: isAdmin ? null : (data.allowedVoucherTypeIds ?? null),
+          showLedger: data.showLedger ?? Boolean(data.capabilities?.ledgers?.can_read),
+          showSalesLedgers: data.showSalesLedgers ?? Boolean(data.capabilities?.ledger_customer?.can_read),
+          showPurchaseLedgers: data.showPurchaseLedgers ?? Boolean(data.capabilities?.ledger_supplier?.can_read),
+          showVouchers: data.showVouchers ?? Boolean(data.capabilities?.vouchers?.can_read),
+          showReceipts: data.showReceipts ?? Boolean(data.capabilities?.vouchers?.can_read),
+          showPayments: data.showPayments ?? Boolean(data.capabilities?.payments?.can_read),
+          showExpenses: data.showExpenses ?? Boolean(data.capabilities?.expenses?.can_read),
+          showAttendance: data.showAttendance ?? Boolean(data.capabilities?.attendance?.can_read),
+          showStocks: data.showStocks ?? Boolean(data.capabilities?.inventory?.can_read),
+          showReports: data.showReports ?? Boolean(data.capabilities?.reports?.can_read),
+          showOrders: data.showOrders ?? Boolean(data.capabilities?.orders?.can_read),
+          showCheckIn: data.showCheckIn ?? Boolean(data.capabilities?.visits?.can_read),
+          showGst: data.showGst ?? Boolean(data.capabilities?.gst?.can_read),
+          showCustomers: data.showCustomers ?? Boolean(data.capabilities?.customers?.can_read),
+          ledgerScope: data.ledgerScope ?? 'all',
+          stockScope: data.stockScope ?? 'full',
+          voucherActionScope: data.voucherActionScope ?? 'view_only',
+          allowedVoucherTypeIds: data.allowedVoucherTypeIds ?? null,
           isAdmin,
         },
       })
@@ -211,10 +213,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const SUB_MODULE_PARENT_MAP: Record<string, string> = {
+    ledger_groups: 'ledgers',
+    cost_categories: 'ledgers',
+    cost_centres: 'ledgers',
+    cost_centre_classes: 'ledgers',
+    currencies: 'settings',
+    voucher_types: 'settings',
+    stock_groups: 'inventory',
+    stock_categories: 'inventory',
+    stock_items: 'inventory',
+    units: 'inventory',
+    godowns: 'inventory',
+    price_lists: 'inventory',
+    bom: 'inventory',
+  }
+
   const can = useCallback((module: string, action: 'create' | 'read' | 'update' | 'delete'): boolean => {
     if (!user) return false
-    if (user.permissions?.isAdmin) return true
-    const cap = user.capabilities?.[module]
+    // Zero admin bypass: evaluate capabilities directly with hierarchical parent fallback
+    let cap = user.capabilities?.[module]
+    if (!cap && SUB_MODULE_PARENT_MAP[module]) {
+      cap = user.capabilities?.[SUB_MODULE_PARENT_MAP[module]]
+    }
     if (!cap) return false
     const field = `can_${action}` as keyof typeof cap
     return Boolean(cap[field])

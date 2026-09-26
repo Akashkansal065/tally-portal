@@ -53,7 +53,7 @@ const CATEGORIES = [
 const MODES = ['Cash', 'Bank', 'Online']
 
 export default function ExpensesPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
 
   const [expenses, setExpenses] = useState<Expense[]>([])
@@ -129,9 +129,9 @@ export default function ExpensesPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showExpenses && !permissions.isAdmin) { router.replace('/'); return }
+    if (!can('expenses', 'read')) { router.replace('/'); return }
     fetchExpenses()
-  }, [user, token, router, permissions, scope, statusFilter, selectedSalesperson])
+  }, [user, token, router, can, scope, statusFilter, selectedSalesperson])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]

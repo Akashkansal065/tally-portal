@@ -12,23 +12,22 @@ from typing import Optional, List
 from datetime import datetime, timezone
 
 from app.core.database import get_db, Base
-from app.core.permissions import require_permission
+from app.core.permissions import require_permission, get_effective_permission
 from app.models.portal_core import User
 from app.core.config import settings
 from app.core.datetime_utils import get_ist_now, to_ist_iso
 
-def check_is_admin(user: User) -> bool:
-    if not user:
-        return False
-    if user.role and user.role.name and user.role.name.lower() in {"admin", "owner", "superadmin"}:
+async def can_manage_all_orders(user: User, db: AsyncSession) -> bool:
+    """Determine whether user has manager/admin-level access to view/edit all orders."""
+    admin_perms = await get_effective_permission(user, "admin", db)
+    if admin_perms.get("can_read", False):
         return True
-    if getattr(user, "role_id", None) == 1:
-        return True
-    return False
+    orders_perms = await get_effective_permission(user, "orders", db)
+    return bool(orders_perms.get("can_update", False) and orders_perms.get("can_delete", False))
 
-def check_order_editable(order: "TempOrder", user: User) -> bool:
-    # Admin can edit orders at any time
-    if check_is_admin(user):
+def check_order_editable(order: "TempOrder", is_manager: bool) -> bool:
+    # Managers/admins can edit orders at any time
+    if is_manager:
         return True
     if order.status != "pending":
         return False
@@ -340,14 +339,14 @@ async def get_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    is_admin = check_is_admin(user)
+    is_manager = await can_manage_all_orders(user, db)
 
-    # Access control: admin can view any order; regular salesperson only their own
-    if not is_admin and order.user_id != user.user_id:
+    # Access control: managers can view any order; regular salesperson only their own
+    if not is_manager and order.user_id != user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to view this order")
 
-    # Time check (30 minutes edit window for regular salesperson; admin can edit anytime)
-    is_editable = check_order_editable(order, user)
+    # Time check (30 minutes edit window for regular salesperson; managers can edit anytime)
+    is_editable = check_order_editable(order, is_manager)
 
     items_list = []
     total = 0.0
@@ -409,12 +408,12 @@ async def edit_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    is_admin = check_is_admin(user)
+    is_manager = await can_manage_all_orders(user, db)
 
-    if not is_admin and order.user_id != user.user_id:
+    if not is_manager and order.user_id != user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to edit this order")
 
-    if not check_order_editable(order, user):
+    if not check_order_editable(order, is_manager):
         if order.status != "pending":
             raise HTTPException(status_code=400, detail="Only pending orders can be edited")
         raise HTTPException(status_code=400, detail="The 30-minute editing window has expired")

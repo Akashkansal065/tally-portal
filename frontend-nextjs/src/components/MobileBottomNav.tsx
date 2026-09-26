@@ -29,14 +29,14 @@ interface NavTab {
 
 export function MobileBottomNav() {
   const pathname = usePathname()
-  const { user, permissions } = useAuth()
+  const { user, permissions, can } = useAuth()
 
   if (!user) return null
 
   const isAdmin = permissions.isAdmin || user.role === 'admin' || user.role === 'Admin'
-  const hasVouchersAccess = Boolean(permissions.showVouchers ?? permissions.showReceipts)
+  const hasVouchersAccess = Boolean((permissions.showVouchers ?? permissions.showReceipts) && can('vouchers', 'read'))
 
-  const hasCustomersAccess = Boolean(permissions.showCustomers || isAdmin)
+  const hasCustomersAccess = Boolean(permissions.showCustomers && can('customers', 'read'))
 
   const tabs: NavTab[] = [
     { href: '/', label: 'Home', icon: Home },

@@ -52,7 +52,7 @@ type Salesperson = {
 }
 
 export default function TempOrdersPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
   const [orders, setOrders] = useState<Order[]>([])
   const [salespersons, setSalespersons] = useState<Salesperson[]>([])
@@ -115,9 +115,9 @@ export default function TempOrdersPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showOrders) { router.replace('/'); return }
+    if (!can('orders', 'read')) { router.replace('/'); return }
     fetchData()
-  }, [user, token, router, permissions])
+  }, [user, token, router, can])
 
   const handleStatusChange = async (orderId: number, nextStatus: 'done' | 'cancelled') => {
     try {
@@ -152,6 +152,7 @@ export default function TempOrdersPage() {
   }, [orders, statusFilter, salespersonFilter])
 
   const checkIsEditable = (order: Order) => {
+    if (!can('orders', 'update')) return false
     if (permissions?.isAdmin) return true
     if (order.status !== 'pending') return false
     
@@ -186,12 +187,14 @@ export default function TempOrdersPage() {
             </h1>
             <p className="text-[11px] text-muted-foreground mt-0.5">Place & approve salesperson sales orders</p>
           </div>
-          <button 
-            onClick={() => router.push('/temporders/new')}
-            className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all active:scale-[0.98] shadow-md shadow-emerald-500/10 cursor-pointer"
-          >
-            <Plus className="h-3.5 w-3.5" /> Place Order
-          </button>
+          {can('orders', 'create') && (
+            <button 
+              onClick={() => router.push('/temporders/new')}
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all active:scale-[0.98] shadow-md shadow-emerald-500/10 cursor-pointer"
+            >
+              <Plus className="h-3.5 w-3.5" /> Place Order
+            </button>
+          )}
         </div>
 
         {/* Filters Panel */}

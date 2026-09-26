@@ -19,7 +19,7 @@ type UOM = {
 }
 
 export default function UnitsOfMeasurePage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
   const [uoms, setUoms] = useState<UOM[]>([])
   const [loading, setLoading] = useState(true)
@@ -51,9 +51,9 @@ export default function UnitsOfMeasurePage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.isAdmin) { router.replace('/'); return }
+    if (!can('units', 'read')) { router.replace('/'); return }
     fetchUoms()
-  }, [user, permissions, router])
+  }, [user, can, router])
 
   const openCreateModal = () => {
     setIsEditing(false)
@@ -153,12 +153,14 @@ export default function UnitsOfMeasurePage() {
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Units of Measure</h1>
           <p className="text-sm text-muted-foreground mt-1">Manage simple and compound units for inventory tracking.</p>
         </div>
-        <button 
-          onClick={openCreateModal}
-          className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
-        >
-          <Plus className="h-4 w-4" /> Create UOM
-        </button>
+        {can('units', 'create') && (
+          <button 
+            onClick={openCreateModal}
+            className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="h-4 w-4" /> Create UOM
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -196,8 +198,12 @@ export default function UnitsOfMeasurePage() {
                       ) : '—'}
                     </td>
                     <td className="px-4 py-3 align-middle text-right space-x-2">
-                      <button onClick={() => openEditModal(uom)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
-                      <button onClick={() => handleDelete(uom.unit_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                      {can('units', 'update') && (
+                        <button onClick={() => openEditModal(uom)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
+                      )}
+                      {can('units', 'delete') && (
+                        <button onClick={() => handleDelete(uom.unit_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                      )}
                     </td>
                   </tr>
                 ))

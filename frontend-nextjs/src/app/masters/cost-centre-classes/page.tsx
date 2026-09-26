@@ -7,7 +7,7 @@ import { API_BASE, authHeaders } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 
 export default function CostCentreClassesPage() {
-  const { token, permissions } = useAuth()
+  const { token, can } = useAuth()
   const [classes, setClasses] = useState<any[]>([])
   const [categories, setCategories] = useState<any[]>([])
   const [centres, setCentres] = useState<any[]>([])
@@ -72,7 +72,7 @@ export default function CostCentreClassesPage() {
     setIsModalOpen(true)
   }
 
-  if (!permissions.isAdmin) {
+  if (!can('cost_centre_classes', 'read')) {
     return <div className="p-6 text-red-500">You do not have permission to access this page.</div>
   }
 
@@ -87,13 +87,15 @@ export default function CostCentreClassesPage() {
             Configure automated percentage-based allocations for your Cost Centres.
           </p>
         </div>
-        <button
-          onClick={() => { setEditingData(null); setIsModalOpen(true) }}
-          className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all shadow-md hover:shadow-lg font-medium"
-        >
-          <Plus size={20} />
-          Create Class
-        </button>
+        {can('cost_centre_classes', 'create') && (
+          <button
+            onClick={() => { setEditingData(null); setIsModalOpen(true) }}
+            className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all shadow-md hover:shadow-lg font-medium"
+          >
+            <Plus size={20} />
+            Create Class
+          </button>
+        )}
       </div>
       
       {/* Informational Banner */}
@@ -156,20 +158,24 @@ export default function CostCentreClassesPage() {
                     </td>
                     <td className="p-4 text-right">
                       <div className="flex justify-end gap-2">
-                        <button
-                          onClick={() => handleEdit(cls)}
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Edit"
-                        >
-                          <Edit2 size={18} />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(cls.class_id)}
-                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          title="Delete"
-                        >
-                          <Trash2 size={18} />
-                        </button>
+                        {can('cost_centre_classes', 'update') && (
+                          <button
+                            onClick={() => handleEdit(cls)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit"
+                          >
+                            <Edit2 size={18} />
+                          </button>
+                        )}
+                        {can('cost_centre_classes', 'delete') && (
+                          <button
+                            onClick={() => handleDelete(cls.class_id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

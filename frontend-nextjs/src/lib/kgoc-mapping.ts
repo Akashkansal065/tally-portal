@@ -109,9 +109,9 @@ export const PRODUCT_MAP: Record<string, { brand: string; subtitle: string }> = 
   'LR-181': { brand: 'Kohe', subtitle: 'Gas Lighter (18")' },
   'LR-181/P': { brand: 'Kohe', subtitle: 'Gas Lighter - Pouch (18")' },
   'LR-62 R': { brand: 'Kohe', subtitle: 'Gas Lighter (Rubber Grip) (6")' },
-  // 21 SS / 21SS — gas lighter stainless steel series
-  '21 SS': { brand: 'Kohe', subtitle: 'Gas Lighter - Stainless Steel (21")' },
-  '21SS BIG 15"': { brand: 'Kohe', subtitle: 'Gas Lighter - Stainless Steel Big (15")' },
+  // 21 SS / 21SS — Celltone gas lighter stainless steel series
+  '21 SS': { brand: 'CELLTONE', subtitle: 'Gas Lighter - Stainless Steel (21")' },
+  '21SS BIG 15"': { brand: 'CELLTONE', subtitle: 'Gas Lighter - Stainless Steel Big (15")' },
   // Other brands (Kangaro / Munix) also distributed
   'M-STAR': { brand: 'Kangaro', subtitle: 'Stationery Product (Stapler/Punch)' },
   'SL-1143': { brand: 'Munix', subtitle: 'Prime Scissors (108 mm)' },
@@ -127,19 +127,29 @@ export const PRODUCT_MAP: Record<string, { brand: string; subtitle: string }> = 
 export const getProductDetails = (name: string, groupName: string) => {
   const code = (name || '').trim()
 
+  // Identify brand from stock group name if available
+  const upperGroup = (groupName || '').toUpperCase()
+  let groupBrand: string | null = null
+  if (upperGroup.includes('CELLTONE')) groupBrand = 'CELLTONE'
+  else if (upperGroup.includes('BAJAJ')) groupBrand = 'BAJAJ'
+  else if (upperGroup.includes('SURAJ')) groupBrand = 'SURAJ'
+  else if (upperGroup.includes('KGOC')) groupBrand = 'KOHE'
+  else if (upperGroup.includes('NIRVAAN')) groupBrand = 'NIRVAAN'
+  else if (upperGroup.includes('RAMSON')) groupBrand = 'RAMSON'
+
   // Direct lookup from product map
-  if (PRODUCT_MAP[code]) return PRODUCT_MAP[code]
+  if (PRODUCT_MAP[code]) {
+    const mapped = PRODUCT_MAP[code]
+    return {
+      // Group brand always takes precedence over map if group is explicitly known
+      brand: groupBrand || mapped.brand,
+      subtitle: mapped.subtitle
+    }
+  }
 
   // Fallback brand from group name
-  let brand = (groupName || '').split(' ')[0] || 'ITEM'
-  if (groupName) {
-    if (groupName.includes('BAJAJ')) brand = 'BAJAJ'
-    else if (groupName.includes('SURAJ')) brand = 'SURAJ'
-    else if (groupName.includes('CELLTONE')) brand = 'CELLTONE'
-    else if (groupName.includes('KGOC')) brand = 'KOHE'
-    else if (groupName.includes('NIRVAAN')) brand = 'NIRVAAN'
-    else if (groupName.toUpperCase().includes('RAMSON')) brand = 'RAMSON'
-  }
+  let brand = groupBrand || (groupName || '').split(' ')[0] || 'ITEM'
 
   return { brand, subtitle: name }
 }
+

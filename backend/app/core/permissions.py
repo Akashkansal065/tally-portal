@@ -97,6 +97,12 @@ MODULE_TOGGLE_MAPPING = {
 
 ALL_KNOWN_MODULES = [
     "ledgers",
+    "ledger_groups",
+    "cost_categories",
+    "cost_centres",
+    "cost_centre_classes",
+    "currencies",
+    "voucher_types",
     "ledger_customer",
     "ledger_supplier",
     "vouchers",
@@ -104,6 +110,13 @@ ALL_KNOWN_MODULES = [
     "expenses",
     "attendance",
     "inventory",
+    "stock_groups",
+    "stock_categories",
+    "stock_items",
+    "units",
+    "godowns",
+    "price_lists",
+    "bom",
     "reports",
     "orders",
     "visits",
@@ -115,6 +128,22 @@ ALL_KNOWN_MODULES = [
     "payroll",
     "admin",
 ]
+
+SUB_MODULE_PARENT_MAP = {
+    "ledger_groups": "ledgers",
+    "cost_categories": "ledgers",
+    "cost_centres": "ledgers",
+    "cost_centre_classes": "ledgers",
+    "currencies": "settings",
+    "voucher_types": "settings",
+    "stock_groups": "inventory",
+    "stock_categories": "inventory",
+    "stock_items": "inventory",
+    "units": "inventory",
+    "godowns": "inventory",
+    "price_lists": "inventory",
+    "bom": "inventory",
+}
 
 async def get_all_user_permissions(
     user_id: int,
@@ -249,18 +278,40 @@ async def get_all_user_permissions(
 
 
 async def get_effective_permission(
-    user_id: int, 
+    user_or_id: User | int, 
     module_code: str, 
-    db: AsyncSession
+    db: AsyncSession,
+    user_perms: dict | None = None
 ) -> dict:
     """
     Resolves the effective permission for a user on a given module.
     Delegates to get_all_user_permissions for consistent logic across roles and overrides.
+    If user_perms is provided, extracts capabilities directly without querying the DB.
     """
-    user_query = await db.execute(
-        select(User).options(selectinload(User.role)).where(User.user_id == user_id)
-    )
-    user = user_query.scalars().first()
+    m_lower = module_code.lower()
+
+    if user_perms is not None:
+        caps = user_perms.get("capabilities", {})
+        if m_lower in caps:
+            return caps[m_lower]
+        parent_mod = SUB_MODULE_PARENT_MAP.get(m_lower)
+        if parent_mod and parent_mod in caps:
+            return caps[parent_mod]
+        return {
+            "can_create": False,
+            "can_read": False,
+            "can_update": False,
+            "can_delete": False,
+        }
+
+    if isinstance(user_or_id, User):
+        user = user_or_id
+    else:
+        user_query = await db.execute(
+            select(User).options(selectinload(User.role)).where(User.user_id == user_or_id)
+        )
+        user = user_query.scalars().first()
+
     if not user:
         return {
             "can_create": False,
@@ -273,7 +324,7 @@ async def get_effective_permission(
     is_admin = bool(r_name and r_name.lower() in ("admin", "superadmin", "owner"))
 
     # "admin" virtual module check: if checking "admin" access, any admin user passes
-    if module_code.lower() == "admin":
+    if m_lower == "admin":
         return {
             "can_create": is_admin,
             "can_read": is_admin,
@@ -282,16 +333,20 @@ async def get_effective_permission(
         }
 
     all_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
-    default_access = is_admin
-    return all_perms["capabilities"].get(
-        module_code.lower(),
-        {
-            "can_create": default_access,
-            "can_read": default_access,
-            "can_update": default_access,
-            "can_delete": default_access,
-        }
-    )
+    caps = all_perms.get("capabilities", {})
+    if m_lower in caps:
+        return caps[m_lower]
+
+    parent_mod = SUB_MODULE_PARENT_MAP.get(m_lower)
+    if parent_mod and parent_mod in caps:
+        return caps[parent_mod]
+
+    return {
+        "can_create": False,
+        "can_read": False,
+        "can_update": False,
+        "can_delete": False,
+    }
 
 
 async def get_user_permission_toggles(
@@ -315,7 +370,7 @@ def require_permission(module_code: str, action: str):
         user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
-        perms = await get_effective_permission(user.user_id, module_code, db)
+        perms = await get_effective_permission(user, module_code, db)
         field = f"can_{action}"
         if not perms.get(field, False):
             raise HTTPException(
@@ -333,8 +388,10 @@ async def require_voucher_read_permission(
     User is allowed to read vouchers if they have read permission for ANY voucher-related module:
     vouchers (Receipts), ledger_customer (Sales), ledger_supplier (Purchases), or payments.
     """
+    r_name = user.role.name if user.role else "Unknown"
+    all_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
     for mod_code in ("vouchers", "ledger_customer", "ledger_supplier", "payments"):
-        perms = await get_effective_permission(user.user_id, mod_code, db)
+        perms = await get_effective_permission(user, mod_code, db, user_perms=all_perms)
         if perms.get("can_read", False):
             return user
             
@@ -350,10 +407,12 @@ async def require_customer_read_permission(
     """
     User is allowed to read customers/directory if they have read permission for ANY customer-related feature:
     customers (Store), ledger_customer (Customer Statement), orders (Orders), or visits (Check-In).
-    Admin unconditionally gets access via get_effective_permission.
+    Permissions are evaluated strictly against capability records without hardcoded role bypasses.
     """
+    r_name = user.role.name if user.role else "Unknown"
+    all_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
     for mod_code in ("customers", "ledger_customer", "orders", "visits"):
-        perms = await get_effective_permission(user.user_id, mod_code, db)
+        perms = await get_effective_permission(user, mod_code, db, user_perms=all_perms)
         if perms.get("can_read", False):
             return user
 

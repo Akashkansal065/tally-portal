@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
 import { getProductDetails } from '@/lib/kgoc-mapping'
+import { filterAndSortBySearch } from '@/lib/search'
 import { 
   ArrowLeft, 
   Search, 
@@ -33,7 +34,7 @@ interface CartItem {
   is_custom?: boolean
 }
 
-type Ledger = { ledger_id: number; name: string; is_customer?: boolean }
+type Ledger = { ledger_id: number; name: string; is_customer?: boolean; alias?: string; parent?: string }
 type StockItem = {
   item_id: number
   name: string
@@ -75,7 +76,7 @@ export default function EditOrderPage({ params }: EditProps) {
   const resolvedParams = use(params)
   const orderId = resolvedParams.id
 
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
   
   // Steps: 1 = Customer select, 2 = Add items, 3 = Summary & checkout
@@ -136,8 +137,8 @@ export default function EditOrderPage({ params }: EditProps) {
 
         const orderData = await orderRes.json()
         if (orderRes.ok && orderData) {
-          if (!orderData.is_editable && !permissions?.isAdmin) {
-            alert('This order is no longer editable (30-minute limit exceeded or already completed).')
+          if (!can('orders', 'update') || (!orderData.is_editable && !permissions?.isAdmin)) {
+            alert(!can('orders', 'update') ? 'You do not have permission to edit orders.' : 'This order is no longer editable (30-minute limit exceeded or already completed).')
             router.push('/temporders')
             return
           }
@@ -200,34 +201,25 @@ export default function EditOrderPage({ params }: EditProps) {
 
   // Filtered Shops
   const filteredShops = useMemo(() => {
-    if (shopQuery.trim().length < 2) return []
-    return cachedShops.filter(s =>
-      s.name.toLowerCase().includes(shopQuery.toLowerCase())
-    ).slice(0, 15)
+    if (shopQuery.trim().length < 1) return []
+    return filterAndSortBySearch(cachedShops, shopQuery, s => [s.name, s.alias, s.parent]).slice(0, 15)
   }, [shopQuery, cachedShops])
 
   // Filtered Products
   const filteredProducts = useMemo(() => {
     if (productQuery.trim().length < 1) return []
-    const lowerQuery = productQuery.toLowerCase().trim()
-    return cachedProducts.filter(p => {
+    return filterAndSortBySearch(cachedProducts, productQuery, p => {
       const company = getCompanySuffix(p)
       const mapping = p.name ? getProductDetails(p.name, company || p.parent || '') : null
-      const brandStr = mapping?.brand?.toLowerCase() || ''
-      const subtitleStr = mapping?.subtitle?.toLowerCase() || ''
-      const parentStr = p.parent?.toLowerCase() || ''
-      const groupStr = company.toLowerCase()
-      const nameStr = p.name ? p.name.toLowerCase() : ''
-      const partStr = p.part_number ? p.part_number.toLowerCase() : ''
-      const hsnStr = p.hsn_code ? p.hsn_code.toLowerCase() : ''
-
-      return nameStr.includes(lowerQuery) || 
-             brandStr.includes(lowerQuery) || 
-             subtitleStr.includes(lowerQuery) ||
-             parentStr.includes(lowerQuery) ||
-             groupStr.includes(lowerQuery) ||
-             partStr.includes(lowerQuery) ||
-             hsnStr.includes(lowerQuery)
+      return [
+        p.name,
+        mapping?.brand,
+        mapping?.subtitle,
+        p.parent,
+        company,
+        p.part_number,
+        p.hsn_code
+      ]
     }).slice(0, 30)
   }, [productQuery, cachedProducts])
 

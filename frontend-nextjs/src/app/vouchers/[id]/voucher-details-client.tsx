@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react'
 import { cn, toTitleCase } from '@/lib/utils'
 import { getProductDetails } from '@/lib/kgoc-mapping'
+import { matchesSearch } from '@/lib/search'
 
 type Props = {
   header: any
@@ -106,8 +107,12 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
 
     // 2. Search query filter
     if (searchQuery.trim()) {
-      const lower = searchQuery.toLowerCase()
-      result = result.filter(item => (item.item || '').toLowerCase().includes(lower))
+      result = result.filter(item =>
+        matchesSearch(
+          [item.item, item.description, getProductDetails(item.item, "").subtitle],
+          searchQuery
+        )
+      )
     }
 
     // 3. Discounted filter
@@ -172,8 +177,7 @@ export default function VoucherDetailsClient({ header, accounts, inventory, isIn
 
     // 3. Search query filter
     if (searchQuery.trim()) {
-      const lower = searchQuery.toLowerCase()
-      result = result.filter(acc => ((acc.ledger_name || acc.ledger) || '').toLowerCase().includes(lower))
+      result = result.filter(acc => matchesSearch((acc.ledger_name || acc.ledger) || '', searchQuery))
     }
 
     return result

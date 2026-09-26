@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Plus, Edit2, Trash2 } from 'lucide-react'
 import CostCentreFormModal from '@/components/CostCentreFormModal'
 import { API_BASE, authHeaders } from '@/lib/utils'
@@ -9,7 +10,8 @@ import { Button } from '@/components/ui/button'
 import { ChevronRight, ChevronDown, CheckCircle2, AlertCircle, Info } from 'lucide-react'
 
 export default function CostCentresPage() {
-  const { user, token } = useAuth()
+  const { user, token, can } = useAuth()
+  const router = useRouter()
   const [centresTree, setCentresTree] = useState<any[]>([])
   const [flatCentres, setFlatCentres] = useState<any[]>([])
   const [categories, setCategories] = useState<any[]>([])
@@ -22,10 +24,12 @@ export default function CostCentresPage() {
   const [editData, setEditData] = useState<any>(null)
 
   useEffect(() => {
-    if (user && token) {
+    if (!user) { router.replace('/login'); return }
+    if (!can('cost_centres', 'read')) { router.replace('/'); return }
+    if (token) {
       fetchData()
     }
-  }, [user, token])
+  }, [user, token, can, router])
 
   const fetchData = async () => {
     setLoading(true)
@@ -130,25 +134,29 @@ export default function CostCentresPage() {
               )}
               
               <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-muted-foreground hover:text-primary"
-                  onClick={() => {
-                    setEditData(node)
-                    setIsModalOpen(true)
-                  }}
-                >
-                  <Edit2 className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                  onClick={() => handleDelete(node.cost_centre_id)}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                {can('cost_centres', 'update') && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-primary"
+                    onClick={() => {
+                      setEditData(node)
+                      setIsModalOpen(true)
+                    }}
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </Button>
+                )}
+                {can('cost_centres', 'delete') && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                    onClick={() => handleDelete(node.cost_centre_id)}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                )}
               </div>
             </div>
           </div>
@@ -182,16 +190,18 @@ export default function CostCentresPage() {
                 </div>
               </div>
             </div>
-            <Button
-              onClick={() => {
-                setEditData(null)
-                setIsModalOpen(true)
-              }}
-              className="bg-[#008f68] hover:bg-[#007656] text-white whitespace-nowrap"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Create
-            </Button>
+            {can('cost_centres', 'create') && (
+              <Button
+                onClick={() => {
+                  setEditData(null)
+                  setIsModalOpen(true)
+                }}
+                className="bg-[#008f68] hover:bg-[#007656] text-white whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Create
+              </Button>
+            )}
           </div>
 
           {error && (

@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 import hashlib
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_access_token
 from app.core.permissions import get_current_user, oauth2_scheme, get_all_user_permissions, get_user_permission_toggles
 from app.core.seed import seed_company_defaults
@@ -211,7 +212,7 @@ async def login(
     session = UserSession(
         user_id=user.user_id,
         token_hash=token_hash,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=1440)
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     db.add(session)
     
@@ -246,7 +247,7 @@ async def swagger_login(
     session = UserSession(
         user_id=user.user_id,
         token_hash=token_hash,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=1440)
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     db.add(session)
     

@@ -80,7 +80,7 @@ function formatIndianNumber(num: number) {
 }
 
 export default function VouchersPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
   const [allVouchers, setAllVouchers] = useState<Voucher[]>([])
   const [loading, setLoading] = useState(true)
@@ -159,7 +159,7 @@ export default function VouchersPage() {
   }, [permissions, allowedVoucherTypeNames])
 
   const hasAnyVoucherPermission = 
-    Boolean(permissions.showVouchers ?? permissions.showReceipts)
+    can('vouchers', 'read') || Boolean(permissions.showVouchers ?? permissions.showReceipts)
 
   const allowedCategories = useMemo(() => {
     const baseCats: string[] = []
@@ -178,9 +178,9 @@ export default function VouchersPage() {
     return ['All', ...filteredCats]
   }, [permissions, allowedVoucherTypeNames])
 
-  const canCreateVoucher = permissions.voucherActionScope !== 'view_only'
-  const canEditVoucher = permissions.voucherActionScope === 'full'
-  const canDeleteVoucher = permissions.voucherActionScope === 'full'
+  const canCreateVoucher = can('vouchers', 'create') && permissions.voucherActionScope !== 'view_only'
+  const canEditVoucher = can('vouchers', 'update') && permissions.voucherActionScope === 'full'
+  const canDeleteVoucher = can('vouchers', 'delete') && permissions.voucherActionScope === 'full'
 
   // Fetch all vouchers, ledgers, and voucherTypes on mount
   useEffect(() => {

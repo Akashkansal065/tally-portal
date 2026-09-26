@@ -39,12 +39,15 @@ type StockItem = {
   cons_value: number
   gp_value: number
   gp_percent: number
+  hsn_code?: string
+  part_number?: string
 }
 
 import { getProductDetails } from '@/lib/kgoc-mapping'
+import { filterAndSortBySearch } from '@/lib/search'
 
 function StocksContent() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
   const searchParams = useSearchParams()
   const groupParam = searchParams.get('group')
@@ -55,8 +58,8 @@ function StocksContent() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if ((!permissions.showStocks || permissions.stockScope === 'catalog_only') && !permissions.isAdmin) { router.replace('/'); return }
-  }, [user, permissions, router])
+    if ((!can('stock_items', 'read') || permissions.stockScope === 'catalog_only')) { router.replace('/'); return }
+  }, [user, permissions, can, router])
 
   const [search, setSearch] = useState('')
   const [selectedGroup, setSelectedGroup] = useState<string | null>(groupParam || null)
@@ -258,11 +261,13 @@ function StocksContent() {
 
     // Search filter
     if (search.trim()) {
-      const q = search.toLowerCase()
-      result = result.filter(item =>
-        item.name.toLowerCase().includes(q) ||
-        getProductDetails(item.name, item.group_name).subtitle.toLowerCase().includes(q)
-      )
+      result = filterAndSortBySearch(result, search, item => [
+        item.name,
+        item.group_name,
+        getProductDetails(item.name, item.group_name).subtitle,
+        item.hsn_code,
+        item.part_number
+      ])
     }
 
     // Stock Status filter
@@ -343,16 +348,23 @@ function StocksContent() {
   }, [filtered, isGrossGst])
 
   // Filtered vouchers for 3rd level
-  const filteredVouchers = itemVouchers.filter(v => {
-    if (voucherTypeFilter !== 'All Vouchers' && v.voucher_type !== voucherTypeFilter) return false
-    if (voucherFlowFilter === 'Inward' && !v.is_inward) return false
-    if (voucherFlowFilter === 'Outward' && v.is_inward) return false
+  const filteredVouchers = useMemo(() => {
+    let result = itemVouchers.filter(v => {
+      if (voucherTypeFilter !== 'All Vouchers' && v.voucher_type !== voucherTypeFilter) return false
+      if (voucherFlowFilter === 'Inward' && !v.is_inward) return false
+      if (voucherFlowFilter === 'Outward' && v.is_inward) return false
+      return true
+    })
     if (voucherSearch.trim()) {
-      const q = voucherSearch.toLowerCase()
-      if (!v.party_name.toLowerCase().includes(q) && !v.voucher_number.toLowerCase().includes(q)) return false
+      result = filterAndSortBySearch(result, voucherSearch, v => [
+        v.party_name,
+        v.voucher_number,
+        v.voucher_type,
+        v.narration
+      ])
     }
-    return true
-  })
+    return result
+  }, [itemVouchers, voucherTypeFilter, voucherFlowFilter, voucherSearch])
 
   const voucherTypes = Array.from(new Set(itemVouchers.map(v => v.voucher_type)))
 

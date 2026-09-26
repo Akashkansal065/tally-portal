@@ -2,12 +2,14 @@
 
 import React, { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2, Info } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import VoucherTypeFormModal from '@/components/VoucherTypeFormModal'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 
 export default function VoucherTypesPage() {
-  const { token } = useAuth()
+  const { token, user, can } = useAuth()
+  const router = useRouter()
   const [voucherTypes, setVoucherTypes] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -30,8 +32,10 @@ export default function VoucherTypesPage() {
   }
 
   useEffect(() => {
+    if (!user) { router.replace('/login'); return }
+    if (!can('voucher_types', 'read')) { router.replace('/'); return }
     if (token) fetchVoucherTypes()
-  }, [token])
+  }, [user, token, can, router])
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this voucher type?')) return
@@ -74,13 +78,15 @@ export default function VoucherTypesPage() {
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">Voucher Types</h1>
           <p className="text-sm text-gray-500 mt-2">Manage Accounting and Inventory Voucher Types</p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background bg-blue-600 text-white hover:bg-blue-700 h-10 py-2 px-4 shadow-sm"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Create Voucher Type
-        </button>
+        {can('voucher_types', 'create') && (
+          <button
+            onClick={openCreateModal}
+            className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background bg-blue-600 text-white hover:bg-blue-700 h-10 py-2 px-4 shadow-sm"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Create Voucher Type
+          </button>
+        )}
       </div>
 
       {error && (
@@ -131,14 +137,16 @@ export default function VoucherTypesPage() {
                   <td className="px-4 py-3 text-gray-600">{vt.abbreviation || '-'}</td>
                   <td className="px-4 py-3 text-gray-600">{vt.numbering_method}</td>
                   <td className="px-4 py-3 text-right space-x-2">
-                    <button
-                      onClick={() => openEditModal(vt)}
-                      className="text-blue-600 hover:text-blue-800 p-1 rounded-md hover:bg-blue-50 transition-colors"
-                      title="Edit Voucher Type"
-                    >
-                      <Edit2 className="w-4 h-4 inline" />
-                    </button>
-                    {!vt.is_system_defined && (
+                    {can('voucher_types', 'update') && (
+                      <button
+                        onClick={() => openEditModal(vt)}
+                        className="text-blue-600 hover:text-blue-800 p-1 rounded-md hover:bg-blue-50 transition-colors"
+                        title="Edit Voucher Type"
+                      >
+                        <Edit2 className="w-4 h-4 inline" />
+                      </button>
+                    )}
+                    {!vt.is_system_defined && can('voucher_types', 'delete') && (
                       <button
                         onClick={() => handleDelete(vt.voucher_type_id)}
                         className="text-red-600 hover:text-red-800 p-1 rounded-md hover:bg-red-50 transition-colors"

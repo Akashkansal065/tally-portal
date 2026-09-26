@@ -58,11 +58,12 @@ type VoucherDetail = {
 }
 
 export default function VoucherDetailPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
   const params = useParams()
   const id = params?.id as string
-  const canEditVoucher = permissions.voucherActionScope === 'full'
+  const canEditVoucher = can('vouchers', 'update') && permissions.voucherActionScope === 'full'
+  const canDeleteVoucher = can('vouchers', 'delete') && permissions.voucherActionScope === 'full'
 
   const [voucher, setVoucher] = useState<VoucherDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -121,6 +122,7 @@ export default function VoucherDetailPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
+    if (!can('vouchers', 'read')) { router.replace('/'); return }
     fetchVoucher()
 
     // Fetch ledgers & voucher types for edit modal
@@ -134,7 +136,7 @@ export default function VoucherDetailPage() {
         .then(d => setVoucherTypes(Array.isArray(d) ? d : []))
         .catch(console.error)
     }
-  }, [user, fetchVoucher, token, router])
+  }, [user, fetchVoucher, token, router, can])
 
   const handleAlterVoucher = async (payload: any, voucherId?: number | null) => {
     if (!token || !id) return
@@ -451,7 +453,7 @@ export default function VoucherDetailPage() {
           )}
 
           {/* Delete Voucher Button */}
-          {canEditVoucher && (
+          {canDeleteVoucher && (
             <button
               type="button"
               onClick={() => setIsDeleteDialogOpen(true)}
@@ -506,7 +508,7 @@ export default function VoucherDetailPage() {
               {isRetrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
               Retry Sync
             </button>
-            {voucher.can_rollback && (
+            {voucher.can_rollback && canEditVoucher && (
               <button
                 onClick={() => setIsRollbackModalOpen(true)}
                 disabled={isRollingBack}

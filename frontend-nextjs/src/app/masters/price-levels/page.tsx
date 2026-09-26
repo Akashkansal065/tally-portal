@@ -13,7 +13,7 @@ type PriceLevel = {
 }
 
 export default function PriceLevelsPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
   
   const [levels, setLevels] = useState<PriceLevel[]>([])
@@ -40,9 +40,9 @@ export default function PriceLevelsPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.isAdmin) { router.replace('/'); return }
+    if (!can('price_lists', 'read')) { router.replace('/'); return }
     fetchLevels()
-  }, [user, permissions, router])
+  }, [user, can, router])
 
   const openCreate = () => {
     setIsEditing(false)
@@ -109,12 +109,14 @@ export default function PriceLevelsPage() {
             <h1 className="text-2xl font-bold tracking-tight text-foreground">Price Levels</h1>
             <p className="text-sm text-muted-foreground mt-1">Manage tiers for pricing (e.g., Wholesale, Retail, Corporate).</p>
           </div>
-          <button 
-            onClick={openCreate}
-            className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
-          >
-            <Plus className="h-4 w-4" /> Create Price Level
-          </button>
+          {can('price_lists', 'create') && (
+            <button 
+              onClick={openCreate}
+              className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors"
+            >
+              <Plus className="h-4 w-4" /> Create Price Level
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -147,8 +149,12 @@ export default function PriceLevelsPage() {
                         }
                       </td>
                       <td className="px-4 py-3 text-right space-x-2">
-                        <button onClick={() => openEdit(l)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
-                        <button onClick={() => handleDelete(l.price_level_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                        {can('price_lists', 'update') && (
+                          <button onClick={() => openEdit(l)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
+                        )}
+                        {can('price_lists', 'delete') && (
+                          <button onClick={() => handleDelete(l.price_level_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                        )}
                       </td>
                     </tr>
                   ))}

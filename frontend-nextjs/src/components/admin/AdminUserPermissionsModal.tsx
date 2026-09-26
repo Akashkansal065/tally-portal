@@ -201,11 +201,6 @@ export function AdminUserPermissionsModal({
   const isModuleEnabledInRole = useCallback(
     (moduleCode: string): boolean => {
       if (!user) return false;
-      const roleLower = user.role.toLowerCase();
-      // Admin / Superadmin / Owner bypass role restrictions
-      if (roleLower === "admin" || roleLower === "superadmin" || roleLower === "owner") {
-        return true;
-      }
       // If roles or permissions are not yet loaded, default to true
       if (!activeRoleObj || !activeRoleObj.permissions || activeRoleObj.permissions.length === 0) {
         return true;

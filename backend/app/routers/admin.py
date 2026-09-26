@@ -671,38 +671,25 @@ async def get_role_permissions(
         
     all_mods = (await db.execute(select(Module).order_by(Module.module_id.asc()))).scalars().all()
     
-    # If Admin, return full permissions for all modules
-    if role.name.lower() == "admin":
-        return [
-            RolePermissionItem(
-                module_id=m.module_id,
-                code=m.code,
-                name=m.name,
-                description=m.description,
-                can_create=True,
-                can_read=True,
-                can_update=True,
-                can_delete=True
-            ) for m in all_mods
-        ]
-        
     existing_perms = (await db.execute(
         select(Permission).where(Permission.role_id == role_id)
     )).scalars().all()
     perm_map = {p.module_id: p for p in existing_perms}
     
     result = []
+    is_admin_role = role.name.lower() == "admin"
     for m in all_mods:
         p = perm_map.get(m.module_id)
+        default_val = True if is_admin_role else False
         result.append(RolePermissionItem(
             module_id=m.module_id,
             code=m.code,
             name=m.name,
             description=m.description,
-            can_create=bool(p.can_create) if p else False,
-            can_read=bool(p.can_read) if p else False,
-            can_update=bool(p.can_update) if p else False,
-            can_delete=bool(p.can_delete) if p else False
+            can_create=bool(p.can_create) if p is not None else default_val,
+            can_read=bool(p.can_read) if p is not None else default_val,
+            can_update=bool(p.can_update) if p is not None else default_val,
+            can_delete=bool(p.can_delete) if p is not None else default_val
         ))
     return result
 
@@ -717,11 +704,7 @@ async def update_role_permissions(
     if not role:
         raise HTTPException(status_code=404, detail="Role not found.")
         
-    if role.name.lower() == "admin":
-        raise HTTPException(
-            status_code=400,
-            detail="Administrator permissions cannot be restricted. Admin always retains full access to all features."
-        )
+    # Allow customizing permissions for all roles including Admin
         
     for item in payload:
         perm = (await db.execute(
@@ -755,7 +738,7 @@ async def update_role_permissions(
             delete(UserPermissionOverride).where(
                 UserPermissionOverride.user_id.in_(user_ids),
                 UserPermissionOverride.module_id.in_(updated_module_ids),
-                UserPermissionOverride.reason == "Admin Panel Toggle"
+                UserPermissionOverride.reason.in_(["Admin Panel Toggle", "Admin Voucher Scope Configuration"])
             )
         )
 

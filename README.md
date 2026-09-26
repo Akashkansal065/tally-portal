@@ -470,7 +470,7 @@ This starts MySQL 8.0 on port `3306` with database `mytally_db`. The backend wil
      ```env
      DATABASE_URL=mysql+aiomysql://YOUR_DB_USER:YOUR_DB_PASSWORD@localhost:3306/mytally_db
      JWT_SECRET=change-this-to-a-very-secure-secret-key
-     ACCESS_TOKEN_EXPIRE_MINUTES=1440
+     ACCESS_TOKEN_EXPIRE_MINUTES=43200 # 30 days
      
      # Tally Database Name
      TALLY_DATABASE_NAME=tally_sync

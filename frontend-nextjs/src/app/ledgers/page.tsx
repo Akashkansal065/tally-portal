@@ -32,7 +32,7 @@ type Ledger = {
 }
 
 export default function LedgersPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState<'customers' | 'suppliers'>('customers')
@@ -49,7 +49,7 @@ export default function LedgersPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showLedger) { router.replace('/'); return }
+    if (!can('ledgers', 'read')) { router.replace('/'); return }
     
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
@@ -203,11 +203,7 @@ export default function LedgersPage() {
     setIsDeleteOpen(true)
   }
 
-  // Admin / Management Permission check
-  const canManageLedgers = useMemo(() => {
-    if (!user) return false
-    return user.role?.toLowerCase() === 'admin' || permissions?.isAdmin === true
-  }, [user, permissions])
+
 
   const [isSyncing, setIsSyncing] = useState(false)
 
@@ -250,15 +246,17 @@ export default function LedgersPage() {
             {isSyncing ? 'Syncing...' : 'Sync Tally'}
           </button>
           
-          <button
-            onClick={() => router.push('/ledgers/groups')}
-            className="px-3.5 py-2 border border-border bg-background hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer hidden sm:flex"
-            title="Manage Group Master Hierarchy"
-          >
-            <FolderTree className="w-4 h-4" />
-            Group Master
-          </button>
-          {canManageLedgers && (
+          {can('ledger_groups', 'read') && (
+            <button
+              onClick={() => router.push('/ledgers/groups')}
+              className="px-3.5 py-2 border border-border bg-background hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer hidden sm:flex"
+              title="Manage Group Master Hierarchy"
+            >
+              <FolderTree className="w-4 h-4" />
+              Group Master
+            </button>
+          )}
+          {can('ledgers', 'create') && (
             <button
               onClick={handleOpenCreateModal}
               className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
@@ -379,9 +377,9 @@ export default function LedgersPage() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                      {/* Action Buttons (Admin Only) */}
-                      {canManageLedgers && (
-                        <>
+                      {/* Action Buttons */}
+                      <div className="flex items-center gap-1">
+                        {can('ledgers', 'update') && (
                           <button
                             onClick={e => handleOpenEditModal(ledger, e)}
                             title="Edit Ledger"
@@ -389,6 +387,8 @@ export default function LedgersPage() {
                           >
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
+                        )}
+                        {can('ledgers', 'delete') && (
                           <button
                             onClick={e => handleOpenDeleteModal(ledger, e)}
                             title="Delete Ledger"
@@ -396,8 +396,8 @@ export default function LedgersPage() {
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
-                        </>
-                      )}
+                        )}
+                      </div>
 
                       {/* Balance Badge */}
                       <div className={cn(

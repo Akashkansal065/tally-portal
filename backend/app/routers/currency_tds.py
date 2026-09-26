@@ -128,7 +128,7 @@ SEED_CURRENCIES = [
 
 @router.post("/currency/seed")
 async def seed_currencies(
-    user: User = Depends(require_permission("settings", "update")),
+    user: User = Depends(require_permission("currencies", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     """Bulk-insert world currencies into the DB. Skips any that already exist by code."""
@@ -161,7 +161,7 @@ async def seed_currencies(
 @router.post("/currency", response_model=CurrencyResponse)
 async def create_currency(
     req: CurrencyCreate,
-    user: User = Depends(require_permission("settings", "update")),
+    user: User = Depends(require_permission("currencies", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.email} attempting to create currency: {req.code}")
@@ -222,7 +222,7 @@ async def create_currency(
 async def update_currency(
     currency_id: int,
     req: CurrencyCreate,
-    user: User = Depends(require_permission("settings", "update")),
+    user: User = Depends(require_permission("currencies", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.email} attempting to alter currency ID {currency_id} to code {req.code}")
@@ -285,7 +285,7 @@ async def update_currency(
 
 @router.get("/currency", response_model=List[CurrencyResponse])
 async def get_currencies(
-    user: User = Depends(require_permission("vouchers", "read")),
+    user: User = Depends(require_permission("currencies", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     # Fetch all global currencies and eager load their exchange rates for the user's company
@@ -295,7 +295,7 @@ async def get_currencies(
 @router.delete("/currency/{currency_id}")
 async def delete_currency(
     currency_id: int,
-    user: User = Depends(require_permission("settings", "update")),
+    user: User = Depends(require_permission("currencies", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.email} attempting to delete currency ID {currency_id}")

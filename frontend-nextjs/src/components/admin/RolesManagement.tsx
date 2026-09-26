@@ -69,7 +69,19 @@ const MODULE_GROUPS = [
     description: 'Chart of accounts, customer & supplier ledgers, vouchers, payments & debt aging',
     icon: Landmark,
     color: 'text-blue-500 bg-blue-500/10 border-blue-500/20',
-    codes: ['ledgers', 'ledger_customer', 'ledger_supplier', 'vouchers', 'payments']
+    codes: [
+      'ledgers',
+      'ledger_groups',
+      'cost_categories',
+      'cost_centres',
+      'cost_centre_classes',
+      'currencies',
+      'voucher_types',
+      'ledger_customer',
+      'ledger_supplier',
+      'vouchers',
+      'payments'
+    ]
   },
   {
     id: 'inventory',
@@ -77,7 +89,16 @@ const MODULE_GROUPS = [
     description: 'Stock items, stock groups, godowns, unit conversion & BOM manufacturing',
     icon: Package,
     color: 'text-amber-500 bg-amber-500/10 border-amber-500/20',
-    codes: ['inventory']
+    codes: [
+      'inventory',
+      'stock_groups',
+      'stock_categories',
+      'stock_items',
+      'units',
+      'godowns',
+      'price_lists',
+      'bom'
+    ]
   },
   {
     id: 'field_ops',
@@ -174,7 +195,6 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
     action: 'can_read' | 'can_create' | 'can_update' | 'can_delete',
     val: boolean
   ) => {
-    if (selectedRole?.name.toLowerCase() === 'admin') return
     setIsDirty(true)
     setPermissions((prev) =>
       prev.map((p) => {
@@ -196,7 +216,6 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
   }
 
   const handleToggleModuleAll = (moduleId: number, enable: boolean) => {
-    if (selectedRole?.name.toLowerCase() === 'admin') return
     setIsDirty(true)
     setPermissions((prev) =>
       prev.map((p) => {
@@ -213,7 +232,6 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
   }
 
   const handleApplyPreset = (preset: 'all' | 'read' | 'clear') => {
-    if (selectedRole?.name.toLowerCase() === 'admin') return
     setIsDirty(true)
     setPermissions((prev) =>
       prev.map((p) => {
@@ -231,10 +249,6 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
   // Save permissions
   const handleSavePermissions = async () => {
     if (!token || !selectedRole) return
-    if (selectedRole.name.toLowerCase() === 'admin') {
-      toast.info('Administrator has permanent, unconditional full access to all features.')
-      return
-    }
     setSavingPerms(true)
     try {
       const res = await fetch(`${API_BASE}/admin/roles/${selectedRole.role_id}/permissions`, {
@@ -458,7 +472,7 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                   {/* Badge */}
                   {isAdmin ? (
                     <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 border border-amber-500/20">
-                      Superuser
+                      Admin
                     </span>
                   ) : isSales ? (
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 border border-blue-500/20">
@@ -563,87 +577,73 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                   <h3 className="font-black text-base text-foreground">{selectedRole.name} Permissions</h3>
                   {isAdminSelected && (
                     <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-600 border border-amber-500/30">
-                      Unrestricted Full Access
+                      Admin Role
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {isAdminSelected
-                    ? 'Administrators possess unconditional, bypass access to every portal capability.'
-                    : `${stats.activeModules} active modules (${stats.totalActions}/${stats.maxActions} actions enabled)`}
+                  {stats.activeModules} active modules ({stats.totalActions}/{stats.maxActions} actions enabled)
                 </p>
               </div>
             </div>
 
             {/* Actions Bar */}
-            {!isAdminSelected && (
-              <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-                <div className="flex items-center gap-1.5 bg-background border border-border rounded-xl p-1 shadow-2xs">
-                  <button
-                    onClick={() => handleApplyPreset('all')}
-                    className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
-                  >
-                    Grant All
-                  </button>
-                  <button
-                    onClick={() => handleApplyPreset('read')}
-                    className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
-                  >
-                    Read Only
-                  </button>
-                  <button
-                    onClick={() => handleApplyPreset('clear')}
-                    className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                  >
-                    Clear All
-                  </button>
-                </div>
-
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <div className="flex items-center gap-1.5 bg-background border border-border rounded-xl p-1 shadow-2xs">
                 <button
-                  onClick={handleSavePermissions}
-                  disabled={savingPerms || !isDirty}
-                  className={cn(
-                    'flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shrink-0 cursor-pointer',
-                    isDirty
-                      ? 'bg-emerald-500 hover:bg-emerald-600 text-white animate-pulse'
-                      : 'bg-emerald-500/80 text-white disabled:opacity-50'
-                  )}
+                  onClick={() => handleApplyPreset('all')}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
                 >
-                  {savingPerms ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      Saving...
-                    </>
-                  ) : (
-                    <>
-                      <Check className="w-3.5 h-3.5" />
-                      Save Permissions {isDirty && '•'}
-                    </>
-                  )}
+                  Grant All
+                </button>
+                <button
+                  onClick={() => handleApplyPreset('read')}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+                >
+                  Read Only
+                </button>
+                <button
+                  onClick={() => handleApplyPreset('clear')}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                >
+                  Clear All
                 </button>
               </div>
-            )}
+
+              <button
+                onClick={handleSavePermissions}
+                disabled={savingPerms || !isDirty}
+                className={cn(
+                  'flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shrink-0 cursor-pointer',
+                  isDirty
+                    ? 'bg-emerald-500 hover:bg-emerald-600 text-white animate-pulse'
+                    : 'bg-emerald-500/80 text-white disabled:opacity-50'
+                )}
+              >
+                {savingPerms ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    Save Permissions {isDirty && '•'}
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
-          {/* Admin Special Callout Banner */}
+          {/* Admin Informational Banner */}
           {isAdminSelected && (
-            <div className="p-6 bg-gradient-to-br from-amber-500/10 via-amber-500/5 to-transparent border-b border-amber-500/20">
-              <div className="flex items-start gap-4">
-                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-600 flex items-center justify-center shrink-0 shadow-xs">
-                  <Lock className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
-                    Superuser Security Guarantee
-                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-black">
-                      Protected
-                    </span>
-                  </h4>
-                  <p className="text-xs text-muted-foreground mt-1 leading-relaxed max-w-3xl">
-                    The <strong>Admin</strong> role unconditionally bypasses all permission evaluation rules in both frontend navigation and backend API endpoints. To prevent administrator lockout, permissions for this role are permanently locked to 100% full access.
-                  </p>
-                </div>
+            <div className="p-4 bg-amber-500/5 border-b border-amber-500/20 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-600 flex items-center justify-center shrink-0">
+                <Shield className="w-4 h-4" />
               </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                <strong>Admin Role Capability Configuration:</strong> Permissions configured here directly dictate administrator capabilities. Disabling a capability will block all administrators from performing that action.
+              </p>
             </div>
           )}
 
@@ -732,11 +732,10 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                               {/* Master Toggle */}
                               <button
                                 type="button"
-                                disabled={isAdminSelected}
                                 onClick={() => handleToggleModuleAll(mod.module_id, !isModuleActive)}
                                 className={cn(
                                   'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all border shrink-0',
-                                  isAdminSelected || isModuleActive
+                                  isModuleActive
                                     ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/30'
                                     : 'bg-muted text-muted-foreground border-border hover:text-foreground'
                                 )}
@@ -744,10 +743,10 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                                 <span
                                   className={cn(
                                     'w-2 h-2 rounded-full',
-                                    isAdminSelected || isModuleActive ? 'bg-emerald-500' : 'bg-muted-foreground'
+                                    isModuleActive ? 'bg-emerald-500' : 'bg-muted-foreground'
                                   )}
                                 />
-                                {isAdminSelected ? 'Active' : isModuleActive ? 'Active' : 'Disabled'}
+                                {isModuleActive ? 'Active' : 'Disabled'}
                               </button>
 
                               {/* CRUD Actions */}
@@ -758,13 +757,12 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                                   { key: 'can_update', label: 'Edit', short: 'U' },
                                   { key: 'can_delete', label: 'Delete', short: 'D' }
                                 ].map((act) => {
-                                  const isChecked = isAdminSelected || Boolean(mod[act.key as keyof PermissionItem])
+                                  const isChecked = Boolean(mod[act.key as keyof PermissionItem])
 
                                   return (
                                     <button
                                       key={act.key}
                                       type="button"
-                                      disabled={isAdminSelected}
                                       onClick={() =>
                                         handleToggleAction(
                                           mod.module_id,
@@ -838,12 +836,11 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                               { key: 'can_update', label: 'Edit' },
                               { key: 'can_delete', label: 'Delete' }
                             ].map((act) => {
-                              const isChecked = isAdminSelected || Boolean(mod[act.key as keyof PermissionItem])
+                              const isChecked = Boolean(mod[act.key as keyof PermissionItem])
                               return (
                                 <button
                                   key={act.key}
                                   type="button"
-                                  disabled={isAdminSelected}
                                   onClick={() =>
                                     handleToggleAction(
                                       mod.module_id,

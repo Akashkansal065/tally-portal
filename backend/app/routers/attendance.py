@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc, and_, Date
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc, and_, Date, Boolean
 from sqlalchemy.orm import relationship, selectinload
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -42,6 +42,10 @@ class Attendance(Base):
     check_out_ip_address = Column(String(64), nullable=True)
     check_in_device_fingerprint = Column(String(1024), nullable=True)
     check_out_device_fingerprint = Column(String(1024), nullable=True)
+    is_auto_punch_out = Column(Boolean, default=False, nullable=True)
+    auto_punch_out_reason = Column(String(64), nullable=True)
+    warning_notification_sent_at = Column(DateTime, nullable=True)
+    midnight_warning_sent_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
     user = relationship("User", foreign_keys=[user_id])
@@ -126,6 +130,8 @@ async def get_today_attendance(
             "checkOutIpAddress": latest.check_out_ip_address,
             "checkInDeviceFingerprint": latest.check_in_device_fingerprint,
             "checkOutDeviceFingerprint": latest.check_out_device_fingerprint,
+            "isAutoPunchOut": bool(latest.is_auto_punch_out) if latest.is_auto_punch_out else False,
+            "autoPunchOutReason": latest.auto_punch_out_reason,
         }}
         
     # If latest session is completed, only return it if it was checked in today (in IST)
@@ -148,6 +154,8 @@ async def get_today_attendance(
             "checkOutIpAddress": latest.check_out_ip_address,
             "checkInDeviceFingerprint": latest.check_in_device_fingerprint,
             "checkOutDeviceFingerprint": latest.check_out_device_fingerprint,
+            "isAutoPunchOut": bool(latest.is_auto_punch_out) if latest.is_auto_punch_out else False,
+            "autoPunchOutReason": latest.auto_punch_out_reason,
         }}
         
     return {"success": True, "attendance": None}
@@ -280,6 +288,8 @@ async def get_attendance_history(
                 "checkOutIpAddress": h.check_out_ip_address,
                 "checkInDeviceFingerprint": h.check_in_device_fingerprint,
                 "checkOutDeviceFingerprint": h.check_out_device_fingerprint,
+                "isAutoPunchOut": bool(h.is_auto_punch_out) if h.is_auto_punch_out else False,
+                "autoPunchOutReason": h.auto_punch_out_reason,
             }
             for h in history
         ]
@@ -345,6 +355,8 @@ async def get_team_attendance_for_admin(
                 "checkOutPhotoUrl": rec.check_out_photo_url,
                 "checkInComments": rec.check_in_comments,
                 "checkOutComments": rec.check_out_comments,
+                "isAutoPunchOut": bool(rec.is_auto_punch_out) if (rec and rec.is_auto_punch_out) else False,
+                "autoPunchOutReason": rec.auto_punch_out_reason if rec else None,
             } if rec else None
         })
         
@@ -401,6 +413,8 @@ async def get_full_team_attendance_history(
                 "checkOutComments": h.check_out_comments,
                 "checkInIpAddress": h.check_in_ip_address,
                 "checkOutIpAddress": h.check_out_ip_address,
+                "isAutoPunchOut": bool(h.is_auto_punch_out) if h.is_auto_punch_out else False,
+                "autoPunchOutReason": h.auto_punch_out_reason,
             }
             for h in history
         ]

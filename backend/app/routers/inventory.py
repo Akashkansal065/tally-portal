@@ -32,7 +32,7 @@ router = APIRouter(prefix="/inventory", tags=["Inventory Management"])
 @router.post("/uoms", response_model=UnitOfMeasureResponse)
 async def create_uom(
     req: UnitOfMeasureCreate,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("units", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     if not req.is_simple_unit:
@@ -92,7 +92,7 @@ async def create_uom(
 async def update_uom(
     unit_id: int,
     req: UnitOfMeasureCreate,
-    user: User = Depends(require_permission("inventory", "update")),
+    user: User = Depends(require_permission("units", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
@@ -146,7 +146,7 @@ async def update_uom(
 @router.delete("/uoms/{unit_id}")
 async def delete_uom(
     unit_id: int,
-    user: User = Depends(require_permission("inventory", "delete")),
+    user: User = Depends(require_permission("units", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
@@ -172,7 +172,7 @@ async def delete_uom(
 
 @router.get("/uoms", response_model=List[UnitOfMeasureResponse])
 async def get_uoms(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("units", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     from sqlalchemy import func
@@ -188,7 +188,7 @@ async def get_uoms(
 @router.post("/groups", response_model=StockGroupResponse)
 async def create_stock_group(
     req: StockGroupCreate,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("stock_groups", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     if req.parent_id:
@@ -233,7 +233,7 @@ async def create_stock_group(
 async def update_stock_group(
     group_id: int,
     req: StockGroupCreate,
-    user: User = Depends(require_permission("inventory", "update")),
+    user: User = Depends(require_permission("stock_groups", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     group = (await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
@@ -275,7 +275,7 @@ async def update_stock_group(
 @router.delete("/groups/{group_id}")
 async def delete_stock_group(
     group_id: int,
-    user: User = Depends(require_permission("inventory", "delete")),
+    user: User = Depends(require_permission("stock_groups", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     group = (await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
@@ -301,7 +301,7 @@ async def delete_stock_group(
 
 @router.get("/groups", response_model=List[StockGroupResponse])
 async def get_stock_groups(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("stock_groups", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.company_id == user.company_id)
@@ -313,7 +313,7 @@ async def get_stock_groups(
 @router.post("/categories", response_model=StockCategoryResponse)
 async def create_stock_category(
     req: StockCategoryCreate,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("stock_categories", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     if req.parent_id:
@@ -355,7 +355,7 @@ async def create_stock_category(
 async def update_stock_category(
     category_id: int,
     req: StockCategoryCreate,
-    user: User = Depends(require_permission("inventory", "update")),
+    user: User = Depends(require_permission("stock_categories", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     cat = (await db.execute(select(MstStockCategory).where(MstStockCategory.stock_category_id == category_id, MstStockCategory.company_id == user.company_id))).scalars().first()
@@ -392,7 +392,7 @@ async def update_stock_category(
 @router.delete("/categories/{category_id}")
 async def delete_stock_category(
     category_id: int,
-    user: User = Depends(require_permission("inventory", "delete")),
+    user: User = Depends(require_permission("stock_categories", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     cat = (await db.execute(select(MstStockCategory).where(MstStockCategory.stock_category_id == category_id, MstStockCategory.company_id == user.company_id))).scalars().first()
@@ -418,7 +418,7 @@ async def delete_stock_category(
 
 @router.get("/categories", response_model=List[StockCategoryResponse])
 async def get_stock_categories(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("stock_categories", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(MstStockCategory).where(MstStockCategory.company_id == user.company_id)
@@ -430,7 +430,7 @@ async def get_stock_categories(
 @router.post("/godowns", response_model=GodownResponse)
 async def create_godown(
     req: GodownCreate,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("godowns", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     if req.parent_id:
@@ -475,7 +475,7 @@ async def create_godown(
 async def update_godown(
     godown_id: int,
     req: GodownCreate,
-    user: User = Depends(require_permission("inventory", "update")),
+    user: User = Depends(require_permission("godowns", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     g = (await db.execute(select(MstGodown).where(MstGodown.godown_id == godown_id, MstGodown.company_id == user.company_id))).scalars().first()
@@ -515,7 +515,7 @@ async def update_godown(
 @router.delete("/godowns/{godown_id}")
 async def delete_godown(
     godown_id: int,
-    user: User = Depends(require_permission("inventory", "delete")),
+    user: User = Depends(require_permission("godowns", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     g = (await db.execute(select(MstGodown).where(MstGodown.godown_id == godown_id, MstGodown.company_id == user.company_id))).scalars().first()
@@ -541,7 +541,7 @@ async def delete_godown(
 
 @router.get("/godowns", response_model=List[GodownResponse])
 async def get_godowns(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("godowns", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(MstGodown).where(MstGodown.company_id == user.company_id)
@@ -553,7 +553,7 @@ async def get_godowns(
 @router.post("/price-levels", response_model=PriceLevelResponse)
 async def create_price_level(
     req: PriceLevelCreate,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("price_lists", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     pl = MstPriceLevel(company_id=user.company_id, name=req.name, is_active=req.is_active)
@@ -566,7 +566,7 @@ async def create_price_level(
 async def update_price_level(
     level_id: int,
     req: PriceLevelCreate,
-    user: User = Depends(require_permission("inventory", "update")),
+    user: User = Depends(require_permission("price_lists", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     pl = (await db.execute(select(MstPriceLevel).where(MstPriceLevel.price_level_id == level_id, MstPriceLevel.company_id == user.company_id))).scalars().first()
@@ -581,7 +581,7 @@ async def update_price_level(
 @router.delete("/price-levels/{level_id}")
 async def delete_price_level(
     level_id: int,
-    user: User = Depends(require_permission("inventory", "delete")),
+    user: User = Depends(require_permission("price_lists", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     pl = (await db.execute(select(MstPriceLevel).where(MstPriceLevel.price_level_id == level_id, MstPriceLevel.company_id == user.company_id))).scalars().first()
@@ -593,7 +593,7 @@ async def delete_price_level(
 
 @router.get("/price-levels", response_model=List[PriceLevelResponse])
 async def get_price_levels(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("price_lists", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(MstPriceLevel).where(MstPriceLevel.company_id == user.company_id)
@@ -604,7 +604,7 @@ async def get_price_levels(
 async def save_price_level_rates(
     level_id: int,
     req: PriceLevelRatesBulkCreate,
-    user: User = Depends(require_permission("inventory", "update")),
+    user: User = Depends(require_permission("price_lists", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     pl = (await db.execute(select(MstPriceLevel).where(MstPriceLevel.price_level_id == level_id, MstPriceLevel.company_id == user.company_id))).scalars().first()
@@ -647,7 +647,7 @@ from app.models.tally_core import StockItemAlias, StockItemPriceList, StockItemO
 @router.post("/items", response_model=StockItemResponse)
 async def create_stock_item(
     req: StockItemCreate,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("stock_items", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     # Verify or resolve UOM
@@ -832,7 +832,7 @@ async def create_stock_item(
 @router.get("/items/{item_id}", response_model=StockItemResponse)
 async def get_stock_item(
     item_id: int,
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("stock_items", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
@@ -907,7 +907,7 @@ async def get_stock_item(
 async def update_stock_item(
     item_id: int,
     req: StockItemCreate,
-    user: User = Depends(require_permission("inventory", "update")),
+    user: User = Depends(require_permission("stock_items", "update")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
@@ -1069,7 +1069,7 @@ async def update_stock_item(
 @router.delete("/items/{item_id}")
 async def delete_stock_item(
     item_id: int,
-    user: User = Depends(require_permission("inventory", "delete")),
+    user: User = Depends(require_permission("stock_items", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
     item = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id))).scalars().first()
@@ -1125,15 +1125,13 @@ async def get_stock_items(
     from decimal import Decimal
 
     # Permission check:
-    # 1. Admin/owner gets full access
-    # 2. Users with 'inventory:read' get access
-    # 3. Users with 'orders:read' or 'orders:create' get catalog-level access for booking orders
-    is_admin = bool(user.role and user.role.name and user.role.name.lower() in ("admin", "superadmin", "owner"))
-    inv_perms = await get_effective_permission(user.user_id, "inventory", db)
-    orders_perms = await get_effective_permission(user.user_id, "orders", db)
+    # 1. Users with 'inventory:read' get access
+    # 2. Users with 'orders:read' or 'orders:create' get catalog-level access for booking orders
+    inv_perms = await get_effective_permission(user, "inventory", db)
+    orders_perms = await get_effective_permission(user, "orders", db)
 
-    can_read_inv = is_admin or inv_perms.get("can_read", False)
-    can_order = is_admin or orders_perms.get("can_read", False) or orders_perms.get("can_create", False)
+    can_read_inv = inv_perms.get("can_read", False)
+    can_order = orders_perms.get("can_read", False) or orders_perms.get("can_create", False)
 
     if not (can_read_inv or can_order):
         raise HTTPException(
@@ -1143,7 +1141,7 @@ async def get_stock_items(
 
     # Determine whether user has access to full financial stock details (quantities, values, GP%)
     user_stock_scope = getattr(user, "stock_scope", "full") or "full"
-    has_full_stock_access = is_admin or (can_read_inv and user_stock_scope != "catalog_only")
+    has_full_stock_access = can_read_inv and user_stock_scope != "catalog_only"
 
     stmt = (
         select(MstStockItem)
@@ -1276,14 +1274,13 @@ async def get_item_vouchers(
     item_id: int,
     from_date: Optional[str] = Query(None, description="Filter vouchers from date (YYYY-MM-DD)"),
     to_date: Optional[str] = Query(None, description="Filter vouchers to date (YYYY-MM-DD)"),
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("stock_items", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """Return individual stock transaction vouchers for a specific stock item,
     including party name (Sundry Debtors / Sundry Creditors ledger on the voucher)."""
-    is_admin = bool(user.role and user.role.name and user.role.name.lower() in ("admin", "superadmin", "owner"))
     user_stock_scope = getattr(user, "stock_scope", "full") or "full"
-    if not is_admin and user_stock_scope == "catalog_only":
+    if user_stock_scope == "catalog_only":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to view stock transaction vouchers."
@@ -1400,7 +1397,7 @@ async def get_item_vouchers(
 @router.post("/boms", response_model=BillOfMaterialsResponse)
 async def create_bom(
     req: BillOfMaterialsCreate,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("bom", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     # Verify stock item exists
@@ -1451,7 +1448,7 @@ async def create_bom(
 
 @router.get("/boms", response_model=List[BillOfMaterialsResponse])
 async def get_boms(
-    user: User = Depends(require_permission("inventory", "read")),
+    user: User = Depends(require_permission("bom", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     stmt = (
@@ -1570,7 +1567,7 @@ class ManufacturingJournalRequest(BaseModel):
 @router.post("/manufacturing-journal")
 async def create_manufacturing_journal(
     req: ManufacturingJournalRequest,
-    user: User = Depends(require_permission("inventory", "create")),
+    user: User = Depends(require_permission("bom", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     """

@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 import GroupFormModal, { AccountGroupTreeNode, GroupFormData } from '@/components/GroupFormModal'
 
 export default function GroupsPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
 
   const [groups, setGroups] = useState<AccountGroupTreeNode[]>([])
@@ -26,9 +26,9 @@ export default function GroupsPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showLedger) { router.replace('/'); return }
+    if (!can('ledger_groups', 'read')) { router.replace('/'); return }
     fetchData()
-  }, [user, token])
+  }, [user, token, can, router])
 
   const fetchData = async () => {
     setLoading(true)
@@ -164,21 +164,25 @@ export default function GroupsPage() {
             </div>
 
             <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                onClick={(e) => { e.stopPropagation(); handleOpenCreateModal(node.group_id) }}
-                className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
-                title="Add Sub-Group"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-              <button
-                onClick={(e) => handleOpenEditModal(node, e)}
-                className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
-                title="Edit Group"
-              >
-                <Edit2 className="w-4 h-4" />
-              </button>
-              {!(node as any).is_system_defined && (
+              {can('ledger_groups', 'create') && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleOpenCreateModal(node.group_id) }}
+                  className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
+                  title="Add Sub-Group"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              )}
+              {can('ledger_groups', 'update') && (
+                <button
+                  onClick={(e) => handleOpenEditModal(node, e)}
+                  className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
+                  title="Edit Group"
+                >
+                  <Edit2 className="w-4 h-4" />
+                </button>
+              )}
+              {!(node as any).is_system_defined && can('ledger_groups', 'delete') && (
                 <button
                   onClick={(e) => handleDelete(node, e)}
                   className="p-1.5 text-red-500/70 hover:text-red-600 hover:bg-red-500/10 rounded-lg transition-colors"
@@ -237,13 +241,15 @@ export default function GroupsPage() {
             {loading ? 'Refreshing...' : 'Refresh'}
           </button>
           
-          <button
-            onClick={() => handleOpenCreateModal(null)}
-            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
-          >
-            <Plus className="w-4 h-4" />
-            + New Primary Group
-          </button>
+          {can('ledger_groups', 'create') && (
+            <button
+              onClick={() => handleOpenCreateModal(null)}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+            >
+              <Plus className="w-4 h-4" />
+              + New Primary Group
+            </button>
+          )}
         </div>
       </div>
 

@@ -2,12 +2,14 @@
 
 import React, { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2, Info } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import CurrencyFormModal from '@/components/CurrencyFormModal'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 
 export default function CurrenciesPage() {
-  const { token, user } = useAuth()
+  const { token, user, can } = useAuth()
+  const router = useRouter()
   const [currencies, setCurrencies] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -30,8 +32,10 @@ export default function CurrenciesPage() {
   }
 
   useEffect(() => {
+    if (!user) { router.replace('/login'); return }
+    if (!can('currencies', 'read')) { router.replace('/'); return }
     if (token) fetchCurrencies()
-  }, [token])
+  }, [user, token, can, router])
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this currency?')) return
@@ -70,13 +74,15 @@ export default function CurrenciesPage() {
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">Currencies</h1>
           <p className="text-sm text-gray-500 mt-2">Manage Foreign Currencies and Exchange Rates</p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background bg-blue-600 text-white hover:bg-blue-700 h-10 py-2 px-4 shadow-sm"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Create Currency
-        </button>
+        {can('currencies', 'create') && (
+          <button
+            onClick={openCreateModal}
+            className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none ring-offset-background bg-blue-600 text-white hover:bg-blue-700 h-10 py-2 px-4 shadow-sm"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Create Currency
+          </button>
+        )}
       </div>
 
       {error && (
@@ -126,14 +132,16 @@ export default function CurrenciesPage() {
                   <td className="px-4 py-3 text-gray-600">{curr.code}</td>
                   <td className="px-4 py-3 text-center text-gray-600">{curr.decimal_places}</td>
                   <td className="px-4 py-3 text-right space-x-2">
-                    <button
-                      onClick={() => openEditModal(curr)}
-                      className="text-blue-600 hover:text-blue-800 p-1 rounded-md hover:bg-blue-50 transition-colors"
-                      title="Edit Currency"
-                    >
-                      <Edit2 className="w-4 h-4 inline" />
-                    </button>
-                    {!curr.is_base_currency && (
+                    {can('currencies', 'update') && (
+                      <button
+                        onClick={() => openEditModal(curr)}
+                        className="text-blue-600 hover:text-blue-800 p-1 rounded-md hover:bg-blue-50 transition-colors"
+                        title="Edit Currency"
+                      >
+                        <Edit2 className="w-4 h-4 inline" />
+                      </button>
+                    )}
+                    {!curr.is_base_currency && can('currencies', 'delete') && (
                       <button
                         onClick={() => handleDelete(curr.currency_id)}
                         className="text-red-600 hover:text-red-800 p-1 rounded-md hover:bg-red-50 transition-colors"

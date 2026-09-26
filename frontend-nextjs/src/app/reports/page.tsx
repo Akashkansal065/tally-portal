@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
+import { matchesSearch } from '@/lib/search'
 import {
   BarChart3, TrendingUp, TrendingDown, Package, Layers, BookOpen, FileText,
   DollarSign, PieChart as PieChartIcon, Calendar, Download, RefreshCw, Search,
@@ -286,7 +287,7 @@ const ACCOUNT_GROUP_DESCRIPTIONS: Record<string, { desc: string; drCr: string; e
 }
 
 export default function ReportsPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, permissions, can } = useAuth()
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState<TabType>('executive')
@@ -534,8 +535,8 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.showReports && !permissions.isAdmin) { router.replace('/'); return }
-  }, [user, permissions, router])
+    if (!can('reports', 'read')) { router.replace('/'); return }
+  }, [user, can, router])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -2722,11 +2723,7 @@ export default function ReportsPage() {
               if (custItemCompanyFilter !== 'all' && r.company_name !== custItemCompanyFilter) return false
               if (custItemCustomerFilter !== 'all' && r.customer_name !== custItemCustomerFilter) return false
               if (custItemSearch.trim()) {
-                const q = custItemSearch.toLowerCase()
-                const matchCust = (r.customer_name || '').toLowerCase().includes(q)
-                const matchComp = (r.company_name || '').toLowerCase().includes(q)
-                const matchItem = (r.item_name || '').toLowerCase().includes(q)
-                if (!matchCust && !matchComp && !matchItem) return false
+                if (!matchesSearch([r.customer_name, r.company_name, r.item_name], custItemSearch)) return false
               }
               return true
             })

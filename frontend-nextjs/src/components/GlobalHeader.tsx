@@ -72,7 +72,7 @@ import {
 } from '@/lib/pushNotifications'
 
 export function GlobalHeader() {
-  const { user, token, logout, permissions, switchCompany } = useAuth()
+  const { user, token, logout, permissions, switchCompany, can } = useAuth()
   const isAdmin = Boolean(
     permissions?.isAdmin ||
     user?.role?.toLowerCase() === 'admin' ||
@@ -854,51 +854,73 @@ export function GlobalHeader() {
                 <DrawerLink href="/admin" icon={Shield} label="Admin Panel" onClick={() => setDrawerOpen(false)} />
               )}
 
-              {permissions.showLedger && (
+              {(can('ledgers', 'read') || can('ledger_groups', 'read') || can('cost_categories', 'read') || can('cost_centres', 'read') || can('cost_centre_classes', 'read') || can('currencies', 'read') || can('voucher_types', 'read')) && (
                 <CollapsibleMenu label="Accounting Masters" icon={BookOpen} defaultOpen={true}>
-                  {permissions.showLedger && (
+                  {can('ledger_groups', 'read') && (
                     <DrawerLink href="/ledgers/groups" icon={Layers} label="Group" onClick={() => setDrawerOpen(false)} />
                   )}
-                  <DrawerLink href="/ledgers" icon={BookOpen} label="Ledger" onClick={() => setDrawerOpen(false)} />
-                  {isAdmin && (
-                    <>
-                      <DrawerLink href="/masters/cost-categories" icon={Layers} label="Cost Category" onClick={() => setDrawerOpen(false)} />
-                      <DrawerLink href="/masters/cost-centres" icon={FolderTree} label="Cost Centre" onClick={() => setDrawerOpen(false)} />
-                      <DrawerLink href="/masters/cost-centre-classes" icon={BookOpen} label="Cost Centre Class" onClick={() => setDrawerOpen(false)} />
-                      <DrawerLink href="/masters/currencies" icon={BookOpen} label="Currencies" onClick={() => setDrawerOpen(false)} />
-                      <DrawerLink href="/masters/voucher-types" icon={BookOpen} label="Voucher Types" onClick={() => setDrawerOpen(false)} />
-                    </>
+                  {can('ledgers', 'read') && (
+                    <DrawerLink href="/ledgers" icon={BookOpen} label="Ledger" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('cost_categories', 'read') && (
+                    <DrawerLink href="/masters/cost-categories" icon={Layers} label="Cost Category" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('cost_centres', 'read') && (
+                    <DrawerLink href="/masters/cost-centres" icon={FolderTree} label="Cost Centre" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('cost_centre_classes', 'read') && (
+                    <DrawerLink href="/masters/cost-centre-classes" icon={BookOpen} label="Cost Centre Class" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('currencies', 'read') && (
+                    <DrawerLink href="/masters/currencies" icon={BookOpen} label="Currencies" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('voucher_types', 'read') && (
+                    <DrawerLink href="/masters/voucher-types" icon={BookOpen} label="Voucher Types" onClick={() => setDrawerOpen(false)} />
                   )}
                 </CollapsibleMenu>
               )}
 
-              {permissions.showStocks && permissions.stockScope !== 'catalog_only' && (
+              {(can('inventory', 'read') || can('stock_groups', 'read') || can('stock_categories', 'read') || can('stock_items', 'read') || can('units', 'read') || can('godowns', 'read') || can('price_lists', 'read') || can('bom', 'read')) && permissions.stockScope !== 'catalog_only' && (
                 <CollapsibleMenu label="Inventory Masters" icon={Package} defaultOpen={true}>
-                  <DrawerLink href="/masters/stock-groups" icon={FolderTree} label="Stock Group" onClick={() => setDrawerOpen(false)} />
-                  <DrawerLink href="/masters/stock-categories" icon={Tag} label="Stock Category" onClick={() => setDrawerOpen(false)} />
-                  <DrawerLink href="/stocks" icon={Package} label="Stock Item" onClick={() => setDrawerOpen(false)} />
-                  <DrawerLink href="/masters/units" icon={Scale} label="Unit" onClick={() => setDrawerOpen(false)} />
-                  <DrawerLink href="/masters/godowns" icon={Warehouse} label="Godown" onClick={() => setDrawerOpen(false)} />
-                  <DrawerLink href="/masters/price-lists" icon={Layers} label="Price Lists" onClick={() => setDrawerOpen(false)} />
-                  <DrawerLink href="/inventory/bom" icon={Layers} label="BOM & Manufacturing" onClick={() => setDrawerOpen(false)} />
+                  {can('stock_groups', 'read') && (
+                    <DrawerLink href="/masters/stock-groups" icon={FolderTree} label="Stock Group" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('stock_categories', 'read') && (
+                    <DrawerLink href="/masters/stock-categories" icon={Tag} label="Stock Category" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('stock_items', 'read') && (
+                    <DrawerLink href="/stocks" icon={Package} label="Stock Item" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('units', 'read') && (
+                    <DrawerLink href="/masters/units" icon={Scale} label="Unit" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('godowns', 'read') && (
+                    <DrawerLink href="/masters/godowns" icon={Warehouse} label="Godown" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('price_lists', 'read') && (
+                    <DrawerLink href="/masters/price-lists" icon={Layers} label="Price Lists" onClick={() => setDrawerOpen(false)} />
+                  )}
+                  {can('bom', 'read') && (
+                    <DrawerLink href="/inventory/bom" icon={Layers} label="BOM & Manufacturing" onClick={() => setDrawerOpen(false)} />
+                  )}
                 </CollapsibleMenu>
               )}
 
               {((permissions.showVouchers ?? permissions.showReceipts) || permissions.showPayments || permissions.showOrders || permissions.showExpenses) && (
                 <CollapsibleMenu label="Transactions" icon={FileText} defaultOpen={true}>
-                  {(permissions.showVouchers ?? permissions.showReceipts) && (
+                  {(permissions.showVouchers ?? permissions.showReceipts) && can('vouchers', 'read') && (
                     <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
                   )}
-                  {permissions.showOrders && (
+                  {permissions.showOrders && can('orders', 'read') && (
                     <DrawerLink href="/temporders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
                   )}
-                  {permissions.showPayments && (
+                  {permissions.showPayments && can('payments', 'read') && (
                     <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
                   )}
-                  {permissions.showPayments && (
+                  {permissions.showPayments && can('payments', 'read') && (
                     <DrawerLink href="/outstanding" icon={Clock} label="Debtors Aging & Reminders" onClick={() => setDrawerOpen(false)} />
                   )}
-                  {permissions.showExpenses && (
+                  {permissions.showExpenses && can('expenses', 'read') && (
                     <DrawerLink href="/expenses" icon={Wallet} label="Expenses" onClick={() => setDrawerOpen(false)} />
                   )}
                 </CollapsibleMenu>
@@ -906,7 +928,7 @@ export function GlobalHeader() {
 
               {(permissions.showCustomers || permissions.showCheckIn) && (
                 <CollapsibleMenu label="Field Operations" icon={MapPin} defaultOpen={true}>
-                  {(permissions.showCustomers || isAdmin) && (
+                  {(permissions.showCustomers && can('customers', 'read')) && (
                     <DrawerLink href="/customers" icon={Users} label="Customer Directory" onClick={() => setDrawerOpen(false)} />
                   )}
                   {permissions.showCheckIn && (

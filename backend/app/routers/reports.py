@@ -24,6 +24,7 @@ from app.core.cache import (
     clear_all_cache,
     get_cache_stats
 )
+from app.core.search import matches_search
 
 router = APIRouter(prefix="/reports", tags=["Reports Hub"])
 
@@ -2133,7 +2134,7 @@ async def get_customer_item_sales(
 
         # Apply text search if requested
         if s_lower:
-            if s_lower not in c_name.lower() and s_lower not in comp_name.lower() and s_lower not in i_name.lower():
+            if not matches_search([c_name, comp_name, i_name], s_lower):
                 continue
 
         qty = float(r.total_qty or 0.0)

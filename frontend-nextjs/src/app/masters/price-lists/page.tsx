@@ -7,7 +7,7 @@ import { API_BASE, authHeaders } from '@/lib/utils'
 import { Plus, X, Search, Save, Calendar, Filter } from 'lucide-react'
 
 export default function PriceListManagerPage() {
-  const { user, token, permissions } = useAuth()
+  const { user, token, can } = useAuth()
   const router = useRouter()
   
   const [loading, setLoading] = useState(true)
@@ -45,9 +45,9 @@ export default function PriceListManagerPage() {
 
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
-    if (!permissions.isAdmin) { router.replace('/'); return }
+    if (!can('price_lists', 'read')) { router.replace('/'); return }
     fetchDependencies()
-  }, [user, permissions, router])
+  }, [user, can, router])
 
   // Filter items based on group selection
   const displayItems = selectedGroup === '' ? items : items.filter(i => i.stock_group_id === Number(selectedGroup))
@@ -156,12 +156,14 @@ export default function PriceListManagerPage() {
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Price List Manager</h1>
           <p className="text-sm text-muted-foreground mt-1">Bulk manage date-effective item rates for specific price levels.</p>
         </div>
-        <button 
-          onClick={handleSave}
-          className="bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors shadow-sm"
-        >
-          <Save className="h-4 w-4" /> Save Price List
-        </button>
+        {(can('price_lists', 'update') || can('price_lists', 'create')) && (
+          <button 
+            onClick={handleSave}
+            className="bg-primary text-primary-foreground px-5 py-2.5 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-primary/90 transition-colors shadow-sm"
+          >
+            <Save className="h-4 w-4" /> Save Price List
+          </button>
+        )}
       </div>
 
       <div className="bg-card border border-border rounded-xl shadow-sm mb-6 shrink-0 p-4 flex items-end gap-6">

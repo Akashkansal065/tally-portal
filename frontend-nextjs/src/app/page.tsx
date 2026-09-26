@@ -84,7 +84,7 @@ interface DashboardCard {
 }
 
 export default function DashboardPage() {
-  const { user, token, permissions, isLoading } = useAuth()
+  const { user, token, permissions, isLoading, can } = useAuth()
   const isAdmin = Boolean(
     permissions?.isAdmin ||
     user?.role?.toLowerCase() === 'admin' ||
@@ -307,7 +307,7 @@ export default function DashboardPage() {
       icon: Users,
       color: 'text-violet-600',
       bgColor: 'bg-violet-500/10 border-violet-500/20',
-      show: Boolean(permissions.showCustomers || isAdmin),
+      show: Boolean(permissions.showCustomers && can('customers', 'read')),
     },
     {
       href: '/stocks',
@@ -751,7 +751,7 @@ export default function DashboardPage() {
                   Debtors ranked by total sales turnover for this period
                 </p>
               </div>
-              {Boolean(permissions.showCustomers || isAdmin) && (
+              {Boolean(permissions.showCustomers && can('customers', 'read')) && (
                 <Link
                   href="/customers"
                   className="text-[11px] font-bold text-emerald-600 hover:underline flex items-center gap-0.5 self-start sm:self-auto"
