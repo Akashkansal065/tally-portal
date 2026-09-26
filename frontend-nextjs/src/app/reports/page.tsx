@@ -557,22 +557,26 @@ export default function ReportsPage() {
     setLoading(true)
     try {
       const headers = authHeaders(token)
-      const q = `from_date=${fromDate}&to_date=${toDate}`
+      const qParams = new URLSearchParams()
+      if (fromDate) qParams.append('from_date', fromDate)
+      if (toDate) qParams.append('to_date', toDate)
+      const qStr = qParams.toString()
+      const q = qStr ? `?${qStr}` : ''
       
       const results = await Promise.allSettled([
-        fetch(`${API_BASE}/reports/dashboard-summary?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/executive-analytics?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/top-customers?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/dashboard-summary${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/executive-analytics${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/top-customers${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/inventory-analytics`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/sales-register?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/daybook?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/sales-register${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/daybook${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/trial-balance`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/profit-loss?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/profit-loss${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/balance-sheet`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/cash-flow?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/cash-flow${q}`, { headers }).then(r => r.ok ? r.json() : null),
         fetch(`${API_BASE}/reports/ratio-analysis`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/company-stock-performance?${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/customer-item-sales?${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/company-stock-performance${q}`, { headers }).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/reports/customer-item-sales${q}`, { headers }).then(r => r.ok ? r.json() : null),
       ])
 
       if (results[0].status === 'fulfilled' && results[0].value) setSummary(results[0].value)

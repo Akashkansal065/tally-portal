@@ -397,7 +397,10 @@ async def get_dashboard_summary(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    cache_key = f"dashboard_summary_{from_date}_{to_date}"
+    norm_from = from_date.strip() if from_date and from_date.strip() else None
+    norm_to = to_date.strip() if to_date and to_date.strip() else None
+
+    cache_key = f"dashboard_summary_{norm_from}_{norm_to}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -405,35 +408,56 @@ async def get_dashboard_summary(
     from sqlalchemy import text
     from datetime import date, timedelta
 
-    # 1. Fetch Company & Financial Year details
+    # 1. Fetch Company details
     comp_stmt = select(Company).where(Company.company_id == user.company_id)
     comp_res = await db.execute(comp_stmt)
     company = comp_res.scalars().first()
     comp_name = company.name if company else "Company"
 
-    # Calculate default Indian Financial Year (April 1 to March 31)
-    today = date.today()
-    curr_fy_year = today.year if today.month >= 4 else today.year - 1
-    fy_start = getattr(company, 'financial_year_start', None) or date(curr_fy_year, 4, 1)
-    if isinstance(fy_start, date) and fy_start.month != 4:
-        fy_start = date(curr_fy_year, 4, 1)
-        
-    fy_end = getattr(company, 'financial_year_end', None)
-    if not fy_end or (isinstance(fy_end, date) and fy_end.month != 3):
-        fy_end = date(fy_start.year + 1, 3, 31)
-
-    def format_tally_date(d: date, full_year: bool = False) -> str:
+    def format_tally_date(d: Optional[date], full_year: bool = False) -> str:
         if not d: return ""
         yr = str(d.year) if full_year else str(d.year)[-2:]
         return f"{d.day}-{d.strftime('%b')}-{yr}"
 
-    # Parse active or requested date range for current_period display string
-    req_from = datetime.strptime(from_date, "%Y-%m-%d").date() if from_date else fy_start
-    req_to = datetime.strptime(to_date, "%Y-%m-%d").date() if to_date else fy_end
-
-    curr_period_start = format_tally_date(req_from)
-    curr_period_end = format_tally_date(req_to)
-    current_period_str = f"{curr_period_start} to {curr_period_end}"
+    # Determine date range display string
+    if norm_from and norm_to:
+        try:
+            req_from = datetime.strptime(norm_from, "%Y-%m-%d").date()
+            req_to = datetime.strptime(norm_to, "%Y-%m-%d").date()
+            curr_period_start = format_tally_date(req_from)
+            curr_period_end = format_tally_date(req_to)
+            current_period_str = f"{curr_period_start} to {curr_period_end}"
+        except Exception:
+            curr_period_start = norm_from
+            curr_period_end = norm_to
+            current_period_str = f"{curr_period_start} to {curr_period_end}"
+    elif norm_from:
+        try:
+            req_from = datetime.strptime(norm_from, "%Y-%m-%d").date()
+            curr_period_start = format_tally_date(req_from)
+        except Exception:
+            curr_period_start = norm_from
+        curr_period_end = "Present"
+        current_period_str = f"{curr_period_start} to Present"
+    elif norm_to:
+        try:
+            req_to = datetime.strptime(norm_to, "%Y-%m-%d").date()
+            curr_period_end = format_tally_date(req_to)
+        except Exception:
+            curr_period_end = norm_to
+        curr_period_start = "Beginning"
+        current_period_str = f"Up to {curr_period_end}"
+    else:
+        # All Time requested - query min and max voucher dates for full span
+        min_max_stmt = text("""
+            SELECT MIN(voucher_date), MAX(voucher_date) FROM tally_sync.vouchers 
+            WHERE company_id = :comp_id AND COALESCE(is_cancelled, FALSE) = FALSE
+        """)
+        mm_res = await db.execute(min_max_stmt, {"comp_id": user.company_id})
+        min_d, max_d = mm_res.fetchone() or (None, None)
+        curr_period_start = format_tally_date(min_d) if min_d else "All Time"
+        curr_period_end = format_tally_date(max_d) if max_d else ""
+        current_period_str = f"{curr_period_start} to {curr_period_end}" if (min_d and max_d) else "All Time"
 
     today = date.today()
     current_date_str = f"{today.strftime('%A')}, {format_tally_date(today, full_year=True)}"
@@ -447,20 +471,14 @@ async def get_dashboard_summary(
     last_date = last_entry_res.scalar()
     date_of_last_entry_str = format_tally_date(last_date) if last_date else "No Entries"
 
-    # Default date filters to Current Period if not specified
-    if not from_date:
-        from_date = fy_start.strftime("%Y-%m-%d")
-    if not to_date:
-        to_date = fy_end.strftime("%Y-%m-%d")
-    
     date_where = ""
     params = {"comp_id": user.company_id}
-    if from_date:
+    if norm_from:
         date_where += " AND v.voucher_date >= :from_date"
-        params["from_date"] = from_date
-    if to_date:
+        params["from_date"] = norm_from
+    if norm_to:
         date_where += " AND v.voucher_date <= :to_date"
-        params["to_date"] = to_date
+        params["to_date"] = norm_to
 
     sales_query = await db.execute(text(f"""
         SELECT SUM(COALESCE(sub.net_bal, 0)) as final_bal
