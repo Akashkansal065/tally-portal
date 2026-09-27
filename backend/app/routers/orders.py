@@ -53,10 +53,14 @@ class TempOrder(Base):
     custom_customer_name = Column(String(256), nullable=True)
     custom_customer_gstin = Column(String(15), nullable=True)
     status = Column(String(32), default="pending")  # pending, done, cancelled
+    acted_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+    acted_at = Column(DateTime, nullable=True)
+    status_reason = Column(String(1024), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", foreign_keys=[user_id])
+    acted_by = relationship("User", foreign_keys=[acted_by_user_id])
     ledger = relationship("MstLedger", foreign_keys=[ledger_id])
     items = relationship("TempOrderItem", back_populates="order", cascade="all, delete-orphan")
 
@@ -206,6 +210,7 @@ async def list_orders(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),
             selectinload(TempOrder.user),
+            selectinload(TempOrder.acted_by),
         )
         .order_by(desc(TempOrder.created_at))
         .limit(100)
@@ -245,6 +250,10 @@ async def list_orders(
             "custom_customer_gstin": o.custom_customer_gstin.strip().upper() if o.custom_customer_gstin else None,
             "customer_gstin": customer_gstin,
             "status": o.status,
+            "acted_by_id": o.acted_by_user_id,
+            "acted_by_name": o.acted_by.username if o.acted_by else None,
+            "acted_at": format_datetime_utc(o.acted_at),
+            "status_reason": o.status_reason,
             "created_at": format_datetime_utc(o.created_at),
             "total": round(total, 2),
             "items": items_list,
@@ -269,6 +278,7 @@ async def list_all_orders(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),
             selectinload(TempOrder.user),
+            selectinload(TempOrder.acted_by),
         )
         .order_by(desc(TempOrder.created_at))
         .limit(500)
@@ -308,6 +318,10 @@ async def list_all_orders(
             "custom_customer_gstin": o.custom_customer_gstin.strip().upper() if o.custom_customer_gstin else None,
             "customer_gstin": customer_gstin,
             "status": o.status,
+            "acted_by_id": o.acted_by_user_id,
+            "acted_by_name": o.acted_by.username if o.acted_by else None,
+            "acted_at": format_datetime_utc(o.acted_at),
+            "status_reason": o.status_reason,
             "created_at": format_datetime_utc(o.created_at),
             "total": round(total, 2),
             "items": items_list,
@@ -333,6 +347,7 @@ async def get_order(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),
             selectinload(TempOrder.user),
+            selectinload(TempOrder.acted_by),
         )
     )
     order = result.scalars().first()
@@ -380,6 +395,10 @@ async def get_order(
         "customer_gstin": customer_gstin,
         "customer_name": order.ledger.name if order.ledger else order.custom_customer_name or "Unknown Customer",
         "status": order.status,
+        "acted_by_id": order.acted_by_user_id,
+        "acted_by_name": order.acted_by.username if order.acted_by else None,
+        "acted_at": format_datetime_utc(order.acted_at),
+        "status_reason": order.status_reason,
         "created_at": format_datetime_utc(order.created_at),
         "total": round(total, 2),
         "items": items_list,
@@ -499,23 +518,38 @@ async def update_order_status(
         raise HTTPException(status_code=400, detail="Status must be 'done', 'cancelled', or 'pending'")
 
     order.status = req.status
+    if req.status in {"done", "cancelled"}:
+        order.acted_by_user_id = user.user_id
+        order.acted_at = get_ist_now()
+        order.status_reason = req.reason.strip() if req.reason and req.reason.strip() else None
+    elif req.status == "pending":
+        order.acted_by_user_id = None
+        order.acted_at = None
+        order.status_reason = None
     order.updated_at = get_ist_now()
     await db.commit()
 
     # Notify order creator (salesperson)
     from app.routers.notifications import notify_user
     status_label = "approved" if req.status == "done" else ("rejected" if req.status == "cancelled" else req.status)
+    reason_text = f" Reason: {req.reason.strip()}" if req.reason and req.reason.strip() else ""
     await notify_user(
         db=db,
         company_id=user.company_id,
         user_id=order.user_id,
         type="order_status",
         title=f"Order #{order.id} {status_label.title()}",
-        message=f"Your order #{order.id} has been {status_label}.",
+        message=f"Your order #{order.id} has been {status_label} by {user.username}.{reason_text}",
         reference_id=str(order.id),
         reference_type="order",
         auto_commit=True,
     )
 
-    return {"success": True, "status": order.status}
+    return {
+        "success": True, 
+        "status": order.status, 
+        "acted_by_name": user.username,
+        "acted_at": format_datetime_utc(order.acted_at),
+        "status_reason": order.status_reason
+    }
 

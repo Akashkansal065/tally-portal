@@ -625,6 +625,8 @@ class AuditLog(Base):
     new_value = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), index=True)
 
+    user = relationship("User", foreign_keys=[user_id])
+
 class GstReturnPeriod(Base):
     __tablename__ = "gst_return_periods"
     __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
@@ -833,10 +835,13 @@ class ShopPayment(Base):
     review_comment = Column(String(1024), nullable=True)
     photo_url = Column(Text, nullable=True)
     status = Column(String(32), default="pending")  # pending, success, cancelled
+    reviewed_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), index=True)
 
-    user = relationship("User")
-    ledger = relationship("MstLedger")
+    user = relationship("User", foreign_keys=[user_id])
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_user_id])
+    ledger = relationship("MstLedger", foreign_keys=[ledger_id])
 
 class BillOfMaterials(Base):
     __tablename__ = "bill_of_materials"

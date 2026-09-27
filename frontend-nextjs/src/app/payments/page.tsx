@@ -32,6 +32,9 @@ type Payment = {
   status: 'pending' | 'success' | 'cancelled'
   comments?: string
   review_comment?: string
+  reviewed_by_id?: number | null
+  reviewed_by_name?: string | null
+  reviewed_at?: string | null
   created_at: string
   user_name: string
   photo_url?: string
@@ -111,9 +114,17 @@ export default function PaymentsPage() {
       if (!res.ok) {
         throw new Error(data.detail || 'Failed to update status')
       }
+      const reviewedByName = data.reviewed_by_name || user?.username || 'You'
+      const reviewedAt = data.reviewed_at || new Date().toISOString()
       setPayments(prev => prev.map(p => 
         p.id === reviewTarget.payment.id 
-          ? { ...p, status: reviewTarget.action, review_comment: trimmed } 
+          ? { 
+              ...p, 
+              status: reviewTarget.action, 
+              review_comment: trimmed,
+              reviewed_by_name: reviewedByName,
+              reviewed_at: reviewedAt
+            } 
           : p
       ))
       setReviewTarget(null)
@@ -353,13 +364,19 @@ export default function PaymentsPage() {
                               Note: "{p.comments}"
                             </p>
                           )}
-                          {p.review_comment && (
-                            <div className="mt-1.5 inline-flex items-start gap-1.5 text-[11px] bg-muted/60 border border-border/80 px-2.5 py-1 rounded-lg text-foreground max-w-sm">
+                          {(p.review_comment || p.reviewed_by_name) && (
+                            <div className="mt-1.5 inline-flex items-start gap-1.5 text-[11px] bg-muted/60 border border-border/80 px-2.5 py-1.5 rounded-lg text-foreground max-w-sm">
                               <MessageSquare className="h-3 w-3 mt-0.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                              <span className="break-words">
-                                <strong className="text-[10px] uppercase font-bold text-muted-foreground mr-1">Review:</strong>
-                                {p.review_comment}
-                              </span>
+                              <div className="min-w-0">
+                                <div className="text-[10px] uppercase font-bold text-muted-foreground flex items-center gap-1 flex-wrap">
+                                  <span>{p.status === 'success' ? 'Approved' : (p.status === 'cancelled' ? 'Rejected' : 'Review')}</span>
+                                  {p.reviewed_by_name && <span className="text-foreground normal-case font-semibold">by {p.reviewed_by_name}</span>}
+                                  {p.reviewed_at && <span className="font-normal text-muted-foreground">({formatPaymentDate(p.reviewed_at)})</span>}
+                                </div>
+                                {p.review_comment && (
+                                  <p className="mt-0.5 text-foreground break-words font-medium">{p.review_comment}</p>
+                                )}
+                              </div>
                             </div>
                           )}
                         </td>
@@ -415,12 +432,19 @@ export default function PaymentsPage() {
                               </button>
                             </div>
                           ) : (
-                            <span className={cn(
-                              'inline-block px-3 py-1 rounded-full text-[11px] font-bold border',
-                              p.status === 'success' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
-                            )}>
-                              {p.status === 'success' ? 'Approved' : 'Cancelled'}
-                            </span>
+                            <div className="flex flex-col items-end">
+                              <span className={cn(
+                                'inline-block px-3 py-1 rounded-full text-[11px] font-bold border',
+                                p.status === 'success' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                              )}>
+                                {p.status === 'success' ? 'Approved' : 'Cancelled'}
+                              </span>
+                              {p.reviewed_by_name && (
+                                <span className="text-[10px] text-muted-foreground mt-0.5">
+                                  by {p.reviewed_by_name}
+                                </span>
+                              )}
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -478,12 +502,16 @@ export default function PaymentsPage() {
                     </p>
                   )}
 
-                  {p.review_comment && (
+                  {(p.review_comment || p.reviewed_by_name) && (
                     <div className="text-[11px] bg-muted/50 border border-border/80 text-foreground p-2.5 rounded-xl leading-relaxed flex items-start gap-2">
                       <MessageSquare className="h-3.5 w-3.5 mt-0.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                       <div className="min-w-0 flex-1">
-                        <span className="font-bold text-[10px] uppercase tracking-wider text-muted-foreground block mb-0.5">Review Comment</span>
-                        <p className="text-foreground font-medium break-words">{p.review_comment}</p>
+                        <div className="text-[10px] uppercase font-bold text-muted-foreground flex items-center gap-1 flex-wrap mb-0.5">
+                          <span>{p.status === 'success' ? 'Approved' : (p.status === 'cancelled' ? 'Rejected' : 'Review')}</span>
+                          {p.reviewed_by_name && <span className="text-foreground normal-case font-semibold">by {p.reviewed_by_name}</span>}
+                          {p.reviewed_at && <span className="font-normal text-muted-foreground">({formatPaymentDate(p.reviewed_at)})</span>}
+                        </div>
+                        {p.review_comment && <p className="text-foreground font-medium break-words">{p.review_comment}</p>}
                       </div>
                     </div>
                   )}
@@ -518,12 +546,19 @@ export default function PaymentsPage() {
                         </button>
                       </div>
                     ) : (
-                      <span className={cn(
-                        'inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border',
-                        p.status === 'success' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
-                      )}>
-                        {p.status === 'success' ? 'Approved' : 'Cancelled'}
-                      </span>
+                      <div className="flex flex-col items-end">
+                        <span className={cn(
+                          'inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border',
+                          p.status === 'success' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' : 'bg-rose-500/10 text-rose-600 border-rose-500/20'
+                        )}>
+                          {p.status === 'success' ? 'Approved' : 'Cancelled'}
+                        </span>
+                        {p.reviewed_by_name && (
+                          <span className="text-[9px] text-muted-foreground mt-0.5">
+                            by {p.reviewed_by_name}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>

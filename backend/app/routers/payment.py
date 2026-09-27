@@ -7,6 +7,7 @@ from datetime import date, datetime
 
 from app.core.database import get_db
 from app.core.permissions import require_permission
+from app.core.datetime_utils import get_ist_now, to_ist_iso
 from app.models.portal_core import User
 from app.models.tally_core import MstLedger
 from app.models.tally_core import TrnBill, BillAllocation
@@ -733,7 +734,7 @@ async def get_payment_history(
     result = await db.execute(
         select(ShopPayment)
         .where(ShopPayment.user_id == user.user_id)
-        .options(selectinload(ShopPayment.ledger), selectinload(ShopPayment.user))
+        .options(selectinload(ShopPayment.ledger), selectinload(ShopPayment.user), selectinload(ShopPayment.reviewed_by))
         .order_by(ShopPayment.created_at.desc())
         .limit(100)
     )
@@ -748,8 +749,11 @@ async def get_payment_history(
             "comments": p.comments,
             "review_comment": p.review_comment,
             "status": p.status,
+            "reviewed_by_id": p.reviewed_by_user_id,
+            "reviewed_by_name": p.reviewed_by.username if p.reviewed_by else None,
+            "reviewed_at": to_ist_iso(p.reviewed_at) if p.reviewed_at else None,
             "photo_url": p.photo_url,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "created_at": to_ist_iso(p.created_at) if p.created_at else None,
             "user_name": p.user.username if p.user else "Salesperson",
         }
         for p in payments
@@ -764,7 +768,7 @@ async def get_all_payments(
     from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(ShopPayment)
-        .options(selectinload(ShopPayment.ledger), selectinload(ShopPayment.user))
+        .options(selectinload(ShopPayment.ledger), selectinload(ShopPayment.user), selectinload(ShopPayment.reviewed_by))
         .order_by(ShopPayment.created_at.desc())
         .limit(500)
     )
@@ -779,8 +783,11 @@ async def get_all_payments(
             "comments": p.comments,
             "review_comment": p.review_comment,
             "status": p.status,
+            "reviewed_by_id": p.reviewed_by_user_id,
+            "reviewed_by_name": p.reviewed_by.username if p.reviewed_by else None,
+            "reviewed_at": to_ist_iso(p.reviewed_at) if p.reviewed_at else None,
             "photo_url": p.photo_url,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "created_at": to_ist_iso(p.created_at) if p.created_at else None,
             "user_name": p.user.username if p.user else "Salesperson",
         }
         for p in payments
@@ -816,8 +823,22 @@ async def update_payment_status(
         )
 
     payment.status = req.status
-    if comment:
-        payment.review_comment = comment
+    if req.status in {"success", "cancelled"}:
+        payment.reviewed_by_user_id = user.user_id
+        payment.reviewed_at = get_ist_now()
+        if comment:
+            payment.review_comment = comment
+    elif req.status == "pending":
+        payment.reviewed_by_user_id = None
+        payment.reviewed_at = None
+        payment.review_comment = None
+
     await db.commit()
-    return {"success": True, "status": payment.status, "review_comment": payment.review_comment}
+    return {
+        "success": True, 
+        "status": payment.status, 
+        "review_comment": payment.review_comment,
+        "reviewed_by_name": user.username,
+        "reviewed_at": to_ist_iso(payment.reviewed_at)
+    }
 

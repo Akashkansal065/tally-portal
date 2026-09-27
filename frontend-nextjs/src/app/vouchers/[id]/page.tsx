@@ -4,8 +4,8 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders, toTitleCase } from '@/lib/utils'
-import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2, QrCode, ExternalLink, Copy, CheckCircle2, Zap, X } from 'lucide-react'
+import { API_BASE, authHeaders, toTitleCase, formatDate } from '@/lib/utils'
+import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2, QrCode, ExternalLink, Copy, CheckCircle2, Zap, X, XCircle } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -27,6 +27,7 @@ type VoucherEntry = {
 type VoucherDetail = {
   voucher_id: number
   date: string
+  voucher_date?: string
   voucher_type: string
   voucher_type_id?: number
   voucher_number: string
@@ -37,6 +38,9 @@ type VoucherDetail = {
   amount: number
   total_amount: number
   status?: string
+  is_cancelled?: boolean
+  cancelled_by?: string | null
+  cancelled_at?: string | null
   original_voucher_id?: number | null
   entries: VoucherEntry[]
   accounts: any[]
@@ -480,6 +484,30 @@ export default function VoucherDetailPage() {
         </div>
       </div>
 
+      {/* Voucher Cancellation Banner */}
+      {(voucher?.is_cancelled || voucher?.status === 'cancelled') && (
+        <div className="mb-4 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm animate-in fade-in duration-200">
+          <div className="flex items-center gap-3">
+            <XCircle className="h-5 w-5 text-rose-600 dark:text-rose-400 shrink-0" />
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-black uppercase tracking-wider text-rose-800 dark:text-rose-300">
+                  Voucher Cancelled
+                </h4>
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-extrabold bg-rose-500/20 text-rose-700 dark:text-rose-300">
+                  CANCELLED
+                </span>
+              </div>
+              <p className="text-xs text-rose-700 dark:text-rose-400 mt-0.5 font-medium">
+                {voucher.cancelled_by 
+                  ? `Cancelled by ${voucher.cancelled_by}${voucher.cancelled_at ? ` on ${formatDate(voucher.cancelled_at)}` : ''}`
+                  : 'This voucher has been marked as cancelled.'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tally Prime Sync Failure Alert Banner */}
       {voucher?.sync_status === 'FAILED' && (
         <div className="mb-4 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 dark:border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm animate-in fade-in duration-200">
@@ -689,7 +717,14 @@ export default function VoucherDetailPage() {
         {/* Header Section */}
         <div className="flex justify-between border-b border-foreground pb-2 mb-4 text-base sm:text-lg">
           <div>
-            <h1 className="text-2xl font-extrabold uppercase tracking-tight">{voucher.voucher_type}</h1>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-2xl font-extrabold uppercase tracking-tight">{voucher.voucher_type}</h1>
+              {(voucher.is_cancelled || voucher.status === 'cancelled') && (
+                <span className="px-2 py-0.5 text-xs font-black uppercase tracking-wider bg-rose-500 text-white rounded-md">
+                  CANCELLED
+                </span>
+              )}
+            </div>
             <p className="text-muted-foreground text-sm">
               No. <span className="font-bold text-foreground">{voucher.voucher_number}</span>
             </p>

@@ -41,6 +41,10 @@ type Order = {
   custom_customer_gstin?: string
   customer_gstin?: string
   status: 'pending' | 'done' | 'cancelled'
+  acted_by_id?: number | null
+  acted_by_name?: string | null
+  acted_at?: string | null
+  status_reason?: string | null
   created_at: string
   total: number
   items: OrderItem[]
@@ -120,16 +124,40 @@ export default function TempOrdersPage() {
   }, [user, token, router, can])
 
   const handleStatusChange = async (orderId: number, nextStatus: 'done' | 'cancelled') => {
+    let reason: string | null = null
+    if (nextStatus === 'cancelled') {
+      const input = window.prompt('Enter reason for cancelling this order (optional):')
+      if (input === null) return // User cancelled the prompt dialog
+      reason = input.trim() || null
+    }
+
     try {
       const res = await fetch(`${API_BASE}/temporders/${orderId}/status`, {
         method: 'PUT',
         headers: authHeaders(token),
-        body: JSON.stringify({ status: nextStatus })
+        body: JSON.stringify({ status: nextStatus, reason: reason || undefined })
       })
       if (!res.ok) throw new Error('Failed to update order status')
-      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: nextStatus } : o))
+      const data = await res.json()
+      const actedByName = data.acted_by_name || user?.username || 'You'
+      const actedAt = data.acted_at || new Date().toISOString()
+      const statusReason = data.status_reason || reason
+
+      setOrders(prev => prev.map(o => o.id === orderId ? { 
+        ...o, 
+        status: nextStatus,
+        acted_by_name: actedByName,
+        acted_at: actedAt,
+        status_reason: statusReason || o.status_reason
+      } : o))
       if (expandedOrder && expandedOrder.id === orderId) {
-        setExpandedOrder(prev => prev ? { ...prev, status: nextStatus } : null)
+        setExpandedOrder(prev => prev ? { 
+          ...prev, 
+          status: nextStatus,
+          acted_by_name: actedByName,
+          acted_at: actedAt,
+          status_reason: statusReason || prev.status_reason
+        } : null)
       }
     } catch (err: any) {
       alert(err.message)
@@ -261,7 +289,7 @@ export default function TempOrdersPage() {
                           </span>
                         ) : null}
                       </div>
-                      <div className="flex gap-2 items-center mt-1 text-[10px] text-muted-foreground font-semibold">
+                      <div className="flex gap-2 items-center mt-1 text-[10px] text-muted-foreground font-semibold flex-wrap">
                         <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {formatDate(o.created_at)}</span>
                         {permissions.isAdmin && (
                           <span className="flex items-center gap-1 uppercase bg-muted px-1.5 py-0.5 rounded tracking-wider text-[8px]">
@@ -269,6 +297,20 @@ export default function TempOrdersPage() {
                           </span>
                         )}
                       </div>
+                      {o.status === 'done' && (
+                        <div className="mt-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 flex-wrap">
+                          <CheckCircle2 className="h-3 w-3 shrink-0" />
+                          <span>Approved {o.acted_by_name ? `by ${o.acted_by_name}` : ''} {o.acted_at ? `on ${formatDate(o.acted_at)}` : ''}</span>
+                          {o.status_reason && <span className="text-muted-foreground font-normal italic">• "{o.status_reason}"</span>}
+                        </div>
+                      )}
+                      {o.status === 'cancelled' && (
+                        <div className="mt-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 flex items-center gap-1 flex-wrap">
+                          <XCircle className="h-3 w-3 shrink-0" />
+                          <span>Cancelled {o.acted_by_name ? `by ${o.acted_by_name}` : ''} {o.acted_at ? `on ${formatDate(o.acted_at)}` : ''}</span>
+                          {o.status_reason && <span className="text-muted-foreground font-normal italic">• "{o.status_reason}"</span>}
+                        </div>
+                      )}
                     </div>
                     <div className="text-right shrink-0">
                       <p className="font-black text-sm text-emerald-600 dark:text-emerald-400 font-mono">{formatCurrency(o.total)}</p>
@@ -356,6 +398,33 @@ export default function TempOrdersPage() {
                 ) : null}
                 <span className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1"><Calendar className="h-3 w-3" /> Ordered at {formatDate(expandedOrder.created_at)}</span>
               </div>
+
+              {expandedOrder.status !== 'pending' && (
+                <div className={cn(
+                  "p-3 rounded-2xl border text-xs flex items-start gap-2.5",
+                  expandedOrder.status === 'done' 
+                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                    : "bg-rose-500/10 border-rose-500/20 text-rose-700 dark:text-rose-300"
+                )}>
+                  {expandedOrder.status === 'done' ? (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
+                  ) : (
+                    <XCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
+                  )}
+                  <div className="space-y-0.5 flex-1 min-w-0">
+                    <p className="font-bold">
+                      {expandedOrder.status === 'done' ? 'Order Approved' : 'Order Cancelled'}
+                      {expandedOrder.acted_by_name ? ` by ${expandedOrder.acted_by_name}` : ''}
+                      {expandedOrder.acted_at ? ` on ${formatDate(expandedOrder.acted_at)}` : ''}
+                    </p>
+                    {expandedOrder.status_reason && (
+                      <p className="text-[11px] text-muted-foreground italic font-normal break-words">
+                        "{expandedOrder.status_reason}"
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="border-t border-border pt-4">
                 <span className="text-[9px] font-extrabold text-muted-foreground uppercase tracking-widest block mb-2">Order Items</span>

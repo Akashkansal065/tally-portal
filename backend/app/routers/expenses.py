@@ -34,11 +34,14 @@ class Expense(Base):
     receipt_photo_url = Column(String(1024), nullable=True)
     status = Column(String(32), default="pending")  # pending, approved, rejected
     cancel_reason = Column(String(1024), nullable=True)
+    acted_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+    acted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", foreign_keys=[user_id])
     salesperson = relationship("User", foreign_keys=[salesperson_user_id])
+    acted_by = relationship("User", foreign_keys=[acted_by_user_id])
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -204,6 +207,9 @@ def format_expense_item(e: Expense) -> dict:
         "receipt_photo_url": e.receipt_photo_url,
         "status": e.status,
         "cancel_reason": e.cancel_reason,
+        "acted_by_id": e.acted_by_user_id,
+        "acted_by_name": e.acted_by.username if getattr(e, 'acted_by', None) and e.acted_by else None,
+        "acted_at": e.acted_at.isoformat() if e.acted_at else None,
         "created_at": e.created_at.isoformat() if e.created_at else None,
         "user_id": e.user_id,
         "created_by": e.user.username if e.user else f"User #{e.user_id}",
@@ -231,7 +237,7 @@ async def list_expenses(
     if is_admin and scope != "my":
         stmt = (
             select(Expense)
-            .options(selectinload(Expense.user), selectinload(Expense.salesperson))
+            .options(selectinload(Expense.user), selectinload(Expense.salesperson), selectinload(Expense.acted_by))
             .join(User, Expense.user_id == User.user_id)
             .where(User.company_id == user.company_id)
         )
@@ -241,7 +247,7 @@ async def list_expenses(
     else:
         stmt = (
             select(Expense)
-            .options(selectinload(Expense.user), selectinload(Expense.salesperson))
+            .options(selectinload(Expense.user), selectinload(Expense.salesperson), selectinload(Expense.acted_by))
             .where(Expense.user_id == user.user_id)
         )
 
@@ -262,7 +268,7 @@ async def list_all_expenses(
     """Admin: list all expenses for current company."""
     result = await db.execute(
         select(Expense)
-        .options(selectinload(Expense.user), selectinload(Expense.salesperson))
+        .options(selectinload(Expense.user), selectinload(Expense.salesperson), selectinload(Expense.acted_by))
         .join(User, Expense.user_id == User.user_id)
         .where(User.company_id == current_user.company_id)
         .order_by(desc(Expense.created_at))
@@ -280,6 +286,7 @@ async def approve_expense(
     current_user: User = Depends(require_permission("admin", "update")),
     db: AsyncSession = Depends(get_db),
 ):
+    from app.core.datetime_utils import get_ist_now
     result = await db.execute(
         select(Expense)
         .join(User, Expense.user_id == User.user_id)
@@ -291,6 +298,8 @@ async def approve_expense(
     if req.status not in {"approved", "rejected"}:
         raise HTTPException(status_code=400, detail="Status must be 'approved' or 'rejected'")
     expense.status = req.status
+    expense.acted_by_user_id = current_user.user_id
+    expense.acted_at = get_ist_now()
     reason = req.cancel_reason or req.reason
     if reason:
         expense.cancel_reason = reason[:1024]
@@ -298,17 +307,24 @@ async def approve_expense(
 
     # Notify expense creator (salesperson)
     from app.routers.notifications import notify_user
+    reason_text = f" Reason: {reason.strip()}" if reason and reason.strip() else ""
     await notify_user(
         db=db,
         company_id=current_user.company_id,
         user_id=expense.user_id,
         type="expense_status",
         title=f"Expense #{expense.id} {expense.status.title()}",
-        message=f"Your expense #{expense.id} for ₹{float(expense.amount):,.2f} has been {expense.status}." + (f" Reason: {reason}" if reason else ""),
+        message=f"Your expense #{expense.id} for ₹{float(expense.amount):,.2f} has been {expense.status} by {current_user.username}.{reason_text}",
         reference_id=str(expense.id),
         reference_type="expense",
         auto_commit=True,
     )
 
-    return {"success": True, "status": expense.status}
+    return {
+        "success": True, 
+        "status": expense.status,
+        "acted_by_name": current_user.username,
+        "acted_at": expense.acted_at.isoformat() if expense.acted_at else None,
+        "cancel_reason": expense.cancel_reason
+    }
 

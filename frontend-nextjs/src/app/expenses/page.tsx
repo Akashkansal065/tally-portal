@@ -37,6 +37,10 @@ type Expense = {
   salesperson?: string
   user_id?: number
   is_salesman_related?: boolean
+  cancel_reason?: string
+  acted_by_id?: number | null
+  acted_by_name?: string | null
+  acted_at?: string | null
 }
 
 const CATEGORIES = [
@@ -207,7 +211,16 @@ export default function ExpensesPage() {
         body: JSON.stringify({ status, cancel_reason: reason || null })
       })
       if (!res.ok) throw new Error('Failed to update status')
-      setExpenses(prev => prev.map(e => e.id === expenseId ? { ...e, status } : e))
+      const data = await res.json()
+      const actedByName = data.acted_by_name || user?.username || 'You'
+      const actedAt = data.acted_at || new Date().toISOString()
+      setExpenses(prev => prev.map(e => e.id === expenseId ? { 
+        ...e, 
+        status,
+        cancel_reason: reason || e.cancel_reason,
+        acted_by_name: actedByName,
+        acted_at: actedAt
+      } : e))
       setRejectingExpenseId(null)
       setRejectReason('')
     } catch (err: any) {
@@ -579,6 +592,19 @@ export default function ExpensesPage() {
                           </span>
                         )}
                       </div>
+                      {e.status === 'approved' && (
+                        <div className="mt-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 flex-wrap">
+                          <CheckCircle2 className="h-3 w-3 shrink-0" />
+                          <span>Approved {e.acted_by_name ? `by ${e.acted_by_name}` : ''} {e.acted_at ? `on ${formatDate(e.acted_at)}` : ''}</span>
+                        </div>
+                      )}
+                      {e.status === 'rejected' && (
+                        <div className="mt-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 flex items-center gap-1 flex-wrap">
+                          <XCircle className="h-3 w-3 shrink-0" />
+                          <span>Rejected {e.acted_by_name ? `by ${e.acted_by_name}` : ''} {e.acted_at ? `on ${formatDate(e.acted_at)}` : ''}</span>
+                          {e.cancel_reason && <span className="text-muted-foreground font-normal italic">• "{e.cancel_reason}"</span>}
+                        </div>
+                      )}
                     </div>
                     <div className="text-right shrink-0">
                       <p className="font-black text-sm text-emerald-600 dark:text-emerald-400 font-mono">

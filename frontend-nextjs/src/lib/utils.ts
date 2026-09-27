@@ -5,7 +5,19 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000'
+export const API_BASE = (() => {
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname
+    const configured = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000'
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      if (configured.includes('localhost') || configured.includes('127.0.0.1')) {
+        return configured.replace(/localhost|127\.0\.0\.1/, hostname)
+      }
+    }
+    return configured
+  }
+  return process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000'
+})()
 
 export const authHeaders = (token?: string) => {
   const headers: Record<string, string> = {

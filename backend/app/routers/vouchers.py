@@ -10,6 +10,7 @@ import json
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.datetime_utils import to_ist_iso
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission, get_user_allowed_voucher_type_ids
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
@@ -1280,6 +1281,27 @@ async def get_voucher_detail(
     can_rollback = bool(latest_sync and latest_sync.snapshot_data and latest_sync.status in ["FAILED", "EXCEPTION"])
     sync_id = latest_sync.sync_id if latest_sync else None
 
+    # Check who cancelled the voucher if cancelled
+    cancelled_by = None
+    cancelled_at = None
+    is_cancelled = bool(voucher.is_cancelled or voucher.status == 'cancelled')
+    if is_cancelled:
+        audit_res = await db.execute(
+            select(AuditLog)
+            .options(selectinload(AuditLog.user))
+            .where(
+                AuditLog.company_id == user.company_id,
+                AuditLog.entity_type == "Voucher",
+                AuditLog.entity_id == voucher_id,
+                AuditLog.action.in_(["CANCEL", "STATUS_UPDATE"])
+            )
+            .order_by(AuditLog.created_at.desc())
+        )
+        audit_entry = audit_res.scalars().first()
+        if audit_entry:
+            cancelled_by = audit_entry.user.username if audit_entry.user else f"User #{audit_entry.user_id}"
+            cancelled_at = to_ist_iso(audit_entry.created_at)
+
     output = {
         "voucher_id": voucher.voucher_id,
         "date": str(voucher.voucher_date),
@@ -1290,6 +1312,9 @@ async def get_voucher_detail(
         "reference_number": voucher.reference_number,
         "narration": voucher.narration,
         "status": voucher.status,
+        "is_cancelled": is_cancelled,
+        "cancelled_by": cancelled_by,
+        "cancelled_at": cancelled_at,
         "party_name": party_name,
         "party_ledger_id": party_ledger_id,
         "original_voucher_id": voucher.original_voucher_id,

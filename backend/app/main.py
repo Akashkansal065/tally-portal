@@ -70,6 +70,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "https://tally-portal-one.vercel.app",
     ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|.*\.vercel\.app)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
