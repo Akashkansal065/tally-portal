@@ -1187,13 +1187,29 @@ async def get_stock_items(
             ))
         return out
 
-    # Fetch all stock entries for this company
-    from app.models.tally_core import TrnInventory
-    from app.models.tally_core import TrnVoucher
+    # Fetch all stock entries for this company scoped to current financial year
+    from datetime import timedelta
+    from sqlalchemy import func
+    from app.models.portal_core import Company
+    from app.models.tally_core import TrnInventory, TrnVoucher
+
+    comp_stmt = select(Company).where(Company.company_id == user.company_id)
+    comp_res = await db.execute(comp_stmt)
+    comp_obj = comp_res.scalars().first()
+    if comp_obj and comp_obj.financial_year_end:
+        fy_anchor_date = comp_obj.financial_year_end + timedelta(days=1)
+    else:
+        fy_anchor_date = date(2026, 4, 1)
+
     entry_stmt = (
         select(TrnInventory)
         .join(TrnVoucher, TrnInventory.voucher_id == TrnVoucher.voucher_id)
-        .where(TrnVoucher.company_id == user.company_id)
+        .where(
+            TrnVoucher.company_id == user.company_id,
+            TrnVoucher.voucher_date >= fy_anchor_date,
+            func.coalesce(TrnVoucher.is_cancelled, False) == False,
+            func.coalesce(TrnVoucher.is_optional, False) == False,
+        )
     )
     entry_res = await db.execute(entry_stmt)
     entries = entry_res.scalars().all()
@@ -1215,24 +1231,41 @@ async def get_stock_items(
         item_entries = entries_by_item.get(item.stock_item_id, [])
         for entry in item_entries:
             if entry.is_inward:
-                in_qty += entry.quantity
-                in_val += entry.amount
+                in_qty += entry.quantity or Decimal("0.000")
+                in_val += entry.amount or Decimal("0.00")
             else:
-                out_qty += entry.quantity
-                out_val += entry.amount
+                out_qty += entry.quantity or Decimal("0.000")
+                out_val += entry.amount or Decimal("0.00")
+
+        op_qty = item.opening_qty or Decimal("0.000")
+        op_rate = item.opening_rate or Decimal("0.00")
 
         # Weighted average rate calculation (Opening + Inward)
-        total_in_qty = item.opening_qty + in_qty
-        total_in_val = (item.opening_qty * item.opening_rate) + in_val
+        total_in_qty = op_qty + in_qty
+        total_in_val = (op_qty * op_rate) + in_val
         avg_cost = Decimal("0.00")
         if total_in_qty > 0:
             avg_cost = total_in_val / total_in_qty
+        elif op_rate > 0:
+            avg_cost = op_rate
+        elif item.closing_rate and item.closing_rate > 0:
+            avg_cost = item.closing_rate
 
         cons_value = out_qty * avg_cost
         gp_value = out_val - cons_value
         gp_percent = Decimal("0.00")
         if out_val > 0:
             gp_percent = (gp_value / out_val) * 100
+
+        # Calculate closing quantity, value, and rate dynamically
+        if item_entries or op_qty > 0:
+            calc_closing_qty = total_in_qty - out_qty
+            calc_closing_val = max(Decimal("0.00"), total_in_val - cons_value) if calc_closing_qty > 0 else Decimal("0.00")
+            calc_closing_rate = avg_cost if avg_cost > 0 else (item.closing_rate or Decimal("0.00"))
+        else:
+            calc_closing_qty = item.closing_qty or Decimal("0.000")
+            calc_closing_val = item.closing_value or Decimal("0.00")
+            calc_closing_rate = item.closing_rate or Decimal("0.00")
 
         # Construct response object
         out.append(StockItemResponse(
@@ -1245,8 +1278,8 @@ async def get_stock_items(
             unit_id=item.unit_id,
             hsn_code=item.hsn_code,
             gst_rate_percent=item.gst_rate_percent,
-            opening_qty=item.opening_qty,
-            opening_rate=item.opening_rate,
+            opening_qty=op_qty,
+            opening_rate=op_rate,
             reorder_level=item.reorder_level,
             tracking_type=item.tracking_type,
             shelf_life_days=item.shelf_life_days,
@@ -1254,9 +1287,9 @@ async def get_stock_items(
             group_name=item.group_name,
             company_name=item.group_name,
             uom=item.uom,
-            closing_balance=item.closing_qty,
-            closing_rate=item.closing_rate,
-            closing_value=item.closing_value,
+            closing_balance=calc_closing_qty,
+            closing_rate=calc_closing_rate,
+            closing_value=calc_closing_val,
             inward_qty=in_qty,
             inward_value=in_val,
             outward_qty=out_qty,

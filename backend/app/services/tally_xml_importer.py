@@ -2343,18 +2343,24 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     if is_inward:
                         item.closing_qty = (item.closing_qty or Decimal("0.000")) + qty_val
                         item.closing_value = (item.closing_value or Decimal("0.00")) + inv_amt
+                        if item.closing_qty > 0:
+                            item.closing_rate = item.closing_value / item.closing_qty
+                        elif rate_val > 0:
+                            item.closing_rate = rate_val
                     else:
                         qty_before = (item.closing_qty or Decimal("0.000"))
                         val_before = (item.closing_value or Decimal("0.00"))
                         avg_cost = Decimal("0.00")
                         if qty_before > 0:
                             avg_cost = val_before / qty_before
+                        elif item.closing_rate and item.closing_rate > 0:
+                            avg_cost = item.closing_rate
                         cons_val = qty_val * avg_cost
                         item.closing_qty = qty_before - qty_val
-                        item.closing_value = val_before - cons_val
+                        item.closing_value = max(Decimal("0.00"), val_before - cons_val) if item.closing_qty > 0 else Decimal("0.00")
+                        if item.closing_qty > 0 and avg_cost > 0:
+                            item.closing_rate = avg_cost
 
-                    if rate_val > 0:
-                        item.closing_rate = rate_val
                     if gst_rate > 0:
                         item.gst_rate_percent = gst_rate
                     await db.flush()

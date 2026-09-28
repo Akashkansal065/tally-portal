@@ -1465,6 +1465,10 @@ async def get_company_stock_performance(
         profit_on_sold = out_val - cost_of_sold
         gp_pct = (profit_on_sold / out_val * 100) if out_val > 0 else 0.0
 
+        if total_avail_qty > 0 or in_qty > 0 or out_qty > 0:
+            cl_qty = total_avail_qty - out_qty
+            cl_val = max(0.0, total_avail_val - cost_of_sold) if cl_qty > 0 else 0.0
+
         inward_avg_rate = float(r.avg_purchase_rate or 0)
         effective_purchase_rate = inward_avg_rate if inward_avg_rate > 0 else avg_cost
 

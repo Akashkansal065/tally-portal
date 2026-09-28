@@ -18,6 +18,7 @@ type SortKey =
   | 'gp_percent'
   | 'closing_balance'
   | 'closing_value'
+  | 'closing_rate'
 
 type SortDirection = 'asc' | 'desc'
 
@@ -31,6 +32,7 @@ type StockItem = {
   closing_rate: number
   closing_value: number
   opening_balance: number
+  opening_qty?: number
   opening_rate: number
   inward_qty: number
   inward_value: number
@@ -72,12 +74,68 @@ function StocksContent() {
     item: StockItem,
     field: 'closing_value' | 'inward_value' | 'outward_value' | 'cons_value' | 'gp_value'
   ): number => {
-    const base = Number(item[field]) || 0
+    let base = Number(item[field]) || 0
+    if (field === 'closing_value') {
+      const clBal = Number(item.closing_balance) || 0
+      if (clBal <= 0) {
+        base = 0
+      } else {
+        const inwardVal = Number(item.inward_value) || 0
+        const consVal = Number(item.cons_value) || 0
+        const opBal = Number(item.opening_balance) || Number(item.opening_qty) || 0
+        const opRate = Number(item.opening_rate) || 0
+        const totalInVal = (opBal * opRate) + inwardVal
+        if (totalInVal > 0) {
+          const expectedClosingVal = Math.max(0, totalInVal - consVal)
+          // If backend provided 0 or significantly stale closing value, self-heal using cost invariant
+          if (base === 0 || Math.abs(base - expectedClosingVal) > 0.05 * (expectedClosingVal || 1)) {
+            base = expectedClosingVal
+          }
+        }
+      }
+    }
     if (isGrossGst) {
       const gstRate = Number(item.gst_rate_percent) > 0 ? Number(item.gst_rate_percent) : 18
       return base * (1 + gstRate / 100)
     }
     return base
+  }
+
+  // Helper to calculate unit price / rate per quantity
+  const getItemRate = (item: StockItem): number => {
+    const clBal = Math.abs(Number(item.closing_balance) || 0)
+    const closingVal = getItemVal(item, 'closing_value')
+
+    if (clBal > 0 && closingVal > 0) {
+      return closingVal / clBal
+    }
+
+    // When closing stock is 0 or closingVal is 0, fall back to weighted average unit purchase rate
+    const inwardVal = Number(item.inward_value) || 0
+    const inwardQty = Number(item.inward_qty) || 0
+    const opBal = Number(item.opening_balance) || Number(item.opening_qty) || 0
+    const opRate = Number(item.opening_rate) || 0
+    const totalInQty = opBal + inwardQty
+    const totalInVal = (opBal * opRate) + inwardVal
+
+    let unitRate = 0
+    if (totalInQty > 0) {
+      unitRate = totalInVal / totalInQty
+    } else if (opRate > 0) {
+      unitRate = opRate
+    } else if (Number(item.closing_rate) > 0) {
+      unitRate = Number(item.closing_rate)
+    }
+
+    if (unitRate > 0) {
+      if (isGrossGst) {
+        const gstRate = Number(item.gst_rate_percent) > 0 ? Number(item.gst_rate_percent) : 18
+        return unitRate * (1 + gstRate / 100)
+      }
+      return unitRate
+    }
+
+    return 0
   }
 
   // 3rd level — selected stock item voucher detail
@@ -187,7 +245,8 @@ function StocksContent() {
           closing_balance: Number(i.closing_balance) || 0,
           closing_rate: Number(i.closing_rate) || 0,
           closing_value: Number(i.closing_value) || 0,
-          opening_balance: Number(i.opening_balance) || 0,
+          opening_balance: Number(i.opening_balance) || Number((i as any).opening_qty) || 0,
+          opening_qty: Number((i as any).opening_qty) || Number(i.opening_balance) || 0,
           opening_rate: Number(i.opening_rate) || 0,
           inward_qty: Number(i.inward_qty) || 0,
           inward_value: Number(i.inward_value) || 0,
@@ -306,6 +365,10 @@ function StocksContent() {
         const valA = getItemVal(a, sortField)
         const valB = getItemVal(b, sortField)
         comparison = valA - valB
+      } else if (sortField === 'closing_rate') {
+        const rateA = getItemRate(a)
+        const rateB = getItemRate(b)
+        comparison = rateA - rateB
       } else {
         const valA = Number(a[sortField]) || 0
         const valB = Number(b[sortField]) || 0
@@ -632,6 +695,8 @@ function StocksContent() {
                   <option value="closing_balance-asc">Closing Qty (Low to High)</option>
                   <option value="closing_value-desc">Closing Value (High to Low)</option>
                   <option value="closing_value-asc">Closing Value (Low to High)</option>
+                  <option value="closing_rate-desc">Price / Qty (High to Low)</option>
+                  <option value="closing_rate-asc">Price / Qty (Low to High)</option>
                   <option value="name-asc">Name (A to Z)</option>
                   <option value="name-desc">Name (Z to A)</option>
                   <option value="inward_qty-desc">Inward Qty (High to Low)</option>
@@ -783,18 +848,40 @@ function StocksContent() {
                         </div>
                       </div>
 
-                      {/* CLOSING VALUE */}
+                      {/* PRICE / QTY */}
                       <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Closing Value</div>
+                        <div style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Price / Qty</div>
                         <div style={{ textAlign: 'right' }}>
                           <div style={{ fontWeight: 800, fontSize: '13px', color: '#312e81' }}>
-                            {formatCurrency(getItemVal(item, 'closing_value'))}
+                            {getItemRate(item) > 0 ? formatCurrency(getItemRate(item)) : '-'}
                           </div>
-                          {isGrossGst && item.closing_value > 0 && (
-                            <div style={{ fontSize: '10px', fontWeight: 700, color: '#4338ca' }}>
+                          {item.uom && getItemRate(item) > 0 && (
+                            <div style={{ fontSize: '9px', fontWeight: 600, color: '#6366f1' }}>
+                              per {item.uom}
+                            </div>
+                          )}
+                          {isGrossGst && getItemRate(item) > 0 && (
+                            <div style={{ fontSize: '9px', fontWeight: 600, color: '#059669' }}>
                               ({item.gst_rate_percent}% GST)
                             </div>
                           )}
+                        </div>
+                      </div>
+
+                      {/* CLOSING VALUE (Full width) */}
+                      <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '8px', padding: '10px', gridColumn: 'span 2' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Total Closing Value</div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontWeight: 900, fontSize: '14px', color: '#312e81' }}>
+                              {formatCurrency(getItemVal(item, 'closing_value'))}
+                            </div>
+                            {isGrossGst && getItemVal(item, 'closing_value') > 0 && (
+                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#4338ca' }}>
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -850,7 +937,7 @@ function StocksContent() {
               </div>
             ) : (
               <div className="border border-border rounded-lg overflow-x-auto bg-card shadow-sm flex flex-col min-h-0 flex-initial">
-                <table className="w-full border-collapse text-left text-xs min-w-[1000px]">
+                <table className="w-full border-collapse text-left text-xs min-w-[1100px]">
                   <thead>
                     <tr className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider select-none">
                       <th
@@ -930,12 +1017,24 @@ function StocksContent() {
                       </th>
                       <th
                         onClick={() => handleSort('closing_value')}
-                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-r border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
                         title="Click to sort by Closing Value"
                       >
                         <div className="flex items-center justify-end gap-1">
                           <span>Closing Value {isGrossGst ? '(Gross)' : ''}</span>
                           {sortField === 'closing_value' && (
+                            <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('closing_rate')}
+                        className="sticky top-0 z-10 bg-muted px-4 py-3 text-right border-b border-border cursor-pointer hover:bg-muted/80 transition-colors"
+                        title="Click to sort by Price per Qty"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Price / Qty {isGrossGst ? '(Gross)' : ''}</span>
+                          {sortField === 'closing_rate' && (
                             <span className="text-primary font-black ml-1">{sortDir === 'asc' ? '▲' : '▼'}</span>
                           )}
                         </div>
@@ -1034,12 +1133,22 @@ function StocksContent() {
                       </th>
                       <th
                         onClick={() => handleSort('closing_value')}
-                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right cursor-pointer hover:bg-muted transition-colors group"
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right border-r border-border cursor-pointer hover:bg-muted transition-colors group"
                         title="Sort by Closing Value"
                       >
                         <div className="flex items-center justify-end gap-1">
                           <span>Value</span>
                           {getSortIcon('closing_value')}
+                        </div>
+                      </th>
+                      <th
+                        onClick={() => handleSort('closing_rate')}
+                        className="sticky top-[37px] z-10 bg-muted/95 border-b border-border px-4 py-2 text-right cursor-pointer hover:bg-muted transition-colors group"
+                        title="Sort by Price per Qty"
+                      >
+                        <div className="flex items-center justify-end gap-1">
+                          <span>Price / Qty</span>
+                          {getSortIcon('closing_rate')}
                         </div>
                       </th>
                     </tr>
@@ -1137,10 +1246,26 @@ function StocksContent() {
                             {closingQtyStr} <span className="text-[10px] text-muted-foreground font-medium">{item.uom}</span>
                           </td>
                           {/* Closing Value */}
-                          <td className={`px-4 py-3.5 text-right font-black ${isClosingZero ? 'text-muted-foreground/30' : 'text-foreground'}`}>
+                          <td className={`px-4 py-3.5 text-right font-black border-r border-border ${isClosingZero ? 'text-muted-foreground/30' : 'text-foreground'}`}>
                             <div>{formatCurrency(getItemVal(item, 'closing_value'))}</div>
                             {!isClosingZero && isGrossGst && (
                               <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                                ({item.gst_rate_percent}% GST)
+                              </div>
+                            )}
+                          </td>
+                          {/* Price per Qty */}
+                          <td className={`px-4 py-3.5 text-right font-bold ${getItemRate(item) === 0 ? 'text-muted-foreground/30' : 'text-foreground'}`}>
+                            <div>
+                              {getItemRate(item) > 0 ? formatCurrency(getItemRate(item)) : '-'}
+                            </div>
+                            {item.uom && getItemRate(item) > 0 && (
+                              <div className="text-[10px] font-medium text-muted-foreground">
+                                per {item.uom}
+                              </div>
+                            )}
+                            {isGrossGst && getItemRate(item) > 0 && (
+                              <div className="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400">
                                 ({item.gst_rate_percent}% GST)
                               </div>
                             )}
@@ -1196,11 +1321,24 @@ function StocksContent() {
                         {groupTotals.totalClosingQty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       {/* Final Closing Value */}
-                      <td className="px-4 py-3 text-right font-black text-sm text-foreground bg-primary/10 border-l border-primary/20">
+                      <td className="px-4 py-3 text-right font-black text-sm text-foreground bg-primary/10 border-l border-r border-primary/20">
                         <div>{formatCurrency(groupTotals.totalClosingValue)}</div>
                         {isGrossGst && (
                           <div className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 normal-case tracking-normal">
                             (incl. GST)
+                          </div>
+                        )}
+                      </td>
+                      {/* Average Price per Qty */}
+                      <td className="px-4 py-3 text-right font-black text-xs text-foreground bg-muted/90">
+                        <div>
+                          {groupTotals.totalClosingQty > 0
+                            ? formatCurrency(groupTotals.totalClosingValue / groupTotals.totalClosingQty)
+                            : '-'}
+                        </div>
+                        {groupTotals.totalClosingQty > 0 && (
+                          <div className="text-[9px] font-semibold text-muted-foreground">
+                            avg / unit
                           </div>
                         )}
                       </td>

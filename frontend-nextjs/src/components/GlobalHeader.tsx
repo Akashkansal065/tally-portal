@@ -502,7 +502,10 @@ export function GlobalHeader() {
   return (
     <>
       <header
-        className={cn("shrink-0 border-b border-emerald-600/30 bg-emerald-500 dark:bg-emerald-600 text-white z-20", drawerOpen && "z-50 relative")}
+        className={cn(
+          "shrink-0 border-b border-emerald-600/30 bg-emerald-500 dark:bg-emerald-600 text-white relative z-40",
+          (drawerOpen || showNotifications || showCompanyModal) && "z-50"
+        )}
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
         <div className="flex items-center justify-between px-4 h-14">
@@ -630,7 +633,10 @@ export function GlobalHeader() {
                     fetchNotifications()
                   }
                 }}
-                className="p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer relative"
+                className={cn(
+                  "p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer relative",
+                  showNotifications && "bg-emerald-600/80 z-50 ring-2 ring-white/20"
+                )}
                 aria-label="Notifications"
                 title="Notifications"
               >
@@ -649,7 +655,7 @@ export function GlobalHeader() {
                     className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[1px] sm:bg-transparent sm:backdrop-blur-none"
                     onClick={() => setShowNotifications(false)}
                   />
-                  <div className="fixed sm:absolute inset-x-3 sm:inset-x-auto sm:right-0 top-[calc(3.5rem+env(safe-area-inset-top,0px)+8px)] sm:top-full sm:mt-2 w-auto sm:w-96 max-w-[calc(100vw-24px)] bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden text-foreground animate-in fade-in slide-in-from-top-2 duration-150">
+                  <div className="fixed sm:absolute inset-x-3 sm:inset-x-auto sm:right-0 top-[calc(3.5rem+env(safe-area-inset-top,0px)+8px)] sm:top-full sm:mt-3 w-auto sm:w-[400px] max-w-[calc(100vw-24px)] bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden text-foreground animate-in fade-in slide-in-from-top-2 duration-150">
                     <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/40">
                       <div className="flex items-center gap-2 min-w-0">
                         <span className="font-extrabold text-sm text-foreground">Notifications</span>
@@ -747,7 +753,7 @@ export function GlobalHeader() {
                       </div>
                     ) : null}
 
-                    <div className="max-h-[min(380px,calc(100dvh-10rem))] sm:max-h-[380px] overflow-y-auto divide-y divide-border/40">
+                    <div className="max-h-[min(420px,calc(100dvh-12rem))] sm:max-h-[420px] overflow-y-auto overscroll-contain divide-y divide-border/40">
                       {loadingNotifications ? (
                         <div className="p-8 flex flex-col items-center justify-center gap-2 text-muted-foreground">
                           <Loader2 className="w-5 h-5 animate-spin text-primary" />
@@ -767,7 +773,7 @@ export function GlobalHeader() {
                             key={notif.id}
                             onClick={() => handleNotificationClick(notif)}
                             className={cn(
-                              "group p-3 flex items-start gap-3 hover:bg-muted/60 transition-colors cursor-pointer text-left relative",
+                              "group p-3 sm:p-3.5 flex items-start gap-3 hover:bg-muted/60 transition-colors cursor-pointer text-left relative",
                               !notif.is_read ? "bg-primary/5 font-medium" : "opacity-85 hover:opacity-100"
                             )}
                           >
@@ -777,24 +783,29 @@ export function GlobalHeader() {
                             )}>
                               {getNotifIcon(notif.type, notif.title)}
                             </div>
-                            <div className="flex-1 min-w-0 pr-1">
-                              <div className="flex items-center justify-between gap-1">
-                                <h4 className={cn("text-xs truncate", !notif.is_read ? "font-bold text-foreground" : "font-semibold text-foreground/80")}>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <h4 className={cn("text-xs truncate", !notif.is_read ? "font-bold text-foreground" : "font-medium text-foreground/80")}>
                                   {notif.title}
                                 </h4>
-                                <span className="text-[10px] text-muted-foreground whitespace-nowrap shrink-0">
-                                  {formatTimeAgo(notif.created_at)}
-                                </span>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                                    {formatTimeAgo(notif.created_at)}
+                                  </span>
+                                  {!notif.is_read && (
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 shadow-sm animate-pulse" />
+                                  )}
+                                </div>
                               </div>
                               <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-snug break-words">
                                 {notif.message}
                               </p>
                             </div>
-                            <div className="flex items-center gap-1 shrink-0 self-center">
+                            <div className="flex items-center gap-0.5 shrink-0 self-start pt-0.5 opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                               {!notif.is_read && (
                                 <button
                                   onClick={(e) => markAsRead(notif.id, e)}
-                                  className="p-1 rounded-md text-emerald-600 hover:bg-emerald-500/10 transition-colors"
+                                  className="p-1 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/15 transition-colors cursor-pointer"
                                   title="Mark as read"
                                 >
                                   <Check className="w-3.5 h-3.5" />
@@ -802,19 +813,27 @@ export function GlobalHeader() {
                               )}
                               <button
                                 onClick={(e) => deleteNotification(notif.id, notif.is_read, e)}
-                                className="p-1 rounded-md text-muted-foreground hover:text-rose-500 hover:bg-rose-500/10 transition-colors opacity-70 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
+                                className="p-1 rounded-md text-muted-foreground hover:text-rose-600 hover:bg-rose-500/15 transition-colors cursor-pointer"
                                 title="Dismiss notification"
                               >
                                 <X className="w-3.5 h-3.5" />
                               </button>
-                              {!notif.is_read && (
-                                <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                              )}
                             </div>
                           </div>
                         ))
                       )}
                     </div>
+
+                    {notifications.length > 0 && (
+                      <div className="px-4 py-2 bg-muted/25 border-t border-border/60 flex items-center justify-between text-[11px] text-muted-foreground shrink-0 select-none">
+                        <span className="font-medium">
+                          {unreadNotifCount > 0 ? `${unreadNotifCount} unread notification${unreadNotifCount > 1 ? 's' : ''}` : "All caught up"}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground/70">
+                          {notifications.length} total
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </>
               )}
