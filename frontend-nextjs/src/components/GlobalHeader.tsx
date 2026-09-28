@@ -56,8 +56,11 @@ import {
   CheckCheck,
   Check,
   Trash2,
+  CloudOff,
+  Landmark,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
+import { getOfflineQueue } from '@/lib/offline-storage'
 import { useState, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import {
@@ -129,6 +132,24 @@ export function GlobalHeader() {
   const [notifications, setNotifications] = useState<any[]>([])
   const [loadingNotifications, setLoadingNotifications] = useState<boolean>(false)
   const [clearingNotifications, setClearingNotifications] = useState<boolean>(false)
+
+  // Offline Queue States
+  const [offlinePendingCount, setOfflinePendingCount] = useState<number>(0)
+
+  useEffect(() => {
+    const updateOfflineCount = async () => {
+      try {
+        const q = await getOfflineQueue()
+        const pending = q.filter((i) => i.status === 'pending' || i.status === 'failed')
+        setOfflinePendingCount(pending.length)
+      } catch {
+        // silent
+      }
+    }
+    updateOfflineCount()
+    window.addEventListener('mytally:offline-queue-changed', updateOfflineCount)
+    return () => window.removeEventListener('mytally:offline-queue-changed', updateOfflineCount)
+  }, [])
 
   // Mobile Web Push Alert States
   const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false)
@@ -584,6 +605,21 @@ export function GlobalHeader() {
                 <span>Info</span>
               </button>
             )}
+            {/* Offline Sync Indicator */}
+            {offlinePendingCount > 0 && (
+              <button
+                onClick={() => router.push('/sync')}
+                className="p-2 rounded-full hover:bg-emerald-600/60 text-amber-300 transition-colors cursor-pointer relative mr-1"
+                aria-label="Offline Sync Center"
+                title={`${offlinePendingCount} offline item(s) pending sync. Click to open Sync Center.`}
+              >
+                <CloudOff className="h-5 w-5 text-amber-300 animate-pulse" />
+                <span className="absolute top-1 right-1 flex items-center justify-center min-w-[17px] h-[17px] px-1 bg-amber-400 text-black font-black text-[10px] rounded-full border-2 border-emerald-600 shadow-sm">
+                  {offlinePendingCount > 9 ? '9+' : offlinePendingCount}
+                </span>
+              </button>
+            )}
+
             {/* Notification Bell & Dropdown */}
             <div className="relative">
               <button
@@ -923,6 +959,9 @@ export function GlobalHeader() {
                   {permissions.showExpenses && can('expenses', 'read') && (
                     <DrawerLink href="/expenses" icon={Wallet} label="Expenses" onClick={() => setDrawerOpen(false)} />
                   )}
+                  {can('vouchers', 'read') && (
+                    <DrawerLink href="/bank-recon" icon={Landmark} label="Bank Reconciliation" onClick={() => setDrawerOpen(false)} />
+                  )}
                 </CollapsibleMenu>
               )}
 
@@ -936,6 +975,7 @@ export function GlobalHeader() {
                       <DrawerLink href="/planner" icon={Calendar} label="Daily Beat Planner" onClick={() => setDrawerOpen(false)} />
                       <DrawerLink href="/check-in" icon={MapPin} label="Shop Check-In" onClick={() => setDrawerOpen(false)} />
                       <DrawerLink href="/check-in/history" icon={History} label="Visit Log & Audits" onClick={() => setDrawerOpen(false)} />
+                      <DrawerLink href="/sync" icon={CloudOff} label="Offline Sync Center" onClick={() => setDrawerOpen(false)} />
                     </>
                   )}
                 </CollapsibleMenu>

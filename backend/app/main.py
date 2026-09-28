@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
-from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health, masters, payments, customers, notifications, planner
+from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health, masters, payments, customers, notifications, planner, bank_recon
 
 async def db_keep_alive_task(interval_seconds: int = 120):
     """Background task running every 2 minutes to keep the DB connection pool active."""
@@ -70,7 +70,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "https://tally-portal-one.vercel.app",
     ],
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|.*\.vercel\.app)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|tally-portal-one(-[a-z0-9-]+)?\.vercel\.app)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,6 +101,7 @@ app.include_router(masters.router)
 app.include_router(customers.router)
 app.include_router(notifications.router)
 app.include_router(planner.router)
+app.include_router(bank_recon.router)
 
 # Mount isolated Backup & Restore module
 try:

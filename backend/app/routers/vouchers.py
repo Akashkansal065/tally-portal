@@ -1302,6 +1302,32 @@ async def get_voucher_detail(
             cancelled_by = audit_entry.user.username if audit_entry.user else f"User #{audit_entry.user_id}"
             cancelled_at = to_ist_iso(audit_entry.created_at)
 
+    # Check bank reconciliation linkage for this voucher
+    from app.models.portal_core import BankStatementTransaction, BankStatement
+    stmt_tx_res = await db.execute(
+        select(BankStatementTransaction)
+        .options(selectinload(BankStatementTransaction.statement))
+        .where(BankStatementTransaction.matched_voucher_id == voucher_id)
+    )
+    stmt_tx = stmt_tx_res.scalars().first()
+    bank_recon_info = None
+    if stmt_tx:
+        bank_recon_info = {
+            "transaction_id": stmt_tx.transaction_id,
+            "statement_id": stmt_tx.statement_id,
+            "statement_filename": stmt_tx.statement.filename if stmt_tx.statement else None,
+            "bank_account_no": stmt_tx.statement.account_number if stmt_tx.statement else None,
+            "bank_date": stmt_tx.transaction_date.isoformat(),
+            "value_date": stmt_tx.value_date.isoformat() if stmt_tx.value_date else None,
+            "bank_description": stmt_tx.description,
+            "cheque_no": stmt_tx.cheque_no or stmt_tx.reference_no,
+            "reference_no": stmt_tx.reference_no,
+            "amount": float(stmt_tx.amount),
+            "transaction_type": stmt_tx.transaction_type,
+            "matched_at": to_ist_iso(stmt_tx.matched_at) if stmt_tx.matched_at else None,
+            "match_type": stmt_tx.match_type,
+        }
+
     output = {
         "voucher_id": voucher.voucher_id,
         "date": str(voucher.voucher_date),
@@ -1329,6 +1355,7 @@ async def get_voucher_detail(
         "sync_status": sync_status,
         "tally_error_message": sync_error,
         "can_rollback": can_rollback,
-        "sync_id": sync_id
+        "sync_id": sync_id,
+        "bank_reconciliation": bank_recon_info,
     }
     return output

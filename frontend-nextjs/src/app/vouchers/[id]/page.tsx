@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, toTitleCase, formatDate } from '@/lib/utils'
-import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2, QrCode, ExternalLink, Copy, CheckCircle2, Zap, X, XCircle } from 'lucide-react'
+import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2, QrCode, ExternalLink, Copy, CheckCircle2, Zap, X, XCircle, Landmark } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -58,6 +58,21 @@ type VoucherDetail = {
     ack_date: string
     eway_bill_no: string | null
     eway_bill_date: string | null
+  } | null
+  bank_reconciliation?: {
+    transaction_id: number
+    statement_id: number
+    statement_filename: string | null
+    bank_account_no: string | null
+    bank_date: string | null
+    value_date: string | null
+    bank_description: string | null
+    cheque_no: string | null
+    reference_no: string | null
+    amount: number
+    transaction_type: string
+    matched_at: string | null
+    match_type: string | null
   } | null
 }
 
@@ -724,6 +739,11 @@ export default function VoucherDetailPage() {
                   CANCELLED
                 </span>
               )}
+              {voucher.bank_reconciliation && (
+                <span className="px-2 py-0.5 text-xs font-black uppercase tracking-wider bg-emerald-600 text-white rounded-md flex items-center gap-1 shadow-2xs">
+                  <Landmark className="h-3 w-3" /> Bank Cleared
+                </span>
+              )}
             </div>
             <p className="text-muted-foreground text-sm">
               No. <span className="font-bold text-foreground">{voucher.voucher_number}</span>
@@ -854,6 +874,74 @@ export default function VoucherDetailPage() {
                     E-invoicing is only applicable for B2B transactions. Recipient party is unregistered (no GSTIN).
                   </p>
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Bank Reconciliation Section */}
+        {voucher.bank_reconciliation && (
+          <div className="mt-6 border border-emerald-500/30 rounded-xl p-4 bg-emerald-50/50 dark:bg-emerald-950/20 font-sans no-print shadow-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-emerald-500/20">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-600/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <Landmark className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                      Bank Reconciliation Cleared
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+                      {voucher.bank_reconciliation.match_type === 'AUTO' ? '⚡ Auto-Matched' : 'Manual Match'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-emerald-700/80 dark:text-emerald-400/80 mt-0.5 font-medium">
+                    Linked to Bank Statement • Verified against statement transaction
+                  </p>
+                </div>
+              </div>
+              <Link
+                href="/bank-recon"
+                className="self-start sm:self-center px-3 py-1.5 bg-white dark:bg-slate-900 border border-emerald-500/40 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs"
+              >
+                <ExternalLink className="h-3 w-3" /> View in Bank Recon
+              </Link>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs mt-3">
+              <div className="bg-background border border-border p-2.5 rounded-lg">
+                <span className="text-[10px] text-muted-foreground block font-semibold mb-0.5">Bank Clearance Date</span>
+                <span className="font-bold text-foreground">
+                  {voucher.bank_reconciliation.bank_date ? formatDate(voucher.bank_reconciliation.bank_date) : '—'}
+                </span>
+              </div>
+              <div className="bg-background border border-border p-2.5 rounded-lg">
+                <span className="text-[10px] text-muted-foreground block font-semibold mb-0.5">Bank Amount & Type</span>
+                <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                  ₹{voucher.bank_reconciliation.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })} ({voucher.bank_reconciliation.transaction_type})
+                </span>
+              </div>
+              <div className="bg-background border border-border p-2.5 rounded-lg">
+                <span className="text-[10px] text-muted-foreground block font-semibold mb-0.5">Cheque / Ref No.</span>
+                <span className="font-mono font-semibold text-foreground truncate block">
+                  {voucher.bank_reconciliation.cheque_no || voucher.bank_reconciliation.reference_no || '—'}
+                </span>
+              </div>
+              <div className="bg-background border border-border p-2.5 rounded-lg">
+                <span className="text-[10px] text-muted-foreground block font-semibold mb-0.5">Statement File / Account</span>
+                <span className="font-medium text-foreground truncate block" title={voucher.bank_reconciliation.statement_filename || ''}>
+                  {voucher.bank_reconciliation.statement_filename || voucher.bank_reconciliation.bank_account_no || 'Uploaded Statement'}
+                </span>
+              </div>
+            </div>
+
+            {voucher.bank_reconciliation.bank_description && (
+              <div className="mt-2.5 bg-background border border-border p-2.5 rounded-lg">
+                <span className="text-[10px] text-muted-foreground block font-semibold mb-0.5">Bank Statement Narration</span>
+                <p className="text-xs text-foreground/90 font-mono leading-relaxed break-words">
+                  {voucher.bank_reconciliation.bank_description}
+                </p>
               </div>
             )}
           </div>

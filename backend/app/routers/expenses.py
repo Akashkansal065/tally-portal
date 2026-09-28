@@ -15,6 +15,7 @@ from app.core.database import get_db, Base
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.core.config import settings
+from app.core.datetime_utils import get_ist_now, to_ist_iso
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 
@@ -209,8 +210,8 @@ def format_expense_item(e: Expense) -> dict:
         "cancel_reason": e.cancel_reason,
         "acted_by_id": e.acted_by_user_id,
         "acted_by_name": e.acted_by.username if getattr(e, 'acted_by', None) and e.acted_by else None,
-        "acted_at": e.acted_at.isoformat() if e.acted_at else None,
-        "created_at": e.created_at.isoformat() if e.created_at else None,
+        "acted_at": to_ist_iso(e.acted_at),
+        "created_at": to_ist_iso(e.created_at),
         "user_id": e.user_id,
         "created_by": e.user.username if e.user else f"User #{e.user_id}",
         "salesperson_user_id": e.salesperson_user_id,
@@ -286,7 +287,6 @@ async def approve_expense(
     current_user: User = Depends(require_permission("admin", "update")),
     db: AsyncSession = Depends(get_db),
 ):
-    from app.core.datetime_utils import get_ist_now
     result = await db.execute(
         select(Expense)
         .join(User, Expense.user_id == User.user_id)
@@ -301,8 +301,10 @@ async def approve_expense(
     expense.acted_by_user_id = current_user.user_id
     expense.acted_at = get_ist_now()
     reason = req.cancel_reason or req.reason
-    if reason:
-        expense.cancel_reason = reason[:1024]
+    if req.status == "approved":
+        expense.cancel_reason = reason.strip()[:1024] if reason and reason.strip() else None
+    elif reason:
+        expense.cancel_reason = reason.strip()[:1024]
     await db.commit()
 
     # Notify expense creator (salesperson)
@@ -324,7 +326,7 @@ async def approve_expense(
         "success": True, 
         "status": expense.status,
         "acted_by_name": current_user.username,
-        "acted_at": expense.acted_at.isoformat() if expense.acted_at else None,
+        "acted_at": to_ist_iso(expense.acted_at),
         "cancel_reason": expense.cancel_reason
     }
 

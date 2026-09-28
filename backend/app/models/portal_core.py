@@ -1113,3 +1113,72 @@ class BeatPlanStop(Base):
 
     # Relationships
     beat_plan = relationship("BeatPlan", back_populates="stops", foreign_keys=[beat_plan_id])
+
+
+# ─── Bank Statement Reconciliation Models ────────────────────────────────────
+
+class BankStatement(Base):
+    __tablename__ = "bank_statements"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    statement_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    bank_ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    file_hash = Column(String(64), nullable=True, index=True)
+    account_number = Column(String(64), nullable=True)
+    statement_from = Column(Date, nullable=False)
+    statement_to = Column(Date, nullable=False)
+    opening_balance = Column(Numeric(18, 2), default=0.00)
+    closing_balance = Column(Numeric(18, 2), default=0.00)
+    total_transactions = Column(Integer, default=0)
+    reconciled_transactions = Column(Integer, default=0)
+    unmatched_transactions = Column(Integer, default=0)
+    reviewed_transactions = Column(Integer, default=0)
+    status = Column(String(32), default="imported")  # imported, in_progress, reconciled
+    created_at = Column(DateTime, server_default=func.now())
+    created_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+
+    company = relationship("Company", foreign_keys=[company_id])
+    bank_ledger = relationship("MstLedger", foreign_keys=[bank_ledger_id])
+    created_by = relationship("User", foreign_keys=[created_by_user_id])
+    transactions = relationship("BankStatementTransaction", back_populates="statement", cascade="all, delete-orphan")
+
+
+class BankStatementTransaction(Base):
+    __tablename__ = "bank_statement_transactions"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    transaction_id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    statement_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.bank_statements.statement_id", ondelete="CASCADE"), nullable=False, index=True)
+    transaction_date = Column(Date, nullable=False, index=True)
+    value_date = Column(Date, nullable=True)
+    description = Column(String(1024), nullable=False)
+    reference_no = Column(String(128), nullable=True, index=True)  # UTR, Cheque No, Ref
+    cheque_no = Column(String(64), nullable=True)
+    transaction_type = Column(String(16), nullable=False)  # 'DEBIT' or 'CREDIT'
+    amount = Column(Numeric(18, 2), nullable=False)
+    running_balance = Column(Numeric(18, 2), nullable=True)
+    matched_status = Column(String(32), default="unmatched")  # 'unmatched', 'suggested', 'matched'
+    matched_voucher_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.vouchers.voucher_id", ondelete="SET NULL"), nullable=True)
+    matched_payment_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.shop_payments.id", ondelete="SET NULL"), nullable=True)
+    matched_allocation_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.bank_allocations.allocation_id", ondelete="SET NULL"), nullable=True)
+    match_type = Column(String(64), nullable=True)  # 'exact_ref', 'exact_amount_date', 'fuzzy_narration', 'manual'
+    matched_at = Column(DateTime, nullable=True)
+    matched_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+    match_notes = Column(String(512), nullable=True)
+
+    # Admin Review Status fields for non-matching or external transactions
+    review_status = Column(String(64), default="pending_review")  # 'pending_review', 'not_specific', 'bank_charges', 'interest', 'internal_transfer', 'other_account', 'under_investigation'
+    review_notes = Column(String(512), nullable=True)
+    reviewed_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    raw_data = Column(JSON, nullable=True)  # Full unparsed row data from XLSX/CSV
+    row_hash = Column(String(64), nullable=True, index=True)
+
+    statement = relationship("BankStatement", back_populates="transactions", foreign_keys=[statement_id])
+    matched_voucher = relationship("TrnVoucher", foreign_keys=[matched_voucher_id])
+    matched_payment = relationship("ShopPayment", foreign_keys=[matched_payment_id])
+    matched_allocation = relationship("TrnBankAllocation", foreign_keys=[matched_allocation_id])
+    matched_by = relationship("User", foreign_keys=[matched_by_user_id])
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_user_id])

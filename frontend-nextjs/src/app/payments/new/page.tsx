@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, toTitleCase } from '@/lib/utils'
 import { stampPhoto } from '@/lib/photo-stamping'
+import { queueOfflineItem, compressPhoto } from '@/lib/offline-storage'
 import { 
   ArrowLeft, 
   Search, 
@@ -118,16 +119,37 @@ export default function NewPaymentPage() {
     setSubmitting(true)
     setError('')
 
-    try {
-      const payload = {
-        ledger_id: selectedShop.ledger_id,
-        amount: parseFloat(amount),
-        payment_mode: mode,
-        cheque_date: mode.toLowerCase() === 'cheque' ? chequeDate : null,
-        comments: comments.trim() || null,
-        photo_base64: photo
-      }
+    const parsedAmount = parseFloat(amount)
+    const payload = {
+      ledger_id: selectedShop.ledger_id,
+      amount: parsedAmount,
+      payment_mode: mode,
+      cheque_date: mode.toLowerCase() === 'cheque' ? chequeDate : null,
+      comments: comments.trim() || null,
+      photo_base64: photo
+    }
 
+    // Check if offline
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      try {
+        const compressed = await compressPhoto(photo)
+        await queueOfflineItem({
+          type: 'payment',
+          shop_name: selectedShop.name,
+          amount: parsedAmount,
+          payload: { ...payload, photo_base64: compressed }
+        })
+        alert('✓ You are offline. Payment collection saved in your Offline Queue and will sync automatically when network returns!')
+        router.push('/sync')
+        return
+      } catch (queueErr: any) {
+        setError('Failed to queue offline payment: ' + (queueErr.message || 'Storage error'))
+        setSubmitting(false)
+        return
+      }
+    }
+
+    try {
       const res = await fetch(`${API_BASE}/payment/collect`, {
         method: 'POST',
         headers: authHeaders(token),
@@ -141,6 +163,22 @@ export default function NewPaymentPage() {
 
       router.push('/payments')
     } catch (err: any) {
+      if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError') || !navigator.onLine) {
+        try {
+          const compressed = await compressPhoto(photo)
+          await queueOfflineItem({
+            type: 'payment',
+            shop_name: selectedShop.name,
+            amount: parsedAmount,
+            payload: { ...payload, photo_base64: compressed }
+          })
+          alert('✓ Network connection failed. Payment collection queued locally and will sync when network is restored!')
+          router.push('/sync')
+          return
+        } catch (queueErr) {
+          console.error('Queue fallback error:', queueErr)
+        }
+      }
       setError(err.message)
     } finally {
       setSubmitting(false)

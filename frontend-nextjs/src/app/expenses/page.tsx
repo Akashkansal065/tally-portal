@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate } from '@/lib/utils'
 import { stampPhoto } from '@/lib/photo-stamping'
+import { queueOfflineItem, compressPhoto } from '@/lib/offline-storage'
 import {
   Wallet,
   Plus,
@@ -170,21 +171,55 @@ export default function ExpensesPage() {
     setSubmitting(true)
     setError('')
     setSuccess('')
+
+    const parsedAmount = parseFloat(amount)
+    const payload = {
+      amount: parsedAmount,
+      date,
+      category,
+      payment_mode: mode,
+      is_salesman_related: isSalesmanRelated,
+      salesperson_user_id: isSalesmanRelated && selectedSalesmanId ? parseInt(selectedSalesmanId) : null,
+      narration: narration || undefined,
+      reference_no: refNo || undefined,
+      photo_base64: photo || undefined
+    }
+
+    // Check if offline
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      try {
+        let compressedPhoto = photo
+        if (photo) {
+          compressedPhoto = await compressPhoto(photo)
+        }
+        await queueOfflineItem({
+          type: 'expense',
+          shop_name: category,
+          amount: parsedAmount,
+          payload: { ...payload, photo_base64: compressedPhoto }
+        })
+        setSuccess('✓ You are offline. Expense claim saved in your Offline Queue and will sync automatically when network returns!')
+        setShowForm(false)
+        setAmount('')
+        setNarration('')
+        setRefNo('')
+        setPhoto(null)
+        setIsSalesmanRelated(false)
+        setSelectedSalesmanId('')
+        return
+      } catch (queueErr: any) {
+        setError('Failed to save offline expense: ' + (queueErr.message || 'Storage error'))
+        return
+      } finally {
+        setSubmitting(false)
+      }
+    }
+
     try {
       const res = await fetch(`${API_BASE}/expenses`, {
         method: 'POST',
         headers: authHeaders(token),
-        body: JSON.stringify({
-          amount: parseFloat(amount),
-          date,
-          category,
-          payment_mode: mode,
-          is_salesman_related: isSalesmanRelated,
-          salesperson_user_id: isSalesmanRelated && selectedSalesmanId ? parseInt(selectedSalesmanId) : null,
-          narration: narration || undefined,
-          reference_no: refNo || undefined,
-          photo_base64: photo || undefined
-        }),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
       setSuccess('Expense claim submitted successfully!')
@@ -197,6 +232,31 @@ export default function ExpensesPage() {
       setSelectedSalesmanId('')
       await fetchExpenses()
     } catch (err: any) {
+      if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError') || !navigator.onLine) {
+        try {
+          let compressedPhoto = photo
+          if (photo) {
+            compressedPhoto = await compressPhoto(photo)
+          }
+          await queueOfflineItem({
+            type: 'expense',
+            shop_name: category,
+            amount: parsedAmount,
+            payload: { ...payload, photo_base64: compressedPhoto }
+          })
+          setSuccess('✓ Network connection failed. Expense claim queued locally and will sync when network is restored!')
+          setShowForm(false)
+          setAmount('')
+          setNarration('')
+          setRefNo('')
+          setPhoto(null)
+          setIsSalesmanRelated(false)
+          setSelectedSalesmanId('')
+          return
+        } catch (queueErr) {
+          console.error('Queue fallback error:', queueErr)
+        }
+      }
       setError(err.message)
     } finally {
       setSubmitting(false)
@@ -214,10 +274,11 @@ export default function ExpensesPage() {
       const data = await res.json()
       const actedByName = data.acted_by_name || user?.username || 'You'
       const actedAt = data.acted_at || new Date().toISOString()
+      const cancelReason = data.cancel_reason !== undefined ? data.cancel_reason : (reason ? reason.trim() : null)
       setExpenses(prev => prev.map(e => e.id === expenseId ? { 
         ...e, 
         status,
-        cancel_reason: reason || e.cancel_reason,
+        cancel_reason: cancelReason,
         acted_by_name: actedByName,
         acted_at: actedAt
       } : e))

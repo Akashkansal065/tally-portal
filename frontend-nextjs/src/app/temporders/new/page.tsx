@@ -6,6 +6,7 @@ import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase } from '@/lib/utils'
 import { getProductDetails } from '@/lib/kgoc-mapping'
 import { filterAndSortBySearch } from '@/lib/search'
+import { queueOfflineItem } from '@/lib/offline-storage'
 import { 
   ArrowLeft, 
   Search, 
@@ -246,20 +247,41 @@ export default function NewOrderPage() {
     if (!shopName) return
 
     setSubmitting(true)
-    try {
-      const payload = {
-        ledger_id: isCustomShop ? null : selectedShop?.ledger_id,
-        custom_customer_name: isCustomShop ? customShopName.trim() : null,
-        custom_customer_gstin: isCustomShop && customShopHasGst && customShopGstin.trim() ? customShopGstin.trim().toUpperCase() : null,
-        items: cart.map(item => ({
-          stock_item_id: item.stock_item_id || null,
-          custom_item_name: item.is_custom ? item.name : (item.custom_item_name || null),
-          qty: item.qty,
-          price: item.price,
-          is_bill_required: item.is_bill_required
-        }))
-      }
+    const totalAmount = cart.reduce((acc, item) => acc + (item.price * item.qty), 0)
 
+    const payload = {
+      ledger_id: isCustomShop ? null : selectedShop?.ledger_id,
+      custom_customer_name: isCustomShop ? customShopName.trim() : null,
+      custom_customer_gstin: isCustomShop && customShopHasGst && customShopGstin.trim() ? customShopGstin.trim().toUpperCase() : null,
+      items: cart.map(item => ({
+        stock_item_id: item.stock_item_id || null,
+        custom_item_name: item.is_custom ? item.name : (item.custom_item_name || null),
+        qty: item.qty,
+        price: item.price,
+        is_bill_required: item.is_bill_required
+      }))
+    }
+
+    // Check if device is offline
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      try {
+        await queueOfflineItem({
+          type: 'order',
+          shop_name: shopName,
+          amount: totalAmount,
+          payload,
+        })
+        alert('✓ You are offline. Order saved locally in your Offline Queue and will sync automatically when network returns!')
+        router.push('/sync')
+        return
+      } catch (queueErr: any) {
+        alert('Failed to save offline order: ' + (queueErr.message || 'Storage error'))
+        setSubmitting(false)
+        return
+      }
+    }
+
+    try {
       const res = await fetch(`${API_BASE}/temporders`, {
         method: 'POST',
         headers: authHeaders(token),
@@ -273,6 +295,22 @@ export default function NewOrderPage() {
 
       router.push('/temporders')
     } catch (err: any) {
+      // Check if network error (failed to fetch)
+      if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError') || !navigator.onLine) {
+        try {
+          await queueOfflineItem({
+            type: 'order',
+            shop_name: shopName,
+            amount: totalAmount,
+            payload,
+          })
+          alert('✓ Network connection failed. Order queued locally and will sync when network is restored!')
+          router.push('/sync')
+          return
+        } catch (queueErr) {
+          console.error('Queue fallback error:', queueErr)
+        }
+      }
       alert(err.message)
     } finally {
       setSubmitting(false)

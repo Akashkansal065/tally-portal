@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
-import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info, Edit3, Trash2, RefreshCw, AlertTriangle, CheckCircle2, GitCompare, ShoppingCart } from 'lucide-react'
+import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, Download, FileDown, Plus, BellRing, Info, Edit3, Trash2, RefreshCw, AlertTriangle, CheckCircle2, GitCompare, ShoppingCart, Landmark } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherFormModal from '@/components/VoucherFormModal'
@@ -93,7 +93,7 @@ export default function VouchersPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all')
   const [filterModalOpen, setFilterModalOpen] = useState(false)
   const [showGrossInfoModal, setShowGrossInfoModal] = useState(false)
-  
+
   // Voucher creation / edit / delete state
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [editingVoucher, setEditingVoucher] = useState<any | null>(null)
@@ -158,7 +158,7 @@ export default function VouchersPage() {
     return true
   }, [permissions, allowedVoucherTypeNames])
 
-  const hasAnyVoucherPermission = 
+  const hasAnyVoucherPermission =
     can('vouchers', 'read') || Boolean(permissions.showVouchers ?? permissions.showReceipts)
 
   const allowedCategories = useMemo(() => {
@@ -186,7 +186,7 @@ export default function VouchersPage() {
   useEffect(() => {
     if (!user) { router.replace('/login'); return }
     if (!hasAnyVoucherPermission) { router.replace('/'); return }
-    
+
     Promise.all([
       fetch(`${API_BASE}/vouchers`, { headers: authHeaders(token) }).then(r => r.json()),
       fetch(`${API_BASE}/ledgers`, { headers: authHeaders(token) }).then(r => r.json()),
@@ -446,7 +446,7 @@ export default function VouchersPage() {
 
       setCreateModalOpen(false)
       setEditingVoucher(null)
-      
+
       // Refresh vouchers
       const vRes = await fetch(`${API_BASE}/vouchers`, { headers: authHeaders(token) })
       if (vRes.ok) {
@@ -597,7 +597,7 @@ export default function VouchersPage() {
                   >
                     <Info className="h-3.5 w-3.5" />
                   </button>
-                  <button 
+                  <button
                     onClick={handleExportFilteredVouchersPdf}
                     className="h-8 w-8 flex items-center justify-center hover:bg-muted text-red-500 rounded-full shrink-0"
                     title="Export PDF Report"
@@ -605,7 +605,7 @@ export default function VouchersPage() {
                     <FileDown className="h-4.5 w-4.5" />
                   </button>
                   {canCreateVoucher && (
-                    <button 
+                    <button
                       onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
                       className="h-8 px-2 sm:px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-lg shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
                       title="Create Voucher"
@@ -614,6 +614,14 @@ export default function VouchersPage() {
                       <span className="hidden sm:inline">Create Voucher</span>
                     </button>
                   )}
+                  <button
+                    onClick={() => router.push('/bank-recon')}
+                    className="h-8 px-2 sm:px-3 flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-bold rounded-lg shadow-2xs shrink-0 cursor-pointer transition-all active:scale-95"
+                    title="Open Bank Reconciliation"
+                  >
+                    <Landmark className="h-4 w-4" />
+                    <span className="hidden sm:inline">Bank Recon</span>
+                  </button>
                 </div>
               </>
             )}
@@ -635,7 +643,7 @@ export default function VouchersPage() {
                 {cat}
               </button>
             ))}
-            <button 
+            <button
               onClick={() => setFilterModalOpen(true)}
               className="h-7 w-7 flex items-center justify-center border border-border bg-card shrink-0 ml-auto rounded-full hover:bg-emerald-500/10 hover:text-emerald-500 cursor-pointer"
             >
@@ -746,14 +754,14 @@ export default function VouchersPage() {
             filtered.map((voucher) => {
               const formattedDate = voucher.date
                 ? new Date(voucher.date).toLocaleDateString('en-IN', {
-                    day: 'numeric',
-                    month: 'short',
-                    year: '2-digit'
-                  }).replace(/ /g, ' ')
+                  day: 'numeric',
+                  month: 'short',
+                  year: '2-digit'
+                }).replace(/ /g, ' ')
                 : 'N/A';
 
-              const isPaid = voucher.voucher_type.toLowerCase().includes('receipt') || 
-                             voucher.voucher_type.toLowerCase().includes('payment');
+              const isPaid = voucher.voucher_type.toLowerCase().includes('receipt') ||
+                voucher.voucher_type.toLowerCase().includes('payment');
 
               return (
                 <div
@@ -906,11 +914,11 @@ export default function VouchersPage() {
 
       {/* Advanced Filter Modal Overlay */}
       {filterModalOpen && (
-        <div 
+        <div
           onClick={() => setFilterModalOpen(false)}
           className="fixed inset-0 bg-black/60 z-[100] flex items-end justify-center p-4 pb-24 md:pb-4 animate-in fade-in duration-200"
         >
-          <div 
+          <div
             onClick={(e) => e.stopPropagation()}
             className="bg-card w-full max-w-md rounded-2xl p-6 space-y-6 animate-in slide-in-from-bottom duration-250 border border-border shadow-2xl"
           >
@@ -919,7 +927,7 @@ export default function VouchersPage() {
                 <SlidersHorizontal className="h-4.5 w-4.5 text-emerald-500" />
                 Advanced Filters
               </h3>
-              <button 
+              <button
                 onClick={() => setFilterModalOpen(false)}
                 className="text-xs font-semibold text-muted-foreground hover:text-foreground cursor-pointer"
               >

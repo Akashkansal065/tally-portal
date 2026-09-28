@@ -32,6 +32,8 @@ import {
   TrendingUp,
   Loader2,
   PieChart as PieChartIcon,
+  Landmark,
+  CloudOff,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -346,6 +348,15 @@ export default function DashboardPage() {
       show: permissions.showPayments,
     },
     {
+      href: '/bank-recon',
+      label: 'Bank Reconciliation',
+      description: 'Upload bank statements, auto-match against Tally vouchers and collections, BRS metrics',
+      icon: Landmark,
+      color: 'text-emerald-700 dark:text-emerald-400',
+      bgColor: 'bg-emerald-500/10 border-emerald-500/20',
+      show: Boolean(can('vouchers', 'read')),
+    },
+    {
       href: '/planner',
       label: 'Daily Beat Planner',
       description: 'Route beat assignments, TSP auto-route stops & EOD scorecard',
@@ -362,6 +373,15 @@ export default function DashboardPage() {
       color: 'text-rose-600',
       bgColor: 'bg-rose-500/10 border-rose-500/20',
       show: permissions.showCheckIn,
+    },
+    {
+      href: '/sync',
+      label: 'Offline Sync Center',
+      description: 'Monitor and sync pending offline orders, payments, expenses, and check-ins',
+      icon: CloudOff,
+      color: 'text-amber-600 dark:text-amber-400',
+      bgColor: 'bg-amber-500/10 border-amber-500/20',
+      show: Boolean(permissions.showCheckIn || permissions.showOrders || permissions.showPayments),
     },
     {
       href: '/expenses',

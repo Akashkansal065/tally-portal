@@ -141,14 +141,14 @@ export default function TempOrdersPage() {
       const data = await res.json()
       const actedByName = data.acted_by_name || user?.username || 'You'
       const actedAt = data.acted_at || new Date().toISOString()
-      const statusReason = data.status_reason || reason
+      const statusReason = data.status_reason !== undefined ? data.status_reason : (reason ? reason.trim() : null)
 
       setOrders(prev => prev.map(o => o.id === orderId ? { 
         ...o, 
         status: nextStatus,
         acted_by_name: actedByName,
         acted_at: actedAt,
-        status_reason: statusReason || o.status_reason
+        status_reason: statusReason
       } : o))
       if (expandedOrder && expandedOrder.id === orderId) {
         setExpandedOrder(prev => prev ? { 
@@ -156,7 +156,7 @@ export default function TempOrdersPage() {
           status: nextStatus,
           acted_by_name: actedByName,
           acted_at: actedAt,
-          status_reason: statusReason || prev.status_reason
+          status_reason: statusReason
         } : null)
       }
     } catch (err: any) {

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
 import { stampPhoto } from '@/lib/photo-stamping'
-import { queueOfflineCheckIn, getPendingCheckIns, syncPendingCheckIns, OfflineCheckIn } from '@/lib/offline-storage'
+import { queueOfflineCheckIn, getPendingCheckIns, syncPendingCheckIns, queueOfflineItem, compressPhoto, OfflineCheckIn } from '@/lib/offline-storage'
 import { useLocationPermission } from '@/hooks/useLocationPermission'
 import { LocationPermissionModal } from '@/components/LocationPermissionModal'
 import Link from 'next/link'
@@ -325,19 +325,27 @@ export default function CheckInPage() {
 
     // Check if offline
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      queueOfflineCheckIn({
-        ...payload,
-        shop_name: selectedShopName || searchQuery || customShop || 'Customer Shop',
-      })
-      setPendingCheckIns(getPendingCheckIns())
-      setSuccess('✓ You are offline. Check-in saved locally and will auto-sync when network returns!')
-      handleClearSelection()
-      setComments('')
-      setPhoto(null)
-      setCoords(null)
-      setGpsStatus('idle')
-      setSubmitting(false)
-      return
+      try {
+        const compressed = photo ? await compressPhoto(photo) : null
+        await queueOfflineItem({
+          type: 'check_in',
+          shop_name: selectedShopName || searchQuery || customShop || 'Customer Shop',
+          payload: { ...payload, photo_base64: compressed },
+        })
+        setPendingCheckIns(getPendingCheckIns())
+        setSuccess('✓ You are offline. Check-in saved securely locally and will auto-sync when network returns!')
+        handleClearSelection()
+        setComments('')
+        setPhoto(null)
+        setCoords(null)
+        setGpsStatus('idle')
+        setSubmitting(false)
+        return
+      } catch (err: any) {
+        setError('Failed to save offline check-in: ' + (err.message || 'Storage error'))
+        setSubmitting(false)
+        return
+      }
     }
 
     try {
@@ -372,20 +380,26 @@ export default function CheckInPage() {
       setRecentVisits(Array.isArray(vs) ? vs : (vs?.data ?? []))
     } catch (err: any) {
       // If network error, offer offline queue fallback
-      if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError'))) {
-        queueOfflineCheckIn({
-          ...payload,
-          shop_name: searchQuery || customShop || 'Customer Shop',
-        })
-        setPendingCheckIns(getPendingCheckIns())
-        setSuccess('✓ Network unavailable. Check-in queued locally and will auto-sync when online!')
-        setSelectedLedger('')
-        setSelectedProfileId(null)
-        setCustomShop('')
-        setComments('')
-        setPhoto(null)
-        setCoords(null)
-        setGpsStatus('idle')
+      if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError') || !navigator.onLine)) {
+        try {
+          const compressed = photo ? await compressPhoto(photo) : null
+          await queueOfflineItem({
+            type: 'check_in',
+            shop_name: searchQuery || customShop || 'Customer Shop',
+            payload: { ...payload, photo_base64: compressed },
+          })
+          setPendingCheckIns(getPendingCheckIns())
+          setSuccess('✓ Network unavailable. Check-in queued locally and will auto-sync when online!')
+          setSelectedLedger('')
+          setSelectedProfileId(null)
+          setCustomShop('')
+          setComments('')
+          setPhoto(null)
+          setCoords(null)
+          setGpsStatus('idle')
+        } catch (queueErr: any) {
+          setError('Failed to queue offline check-in: ' + (queueErr.message || 'Storage error'))
+        }
       } else {
         setError(err.message || 'Failed to record check-in')
       }
