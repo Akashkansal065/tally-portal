@@ -41,7 +41,7 @@ granian==2.7.9
 graphifyy==0.4.23
 greenlet==3.5.3
 grpclib==0.4.9
-gunicorn==23.0.0
+gunicorn==23.0.0; sys_platform != 'win32'
 h11==0.16.0
 h2==4.3.0
 hf-xet==1.5.2
@@ -102,7 +102,7 @@ PyNaCl==1.6.2
 pyobjc-core==12.2.2; sys_platform == 'darwin'
 pyobjc-framework-Cocoa==12.2.2; sys_platform == 'darwin'
 pyobjc-framework-Quartz==12.2.2; sys_platform == 'darwin'
-pyroscope-io==0.8.16
+pyroscope-io==0.8.16; sys_platform != 'win32'
 pystray==0.19.5
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
@@ -155,7 +155,7 @@ typing_extensions==4.16.0
 tzlocal==5.4.4
 urllib3==2.7.0
 uvicorn==0.51.0
-uvloop==0.22.1
+uvloop==0.22.1; sys_platform != 'win32'
 wcwidth==0.8.2
 websockets==15.0.1
 yarl==1.24.5
