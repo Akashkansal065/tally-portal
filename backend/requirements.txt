@@ -99,9 +99,9 @@ Pygments==2.20.0
 PyJWT==2.13.0
 PyMySQL==1.2.0
 PyNaCl==1.6.2
-pyobjc-core==12.2.2
-pyobjc-framework-Cocoa==12.2.2
-pyobjc-framework-Quartz==12.2.2
+pyobjc-core==12.2.2; sys_platform == 'darwin'
+pyobjc-framework-Cocoa==12.2.2; sys_platform == 'darwin'
+pyobjc-framework-Quartz==12.2.2; sys_platform == 'darwin'
 pyroscope-io==0.8.16
 pystray==0.19.5
 python-dateutil==2.9.0.post0
