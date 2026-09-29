@@ -1,0 +1,50 @@
+name: OpenSSF Scorecard
+
+on:
+  # Run on pushes to the default branch
+  push:
+    branches: [master]
+  # Run weekly on Monday at 6:00 UTC
+  schedule:
+    - cron: '0 6 * * 1'
+  # Allow manual trigger
+  workflow_dispatch:
+
+# Declare default permissions as read-only
+permissions: read-all
+
+jobs:
+  scorecard:
+    name: Scorecard Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed for Code Scanning upload
+      security-events: write
+      # Needed to publish results
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@05b42c624433fc40578a4c7a8d240612c4eed0d5 # v2.4.1
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish results to OpenSSF REST API for the badge
+          publish_results: true
+
+      - name: Upload Scorecard results to Code Scanning
+        uses: github/codeql-action/upload-sarif@4dd16135b69cb9c78498a5b5947a5fbb78a53897 # v3.28.0
+        with:
+          sarif_file: results.sarif
+
+      - name: Upload Scorecard results as artifact
+        uses: actions/upload-artifact@ea165f8d65b6db9a8b9c8bb995ea7e0efb0e4cb3 # v4.6.2
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
