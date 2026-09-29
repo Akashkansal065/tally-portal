@@ -10,7 +10,11 @@ node_modules/
 
 # Environment files
 .env
-.env.local
+.env.*
+*.env
+*.env.*
+!.env.example
+!.env.template
 backend/.env
 frontend-nextjs/.env
 frontend-nextjs/.env.local
@@ -37,12 +41,15 @@ dist/
 *.sln
 *.sw?
 
-# Database certs
+# Database certs & keys
+*.pem
+*.key
+*.crt
+*.cert
 ca.pem
 backend/ca.pem
 
 /backend/storage/gstr2b
 .vercel
 /graphify-out
-desktop-sync-agent/agent_config.json
 desktop-sync-agent/agent_config.json
