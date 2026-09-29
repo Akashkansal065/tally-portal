@@ -84,7 +84,7 @@ packaging==26.2
 passlib==1.7.4
 pfzy==0.3.4
 pillow==12.3.0
-polars==1.43.2
+polars==1.44.2
 polars-runtime-32==1.43.2
 prompt_toolkit==3.0.53
 propcache==0.5.2
