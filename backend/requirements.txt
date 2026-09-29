@@ -5,7 +5,7 @@ aiomysql==0.3.2
 aiosignal==1.4.0
 alembic==1.18.5
 annotated-doc==0.0.4
-annotated-types==0.7.0
+annotated-types==0.8.0
 anyio==4.14.1
 APScheduler==3.11.3
 asyncpg==0.31.0
