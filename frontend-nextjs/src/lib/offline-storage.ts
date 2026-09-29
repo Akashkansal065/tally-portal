@@ -53,6 +53,7 @@ const LEGACY_STORAGE_KEYS = {
 
 let dbPromise: Promise<IDBDatabase> | null = null
 
+/** Open the versioned IndexedDB used for queued transactions and cached masters. */
 export function getOfflineDb(): Promise<IDBDatabase> {
   if (typeof window === 'undefined') {
     return Promise.reject(new Error('IndexedDB is not available server-side'))
@@ -195,6 +196,7 @@ function notifyQueueChanged() {
 
 // ─── Unified Queue Operations ──────────────────────────────────────────────
 
+/** Add a transaction to the offline queue, compressing an attached photo first. */
 export async function queueOfflineItem(item: {
   type: OfflineQueueItem['type']
   shop_name: string
@@ -234,6 +236,7 @@ export async function queueOfflineItem(item: {
   })
 }
 
+/** Read queued transactions, optionally filtering by type or synchronization status. */
 export async function getOfflineQueue(filter?: {
   type?: OfflineQueueItem['type']
   status?: OfflineQueueItem['status']
@@ -265,6 +268,7 @@ export async function getOfflineQueue(filter?: {
   }
 }
 
+/** Remove one queued transaction by its client-generated identifier. */
 export async function removeOfflineItem(id: string): Promise<void> {
   const db = await getOfflineDb()
   return new Promise((resolve, reject) => {
@@ -279,6 +283,7 @@ export async function removeOfflineItem(id: string): Promise<void> {
   })
 }
 
+/** Delete successfully synchronized transactions from the local queue. */
 export async function clearSyncedItems(): Promise<void> {
   const db = await getOfflineDb()
   const all = await getOfflineQueue()
@@ -298,6 +303,7 @@ export async function clearSyncedItems(): Promise<void> {
   })
 }
 
+/** Persist queue status, retry metadata, and any server error for an item. */
 export async function updateItemStatus(
   id: string,
   status: OfflineQueueItem['status'],
@@ -340,6 +346,11 @@ export async function updateItemStatus(
 
 // ─── Single Item Sync Engine with Duplicate Protection ───────────────────────
 
+/**
+ * Submit one queued transaction with an idempotency header.
+ * A conflict response is considered successful because the server already
+ * accepted the same client-generated item.
+ */
 export async function syncSingleItem(
   item: OfflineQueueItem,
   apiBase: string,
@@ -413,6 +424,7 @@ export async function syncSingleItem(
 
 // ─── Batch Sync Engine ───────────────────────────────────────────────────────
 
+/** Synchronize pending and previously failed items sequentially with progress callbacks. */
 export async function syncAllPendingItems(
   apiBase: string,
   authHeaders: (token?: any) => Record<string, string>,
@@ -447,6 +459,7 @@ export async function syncAllPendingItems(
 
 // ─── Directory & Master Cache ───────────────────────────────────────────────
 
+/** Cache customer directory data for lookup while the device is offline. */
 export function saveOfflineDirectory(data: {
   customers: any[]
   localities?: any[]
@@ -466,6 +479,7 @@ export function saveOfflineDirectory(data: {
   }
 }
 
+/** Read the cached customer directory, or null when no browser cache exists. */
 export function getOfflineDirectory(): CachedCustomerDirectory | null {
   if (typeof window === 'undefined') return null
   try {
@@ -480,6 +494,7 @@ export function getOfflineDirectory(): CachedCustomerDirectory | null {
 
 // ─── Backward Compatible Shims for Existing Check-In Code ───────────────────
 
+/** Read legacy localStorage check-ins for older callers during migration. */
 export function getPendingCheckIns(): OfflineCheckIn[] {
   // Synchronous fallback reads from localStorage cache if present,
   // but caller is encouraged to use getOfflineQueue
@@ -493,6 +508,7 @@ export function getPendingCheckIns(): OfflineCheckIn[] {
   }
 }
 
+/** Queue a check-in using the unified IndexedDB transaction format. */
 export async function queueOfflineCheckInAsync(
   item: Omit<OfflineCheckIn, 'id' | 'queued_at'>
 ): Promise<OfflineQueueItem> {
@@ -511,6 +527,7 @@ export async function queueOfflineCheckInAsync(
   })
 }
 
+/** Backward-compatible synchronous wrapper that also starts an IndexedDB queue write. */
 export function queueOfflineCheckIn(item: Omit<OfflineCheckIn, 'id' | 'queued_at'>): OfflineCheckIn {
   // Fire async queue in background
   queueOfflineCheckInAsync(item).catch((err) => {
@@ -525,10 +542,12 @@ export function queueOfflineCheckIn(item: Omit<OfflineCheckIn, 'id' | 'queued_at
   }
 }
 
+/** Remove a legacy check-in through the unified offline queue. */
 export function removePendingCheckIn(id: string): void {
   removeOfflineItem(id).catch((err) => console.warn('Failed to remove item:', err))
 }
 
+/** Synchronize queued check-ins through the unified transaction engine. */
 export async function syncPendingCheckIns(
   apiBase: string,
   authHeaders: (token?: any) => Record<string, string>,

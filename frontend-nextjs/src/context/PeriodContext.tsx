@@ -29,6 +29,7 @@ const PeriodContext = createContext<PeriodContextValue>({
   resetPeriod: () => {},
 })
 
+/** Provide the selected reporting period and persist it across page reloads. */
 export function PeriodProvider({ children }: { children: React.ReactNode }) {
   const [startDate, setStartDateState] = useState<string>(defaultFY.start)
   const [endDate, setEndDateState] = useState<string>(defaultFY.end)
@@ -65,4 +66,5 @@ export function PeriodProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
+/** Read the active reporting period from the nearest PeriodProvider. */
 export const usePeriod = () => useContext(PeriodContext)

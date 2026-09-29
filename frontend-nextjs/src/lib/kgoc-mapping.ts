@@ -124,6 +124,10 @@ export const PRODUCT_MAP: Record<string, { brand: string; subtitle: string }> = 
   'SL-1183 SPL OFFER': { brand: 'Munix', subtitle: 'Scissors (Special Offer)' },
 }
 
+/**
+ * Resolve display metadata for a stock item, preferring an explicit brand
+ * inferred from its stock group over the product-code mapping.
+ */
 export const getProductDetails = (name: string, groupName: string) => {
   const code = (name || '').trim()
 
@@ -152,4 +156,3 @@ export const getProductDetails = (name: string, groupName: string) => {
 
   return { brand, subtitle: name }
 }
-

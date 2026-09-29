@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 
+/** Provide theme state and synchronize it with the next-themes provider. */
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [dark, setDark] = useState(false)
 
@@ -34,6 +35,7 @@ const ThemeContext = createContext<{ dark: boolean; toggle: () => void }>({
   toggle: () => {},
 })
 
+/** Read theme controls from the nearest ThemeProvider. */
 export function useTheme() {
   return useContext(ThemeContext)
 }

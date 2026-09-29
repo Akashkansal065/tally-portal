@@ -13,7 +13,7 @@ setup_logging()
 logger = get_logger("app.main")
 
 async def db_keep_alive_task(interval_seconds: int = 120):
-    """Background task running every 2 minutes to keep the DB connection pool active."""
+    """Periodically ping the database so idle pooled connections stay usable."""
     logger.info(f"Starting DB Keep-Alive background worker (interval: {interval_seconds}s)...")
     while True:
         try:
@@ -28,7 +28,9 @@ async def db_keep_alive_task(interval_seconds: int = 120):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Ensure databases exist
+    """Initialize database schemas, seed defaults, and start background workers."""
+    # Database setup is intentionally completed before yielding the app so every
+    # request sees the same schema and default permission data.
     from app.core.database import create_databases_if_not_exist, auto_sync_all_model_schemas
     await create_databases_if_not_exist()
     
@@ -39,7 +41,7 @@ async def lifespan(app: FastAPI):
     # 3. Dynamically sync all model schemas & missing columns automatically
     await auto_sync_all_model_schemas()
         
-    # 3. Seed global default roles, modules, permissions
+    # Seed global default roles, modules, and permissions.
     def sync_seed(connection):
         with connection.begin():
             # We pass the underlying synchronous DBAPI connection wrapper
@@ -51,7 +53,7 @@ async def lifespan(app: FastAPI):
         # and SQLAlchemy requires a special wrapper for sync execution
         await conn.run_sync(sync_seed)
 
-    # 4. Start background DB keep-alive worker task (pings every 2 minutes)
+    # Start background workers only after initialization has succeeded.
     keep_alive_task = asyncio.create_task(db_keep_alive_task(120))
 
     # 5. Start background Attendance Auto Punch-Out worker task (checks every 60 seconds)
@@ -130,6 +132,7 @@ except Exception as e:
 
 @app.get("/")
 def read_root():
+    """Return a lightweight liveness response for the API root."""
     return {"message": "Welcome to Open Tally-Clone API"}
 
 

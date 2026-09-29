@@ -108,6 +108,7 @@ const AuthContext = createContext<AuthContextValue>({
   can: () => false,
 })
 
+/** Provide authenticated user state, company switching, and permission checks. */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [token, setToken] = useState<string>('')
@@ -250,6 +251,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
+/** Read the current authentication state from the nearest AuthProvider. */
 export function useAuth() {
   return useContext(AuthContext)
 }

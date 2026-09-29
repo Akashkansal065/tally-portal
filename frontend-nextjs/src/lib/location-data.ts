@@ -99,6 +99,10 @@ export const COUNTRY_LIST: string[] = [
 /**
  * Extract 2-digit GST state code and PAN number from a 15-character GSTIN string
  */
+/**
+ * Extract the state name and PAN segment from a GSTIN.
+ * Returns an empty object for values too short to contain a state code.
+ */
 export function parseGSTIN(gstin: string): { stateName?: string; panNumber?: string } {
   const clean = gstin.trim().toUpperCase()
   if (clean.length >= 2) {

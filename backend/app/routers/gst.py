@@ -33,15 +33,22 @@ from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.models.tally_core import TrnVoucher, TrnAccounting
 from app.models.tally_core import MstLedger, MstGroup, MstGstReconConfig
-from app.models.portal_core import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn, ManualPurchase
+from app.models.portal_core import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn, ManualPurchase, GstComplianceException, GstFilingSnapshot, GstProviderAttempt
+from app.services.gst.validation import validate_return_lines
+from app.services.gst.providers import create_provider, make_idempotency_key
+from app.core.config import settings
 from app.schemas.gst import (
     GstReturnPeriodCreate, GstReturnPeriodResponse,
     Gstr1LineItemResponse, Gstr1HsnSummaryResponse, Gstr3bSummaryResponse,
     ItcEntryCreate, ItcEntryResponse, Gstr2bEntryResponse, Gstr9AnnualReturnResponse,
     GstEinvoiceListResponse, EinvoiceSettingsResponse, EinvoiceSettingsUpdate,
     ManualPurchaseCreate, ManualPurchaseResponse,
-    Gstr2bOtpRequest, Gstr2bOtpVerify
+    Gstr2bOtpRequest, Gstr2bOtpVerify,
+    GstValidationResponse, GstPeriodLockResponse,
+    GstProviderSubmitRequest, GstProviderSubmitResponse,
 )
+import hashlib
+import json
 
 router = APIRouter(prefix="/gst", tags=["GST Reports & Return Filing"])
 
@@ -86,6 +93,226 @@ async def get_gst_periods(
     res = await db.execute(stmt)
     return res.scalars().all()
 
+
+@router.post("/periods/{period_id}/validate", response_model=GstValidationResponse)
+async def validate_gst_period(
+    period_id: int,
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run deterministic pre-filing validation and persist open exceptions."""
+    period = (
+        await db.execute(
+            select(GstReturnPeriod).where(
+                GstReturnPeriod.return_period_id == period_id,
+                GstReturnPeriod.company_id == user.company_id,
+            )
+        )
+    ).scalars().first()
+    if not period:
+        raise HTTPException(status_code=404, detail="GST Return period not found.")
+
+    lines = (
+        await db.execute(
+            select(Gstr1LineItem).where(Gstr1LineItem.return_period_id == period_id)
+        )
+    ).scalars().all()
+    issues = validate_return_lines(
+        [
+            {
+                "party_gstin": line.party_gstin,
+                "invoice_number": line.invoice_number,
+                "place_of_supply": line.place_of_supply,
+                "taxable_value": line.taxable_value,
+                "cgst_amount": line.cgst_amount,
+                "sgst_amount": line.sgst_amount,
+                "igst_amount": line.igst_amount,
+                "cess_amount": line.cess_amount,
+            }
+            for line in lines
+        ]
+    )
+
+    existing = (
+        await db.execute(
+            select(GstComplianceException).where(
+                GstComplianceException.return_period_id == period_id,
+                GstComplianceException.status == "open",
+            )
+        )
+    ).scalars().all()
+    for exception in existing:
+        exception.status = "resolved"
+        exception.resolved_at = get_ist_now()
+        exception.resolved_by = user.user_id
+    for issue in issues:
+        db.add(
+            GstComplianceException(
+                company_id=user.company_id,
+                return_period_id=period_id,
+                code=issue.code,
+                field=issue.field,
+                message=issue.message,
+                severity=issue.severity,
+            )
+        )
+    await db.commit()
+    return GstValidationResponse(
+        valid=not issues,
+        issue_count=len(issues),
+        issues=[issue.as_dict() for issue in issues],
+    )
+
+
+@router.post("/periods/{period_id}/lock", response_model=GstPeriodLockResponse)
+async def lock_gst_period(
+    period_id: int,
+    user: User = Depends(require_permission("reports", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lock a validated draft period before provider submission or filing."""
+    period = (
+        await db.execute(
+            select(GstReturnPeriod).where(
+                GstReturnPeriod.return_period_id == period_id,
+                GstReturnPeriod.company_id == user.company_id,
+            )
+        )
+    ).scalars().first()
+    if not period:
+        raise HTTPException(status_code=404, detail="GST Return period not found.")
+    if period.status == "Filed":
+        raise HTTPException(status_code=409, detail="Filed GST periods cannot be changed.")
+
+    open_exception = (
+        await db.execute(
+            select(GstComplianceException).where(
+                GstComplianceException.return_period_id == period_id,
+                GstComplianceException.status == "open",
+                GstComplianceException.severity == "error",
+            )
+        )
+    ).scalars().first()
+    if open_exception:
+        raise HTTPException(status_code=422, detail="Resolve GST validation exceptions before locking the period.")
+
+    now = get_ist_now()
+    period.locked_at = now
+    period.locked_by = user.user_id
+    await db.commit()
+    await db.refresh(period)
+    return GstPeriodLockResponse(
+        return_period_id=period.return_period_id,
+        status=period.status,
+        locked_at=period.locked_at,
+        locked_by=period.locked_by,
+    )
+
+
+@router.post("/periods/{period_id}/submit", response_model=GstProviderSubmitResponse)
+async def submit_gst_period(
+    period_id: int,
+    req: GstProviderSubmitRequest,
+    user: User = Depends(require_permission("reports", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit a locked period through an isolated provider and retain filing evidence."""
+    period = (
+        await db.execute(
+            select(GstReturnPeriod).where(
+                GstReturnPeriod.return_period_id == period_id,
+                GstReturnPeriod.company_id == user.company_id,
+            )
+        )
+    ).scalars().first()
+    if not period:
+        raise HTTPException(status_code=404, detail="GST Return period not found.")
+    if not period.locked_at:
+        raise HTTPException(status_code=409, detail="Validate and lock the GST period before provider submission.")
+    if req.environment not in {"mock", "sandbox", "production"}:
+        raise HTTPException(status_code=422, detail="Unsupported GST provider environment.")
+
+    lines = (
+        await db.execute(select(Gstr1LineItem).where(Gstr1LineItem.return_period_id == period_id))
+    ).scalars().all()
+    payload = {
+        "return_type": period.return_type,
+        "period_month": period.period_month,
+        "period_year": period.period_year,
+        "lines": [
+            {
+                "invoice_number": line.invoice_number,
+                "invoice_date": line.invoice_date.isoformat(),
+                "party_gstin": line.party_gstin,
+                "place_of_supply": line.place_of_supply,
+                "taxable_value": str(line.taxable_value),
+                "cgst_amount": str(line.cgst_amount),
+                "sgst_amount": str(line.sgst_amount),
+                "igst_amount": str(line.igst_amount),
+                "cess_amount": str(line.cess_amount),
+            }
+            for line in lines
+        ],
+    }
+    payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    idempotency_key = make_idempotency_key(user.company_id, period_id, payload_hash)
+    existing = (
+        await db.execute(
+            select(GstProviderAttempt).where(GstProviderAttempt.idempotency_key == idempotency_key)
+        )
+    ).scalars().first()
+    if existing:
+        return GstProviderSubmitResponse(
+            attempt_id=existing.attempt_id,
+            provider=existing.provider,
+            status=existing.status,
+            correlation_id=existing.correlation_id,
+            acknowledgement_number=(existing.response or {}).get("acknowledgement_number"),
+        )
+
+    try:
+        provider = create_provider(
+            req.environment,
+            base_url=settings.GST_PROVIDER_URL,
+            api_key=settings.GST_PROVIDER_API_KEY,
+        )
+        result = await provider.submit(period.return_type, payload, payload_hash)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    snapshot = GstFilingSnapshot(
+        company_id=user.company_id,
+        return_period_id=period_id,
+        provider=result.provider,
+        payload_hash=payload_hash,
+        payload=payload,
+        response=result.response,
+        status=result.status,
+        acknowledgement_number=result.response.get("acknowledgement_number"),
+        created_by=user.user_id,
+    )
+    attempt = GstProviderAttempt(
+        company_id=user.company_id,
+        return_period_id=period_id,
+        provider=result.provider,
+        idempotency_key=idempotency_key,
+        status=result.status,
+        correlation_id=result.correlation_id,
+        response=result.response,
+        created_by=user.user_id,
+    )
+    db.add(snapshot)
+    db.add(attempt)
+    await db.commit()
+    await db.refresh(attempt)
+    return GstProviderSubmitResponse(
+        attempt_id=attempt.attempt_id,
+        provider=result.provider,
+        status=result.status,
+        correlation_id=result.correlation_id,
+        acknowledgement_number=result.response.get("acknowledgement_number"),
+    )
+
 @router.delete("/periods/{period_id}")
 async def delete_gst_period(
     period_id: int,
@@ -127,6 +354,8 @@ async def generate_gst_snapshot(
     period = period_query.scalars().first()
     if not period:
         raise HTTPException(status_code=404, detail="GST Return period not found.")
+    if period.locked_at:
+        raise HTTPException(status_code=409, detail="GST period is locked and cannot be regenerated.")
     if period.status != "Draft":
         raise HTTPException(status_code=400, detail="Cannot regenerate snapshot for filed returns.")
         
@@ -382,6 +611,8 @@ async def file_gst_return(
     user: User = Depends(require_permission("reports", "update")),
     db: AsyncSession = Depends(get_db)
 ):
+    if not arn.strip():
+        raise HTTPException(status_code=422, detail="Acknowledgement reference (ARN) is required.")
     period_query = await db.execute(
         select(GstReturnPeriod).where(
             GstReturnPeriod.return_period_id == period_id,
@@ -391,6 +622,8 @@ async def file_gst_return(
     period = period_query.scalars().first()
     if not period:
         raise HTTPException(status_code=404, detail="GST Return period not found.")
+    if not period.locked_at:
+        raise HTTPException(status_code=409, detail="Validate and lock the GST period before filing.")
         
     period.status = "Filed"
     period.arn = arn
@@ -1144,6 +1377,13 @@ async def reconcile_gstr2b(
             g2b.match_status = "Matched"
             g2b.itc_availability = "Available"
             g2b.matched_voucher_id = match["voucher_id"]
+            g2b.match_method = match_type
+            g2b.match_confidence = {"EXACT": Decimal("100.00"), "TOLERANCE": Decimal("90.00"), "FUZZY": Decimal("75.00")}[match_type]
+            g2b.match_reason = {
+                "EXACT": "Invoice number, supplier identity, and tax amounts matched exactly.",
+                "TOLERANCE": "Invoice identity matched within configured taxable/tax tolerances.",
+                "FUZZY": "Supplier and amounts matched within the configured date window.",
+            }[match_type]
             
             if "itc_obj" in match and match["itc_obj"]:
                 match["itc_obj"].claimed_return_period_id = g2b.return_period_id
@@ -1151,6 +1391,9 @@ async def reconcile_gstr2b(
             reconciled_count += 1
         else:
             g2b.match_status = "Unmatched"
+            g2b.match_method = None
+            g2b.match_confidence = Decimal("0.00")
+            g2b.match_reason = "No eligible book entry matched the configured identity and amount rules."
 
     await db.commit()
     return {
@@ -2023,4 +2266,3 @@ async def get_msme_compliance_report(
         },
         "vendors": msme_vendors
     }
-

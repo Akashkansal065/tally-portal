@@ -21,6 +21,10 @@ export interface UseLocationPermissionOptions {
   referenceId?: string
 }
 
+/**
+ * Manage geolocation permission, acquisition state, and the recovery modal
+ * used by field activities such as check-ins and attendance.
+ */
 export function useLocationPermission(options: UseLocationPermissionOptions = {}) {
   const {
     activityName = 'Shop Check-In',

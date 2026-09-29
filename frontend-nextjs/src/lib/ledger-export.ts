@@ -91,9 +91,8 @@ const getFilterLabel = (filterType: string): string => {
 }
 
 /**
- * 1. CSV EXPORT
- * Generates a properly escaped CSV file with metadata header, column headers,
- * transaction rows, running balances, and totals.
+ * Generate a properly escaped CSV statement with metadata, running balances,
+ * transaction rows, and totals, then download it in the browser.
  */
 export function exportLedgerToCsv({
   ledgerInfo,
@@ -219,6 +218,7 @@ export function exportLedgerToCsv({
  * Builds a professional multi-page A4 document with corporate header,
  * summary cards, formatted transaction ledger, and automatic pagination.
  */
+/** Render a ledger statement as a PDF and download it with the selected filters. */
 export function exportLedgerToPdf({
   ledgerInfo,
   transactions,
@@ -578,6 +578,7 @@ export function exportLedgerToPdf({
  * Formats a clean, professional WhatsApp text statement itemizing the
  * filtered transactions, opening balance, totals, and closing balance.
  */
+/** Build a concise WhatsApp-ready statement message from ledger totals. */
 export function generateWhatsAppStatementMessage({
   ledgerInfo,
   transactions,
@@ -640,6 +641,7 @@ export function generateWhatsAppStatementMessage({
  * 4. OPEN WHATSAPP HELPER
  * Opens WhatsApp Web or app with the encoded message for a specific or empty phone.
  */
+/** Open WhatsApp with a prefilled statement message for an optional phone number. */
 export function openWhatsAppWithStatement(phone: string | undefined | null, message: string): void {
   const cleanPhone = (phone || '').replace(/\D/g, '')
   let url = ''

@@ -15,9 +15,43 @@ class GstReturnPeriodResponse(GstReturnPeriodCreate):
     filed_date: Optional[date] = None
     arn: Optional[str] = None
     filed_by: Optional[int] = None
+    locked_at: Optional[datetime] = None
+    locked_by: Optional[int] = None
     
     class Config:
         from_attributes = True
+
+
+class GstValidationIssueResponse(BaseModel):
+    code: str
+    field: str
+    message: str
+    severity: str
+
+
+class GstValidationResponse(BaseModel):
+    valid: bool
+    issue_count: int
+    issues: List[GstValidationIssueResponse]
+
+
+class GstPeriodLockResponse(BaseModel):
+    return_period_id: int
+    status: str
+    locked_at: datetime
+    locked_by: int
+
+
+class GstProviderSubmitRequest(BaseModel):
+    environment: str = "mock"
+
+
+class GstProviderSubmitResponse(BaseModel):
+    attempt_id: int
+    provider: str
+    status: str
+    correlation_id: Optional[str] = None
+    acknowledgement_number: Optional[str] = None
 
 class Gstr1LineItemResponse(BaseModel):
     line_item_id: int
@@ -147,6 +181,9 @@ class Gstr2bEntryResponse(BaseModel):
     itc_availability: str
     match_status: str
     matched_voucher_id: Optional[int] = None
+    match_method: Optional[str] = None
+    match_confidence: Optional[Decimal] = None
+    match_reason: Optional[str] = None
 
     class Config:
         from_attributes = True

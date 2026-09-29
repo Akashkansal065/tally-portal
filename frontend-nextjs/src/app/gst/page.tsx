@@ -25,6 +25,8 @@ type ReturnPeriod = {
   period_month: number
   period_year: number
   status: 'Draft' | 'Filed'
+  locked_at?: string
+  locked_by?: number
   filed_date?: string
   arn?: string
   filed_by?: number
@@ -536,7 +538,58 @@ export default function GstPage() {
         alert(err.detail || 'Failed to generate snapshot')
         return
       }
+
       alert('GST Return snapshots generated successfully!')
+      fetchPeriods()
+    } catch (e: any) { alert(e.message) }
+    finally { setActionLoading(null) }
+  }
+
+  const handleValidate = async (periodId: number) => {
+    setActionLoading(`validate-${periodId}`)
+    try {
+      const res = await fetch(`${API_BASE}/gst/periods/${periodId}/validate`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.detail || 'GST validation failed')
+      if (result.valid) {
+        alert('GST validation passed. The period is ready to lock.')
+      } else {
+        alert(`${result.issue_count} validation issue(s) require attention.`)
+      }
+    } catch (e: any) { alert(e.message) }
+    finally { setActionLoading(null) }
+  }
+
+  const handleLock = async (periodId: number) => {
+    setActionLoading(`lock-${periodId}`)
+    try {
+      const res = await fetch(`${API_BASE}/gst/periods/${periodId}/lock`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.detail || 'Unable to lock GST period')
+      setPeriods(prev => prev.map(p => p.return_period_id === periodId
+        ? { ...p, locked_at: result.locked_at, locked_by: result.locked_by }
+        : p))
+    } catch (e: any) { alert(e.message) }
+    finally { setActionLoading(null) }
+  }
+
+  const handleProviderSubmit = async (periodId: number) => {
+    setActionLoading(`submit-${periodId}`)
+    try {
+      const res = await fetch(`${API_BASE}/gst/periods/${periodId}/submit`, {
+        method: 'POST',
+        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ environment: 'mock' })
+      })
+      const result = await res.json()
+      if (!res.ok) throw new Error(result.detail || 'GST provider submission failed')
+      alert(`GST submission accepted: ${result.acknowledgement_number || result.correlation_id}`)
       fetchPeriods()
     } catch (e: any) { alert(e.message) }
     finally { setActionLoading(null) }
@@ -936,7 +989,7 @@ export default function GstPage() {
                   )}
 
                   <div className="flex items-center gap-2 mt-3 flex-wrap">
-                    {p.status === 'Draft' && (
+                    {p.status === 'Draft' && !p.locked_at && (
                       <button
                         onClick={() => handleGenerate(p.return_period_id)}
                         disabled={actionLoading === `gen-${p.return_period_id}`}
@@ -947,6 +1000,39 @@ export default function GstPage() {
                           : <RefreshCw className="h-3 w-3" />}
                         Generate Snapshot
                       </button>
+                    )}
+                    {p.status === 'Draft' && !p.locked_at && (
+                      <>
+                        <button
+                          onClick={() => handleValidate(p.return_period_id)}
+                          disabled={actionLoading === `validate-${p.return_period_id}`}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          {actionLoading === `validate-${p.return_period_id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />}
+                          Validate
+                        </button>
+                        <button
+                          onClick={() => handleLock(p.return_period_id)}
+                          disabled={actionLoading === `lock-${p.return_period_id}`}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-muted hover:bg-muted/80 text-foreground text-[11px] font-bold rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          {actionLoading === `lock-${p.return_period_id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Lock className="h-3 w-3" />}
+                          Lock Period
+                        </button>
+                      </>
+                    )}
+                    {p.locked_at && p.status === 'Draft' && (
+                      <>
+                        <span className="text-[11px] font-semibold text-muted-foreground">Locked for filing</span>
+                        <button
+                          onClick={() => handleProviderSubmit(p.return_period_id)}
+                          disabled={actionLoading === `submit-${p.return_period_id}`}
+                          className="flex items-center gap-1 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          {actionLoading === `submit-${p.return_period_id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowRight className="h-3 w-3" />}
+                          Submit (Mock)
+                        </button>
+                      </>
                     )}
                     <button
                       onClick={() => {

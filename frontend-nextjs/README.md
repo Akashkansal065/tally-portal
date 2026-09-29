@@ -120,7 +120,7 @@ Since the project is structured as a monorepo (`frontend-nextjs/` and `backend/`
 3. Under **Build and Output Settings**, open **Root Directory**:
    - Click **Edit** and set it to **`frontend-nextjs`**.
 4. Under **Environment Variables**, add:
-   - `NEXT_PUBLIC_API_BASE`: URL of your deployed Python backend (e.g. `https://your-backend-api.com`)
+   - `NEXT_PUBLIC_API_BASE`: URL of your deployed Python backend (e.g. `https://your-backend-api.com`). This is the frontend's API variable; `NEXT_PUBLIC_API_URL` is not required.
    - `NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY`: ImageKit public key (if applicable)
    - `NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT`: ImageKit endpoint URL (if applicable)
 5. Click **Deploy**.

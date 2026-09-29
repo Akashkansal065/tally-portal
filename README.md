@@ -48,7 +48,7 @@ tally-portal/
 │   │   ├── models/
 │   │   │   ├── portal_core.py   # Portal staging DB models (50+ tables)
 │   │   │   └── tally_core.py    # Tally synced DB models (60+ tables)
-│   │   ├── routers/             # 21 API router modules
+│   │   ├── routers/             # API router modules for auth, finance, masters, sync, and reporting
 │   │   ├── schemas/             # Pydantic request/response schemas
 │   │   └── services/            # Tally XML builder, importer, GST service
 │   ├── scratch/                 # Admin scripts & Tally sync daemon
@@ -56,8 +56,8 @@ tally-portal/
 │   └── requirements.txt
 ├── frontend-nextjs/             # Next.js 16 + Tailwind CSS 4 frontend
 │   ├── src/
-│   │   ├── app/                 # 16+ route pages
-│   │   ├── components/          # 20+ reusable components
+│   │   ├── app/                 # 42 App Router pages
+│   │   ├── components/          # Reusable UI, forms, reports, and admin components
 │   │   ├── context/             # Auth & Period context providers
 │   │   ├── constants/           # App-wide constants
 │   │   ├── lib/                 # Utility functions
@@ -287,6 +287,8 @@ The reports module provides a full financial analytics suite with **2-hour in-me
   - **"+ Add to Books" Quick Action**: 1-click button on unmatched GSTR-2B rows to add company asset/expense purchases into `manual_purchases` table, auto-matching the row and claiming ITC in GSTR-3B Table 4.
 * **Manual Purchases Register**: Track, manage, and claim ITC on non-inventory or direct company asset/expense purchases.
 * **GSTR-9 Annual Return & E-Invoicing**: Annual return generation & e-invoice IRN / QR code management.
+* **GST Compliance Control Tower**: Period validation, persisted exception queues, append-only filing evidence, and period locking before provider submission.
+* **GST Provider Boundary**: Idempotent mock/sandbox submission with immutable payload/response evidence; production connectors remain deployment-configured behind the same interface.
 
 ---
 
@@ -462,11 +464,7 @@ This starts MySQL 8.0 on port `3306` with database `mytally_db`. The backend wil
    ```
 
 4. Configure the environment variables:
-   - Copy `.env.template` (or create a new `.env` file):
-     ```bash
-     cp .env.template .env
-     ```
-   - Open `.env` and fill in your MySQL details:
+   - Create `backend/.env` and fill in your MySQL details:
      ```env
      DATABASE_URL=mysql+aiomysql://YOUR_DB_USER:YOUR_DB_PASSWORD@localhost:3306/mytally_db
      JWT_SECRET=change-this-to-a-very-secure-secret-key
@@ -521,7 +519,7 @@ This starts MySQL 8.0 on port `3306` with database `mytally_db`. The backend wil
    ```bash
    cp .env.local.example .env.local
    ```
-   Set `NEXT_PUBLIC_API_URL` to your backend URL (default: `http://localhost:8000`).
+   Set `NEXT_PUBLIC_API_BASE` to your backend URL (default: `http://127.0.0.1:8000`).
 
 4. Run the Next.js development server:
    ```bash
@@ -562,7 +560,7 @@ For environments where Tally Prime runs on a local Windows PC or VM:
 cd installer
 build_windows_exe.bat
 ```
-→ Output: `dist/MyTallySyncAgent.exe`
+→ Output: `dist/SnehDistribuorsSync.exe`
 
 ---
 

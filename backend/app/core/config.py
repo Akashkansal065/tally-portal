@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     
     # Tally Synchronization Settings
     TALLY_URL: Optional[str] = None
+
+    # GST provider adapter. Credentials stay server-side; the adapter is API-shape agnostic.
+    GST_PROVIDER_URL: Optional[str] = None
+    GST_PROVIDER_API_KEY: Optional[str] = None
     
     # UPI / Payment Settings
     DEFAULT_UPI_VPA: str = "***@upi"

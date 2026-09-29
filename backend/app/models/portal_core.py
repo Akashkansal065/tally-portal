@@ -640,12 +640,73 @@ class GstReturnPeriod(Base):
     filed_date = Column(Date, nullable=True)
     arn = Column(String(30), nullable=True)
     filed_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    locked_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
     
     company = relationship("Company")
-    user = relationship("User")
+    user = relationship("User", foreign_keys=[filed_by])
+    locked_user = relationship("User", foreign_keys=[locked_by])
     gstr1_lines = relationship("Gstr1LineItem", back_populates="period", cascade="all, delete-orphan")
     gstr1_hsn_summaries = relationship("Gstr1HsnSummary", back_populates="period", cascade="all, delete-orphan")
     gstr3b_summary = relationship("Gstr3bSummary", uselist=False, back_populates="period", cascade="all, delete-orphan")
+
+
+class GstComplianceException(Base):
+    """Persisted validation or provider issue requiring tax-team action."""
+
+    __tablename__ = "gst_compliance_exceptions"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    exception_id = Column(BigInteger, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    return_period_id = Column(BigInteger, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.gst_return_periods.return_period_id", ondelete="CASCADE"), nullable=True, index=True)
+    code = Column(String(80), nullable=False, index=True)
+    field = Column(String(120), nullable=True)
+    message = Column(String(500), nullable=False)
+    severity = Column(String(20), nullable=False, default="error")
+    status = Column(String(20), nullable=False, default="open", index=True)
+    resolution_note = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=True)
+
+
+class GstFilingSnapshot(Base):
+    """Append-only payload and response evidence for a GST filing attempt."""
+
+    __tablename__ = "gst_filing_snapshots"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    snapshot_id = Column(BigInteger, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    return_period_id = Column(BigInteger, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.gst_return_periods.return_period_id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False, default="internal")
+    payload_hash = Column(String(64), nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+    response = Column(JSON, nullable=True)
+    status = Column(String(30), nullable=False, default="generated")
+    acknowledgement_number = Column(String(64), nullable=True)
+    created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+
+
+class GstProviderAttempt(Base):
+    """Append-only audit record for each provider submission or retry."""
+
+    __tablename__ = "gst_provider_attempts"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    attempt_id = Column(BigInteger, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    return_period_id = Column(BigInteger, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.gst_return_periods.return_period_id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False)
+    idempotency_key = Column(String(160), nullable=False, index=True)
+    status = Column(String(30), nullable=False)
+    correlation_id = Column(String(120), nullable=True)
+    response = Column(JSON, nullable=True)
+    error_message = Column(String(500), nullable=True)
+    created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), index=True)
 
 class Gstr1LineItem(Base):
     __tablename__ = "gstr1_line_items"
@@ -761,6 +822,9 @@ class Gstr2bEntry(Base):
     itc_availability = Column(Enum('Available', 'Not Available', 'Pending', name='gstr2b_itc_avail_enum'), default='Pending')
     match_status = Column(Enum('Matched', 'Unmatched', 'Mismatch', name='gstr2b_match_enum'), default='Unmatched')
     matched_voucher_id = Column(BigInteger, nullable=True)
+    match_method = Column(String(30), nullable=True)
+    match_confidence = Column(Numeric(5, 2), nullable=True)
+    match_reason = Column(String(255), nullable=True)
     
     company = relationship("Company")
     period = relationship("GstReturnPeriod")

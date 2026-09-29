@@ -19,11 +19,13 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return outputArray
 }
 
+/** Return whether browser APIs that require a secure origin may be used. */
 export function isSecureContext(): boolean {
   if (typeof window === 'undefined') return false
   return window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
 }
 
+/** Check whether service workers, PushManager, and Notification are available. */
 export function isPushNotificationSupported(): boolean {
   if (typeof window === 'undefined') return false
   return (
@@ -33,6 +35,7 @@ export function isPushNotificationSupported(): boolean {
   )
 }
 
+/** Detect iOS and iPadOS, including iPads that identify as desktop Safari. */
 export function isIOS(): boolean {
   if (typeof window === 'undefined') return false
   return (
@@ -41,6 +44,7 @@ export function isIOS(): boolean {
   )
 }
 
+/** Check whether the PWA is running from an installed standalone window. */
 export function isStandalone(): boolean {
   if (typeof window === 'undefined') return false
   return (
@@ -49,6 +53,7 @@ export function isStandalone(): boolean {
   )
 }
 
+/** Read the current browser notification permission without prompting the user. */
 export function getNotificationPermission(): NotificationPermission {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return 'default'

@@ -1,10 +1,16 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 
+/** Merge conditional class names and Tailwind utilities without conflicting rules. */
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+/**
+ * Resolve the backend URL for both local development and browser deployments.
+ * When a local URL is used from another host, replace the loopback hostname
+ * so phones on the same network can reach the developer's machine.
+ */
 export const API_BASE = (() => {
   if (typeof window !== 'undefined') {
     const hostname = window.location.hostname
@@ -19,6 +25,7 @@ export const API_BASE = (() => {
   return process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000'
 })()
 
+/** Build JSON request headers and include a bearer token when one is available. */
 export const authHeaders = (token?: string) => {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -29,6 +36,7 @@ export const authHeaders = (token?: string) => {
   return headers
 }
 
+/** Format an amount using Indian numbering and INR currency conventions. */
 export const formatCurrency = (amount: number) => {
   if (amount === undefined || amount === null) return '₹0.00';
   return new Intl.NumberFormat('en-IN', {
@@ -37,6 +45,10 @@ export const formatCurrency = (amount: number) => {
   }).format(amount)
 }
 
+/**
+ * Format an API date in the Indian locale.
+ * Naive ISO timestamps are treated as UTC to keep server-rendered dates stable.
+ */
 export const formatDate = (dateStr: string) => {
   if (!dateStr) return '';
   let s = dateStr.trim();
@@ -53,6 +65,7 @@ export const formatDate = (dateStr: string) => {
   });
 }
 
+/** Format a timestamp in Asia/Kolkata with optional date, seconds, and casing. */
 export const formatToIST = (
   dateInput: string | Date | null | undefined,
   options?: { includeSeconds?: boolean; includeDate?: boolean; uppercase?: boolean }
@@ -97,6 +110,7 @@ export const formatToIST = (
   return timePart;
 };
 
+/** Convert each word in a label to title case for UI display. */
 export const toTitleCase = (str: string) => {
   if (!str) return '';
   return str.replace(
@@ -104,4 +118,3 @@ export const toTitleCase = (str: string) => {
     (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
   );
 }
-

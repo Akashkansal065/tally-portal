@@ -1,3 +1,7 @@
+/**
+ * Rotate an image and extract the requested crop rectangle as a JPEG data URL.
+ * The oversized working canvas prevents rotated corners from being clipped.
+ */
 export const getCroppedImg = async (
   imageSrc: string,
   pixelCrop: { x: number; y: number; width: number; height: number },

@@ -37,6 +37,10 @@ const drawFallbackMap = (ctx: CanvasRenderingContext2D, x: number, y: number, w:
   ctx.fill()
 }
 
+/**
+ * Capture location metadata and render it onto a photo before upload.
+ * Falls back from high-accuracy GPS to a lower-accuracy request when needed.
+ */
 export async function stampPhoto(
   file: File,
   preloadedCoords?: { lat: number; lng: number } | null
