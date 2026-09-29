@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.datetime_utils import to_ist_iso
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission, get_user_allowed_voucher_type_ids
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
+from app.core.pagination import PaginationParams, apply_pagination_headers
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
 from app.models.tally_core import (
     MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, BillAllocation, MstLedger, MstGroup, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration, TrnCostCentreAllocation
@@ -1083,6 +1084,7 @@ def _resolve_party_and_amount(entries):
 
 @router.get("", response_model=List[VoucherListResponse])
 async def get_vouchers(
+    response: Response,
     status: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
@@ -1090,6 +1092,7 @@ async def get_vouchers(
     ledger_id: Optional[int] = None,
     party_name: Optional[str] = None,
     voucher_type: Optional[str] = None,
+    pagination: PaginationParams = Depends(),
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
@@ -1097,8 +1100,18 @@ async def get_vouchers(
     cache_key = f"vouchers_list_{status}_{from_date}_{to_date}_{date}_{ledger_id}_{party_name}_{voucher_type}"
     if allowed_ids is not None:
         cache_key += f"_user_{user.user_id}"
+    if pagination.is_paginated:
+        cache_key += f"_p{pagination.page}_ps{pagination.page_size}"
+
     cached = get_cached_response(user.company_id, cache_key)
-    if cached is not None: return cached
+    if cached is not None:
+        if isinstance(cached, dict) and "items" in cached and "total" in cached:
+            apply_pagination_headers(response, cached["total"], pagination)
+            return cached["items"]
+        elif isinstance(cached, list):
+            apply_pagination_headers(response, len(cached), pagination)
+            return cached
+        return cached
 
     stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
@@ -1136,8 +1149,12 @@ async def get_vouchers(
             "total_amount": float(v.total_amount or 0),
         })
 
-    set_cached_response(user.company_id, cache_key, result)
-    return result
+    total = len(result)
+    apply_pagination_headers(response, total, pagination)
+    paginated_result = pagination.slice_list(result)
+
+    set_cached_response(user.company_id, cache_key, {"items": paginated_result, "total": total} if pagination.is_paginated else paginated_result)
+    return paginated_result
 
 @router.get("/{voucher_id}")
 async def get_voucher_detail(

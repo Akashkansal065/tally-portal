@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -7,7 +7,10 @@ from decimal import Decimal
 from sqlalchemy import func, delete, update
 import logging
 
-logger = logging.getLogger("app.routers.ledgers")
+from app.core.logging_config import get_logger
+from app.core.pagination import PaginationParams, apply_pagination_headers
+
+logger = get_logger("app.routers.ledgers")
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_current_user, get_effective_permission, get_all_user_permissions
@@ -399,13 +402,24 @@ async def delete_group(
 
 @router.get("", response_model=List[LedgerResponse])
 async def get_ledgers(
+    response: Response,
+    pagination: PaginationParams = Depends(),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     from app.core.cache import get_cached_response
     cache_key = f"ledgers_user_{user.user_id}"
+    if pagination.is_paginated:
+        cache_key += f"_p{pagination.page}_ps{pagination.page_size}"
+
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
+        if isinstance(cached, dict) and "items" in cached and "total" in cached:
+            apply_pagination_headers(response, cached["total"], pagination)
+            return cached["items"]
+        elif isinstance(cached, list):
+            apply_pagination_headers(response, len(cached), pagination)
+            return cached
         return cached
 
     r_name = user.role.name if user.role else "Unknown"
@@ -497,8 +511,12 @@ async def get_ledgers(
                 filtered.append(ledger)
                 
     from app.core.cache import set_cached_response
-    set_cached_response(user.company_id, cache_key, filtered)
-    return filtered
+    total = len(filtered)
+    apply_pagination_headers(response, total, pagination)
+    paginated_result = pagination.slice_list(filtered)
+
+    set_cached_response(user.company_id, cache_key, {"items": paginated_result, "total": total} if pagination.is_paginated else paginated_result)
+    return paginated_result
 
 @router.post("", response_model=LedgerResponse)
 async def create_ledger(

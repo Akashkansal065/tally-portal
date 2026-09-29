@@ -3,7 +3,7 @@ Customers / Field Shop Directory Router
 Dedicated to field sales, customer profiling, and GPS audit verification.
 Strictly isolated from accounting: NO Tally ledger creation or accounting modifications.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, desc, or_, and_, update
@@ -12,6 +12,11 @@ from typing import Optional, List, Dict, Any
 from decimal import Decimal
 from datetime import datetime
 from collections import defaultdict, Counter
+
+from app.core.logging_config import get_logger
+from app.core.pagination import PaginationParams, apply_pagination_headers
+
+logger = get_logger("app.routers.customers")
 
 from app.core.database import get_db
 from app.core.permissions import get_current_user, require_permission, get_effective_permission, require_customer_read_permission
@@ -175,6 +180,7 @@ def extract_locality_and_city(address: Optional[str]):
 
 @router.get("")
 async def list_customers(
+    response: Response,
     search: Optional[str] = Query(None, description="Search by name, contact, phone, locality"),
     locality: Optional[str] = Query(None, description="Filter by locality"),
     city: Optional[str] = Query(None, description="Filter by city"),
@@ -187,6 +193,7 @@ async def list_customers(
     sort_by: Optional[str] = Query("name_asc", description="name_asc, name_desc, nearest, missing_gps, last_visited, health_asc, health_desc"),
     my_lat: Optional[float] = Query(None, description="Current salesperson latitude"),
     my_lon: Optional[float] = Query(None, description="Current salesperson longitude"),
+    pagination: PaginationParams = Depends(),
     user: User = Depends(require_customer_read_permission),
     db: AsyncSession = Depends(get_db),
 ):
@@ -598,10 +605,15 @@ async def list_customers(
     fair_count = sum(1 for c in customers if c.get("health_score", {}).get("grade") == "FAIR")
     at_risk_count = sum(1 for c in customers if c.get("health_score", {}).get("grade") == "AT_RISK")
 
-    return {
-        "customers": filtered,
+    total_matching = len(filtered)
+    apply_pagination_headers(response, total_matching, pagination)
+    paginated_customers = pagination.slice_list(filtered)
+
+    ret = {
+        "customers": paginated_customers,
         "metrics": {
             "total": total_count,
+            "matching": total_matching,
             "tagged": tagged_count,
             "missing_location": missing_count,
             "mismatch_count": mismatch_count,
@@ -611,6 +623,11 @@ async def list_customers(
             "at_risk_count": at_risk_count,
         }
     }
+    if pagination.is_paginated and pagination.page_size:
+        ret["page"] = pagination.page
+        ret["page_size"] = pagination.page_size
+        ret["total_pages"] = (total_matching + pagination.page_size - 1) // pagination.page_size if total_matching > 0 else 1
+    return ret
 
 
 @router.get("/localities")

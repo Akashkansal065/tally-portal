@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -8,7 +8,11 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.logging_config import get_logger
+from app.core.pagination import PaginationParams, apply_pagination_headers
 from app.core.permissions import require_permission, get_current_user, get_effective_permission
+
+logger = get_logger("app.routers.inventory")
 from app.models.portal_core import User, DeletedRecordAudit, SyncQueue
 from app.models.tally_core import MstUom, MstStockGroup, StockGroupAlias, MstStockCategory, MstGodown, MstStockItem, Batch, MstPriceLevel
 from app.models.portal_core import BillOfMaterials, BomItem, SerialNumber
@@ -1119,6 +1123,8 @@ async def delete_stock_item(
 
 @router.get("/items", response_model=List[StockItemResponse])
 async def get_stock_items(
+    response: Response,
+    pagination: PaginationParams = Depends(),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -1299,7 +1305,9 @@ async def get_stock_items(
             gp_percent=gp_percent
         ))
 
-    return out
+    total = len(out)
+    apply_pagination_headers(response, total, pagination)
+    return pagination.slice_list(out)
 
 
 @router.get("/items/{item_id}/vouchers")

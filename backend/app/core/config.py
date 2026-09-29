@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     LOGIN_RATE_LIMIT: str = "5/minute"
     REGISTER_RATE_LIMIT: str = "5/minute; 20/hour"
+
+    # Logging Settings
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"  # 'text' or 'json'
+
+    # Pagination Settings
+    DEFAULT_PAGE_SIZE: int = 50
+    MAX_PAGE_SIZE: int = 500
     
     @property
     def PORTAL_DATABASE_NAME(self) -> str:

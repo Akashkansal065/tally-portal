@@ -7,19 +7,24 @@ from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
 from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health, masters, payments, customers, notifications, planner, bank_recon
 
+from app.core.logging_config import setup_logging, get_logger, RequestLoggingMiddleware
+
+setup_logging()
+logger = get_logger("app.main")
+
 async def db_keep_alive_task(interval_seconds: int = 120):
     """Background task running every 2 minutes to keep the DB connection pool active."""
-    print(f"Starting DB Keep-Alive background worker (interval: {interval_seconds}s)...")
+    logger.info(f"Starting DB Keep-Alive background worker (interval: {interval_seconds}s)...")
     while True:
         try:
             await asyncio.sleep(interval_seconds)
             async with AsyncSessionLocal() as session:
                 await session.execute(text("SELECT 1"))
         except asyncio.CancelledError:
-            print("DB Keep-Alive background worker stopped.")
+            logger.info("DB Keep-Alive background worker stopped.")
             break
         except Exception as e:
-            print(f"Warning: DB Keep-Alive ping encountered an error: {e}")
+            logger.warning(f"DB Keep-Alive ping encountered an error: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -65,6 +70,9 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
 
 app = FastAPI(title="Open Tally-Clone API", version="1.0.0", lifespan=lifespan)
+
+# Structured Request Logging & Correlation
+app.add_middleware(RequestLoggingMiddleware)
 
 # Rate Limiter
 app.state.limiter = limiter
