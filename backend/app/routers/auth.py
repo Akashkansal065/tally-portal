@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_access_token
 from app.core.permissions import get_current_user, oauth2_scheme, get_all_user_permissions, get_user_permission_toggles
 from app.core.seed import seed_company_defaults
+from app.core.rate_limiter import limiter
 from app.models.portal_core import Company
 from app.models.portal_core import User, Role, UserSession
 from app.schemas.user import UserLogin, Token, UserResponse
@@ -62,7 +63,9 @@ class RegisterCompanyRequest(BaseModel):
     email: str
     password: str
 
+@router.post("/register", response_model=UserResponse)
 @router.post("/register-company", response_model=UserResponse)
+@limiter.limit(settings.REGISTER_RATE_LIMIT)
 async def register_company(
     req: RegisterCompanyRequest,
     request: Request,
@@ -192,7 +195,9 @@ async def register_company(
     return user
 
 @router.post("/login", response_model=Token)
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
 async def login(
+    request: Request,
     req: UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
@@ -227,7 +232,9 @@ async def login(
 
 
 @router.post("/swagger-login", response_model=Token)
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
 async def swagger_login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):

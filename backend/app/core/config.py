@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     VAPID_PUBLIC_KEY: Optional[str] = None
     VAPID_PRIVATE_KEY: Optional[str] = None
     VAPID_CLAIM_EMAIL: str = "mailto:admin@snehdistributors.com"
+
+    # Rate Limiting Settings
+    RATE_LIMIT_ENABLED: bool = True
+    LOGIN_RATE_LIMIT: str = "5/minute"
+    REGISTER_RATE_LIMIT: str = "5/minute; 20/hour"
     
     @property
     def PORTAL_DATABASE_NAME(self) -> str:

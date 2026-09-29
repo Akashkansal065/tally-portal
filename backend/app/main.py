@@ -60,7 +60,16 @@ async def lifespan(app: FastAPI):
         attendance_worker_task.cancel()
         await asyncio.gather(keep_alive_task, attendance_worker_task, return_exceptions=True)
 
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
+
 app = FastAPI(title="Open Tally-Clone API", version="1.0.0", lifespan=lifespan)
+
+# Rate Limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Configure CORS
 app.add_middleware(
