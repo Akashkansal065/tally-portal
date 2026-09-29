@@ -53,7 +53,7 @@ httpx-sse==0.4.3
 huggingface_hub==1.26.0
 hyperframe==6.1.0
 idna==3.18
-importlib_metadata==8.9.0
+importlib_metadata==9.0.1
 inquirerpy==0.3.4
 isodate==0.7.2
 Jinja2==3.1.6
