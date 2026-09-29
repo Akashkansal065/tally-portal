@@ -150,7 +150,7 @@ tree-sitter-typescript==0.23.2
 tree-sitter-verilog==1.0.3
 tree-sitter-zig==1.1.2
 treelib==1.8.0
-typing-inspection==0.4.2
+typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzlocal==5.4.4
 urllib3==2.7.0
