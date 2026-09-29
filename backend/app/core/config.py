@@ -37,11 +37,11 @@ class Settings(BaseSettings):
 
     # Logging Settings
     LOG_LEVEL: str = "INFO"
-    LOG_FORMAT: str = "text"  # 'text' or 'json'
+    LOG_FORMAT: str = "json"  # 'text' or 'json'
 
     # Pagination Settings
     DEFAULT_PAGE_SIZE: int = 50
-    MAX_PAGE_SIZE: int = 500
+    MAX_PAGE_SIZE: int = 50000
     
     @property
     def PORTAL_DATABASE_NAME(self) -> str:
