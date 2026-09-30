@@ -73,7 +73,8 @@ export async function prefetchVapidKey(token: string): Promise<string | null> {
     const res = await fetch(`${API_BASE}/notifications/vapid-public-key`, {
       headers: authHeaders(token)
     })
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || ''
+    if (res.ok && contentType.includes('application/json')) {
       const data = await res.json()
       cachedVapidKey = data.public_key || null
       return cachedVapidKey
@@ -195,7 +196,8 @@ export async function subscribeToPushNotifications(
         signal: controller.signal
       }).finally(() => clearTimeout(fetchTimer))
 
-      if (!vapidRes.ok) {
+      const vapidContentType = vapidRes.headers.get('content-type') || ''
+      if (!vapidRes.ok || !vapidContentType.includes('application/json')) {
         throw new Error('Failed to retrieve push encryption key from server.')
       }
       const data = await vapidRes.json()

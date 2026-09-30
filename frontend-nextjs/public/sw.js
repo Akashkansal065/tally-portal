@@ -1,5 +1,3 @@
-const CACHE_NAME = 'tally-web-cache-v2';
-
 self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
@@ -8,17 +6,11 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
-        cacheNames
-          .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
+        cacheNames.map((name) => caches.delete(name))
       );
     })
   );
   self.clients.claim();
-});
-
-self.addEventListener('fetch', (event) => {
-  // Pass through all fetch events
 });
 
 // Push notification event listener

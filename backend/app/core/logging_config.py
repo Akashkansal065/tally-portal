@@ -108,6 +108,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
             response.headers["X-Request-ID"] = req_id
 
+            if request.url.path.startswith("/auth/"):
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+
             if not is_silent:
                 client_ip = request.client.host if request.client else "unknown"
                 forwarded = request.headers.get("x-forwarded-for")

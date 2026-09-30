@@ -53,8 +53,9 @@ export default function LoginPage() {
     let isMounted = true
     const checkBootstrap = async () => {
       try {
-        const res = await fetch(`${API_BASE}/auth/bootstrap-status`)
-        if (res.ok && isMounted) {
+        const res = await fetch(`${API_BASE}/auth/bootstrap-status`, { cache: 'no-store' })
+        const contentType = res.headers.get('content-type') || ''
+        if (res.ok && contentType.includes('application/json') && isMounted) {
           const data = await res.json()
           setNeedBootstrap(Boolean(data.need_bootstrap))
         }
@@ -97,6 +98,7 @@ export default function LoginPage() {
             email,
             password
           }),
+          cache: 'no-store',
         })
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))
@@ -108,6 +110,7 @@ export default function LoginPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
+          cache: 'no-store',
         })
         if (!loginRes.ok) {
           throw new Error('Bootstrap success, but login failed. Please sign in.')
@@ -121,6 +124,7 @@ export default function LoginPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
+          cache: 'no-store',
         })
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))

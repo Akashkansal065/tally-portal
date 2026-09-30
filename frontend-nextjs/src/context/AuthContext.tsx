@@ -118,16 +118,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch(`${API_BASE}/auth/me`, {
         headers: authHeaders(tok),
+        cache: 'no-store',
       })
-      if (!res.ok) throw new Error('Unauthorized')
+      const contentType = res.headers.get('content-type') || ''
+      if (!res.ok) {
+        let errorDetail = `HTTP ${res.status} (${res.statusText || 'Error'})`
+        try {
+          if (contentType.includes('application/json')) {
+            const errJson = await res.json()
+            errorDetail = errJson.detail || errJson.message || errorDetail
+          } else {
+            const errText = await res.text()
+            if (errText) errorDetail = errText.slice(0, 200)
+          }
+        } catch {}
+        console.error(`[AuthContext] /auth/me failed with status ${res.status}:`, errorDetail)
+        throw new Error(errorDetail)
+      }
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Invalid response format from server (${contentType || 'empty'})`)
+      }
       const data = await res.json()
 
       let allowedCompanies = []
       try {
         const compRes = await fetch(`${API_BASE}/auth/me/companies`, {
           headers: authHeaders(tok),
+          cache: 'no-store',
         })
-        if (compRes.ok) allowedCompanies = await compRes.json()
+        const compContentType = compRes.headers.get('content-type') || ''
+        if (compRes.ok && compContentType.includes('application/json')) {
+          allowedCompanies = await compRes.json()
+        }
       } catch (e) { }
 
       const isAdmin = data.isAdmin ?? (
@@ -160,11 +182,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           isAdmin,
         },
       })
-    } catch {
-      setUser(null)
-      setToken('')
-      localStorage.removeItem('mytally_token')
-      localStorage.removeItem('mytally_email')
+    } catch (err) {
+      console.error('[AuthContext] Failed to load session user profile:', err)
+      // Only clear storage and state if the token that failed is still the active token in localStorage
+      if (typeof window !== 'undefined' && localStorage.getItem('mytally_token') === tok) {
+        setUser(null)
+        setToken('')
+        localStorage.removeItem('mytally_token')
+        localStorage.removeItem('mytally_email')
+      }
+      throw err
     } finally {
       setIsLoading(false)
     }
@@ -174,13 +201,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const saved = localStorage.getItem('mytally_token')
     if (saved) {
       setToken(saved)
-      fetchMe(saved)
+      fetchMe(saved).catch(() => {})
     } else {
       setIsLoading(false)
     }
   }, [fetchMe])
 
   const login = async (tok: string, email: string) => {
+    setIsLoading(true)
     setToken(tok)
     localStorage.setItem('mytally_token', tok)
     localStorage.setItem('mytally_email', email)

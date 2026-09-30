@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -69,6 +69,7 @@ class RegisterCompanyRequest(BaseModel):
 async def register_company(
     req: RegisterCompanyRequest,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db)
 ):
     # Security check: Determine if caller is an authorized Admin or if database is empty of Admins (bootstrap mode)
@@ -198,6 +199,7 @@ async def register_company(
 @limiter.limit(settings.LOGIN_RATE_LIMIT)
 async def login(
     request: Request,
+    response: Response,
     req: UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
@@ -235,6 +237,7 @@ async def login(
 @limiter.limit(settings.LOGIN_RATE_LIMIT)
 async def swagger_login(
     request: Request,
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
