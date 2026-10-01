@@ -12,7 +12,7 @@ from app.core.logging_config import setup_logging, get_logger, RequestLoggingMid
 setup_logging()
 logger = get_logger("app.main")
 
-async def db_keep_alive_task(interval_seconds: int = 120):
+async def db_keep_alive_task(interval_seconds: int = 60):
     """Periodically ping the database so idle pooled connections stay usable."""
     logger.info(f"Starting DB Keep-Alive background worker (interval: {interval_seconds}s)...")
     while True:
@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(sync_seed)
 
     # Start background workers only after initialization has succeeded.
-    keep_alive_task = asyncio.create_task(db_keep_alive_task(120))
+    keep_alive_task = asyncio.create_task(db_keep_alive_task(60))
 
     # 5. Start background Attendance Auto Punch-Out worker task (checks every 60 seconds)
     from app.services.attendance_worker import attendance_auto_checkout_worker

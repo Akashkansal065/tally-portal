@@ -183,10 +183,10 @@ async def get_all_user_permissions(
     for perm, mod_code in perm_q.all():
         m_code = mod_code.lower()
         capabilities[m_code] = {
-            "can_create": bool(perm.can_create),
-            "can_read": bool(perm.can_read),
-            "can_update": bool(perm.can_update),
-            "can_delete": bool(perm.can_delete),
+            "can_create": True if is_admin else bool(perm.can_create),
+            "can_read": True if is_admin else bool(perm.can_read),
+            "can_update": True if is_admin else bool(perm.can_update),
+            "can_delete": True if is_admin else bool(perm.can_delete),
         }
 
     # 2. Fetch user-specific overrides joined with Module

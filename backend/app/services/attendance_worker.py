@@ -238,7 +238,11 @@ async def check_and_process_attendance():
                     await db.rollback()
 
         except Exception as query_err:
-            logger.error(f"Error fetching active attendance records in auto checkout worker: {query_err}", exc_info=True)
+            err_str = str(query_err).lower()
+            if "lost connection" in err_str or "timed out" in err_str or "operationalerror" in err_str:
+                logger.warning(f"Attendance worker encountered transient DB connection timeout (reconnecting next tick): {query_err}")
+            else:
+                logger.error(f"Error fetching active attendance records in auto checkout worker: {query_err}", exc_info=True)
 
 
 async def attendance_auto_checkout_worker(interval_seconds: int = 60):

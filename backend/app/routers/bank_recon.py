@@ -1498,7 +1498,7 @@ async def match_transaction(
     voucher_id: Optional[int] = Form(None),
     payment_id: Optional[int] = Form(None),
     match_notes: Optional[str] = Form(None),
-    user: User = Depends(require_permission("vouchers", "update")),
+    user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """Manually or confirmed match between a statement line and a voucher or collection."""
@@ -1547,7 +1547,7 @@ async def match_transaction(
 @router.post("/unmatch")
 async def unmatch_transaction(
     transaction_id: int = Form(...),
-    user: User = Depends(require_permission("vouchers", "update")),
+    user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """Reverts a previously matched transaction back to unmatched state."""
@@ -1594,7 +1594,7 @@ async def unmatch_transaction(
 async def batch_match_suggested(
     statement_id: Optional[int] = Form(None),
     bank_ledger_id: Optional[int] = Form(None),
-    user: User = Depends(require_permission("vouchers", "update")),
+    user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """1-click accepts all transactions currently in 'suggested' status for this statement or bank ledger."""
@@ -1655,7 +1655,7 @@ async def update_review_status(
     transaction_id: int = Form(...),
     review_status: str = Form(...),  # 'pending_review', 'not_specific', 'bank_charges', 'interest', 'internal_transfer', 'other_account', 'under_investigation'
     review_notes: Optional[str] = Form(None),
-    user: User = Depends(require_permission("vouchers", "update")),
+    user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -1726,7 +1726,7 @@ async def batch_review_status(
     transaction_ids: str = Form(..., description="Comma-separated transaction IDs"),
     review_status: str = Form(...),
     review_notes: Optional[str] = Form(None),
-    user: User = Depends(require_permission("vouchers", "update")),
+    user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     """

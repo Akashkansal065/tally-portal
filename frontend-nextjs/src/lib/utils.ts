@@ -15,7 +15,12 @@ export const API_BASE = (() => {
   if (typeof window !== 'undefined') {
     const hostname = window.location.hostname
     const configured = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:8000'
-    // Align host dynamically (localhost, 127.0.0.1, or local LAN IP)
+    // If accessing via loopback (localhost or 127.0.0.1), always use 127.0.0.1
+    // to avoid macOS IPv6 (::1) connection refused issues when backend binds to IPv4.
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return configured.replace(/localhost|127\.0\.0\.1/, '127.0.0.1')
+    }
+    // Align host dynamically for local network/LAN devices (e.g. 192.168.x.x, 10.x.x.x)
     if (configured.includes('localhost') || configured.includes('127.0.0.1')) {
       return configured.replace(/localhost|127\.0\.0\.1/, hostname)
     }

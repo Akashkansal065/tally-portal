@@ -133,7 +133,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         } catch {}
         console.error(`[AuthContext] /auth/me failed with status ${res.status}:`, errorDetail)
-        throw new Error(errorDetail)
+        const errorObj = new Error(errorDetail) as Error & { status?: number }
+        errorObj.status = res.status
+        throw errorObj
       }
       if (!contentType.includes('application/json')) {
         throw new Error(`Invalid response format from server (${contentType || 'empty'})`)
@@ -182,10 +184,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           isAdmin,
         },
       })
-    } catch (err) {
+    } catch (err: any) {
       console.error('[AuthContext] Failed to load session user profile:', err)
-      // Only clear storage and state if the token that failed is still the active token in localStorage
-      if (typeof window !== 'undefined' && localStorage.getItem('mytally_token') === tok) {
+      // Only clear storage and state if it is an actual authentication error (HTTP 401 / 403 or invalid credentials),
+      // NEVER clear the token on transient network errors (like TypeError: Failed to fetch)
+      const isAuthError =
+        err?.status === 401 ||
+        err?.status === 403 ||
+        err?.message?.toLowerCase().includes('unauthorized') ||
+        err?.message?.toLowerCase().includes('session expired') ||
+        err?.message?.toLowerCase().includes('could not validate credentials')
+      if (isAuthError && typeof window !== 'undefined' && localStorage.getItem('mytally_token') === tok) {
         setUser(null)
         setToken('')
         localStorage.removeItem('mytally_token')

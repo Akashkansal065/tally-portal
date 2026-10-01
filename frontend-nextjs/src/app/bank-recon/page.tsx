@@ -53,6 +53,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+import VoucherDetailModal, { BankTxContext } from '@/components/VoucherDetailModal'
 
 export const REVIEW_CATEGORIES = [
   {
@@ -257,6 +258,17 @@ export default function BankReconciliationPage() {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null)
+
+  // Voucher Detail Modal State (View Receipt / Voucher on the same page)
+  const [modalVoucherId, setModalVoucherId] = useState<number | null>(null)
+  const [modalBankTx, setModalBankTx] = useState<BankTxContext | null>(null)
+  const [isVoucherModalOpen, setIsVoucherModalOpen] = useState(false)
+
+  const handleOpenVoucherModal = (voucherId: number, bankContext?: BankTxContext | null) => {
+    setModalVoucherId(voucherId)
+    setModalBankTx(bankContext || null)
+    setIsVoucherModalOpen(true)
+  }
 
   // Manual Matching Modal
   const [matchingTx, setMatchingTx] = useState<StatementTransaction | null>(null)
@@ -1487,18 +1499,26 @@ export default function BankReconciliationPage() {
                                 {tx.voucher ? (
                                   <div className="space-y-1">
                                     <div className="flex items-center gap-1.5 flex-wrap">
-                                      <Link
-                                        href={`/vouchers/${tx.voucher.voucher_id}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1 group/v"
-                                        title={`Open ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} in new tab`}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenVoucherModal(tx.voucher!.voucher_id, {
+                                          transaction_id: tx.transaction_id,
+                                          transaction_date: tx.transaction_date,
+                                          transaction_type: tx.transaction_type,
+                                          amount: tx.amount,
+                                          description: tx.description,
+                                          reference_no: tx.reference_no,
+                                          cheque_no: tx.cheque_no,
+                                          match_notes: tx.match_notes
+                                        })}
+                                        className="inline-flex items-center gap-1 group/v cursor-pointer text-left"
+                                        title={`View ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} on this page`}
                                       >
                                         <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 group-hover/v:bg-purple-500/20 group-hover/v:border-purple-500/40 transition-all flex items-center gap-1 cursor-pointer">
                                           <span>{tx.voucher.voucher_type} #{tx.voucher.voucher_number}</span>
-                                          <ExternalLink className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
+                                          <Eye className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
                                         </span>
-                                      </Link>
+                                      </button>
                                       <span className="text-[11px] font-medium text-muted-foreground">
                                         {formatDate(tx.voucher.date)}
                                       </span>
@@ -1509,17 +1529,25 @@ export default function BankReconciliationPage() {
                                       </p>
                                     )}
                                     {tx.match_notes && (
-                                      <Link
-                                        href={`/vouchers/${tx.voucher.voucher_id}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/20 hover:border-amber-500/40 transition-colors group/note"
-                                        title={`Open ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} in new tab`}
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenVoucherModal(tx.voucher!.voucher_id, {
+                                          transaction_id: tx.transaction_id,
+                                          transaction_date: tx.transaction_date,
+                                          transaction_type: tx.transaction_type,
+                                          amount: tx.amount,
+                                          description: tx.description,
+                                          reference_no: tx.reference_no,
+                                          cheque_no: tx.cheque_no,
+                                          match_notes: tx.match_notes
+                                        })}
+                                        className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 dark:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-2 py-0.5 rounded border border-amber-500/20 hover:border-amber-500/40 transition-colors group/note cursor-pointer text-left"
+                                        title={`View ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} on this page`}
                                       >
                                         <Sparkles className="h-3 w-3 text-amber-500 shrink-0" />
                                         <span>{tx.match_notes}</span>
-                                        <ExternalLink className="h-2.5 w-2.5 opacity-60 group-hover/note:opacity-100 ml-0.5" />
-                                      </Link>
+                                        <Eye className="h-2.5 w-2.5 opacity-60 group-hover/note:opacity-100 ml-0.5" />
+                                      </button>
                                     )}
                                   </div>
                                 ) : (
@@ -1598,18 +1626,26 @@ export default function BankReconciliationPage() {
                         {tx.voucher && (
                           <div className="flex-1 space-y-1 lg:text-right border-t lg:border-t-0 pt-3 lg:pt-0 border-border min-w-0 w-full">
                             <div className="flex items-center lg:justify-end gap-2 flex-wrap">
-                              <Link
-                                href={`/vouchers/${tx.voucher.voucher_id}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 group/v shrink-0"
-                                title={`Open ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} in new tab`}
+                              <button
+                                type="button"
+                                onClick={() => handleOpenVoucherModal(tx.voucher!.voucher_id, {
+                                  transaction_id: tx.transaction_id,
+                                  transaction_date: tx.transaction_date,
+                                  transaction_type: tx.transaction_type,
+                                  amount: tx.amount,
+                                  description: tx.description,
+                                  reference_no: tx.reference_no,
+                                  cheque_no: tx.cheque_no,
+                                  match_notes: tx.match_notes
+                                })}
+                                className="inline-flex items-center gap-1 group/v shrink-0 cursor-pointer"
+                                title={`View ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} on this page`}
                               >
                                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-600 border border-purple-500/20 group-hover/v:bg-purple-500/20 group-hover/v:border-purple-500/40 transition-all flex items-center gap-1 cursor-pointer">
                                   <span>{tx.voucher.voucher_type} #{tx.voucher.voucher_number}</span>
-                                  <ExternalLink className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
+                                  <Eye className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
                                 </span>
-                              </Link>
+                              </button>
                               <span className="text-xs font-bold text-foreground shrink-0">
                                 {formatDate(tx.voucher.date)}
                               </span>
@@ -1617,16 +1653,24 @@ export default function BankReconciliationPage() {
                             <p className="text-xs text-foreground font-medium break-words break-all [overflow-wrap:anywhere] leading-relaxed">
                               {tx.voucher.narration || 'Book Voucher'}
                             </p>
-                            <Link
-                              href={`/vouchers/${tx.voucher.voucher_id}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 transition-colors break-words break-all"
-                              title={`Open ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} in new tab`}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenVoucherModal(tx.voucher!.voucher_id, {
+                                transaction_id: tx.transaction_id,
+                                transaction_date: tx.transaction_date,
+                                transaction_type: tx.transaction_type,
+                                amount: tx.amount,
+                                description: tx.description,
+                                reference_no: tx.reference_no,
+                                cheque_no: tx.cheque_no,
+                                match_notes: tx.match_notes
+                              })}
+                              className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 transition-colors break-words break-all cursor-pointer text-left"
+                              title={`View ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} on this page`}
                             >
                               <span>{tx.match_notes}</span>
-                              <ExternalLink className="h-2.5 w-2.5 opacity-60 shrink-0" />
-                            </Link>
+                              <Eye className="h-2.5 w-2.5 opacity-60 shrink-0" />
+                            </button>
                           </div>
                         )}
 
@@ -2145,18 +2189,17 @@ export default function BankReconciliationPage() {
                               {formatDate(b.date)}
                             </td>
                             <td className="px-3.5 py-3 whitespace-nowrap">
-                              <Link
-                                href={`/vouchers/${b.voucher_id}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 group/v"
-                                title={`Open ${b.voucher_type} #${b.voucher_number} in new tab`}
+                              <button
+                                type="button"
+                                onClick={() => handleOpenVoucherModal(b.voucher_id)}
+                                className="inline-flex items-center gap-1 group/v cursor-pointer text-left"
+                                title={`View ${b.voucher_type} #${b.voucher_number} on this page`}
                               >
                                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 group-hover/v:bg-purple-500/20 group-hover/v:border-purple-500/40 transition-all flex items-center gap-1 cursor-pointer">
                                   <span>{b.voucher_type} #{b.voucher_number}</span>
-                                  <ExternalLink className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
+                                  <Eye className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
                                 </span>
-                              </Link>
+                              </button>
                             </td>
                             <td className="px-3.5 py-3 font-bold text-foreground break-words break-all [overflow-wrap:anywhere]">
                               {b.party_name}
@@ -2189,18 +2232,17 @@ export default function BankReconciliationPage() {
                       <div className="space-y-1 min-w-0 flex-1 w-full">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-xs font-bold text-foreground shrink-0">{formatDate(b.date)}</span>
-                          <Link
-                            href={`/vouchers/${b.voucher_id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 group/v shrink-0"
-                            title={`Open ${b.voucher_type} #${b.voucher_number} in new tab`}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenVoucherModal(b.voucher_id)}
+                            className="inline-flex items-center gap-1 group/v shrink-0 cursor-pointer"
+                            title={`View ${b.voucher_type} #${b.voucher_number} on this page`}
                           >
                             <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-purple-500/10 text-purple-600 border border-purple-500/20 group-hover/v:bg-purple-500/20 group-hover/v:border-purple-500/40 transition-all flex items-center gap-1 cursor-pointer">
                               <span>{b.voucher_type} #{b.voucher_number}</span>
-                              <ExternalLink className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
+                              <Eye className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
                             </span>
-                          </Link>
+                          </button>
                           <span className="text-xs font-black text-foreground shrink-0">
                             {formatCurrency(b.amount)}
                           </span>
@@ -2307,18 +2349,17 @@ export default function BankReconciliationPage() {
                               {tx.voucher ? (
                                 <div className="space-y-0.5">
                                   <div className="flex items-center gap-1.5 flex-wrap">
-                                    <Link
-                                      href={`/vouchers/${tx.voucher.voucher_id}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 group/v shrink-0"
-                                      title={`Open ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} in new tab`}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenVoucherModal(tx.voucher!.voucher_id)}
+                                      className="inline-flex items-center gap-1 group/v shrink-0 cursor-pointer"
+                                      title={`View ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} on this page`}
                                     >
                                       <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 group-hover/v:bg-emerald-500/20 group-hover/v:border-emerald-500/40 transition-all flex items-center gap-1 cursor-pointer">
                                         <span>{tx.voucher.voucher_type} #{tx.voucher.voucher_number}</span>
-                                        <ExternalLink className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
+                                        <Eye className="h-2.5 w-2.5 opacity-70 group-hover/v:opacity-100" />
                                       </span>
-                                    </Link>
+                                    </button>
                                     <span className="text-[11px] font-medium text-muted-foreground shrink-0">
                                       {formatDate(tx.voucher.date)}
                                     </span>
@@ -2368,16 +2409,15 @@ export default function BankReconciliationPage() {
                             {tx.transaction_type}: {formatCurrency(tx.amount)}
                           </span>
                           {tx.voucher && (
-                            <Link
-                              href={`/vouchers/${tx.voucher.voucher_id}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs font-semibold text-foreground hover:underline inline-flex items-center gap-1 group/v shrink-0"
-                              title={`Open ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} in new tab`}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenVoucherModal(tx.voucher!.voucher_id)}
+                              className="text-xs font-semibold text-foreground hover:underline inline-flex items-center gap-1 group/v shrink-0 cursor-pointer"
+                              title={`View ${tx.voucher.voucher_type} #${tx.voucher.voucher_number} on this page`}
                             >
                               <span>Matched with {tx.voucher.voucher_type} #{tx.voucher.voucher_number}</span>
-                              <ExternalLink className="h-3 w-3 opacity-60 group-hover/v:opacity-100" />
-                            </Link>
+                              <Eye className="h-3 w-3 opacity-60 group-hover/v:opacity-100" />
+                            </button>
                           )}
                         </div>
                         <p className="text-xs text-muted-foreground break-words break-all [overflow-wrap:anywhere] leading-relaxed">{tx.description}</p>
@@ -2641,6 +2681,17 @@ export default function BankReconciliationPage() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-bold">{b.voucher_type} #{b.voucher_number}</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleOpenVoucherModal(b.voucher_id)
+                          }}
+                          className="p-1 rounded-md hover:bg-background/80 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                          title={`Preview ${b.voucher_type} #${b.voucher_number} on this page`}
+                        >
+                          <Eye className="h-3 w-3" />
+                        </button>
                         <span className="text-muted-foreground">({formatDate(b.date)})</span>
                       </div>
                       <p className="text-muted-foreground">{b.party_name}</p>
@@ -2884,6 +2935,21 @@ export default function BankReconciliationPage() {
           </div>
         </div>
       )}
+
+      {/* Interactive Voucher / Receipt Detail Modal on the Same Page */}
+      <VoucherDetailModal
+        isOpen={isVoucherModalOpen}
+        voucherId={modalVoucherId}
+        token={token}
+        onClose={() => {
+          setIsVoucherModalOpen(false)
+          setModalVoucherId(null)
+          setModalBankTx(null)
+        }}
+        bankTx={modalBankTx}
+        onApproveMatch={handleConfirmMatch}
+        isApproving={isSubmittingMatch}
+      />
     </div>
   )
 }

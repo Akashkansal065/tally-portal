@@ -27,13 +27,14 @@ if settings.DB_SSL:
 
 # Enforce Indian Standard Time (IST / UTC+05:30) on all MySQL sessions
 connect_args["init_command"] = "SET time_zone = '+05:30'"
+connect_args["connect_timeout"] = 15
 
 engine = create_async_engine(
     settings.DATABASE_URL, 
     connect_args=connect_args, 
     pool_size=10,
     max_overflow=20,
-    pool_recycle=300, 
+    pool_recycle=60, 
     pool_pre_ping=True, 
     echo=False
 )
