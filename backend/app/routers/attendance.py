@@ -1,26 +1,49 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc, and_, Date, Boolean
 from sqlalchemy.orm import relationship, selectinload
 from sqlalchemy.sql import func
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 import base64
 import urllib.request
 import urllib.parse
 import json
+import math
+import calendar
+import io
+
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
-from app.models.portal_core import User, Role
+from app.models.portal_core import User, Role, Company
 from app.core.config import settings
 from app.core.datetime_utils import IST, get_ist_now, get_ist_date, to_ist_iso
 
 
-# ─── Model ───────────────────────────────────────────────────────────────────
+# ─── Models ───────────────────────────────────────────────────────────────────
+
+class OfficeLocation(Base):
+    __tablename__ = "portal_office_locations"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(128), nullable=False)
+    address = Column(String(255), nullable=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    radius_meters = Column(Integer, default=200, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
 
 class Attendance(Base):
     __tablename__ = "portal_attendance"
@@ -46,6 +69,15 @@ class Attendance(Base):
     auto_punch_out_reason = Column(String(64), nullable=True)
     warning_notification_sent_at = Column(DateTime, nullable=True)
     midnight_warning_sent_at = Column(DateTime, nullable=True)
+    
+    # Geofence & Location Tagging
+    check_in_location_tag = Column(String(128), nullable=True)
+    check_in_distance_meters = Column(Float, nullable=True)
+    check_in_office_id = Column(Integer, nullable=True)
+    check_out_location_tag = Column(String(128), nullable=True)
+    check_out_distance_meters = Column(Float, nullable=True)
+    check_out_office_id = Column(Integer, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
 
     user = relationship("User", foreign_keys=[user_id])
@@ -59,6 +91,72 @@ class PunchRequest(BaseModel):
     deviceFingerprint: str
     photoBase64: str
     comments: Optional[str] = None
+
+
+class OfficeLocationCreate(BaseModel):
+    name: str
+    address: Optional[str] = None
+    latitude: float
+    longitude: float
+    radius_meters: Optional[int] = 200
+
+
+class OfficeLocationUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    radius_meters: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+# ─── Geofencing & Distance Helpers ──────────────────────────────────────────
+
+def haversine_distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Computes Great-Circle distance in meters between two coordinates."""
+    R = 6371000.0  # Earth radius in meters
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = math.sin(delta_phi / 2.0) ** 2 + \
+        math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0) ** 2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return R * c
+
+
+def resolve_location_tag(lat: Optional[float], lon: Optional[float], offices: List[OfficeLocation]) -> tuple[str, Optional[float], Optional[int]]:
+    """Resolves whether a punch coordinate is inside an office geofence or remote."""
+    if lat is None or lon is None:
+        return ("No GPS", None, None)
+    if not offices:
+        return ("Remote / Field", None, None)
+
+    closest_office = None
+    min_dist = float("inf")
+    for off in offices:
+        if not off.is_active:
+            continue
+        dist = haversine_distance_meters(lat, lon, off.latitude, off.longitude)
+        if dist < min_dist:
+            min_dist = dist
+            closest_office = off
+
+    if not closest_office or min_dist == float("inf"):
+        return ("Remote / Field", None, None)
+
+    dist_rounded = round(min_dist, 1)
+    if min_dist <= closest_office.radius_meters:
+        tag = f"In Office: {closest_office.name}"
+    else:
+        if min_dist >= 1000:
+            dist_str = f"{min_dist / 1000:.1f} km"
+        else:
+            dist_str = f"{int(min_dist)}m"
+        tag = f"Outside Radius ({dist_str} from {closest_office.name})"
+    return (tag, dist_rounded, closest_office.id)
+
 
 # Helper upload
 def upload_image_to_imagekit(file_base64: str, file_name: str) -> Optional[str]:
@@ -95,9 +193,135 @@ def upload_image_to_imagekit(file_base64: str, file_name: str) -> Optional[str]:
         print("ImageKit upload exception:", e)
     return None
 
+
 # ─── Router ──────────────────────────────────────────────────────────────────
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
+
+
+# ─── Office Locations Endpoints ──────────────────────────────────────────────
+
+@router.get("/offices")
+async def list_office_locations(
+    user: User = Depends(require_permission("attendance", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Lists configured office locations / geofences for the user's company."""
+    stmt = (
+        select(OfficeLocation)
+        .where(OfficeLocation.company_id == user.company_id)
+        .order_by(OfficeLocation.name.asc())
+    )
+    res = await db.execute(stmt)
+    offices = res.scalars().all()
+    return {
+        "success": True,
+        "offices": [
+            {
+                "id": o.id,
+                "name": o.name,
+                "address": o.address,
+                "latitude": o.latitude,
+                "longitude": o.longitude,
+                "radiusMeters": o.radius_meters,
+                "isActive": o.is_active,
+                "createdAt": to_ist_iso(o.created_at) if o.created_at else None,
+            }
+            for o in offices
+        ]
+    }
+
+
+@router.post("/offices")
+async def create_office_location(
+    req: OfficeLocationCreate,
+    user: User = Depends(require_permission("attendance", "create")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Creates a new office geofence location for attendance tagging."""
+    office = OfficeLocation(
+        company_id=user.company_id,
+        name=req.name.strip(),
+        address=req.address.strip() if req.address else None,
+        latitude=req.latitude,
+        longitude=req.longitude,
+        radius_meters=req.radius_meters or 200,
+        is_active=True,
+    )
+    db.add(office)
+    await db.commit()
+    await db.refresh(office)
+    return {
+        "success": True,
+        "message": f"Office location '{office.name}' created successfully.",
+        "office": {
+            "id": office.id,
+            "name": office.name,
+            "address": office.address,
+            "latitude": office.latitude,
+            "longitude": office.longitude,
+            "radiusMeters": office.radius_meters,
+            "isActive": office.is_active,
+        }
+    }
+
+
+@router.put("/offices/{office_id}")
+async def update_office_location(
+    office_id: int,
+    req: OfficeLocationUpdate,
+    user: User = Depends(require_permission("attendance", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Updates an existing office location / geofence radius."""
+    stmt = select(OfficeLocation).where(
+        OfficeLocation.id == office_id,
+        OfficeLocation.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    office = res.scalars().first()
+    if not office:
+        raise HTTPException(status_code=404, detail="Office location not found")
+
+    if req.name is not None:
+        office.name = req.name.strip()
+    if req.address is not None:
+        office.address = req.address.strip() if req.address else None
+    if req.latitude is not None:
+        office.latitude = req.latitude
+    if req.longitude is not None:
+        office.longitude = req.longitude
+    if req.radius_meters is not None:
+        office.radius_meters = req.radius_meters
+    if req.is_active is not None:
+        office.is_active = req.is_active
+
+    await db.commit()
+    return {"success": True, "message": "Office location updated successfully."}
+
+
+@router.delete("/offices/{office_id}")
+async def delete_office_location(
+    office_id: int,
+    user: User = Depends(require_permission("attendance", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Deletes an office location."""
+    stmt = select(OfficeLocation).where(
+        OfficeLocation.id == office_id,
+        OfficeLocation.company_id == user.company_id
+    )
+    res = await db.execute(stmt)
+    office = res.scalars().first()
+    if not office:
+        raise HTTPException(status_code=404, detail="Office location not found")
+
+    await db.delete(office)
+    await db.commit()
+    return {"success": True, "message": "Office location deleted."}
+
+
+# ─── Attendance Core Endpoints ───────────────────────────────────────────────
 
 @router.get("/today")
 async def get_today_attendance(
@@ -132,6 +356,10 @@ async def get_today_attendance(
             "checkOutDeviceFingerprint": latest.check_out_device_fingerprint,
             "isAutoPunchOut": bool(latest.is_auto_punch_out) if latest.is_auto_punch_out else False,
             "autoPunchOutReason": latest.auto_punch_out_reason,
+            "checkInLocationTag": latest.check_in_location_tag,
+            "checkInDistanceMeters": latest.check_in_distance_meters,
+            "checkOutLocationTag": latest.check_out_location_tag,
+            "checkOutDistanceMeters": latest.check_out_distance_meters,
         }}
         
     # If latest session is completed, only return it if it was checked in today (in IST)
@@ -156,9 +384,14 @@ async def get_today_attendance(
             "checkOutDeviceFingerprint": latest.check_out_device_fingerprint,
             "isAutoPunchOut": bool(latest.is_auto_punch_out) if latest.is_auto_punch_out else False,
             "autoPunchOutReason": latest.auto_punch_out_reason,
+            "checkInLocationTag": latest.check_in_location_tag,
+            "checkInDistanceMeters": latest.check_in_distance_meters,
+            "checkOutLocationTag": latest.check_out_location_tag,
+            "checkOutDistanceMeters": latest.check_out_distance_meters,
         }}
         
     return {"success": True, "attendance": None}
+
 
 @router.post("/punch")
 async def punch_attendance(
@@ -182,6 +415,16 @@ async def punch_attendance(
     sanitized_comments = req.comments[:1024] if req.comments else None
     now_ist = get_ist_now()
     formatted_ist = now_ist.strftime("%I:%M %p")
+
+    # Fetch active office locations for the company to resolve geofence tag
+    offices_res = await db.execute(
+        select(OfficeLocation).where(
+            OfficeLocation.company_id == user.company_id,
+            OfficeLocation.is_active == True
+        )
+    )
+    offices = offices_res.scalars().all()
+    loc_tag, dist_m, off_id = resolve_location_tag(req.latitude, req.longitude, offices)
     
     if req.type == "in":
         # Check if already clocked in (either active session or already checkin today in IST)
@@ -202,7 +445,10 @@ async def punch_attendance(
             check_in_photo_url=photo_url,
             check_in_comments=sanitized_comments,
             check_in_ip_address=ip_address,
-            check_in_device_fingerprint=req.deviceFingerprint
+            check_in_device_fingerprint=req.deviceFingerprint,
+            check_in_location_tag=loc_tag,
+            check_in_distance_meters=dist_m,
+            check_in_office_id=off_id,
         )
         db.add(attendance)
         await db.commit()
@@ -215,14 +461,19 @@ async def punch_attendance(
             company_id=user.company_id,
             type="attendance",
             title="Attendance: Clock-In",
-            message=f"{user.username} clocked in at {formatted_ist} (IST)",
+            message=f"{user.username} clocked in at {formatted_ist} ({loc_tag})",
             reference_id=str(attendance.id),
             reference_type="attendance",
             exclude_user_id=user.user_id,
             auto_commit=True,
         )
 
-        return {"success": True, "message": "Clocked in successfully"}
+        return {
+            "success": True, 
+            "message": "Clocked in successfully",
+            "locationTag": loc_tag,
+            "distanceMeters": dist_m
+        }
     else:
         # Check checkout session
         stmt = select(Attendance).where(Attendance.user_id == user.user_id).order_by(desc(Attendance.check_in_time)).limit(1)
@@ -238,6 +489,9 @@ async def punch_attendance(
         latest.check_out_comments = sanitized_comments
         latest.check_out_ip_address = ip_address
         latest.check_out_device_fingerprint = req.deviceFingerprint
+        latest.check_out_location_tag = loc_tag
+        latest.check_out_distance_meters = dist_m
+        latest.check_out_office_id = off_id
         
         await db.commit()
 
@@ -248,14 +502,19 @@ async def punch_attendance(
             company_id=user.company_id,
             type="attendance",
             title="Attendance: Clock-Out",
-            message=f"{user.username} clocked out at {formatted_ist} (IST)",
+            message=f"{user.username} clocked out at {formatted_ist} ({loc_tag})",
             reference_id=str(latest.id),
             reference_type="attendance",
             exclude_user_id=user.user_id,
             auto_commit=True,
         )
 
-        return {"success": True, "message": "Clocked out successfully"}
+        return {
+            "success": True, 
+            "message": "Clocked out successfully",
+            "locationTag": loc_tag,
+            "distanceMeters": dist_m
+        }
 
 
 @router.get("/history")
@@ -290,10 +549,15 @@ async def get_attendance_history(
                 "checkOutDeviceFingerprint": h.check_out_device_fingerprint,
                 "isAutoPunchOut": bool(h.is_auto_punch_out) if h.is_auto_punch_out else False,
                 "autoPunchOutReason": h.auto_punch_out_reason,
+                "checkInLocationTag": h.check_in_location_tag,
+                "checkInDistanceMeters": h.check_in_distance_meters,
+                "checkOutLocationTag": h.check_out_location_tag,
+                "checkOutDistanceMeters": h.check_out_distance_meters,
             }
             for h in history
         ]
     }
+
 
 @router.get("/admin/today-team")
 async def get_team_attendance_for_admin(
@@ -357,10 +621,15 @@ async def get_team_attendance_for_admin(
                 "checkOutComments": rec.check_out_comments,
                 "isAutoPunchOut": bool(rec.is_auto_punch_out) if (rec and rec.is_auto_punch_out) else False,
                 "autoPunchOutReason": rec.auto_punch_out_reason if rec else None,
+                "checkInLocationTag": rec.check_in_location_tag if rec else None,
+                "checkInDistanceMeters": rec.check_in_distance_meters if rec else None,
+                "checkOutLocationTag": rec.check_out_location_tag if rec else None,
+                "checkOutDistanceMeters": rec.check_out_distance_meters if rec else None,
             } if rec else None
         })
         
     return {"success": True, "data": data}
+
 
 @router.get("/admin/history-team")
 async def get_full_team_attendance_history(
@@ -415,7 +684,389 @@ async def get_full_team_attendance_history(
                 "checkOutIpAddress": h.check_out_ip_address,
                 "isAutoPunchOut": bool(h.is_auto_punch_out) if h.is_auto_punch_out else False,
                 "autoPunchOutReason": h.auto_punch_out_reason,
+                "checkInLocationTag": h.check_in_location_tag,
+                "checkInDistanceMeters": h.check_in_distance_meters,
+                "checkOutLocationTag": h.check_out_location_tag,
+                "checkOutDistanceMeters": h.check_out_distance_meters,
             }
             for h in history
         ]
     }
+
+
+# ─── Monthly Muster Roll & Timesheet Analytics ───────────────────────────────
+
+@router.get("/admin/muster-roll")
+async def get_monthly_muster_roll(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    user: User = Depends(require_permission("attendance", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Computes a monthly muster roll matrix for all company employees.
+    Returns day-by-day status ('P', 'HD', 'A', 'WO', '-') and calculated totals.
+    """
+    now_ist = get_ist_now()
+    cur_year = year or now_ist.year
+    cur_month = month or now_ist.month
+
+    if cur_month < 1 or cur_month > 12:
+        raise HTTPException(status_code=400, detail="Invalid month. Must be between 1 and 12.")
+
+    _, num_days = calendar.monthrange(cur_year, cur_month)
+    month_name = calendar.month_name[cur_month]
+    today_date = now_ist.date()
+
+    # Build calendar days metadata
+    days_meta = []
+    for d in range(1, num_days + 1):
+        day_date = date(cur_year, cur_month, d)
+        days_meta.append({
+            "day": d,
+            "date": day_date.isoformat(),
+            "weekday": day_date.strftime("%a"),
+            "isSunday": day_date.weekday() == 6,
+            "isPast": day_date <= today_date,
+        })
+
+    # Fetch active company users
+    users_stmt = select(User).where(User.company_id == user.company_id, User.is_active == True).order_by(User.username.asc())
+    res_users = await db.execute(users_stmt)
+    all_users = res_users.scalars().all()
+
+    # Fetch all attendances for the month
+    start_dt = datetime(cur_year, cur_month, 1, 0, 0, 0)
+    end_dt = datetime(cur_year, cur_month, num_days, 23, 59, 59)
+    att_stmt = (
+        select(Attendance)
+        .join(User, Attendance.user_id == User.user_id)
+        .where(
+            User.company_id == user.company_id,
+            Attendance.check_in_time >= start_dt,
+            Attendance.check_in_time <= end_dt
+        )
+        .order_by(Attendance.check_in_time.asc())
+    )
+    res_att = await db.execute(att_stmt)
+    attendances = res_att.scalars().all()
+
+    # Map records by (user_id, day)
+    user_day_records: Dict[tuple[int, int], List[Attendance]] = {}
+    for a in attendances:
+        c_date = a.check_in_time.date()
+        if c_date.year == cur_year and c_date.month == cur_month:
+            key = (a.user_id, c_date.day)
+            user_day_records.setdefault(key, []).append(a)
+
+    employees_data = []
+    total_company_hours = 0.0
+    total_presents_all = 0
+    total_working_days_elapsed = sum(1 for m in days_meta if m["isPast"] and not m["isSunday"])
+
+    for u in all_users:
+        emp_days: Dict[str, Any] = {}
+        pres_count = 0
+        hd_count = 0
+        abs_count = 0
+        wo_count = 0
+        emp_hours = 0.0
+        auto_punch_count = 0
+
+        for d_meta in days_meta:
+            d = d_meta["day"]
+            day_date = date(cur_year, cur_month, d)
+            recs = user_day_records.get((u.user_id, d), [])
+
+            if recs:
+                # Use the primary/longest session of the day
+                rec = recs[0]
+                hours = 0.0
+                if rec.check_out_time:
+                    dur_sec = (rec.check_out_time - rec.check_in_time).total_seconds()
+                    hours = max(0.0, round(dur_sec / 3600.0, 1))
+                elif day_date == today_date:
+                    dur_sec = (now_ist - rec.check_in_time).total_seconds()
+                    hours = max(0.0, round(dur_sec / 3600.0, 1))
+
+                emp_hours += hours
+                if rec.is_auto_punch_out:
+                    auto_punch_count += 1
+
+                # Status threshold
+                if hours >= 7.5 or (rec.check_out_time is None and day_date == today_date):
+                    status_code = "P"
+                    pres_count += 1
+                elif 4.0 <= hours < 7.5:
+                    status_code = "HD"
+                    hd_count += 1
+                else:
+                    status_code = "HD"
+                    hd_count += 1
+
+                emp_days[str(d)] = {
+                    "status": status_code,
+                    "checkIn": rec.check_in_time.strftime("%I:%M %p"),
+                    "checkOut": rec.check_out_time.strftime("%I:%M %p") if rec.check_out_time else None,
+                    "hours": hours,
+                    "locationTag": rec.check_in_location_tag or "Remote / Field",
+                    "isAutoPunchOut": bool(rec.is_auto_punch_out),
+                    "photoUrl": rec.check_in_photo_url,
+                }
+            else:
+                if day_date > today_date:
+                    status_code = "-"
+                elif d_meta["isSunday"]:
+                    status_code = "WO"
+                    wo_count += 1
+                else:
+                    status_code = "A"
+                    abs_count += 1
+
+                emp_days[str(d)] = {
+                    "status": status_code,
+                    "checkIn": None,
+                    "checkOut": None,
+                    "hours": 0.0,
+                    "locationTag": None,
+                    "isAutoPunchOut": False,
+                    "photoUrl": None,
+                }
+
+        effective_days = pres_count + (0.5 * hd_count)
+        total_presents_all += pres_count
+        total_company_hours += emp_hours
+
+        employees_data.append({
+            "userId": u.user_id,
+            "username": u.username,
+            "days": emp_days,
+            "summary": {
+                "totalPresent": pres_count,
+                "totalHalfDay": hd_count,
+                "totalAbsent": abs_count,
+                "totalWeekOff": wo_count,
+                "effectiveDays": round(effective_days, 1),
+                "totalHours": round(emp_hours, 1),
+                "autoPunchOuts": auto_punch_count,
+            }
+        })
+
+    # Company KPI metrics
+    num_employees = len(all_users)
+    potential_work_slots = (num_employees * total_working_days_elapsed) if (num_employees and total_working_days_elapsed) else 1
+    avg_attendance_pct = round((total_presents_all / potential_work_slots) * 100, 1) if potential_work_slots else 0.0
+
+    return {
+        "success": True,
+        "year": cur_year,
+        "month": cur_month,
+        "monthName": month_name,
+        "totalDays": num_days,
+        "days": days_meta,
+        "employees": employees_data,
+        "companySummary": {
+            "totalStaff": num_employees,
+            "workingDaysElapsed": total_working_days_elapsed,
+            "avgAttendancePct": avg_attendance_pct,
+            "totalCompanyHours": round(total_company_hours, 1),
+        }
+    }
+
+
+@router.get("/admin/export-excel")
+async def export_monthly_muster_roll_excel(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    user: User = Depends(require_permission("attendance", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generates a professionally formatted Excel (.xlsx) Muster Roll spreadsheet.
+    Includes corporate branding, colored presence cells (P/HD/A/WO), and summary totals.
+    """
+    now_ist = get_ist_now()
+    cur_year = year or now_ist.year
+    cur_month = month or now_ist.month
+
+    if cur_month < 1 or cur_month > 12:
+        raise HTTPException(status_code=400, detail="Invalid month.")
+
+    # Fetch company name
+    comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
+    company = comp_q.scalars().first()
+    company_name = company.name if company else "MyTally Company"
+
+    # Reuse muster roll calculation
+    data = await get_monthly_muster_roll(year=cur_year, month=cur_month, user=user, db=db)
+    days_meta = data["days"]
+    employees = data["employees"]
+    month_name = data["monthName"]
+
+    # Initialize workbook
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Muster Roll - {month_name[:3]}"
+
+    # Styles
+    title_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    title_font = Font(name="Arial", size=15, bold=True, color="FFFFFF")
+    subtitle_font = Font(name="Arial", size=10, italic=True, color="4B5563")
+
+    header_fill = PatternFill(start_color="F3F4F6", end_color="F3F4F6", fill_type="solid")
+    header_sun_fill = PatternFill(start_color="E2E8F0", end_color="E2E8F0", fill_type="solid")
+    header_font = Font(name="Arial", size=9, bold=True, color="1F2937")
+
+    fill_p = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")  # emerald-100
+    font_p = Font(name="Arial", size=9, bold=True, color="166534")
+
+    fill_hd = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") # amber-100
+    font_hd = Font(name="Arial", size=9, bold=True, color="92400E")
+
+    fill_a = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")  # red-100
+    font_a = Font(name="Arial", size=9, bold=True, color="991B1B")
+
+    fill_wo = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid") # slate-100
+    font_wo = Font(name="Arial", size=9, color="64748B")
+
+    thin_border_side = Side(border_style="thin", color="D1D5DB")
+    cell_border = Border(top=thin_border_side, left=thin_border_side, right=thin_border_side, bottom=thin_border_side)
+
+    # Row 1: Company Title Banner
+    num_days = len(days_meta)
+    total_cols = 3 + num_days + 6
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    cell_t1 = ws.cell(row=1, column=1, value=company_name.upper())
+    cell_t1.fill = title_fill
+    cell_t1.font = title_font
+    cell_t1.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 36
+
+    # Row 2: Subtitle
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_cols)
+    cell_t2 = ws.cell(
+        row=2, 
+        column=1, 
+        value=f"MONTHLY ATTENDANCE MUSTER ROLL — {month_name.upper()} {cur_year} | Generated on {now_ist.strftime('%d-%b-%Y %I:%M %p IST')} | Total Staff: {len(employees)}"
+    )
+    cell_t2.font = subtitle_font
+    cell_t2.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 20
+
+    # Row 4: Table Headers - Top Line
+    ws.cell(row=4, column=1, value="Sl.").font = header_font
+    ws.cell(row=4, column=2, value="Employee Name").font = header_font
+    ws.cell(row=4, column=3, value="User ID").font = header_font
+
+    col_idx = 4
+    for d in days_meta:
+        c = ws.cell(row=4, column=col_idx, value=f"{d['day']}\n{d['weekday']}")
+        c.font = header_font
+        c.fill = header_sun_fill if d["isSunday"] else header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = cell_border
+        col_idx += 1
+
+    summary_headers = ["Present (P)", "Half Day (HD)", "Absent (A)", "Week Off (WO)", "Effective Days", "Total Hours"]
+    for sh in summary_headers:
+        c = ws.cell(row=4, column=col_idx, value=sh)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = cell_border
+        col_idx += 1
+
+    for c_i in range(1, 4):
+        ws.cell(row=4, column=c_i).fill = header_fill
+        ws.cell(row=4, column=c_i).alignment = Alignment(horizontal="center", vertical="center")
+        ws.cell(row=4, column=c_i).border = cell_border
+
+    ws.row_dimensions[4].height = 28
+
+    # Data Rows
+    current_row = 5
+    for idx, emp in enumerate(employees, start=1):
+        ws.cell(row=current_row, column=1, value=idx).alignment = Alignment(horizontal="center")
+        ws.cell(row=current_row, column=1).border = cell_border
+
+        ws.cell(row=current_row, column=2, value=emp["username"]).alignment = Alignment(horizontal="left")
+        ws.cell(row=current_row, column=2).border = cell_border
+
+        ws.cell(row=current_row, column=3, value=f"#{emp['userId']}").alignment = Alignment(horizontal="center")
+        ws.cell(row=current_row, column=3).border = cell_border
+
+        col_i = 4
+        for d in days_meta:
+            day_info = emp["days"].get(str(d["day"]), {})
+            st = day_info.get("status", "-")
+            cell = ws.cell(row=current_row, column=col_i, value=st)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = cell_border
+
+            if st == "P":
+                cell.fill = fill_p
+                cell.font = font_p
+            elif st == "HD":
+                cell.fill = fill_hd
+                cell.font = font_hd
+            elif st == "A":
+                cell.fill = fill_a
+                cell.font = font_a
+            elif st == "WO":
+                cell.fill = fill_wo
+                cell.font = font_wo
+
+            col_i += 1
+
+        # Summary columns
+        summ = emp["summary"]
+        ws.cell(row=current_row, column=col_i, value=summ["totalPresent"]).border = cell_border
+        ws.cell(row=current_row, column=col_i).alignment = Alignment(horizontal="center")
+        col_i += 1
+
+        ws.cell(row=current_row, column=col_i, value=summ["totalHalfDay"]).border = cell_border
+        ws.cell(row=current_row, column=col_i).alignment = Alignment(horizontal="center")
+        col_i += 1
+
+        ws.cell(row=current_row, column=col_i, value=summ["totalAbsent"]).border = cell_border
+        ws.cell(row=current_row, column=col_i).alignment = Alignment(horizontal="center")
+        col_i += 1
+
+        ws.cell(row=current_row, column=col_i, value=summ["totalWeekOff"]).border = cell_border
+        ws.cell(row=current_row, column=col_i).alignment = Alignment(horizontal="center")
+        col_i += 1
+
+        ws.cell(row=current_row, column=col_i, value=summ["effectiveDays"]).border = cell_border
+        ws.cell(row=current_row, column=col_i).font = Font(name="Arial", size=9, bold=True)
+        ws.cell(row=current_row, column=col_i).alignment = Alignment(horizontal="center")
+        col_i += 1
+
+        ws.cell(row=current_row, column=col_i, value=f"{summ['totalHours']}h").border = cell_border
+        ws.cell(row=current_row, column=col_i).alignment = Alignment(horizontal="center")
+        col_i += 1
+
+        ws.row_dimensions[current_row].height = 20
+        current_row += 1
+
+    # Column widths
+    ws.column_dimensions["A"].width = 6
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 10
+    for col_num in range(4, 4 + num_days):
+        ws.column_dimensions[get_column_letter(col_num)].width = 5.5
+    for col_num in range(4 + num_days, total_cols + 1):
+        ws.column_dimensions[get_column_letter(col_num)].width = 14
+
+    # Output as downloadable bytes
+    output_stream = io.BytesIO()
+    wb.save(output_stream)
+    output_stream.seek(0)
+    file_bytes = output_stream.getvalue()
+
+    filename = f"Attendance_Muster_Roll_{month_name}_{cur_year}.xlsx"
+    return Response(
+        content=file_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
