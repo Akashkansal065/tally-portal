@@ -81,6 +81,13 @@ class Attendance(Base):
     check_out_accuracy_meters = Column(Float, nullable=True)
     check_out_place_name = Column(String(256), nullable=True)
 
+    # Periodic Location Tracking ("Last Known Location")
+    last_known_latitude = Column(String(32), nullable=True)
+    last_known_longitude = Column(String(32), nullable=True)
+    last_known_accuracy_meters = Column(Float, nullable=True)
+    last_known_place_name = Column(String(256), nullable=True)
+    last_known_time = Column(DateTime, nullable=True)
+
     # Approvals Workflow
     approval_status = Column(String(32), default="approved", nullable=False)
     is_out_of_office = Column(Boolean, default=False, nullable=True)
@@ -101,6 +108,12 @@ class AttendanceApprovalDecision(BaseModel):
 
 class BulkApprovalRequest(BaseModel):
     attendance_ids: List[int]
+
+
+class LocationPingRequest(BaseModel):
+    latitude: float
+    longitude: float
+    accuracyMeters: Optional[float] = None
 
 
 class PunchRequest(BaseModel):
@@ -411,6 +424,11 @@ async def get_today_attendance(
             "checkOutDistanceMeters": rec.check_out_distance_meters,
             "checkOutAccuracyMeters": rec.check_out_accuracy_meters,
             "checkOutPlaceName": rec.check_out_place_name,
+            "lastKnownLatitude": rec.last_known_latitude,
+            "lastKnownLongitude": rec.last_known_longitude,
+            "lastKnownAccuracyMeters": rec.last_known_accuracy_meters,
+            "lastKnownPlaceName": rec.last_known_place_name,
+            "lastKnownTime": to_ist_iso(rec.last_known_time) if rec.last_known_time else None,
             "approvalStatus": rec.approval_status or "approved",
             "isOutOfOffice": bool(rec.is_out_of_office) if rec.is_out_of_office else False,
             "approvedByUserId": rec.approved_by_user_id,
@@ -429,6 +447,70 @@ async def get_today_attendance(
         return {"success": True, "attendance": serialize_att(latest)}
         
     return {"success": True, "attendance": None}
+
+
+@router.post("/ping-location")
+async def ping_location(
+    req: LocationPingRequest,
+    user: User = Depends(require_permission("attendance", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Periodic background location ping from the active web app / mobile wrapper.
+    Updates 'last_known_location' on the user's active attendance session.
+    """
+    stmt = (
+        select(Attendance)
+        .where(
+            and_(
+                Attendance.user_id == user.user_id,
+                Attendance.check_out_time.is_(None)
+            )
+        )
+        .order_by(desc(Attendance.check_in_time))
+        .limit(1)
+    )
+    res = await db.execute(stmt)
+    rec = res.scalars().first()
+
+    if not rec:
+        return {"success": True, "active": False, "message": "No active shift"}
+
+    now_ist = get_ist_now()
+
+    # Determine if we should refresh reverse geocoding
+    # Only reverse geocode if place_name is empty OR if user moved > 100m from previous ping
+    place_name = rec.last_known_place_name
+    should_geocode = not place_name
+
+    if not should_geocode and rec.last_known_latitude and rec.last_known_longitude:
+        try:
+            prev_lat = float(rec.last_known_latitude)
+            prev_lon = float(rec.last_known_longitude)
+            dist_moved = haversine_distance_meters(prev_lat, prev_lon, req.latitude, req.longitude)
+            if dist_moved >= 100.0:
+                should_geocode = True
+        except (ValueError, TypeError):
+            should_geocode = True
+
+    if should_geocode:
+        geocoded = reverse_geocode_place(req.latitude, req.longitude)
+        if geocoded:
+            place_name = geocoded
+
+    rec.last_known_latitude = str(req.latitude)
+    rec.last_known_longitude = str(req.longitude)
+    rec.last_known_accuracy_meters = req.accuracyMeters
+    rec.last_known_place_name = place_name
+    rec.last_known_time = now_ist
+
+    await db.commit()
+    return {
+        "success": True,
+        "active": True,
+        "lastKnownTime": to_ist_iso(now_ist),
+        "placeName": place_name
+    }
 
 
 @router.post("/punch")
@@ -504,6 +586,13 @@ async def punch_attendance(
             attendance.check_in_place_name = place_name
         except Exception:
             pass
+
+        # Initialize last known location with check-in coordinates
+        attendance.last_known_latitude = str(req.latitude)
+        attendance.last_known_longitude = str(req.longitude)
+        attendance.last_known_accuracy_meters = req.accuracyMeters
+        attendance.last_known_place_name = place_name
+        attendance.last_known_time = now_ist
 
         db.add(attendance)
         await db.commit()

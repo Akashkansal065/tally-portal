@@ -76,6 +76,11 @@ type AttendanceRecord = {
   checkOutDistanceMeters?: number | null
   checkOutAccuracyMeters?: number | null
   checkOutPlaceName?: string | null
+  lastKnownLatitude?: string | null
+  lastKnownLongitude?: string | null
+  lastKnownAccuracyMeters?: number | null
+  lastKnownPlaceName?: string | null
+  lastKnownTime?: string | null
   // Approvals Workflow Fields
   approvalStatus?: 'approved' | 'pending' | 'rejected' | null
   isOutOfOffice?: boolean | null
@@ -357,6 +362,13 @@ export default function AttendancePage() {
       if (res.ok) {
         const data = await res.json()
         setTodayAttendance(data.attendance)
+        if (typeof window !== 'undefined') {
+          if (data?.attendance && !data.attendance.checkOutTime) {
+            localStorage.setItem('mytally_shift_active', '1')
+          } else {
+            localStorage.removeItem('mytally_shift_active')
+          }
+        }
       }
     } catch (e) {
       console.error(e)
@@ -1124,8 +1136,23 @@ export default function AttendancePage() {
                         {todayAttendance.checkInLocationTag && (
                           renderLocationBadge(todayAttendance.checkInLocationTag, todayAttendance.checkInDistanceMeters, todayAttendance.checkInPlaceName, todayAttendance.checkInAccuracyMeters)
                         )}
+                        {todayAttendance.checkOutLocationTag && (
+                          renderLocationBadge(todayAttendance.checkOutLocationTag, todayAttendance.checkOutDistanceMeters, todayAttendance.checkOutPlaceName, todayAttendance.checkOutAccuracyMeters)
+                        )}
                         {renderApprovalBadge(todayAttendance.approvalStatus, todayAttendance.isOutOfOffice)}
-                        {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
+                        {todayAttendance.checkOutLatitude && todayAttendance.checkOutLongitude ? (
+                          <a
+                            href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkOutLatitude},${todayAttendance.checkOutLongitude}`)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-600 hover:text-amber-700 hover:underline bg-amber-500/10 px-2 py-0.5 rounded-md"
+                            title="Open auto check-out location in Google Maps"
+                          >
+                            <MapPin className="h-2.5 w-2.5 text-amber-500" />
+                            <span>Auto Check-Out Map</span>
+                            <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                          </a>
+                        ) : todayAttendance.checkInLatitude && todayAttendance.checkInLongitude ? (
                           <a
                             href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
                             target="_blank"
@@ -1137,8 +1164,12 @@ export default function AttendancePage() {
                             <span>Punch-In Map</span>
                             <ExternalLink className="h-2.5 w-2.5 opacity-70" />
                           </a>
+                        ) : null}
+                        {todayAttendance.checkOutPlaceName ? (
+                          <span className="text-[10px] text-amber-700 dark:text-amber-300 font-medium">📍 {todayAttendance.checkOutPlaceName}</span>
+                        ) : (
+                          <span className="text-[10px] text-muted-foreground/70 italic">Selfie/GPS out skipped by auto punch</span>
                         )}
-                        <span className="text-[10px] text-muted-foreground/70 italic">Selfie/GPS out skipped by auto punch</span>
                       </div>
                     </div>
                   ) : (
@@ -1344,7 +1375,12 @@ export default function AttendancePage() {
                         </div>
                         {item.checkInLocationTag && (
                           <div className="mt-1">
-                            {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters)}
+                            {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters, item.checkInPlaceName, item.checkInAccuracyMeters)}
+                          </div>
+                        )}
+                        {item.checkOutLocationTag && (
+                          <div className="mt-0.5">
+                            {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters, item.checkOutPlaceName, item.checkOutAccuracyMeters)}
                           </div>
                         )}
                         {item.approvalStatus === 'rejected' && item.rejectionReason && (
@@ -1606,7 +1642,7 @@ export default function AttendancePage() {
                             </span>
                             {item.attendance?.checkInLocationTag && (
                               <div className="pt-0.5">
-                                {renderLocationBadge(item.attendance.checkInLocationTag, item.attendance.checkInDistanceMeters)}
+                                {renderLocationBadge(item.attendance.checkInLocationTag, item.attendance.checkInDistanceMeters, item.attendance.checkInPlaceName, item.attendance.checkInAccuracyMeters)}
                               </div>
                             )}
                             {item.attendance?.checkInLatitude && item.attendance?.checkInLongitude ? (
@@ -1657,7 +1693,7 @@ export default function AttendancePage() {
                             </div>
                             {item.attendance?.checkOutLocationTag && (
                               <div className="pt-0.5">
-                                {renderLocationBadge(item.attendance.checkOutLocationTag, item.attendance.checkOutDistanceMeters)}
+                                {renderLocationBadge(item.attendance.checkOutLocationTag, item.attendance.checkOutDistanceMeters, item.attendance.checkOutPlaceName, item.attendance.checkOutAccuracyMeters)}
                               </div>
                             )}
                             {item.attendance?.checkOutLatitude && item.attendance?.checkOutLongitude ? (
@@ -1804,7 +1840,7 @@ export default function AttendancePage() {
                                 <div className="space-y-1">
                                   {item.attendance?.checkInLocationTag && (
                                     <div>
-                                      {renderLocationBadge(item.attendance.checkInLocationTag, item.attendance.checkInDistanceMeters)}
+                                      {renderLocationBadge(item.attendance.checkInLocationTag, item.attendance.checkInDistanceMeters, item.attendance.checkInPlaceName, item.attendance.checkInAccuracyMeters)}
                                     </div>
                                   )}
                                   {item.attendance && item.attendance.checkInLatitude && item.attendance.checkInLongitude ? (
@@ -1832,7 +1868,7 @@ export default function AttendancePage() {
                                 <div className="space-y-1">
                                   {item.attendance?.checkOutLocationTag && (
                                     <div>
-                                      {renderLocationBadge(item.attendance.checkOutLocationTag, item.attendance.checkOutDistanceMeters)}
+                                      {renderLocationBadge(item.attendance.checkOutLocationTag, item.attendance.checkOutDistanceMeters, item.attendance.checkOutPlaceName, item.attendance.checkOutAccuracyMeters)}
                                     </div>
                                   )}
                                   {item.attendance && item.attendance.checkOutLatitude && item.attendance.checkOutLongitude ? (
@@ -2241,7 +2277,7 @@ export default function AttendancePage() {
                             <span className="font-bold text-foreground text-xs block">{formatTimeStr(item.checkInTime)}</span>
                             {item.checkInLocationTag && (
                               <div className="pt-0.5">
-                                {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters)}
+                                {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters, item.checkInPlaceName, item.checkInAccuracyMeters)}
                               </div>
                             )}
                             {item.checkInLatitude && item.checkInLongitude ? (
@@ -2280,7 +2316,7 @@ export default function AttendancePage() {
                             <span className="font-bold text-foreground text-xs block">{formatTimeStr(item.checkOutTime)}</span>
                             {item.checkOutLocationTag && (
                               <div className="pt-0.5">
-                                {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters)}
+                                {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters, item.checkOutPlaceName, item.checkOutAccuracyMeters)}
                               </div>
                             )}
                             {item.checkOutLatitude && item.checkOutLongitude ? (
@@ -2381,7 +2417,7 @@ export default function AttendancePage() {
                                 <div className="space-y-1">
                                   {item.checkInLocationTag && (
                                     <div>
-                                      {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters)}
+                                      {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters, item.checkInPlaceName, item.checkInAccuracyMeters)}
                                     </div>
                                   )}
                                   {item.checkInLatitude && item.checkInLongitude ? (
@@ -2407,7 +2443,7 @@ export default function AttendancePage() {
                                 <div className="space-y-1">
                                   {item.checkOutLocationTag && (
                                     <div>
-                                      {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters)}
+                                      {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters, item.checkOutPlaceName, item.checkOutAccuracyMeters)}
                                     </div>
                                   )}
                                   {item.checkOutLatitude && item.checkOutLongitude ? (
@@ -2803,7 +2839,7 @@ export default function AttendancePage() {
 
                                 {item.checkInLocationTag && (
                                   <div>
-                                    {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters)}
+                                    {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters, item.checkInPlaceName, item.checkInAccuracyMeters)}
                                   </div>
                                 )}
 
@@ -2862,7 +2898,7 @@ export default function AttendancePage() {
 
                                 {item.checkOutLocationTag && (
                                   <div>
-                                    {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters)}
+                                    {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters, item.checkOutPlaceName, item.checkOutAccuracyMeters)}
                                   </div>
                                 )}
 

@@ -21,6 +21,29 @@ MIDNIGHT_WARNING_TIME = time(23, 50)                 # Alert at 23:50 IST
 MIDNIGHT_CUTOFF_TIME = time(23, 58)                  # Auto punch out at 23:58 IST
 
 
+def apply_auto_checkout_location(rec: Attendance):
+    """
+    Populates checkout location using the last known location ping,
+    or falls back to the check-in location if no ping was received.
+    """
+    if rec.last_known_latitude and rec.last_known_longitude:
+        rec.check_out_latitude = rec.last_known_latitude
+        rec.check_out_longitude = rec.last_known_longitude
+        rec.check_out_accuracy_meters = rec.last_known_accuracy_meters
+        time_str = rec.last_known_time.strftime("%I:%M %p") if rec.last_known_time else ""
+        place_info = f"{rec.last_known_place_name} " if rec.last_known_place_name else ""
+        suffix = f"(Last seen at {time_str})" if time_str else "(Last Known)"
+        rec.check_out_place_name = f"{place_info}{suffix}".strip()
+        rec.check_out_location_tag = "Last Known Location"
+    elif rec.check_in_latitude and rec.check_in_longitude:
+        rec.check_out_latitude = rec.check_in_latitude
+        rec.check_out_longitude = rec.check_in_longitude
+        rec.check_out_accuracy_meters = rec.check_in_accuracy_meters
+        place_info = f"{rec.check_in_place_name} " if rec.check_in_place_name else ""
+        rec.check_out_place_name = f"{place_info}(Check-in Location)".strip()
+        rec.check_out_location_tag = rec.check_in_location_tag or "Check-in Location"
+
+
 async def check_and_process_attendance():
     """
     Evaluates active attendance records and processes:
@@ -70,10 +93,12 @@ async def check_and_process_attendance():
                     # ─────────────────────────────────────────────────────────────
                     if today_date > check_in_date:
                         cutoff_dt = datetime.combine(check_in_date, MIDNIGHT_CUTOFF_TIME)
+                        apply_auto_checkout_location(rec)
                         rec.check_out_time = cutoff_dt
                         rec.is_auto_punch_out = True
                         rec.auto_punch_out_reason = "midnight_boundary"
-                        rec.check_out_comments = "[SYSTEM AUTO PUNCH-OUT] Day-end boundary cutoff (23:58 IST)"
+                        loc_detail = f" | Location: {rec.check_out_place_name}" if rec.check_out_place_name else ""
+                        rec.check_out_comments = f"[SYSTEM AUTO PUNCH-OUT] Day-end boundary cutoff (23:58 IST){loc_detail}"
                         await db.commit()
 
                         formatted_date_str = check_in_date.strftime("%d %b %Y")
@@ -109,10 +134,12 @@ async def check_and_process_attendance():
                     # ─────────────────────────────────────────────────────────────
                     if current_time >= MIDNIGHT_CUTOFF_TIME:
                         cutoff_dt = datetime.combine(today_date, MIDNIGHT_CUTOFF_TIME)
+                        apply_auto_checkout_location(rec)
                         rec.check_out_time = cutoff_dt
                         rec.is_auto_punch_out = True
                         rec.auto_punch_out_reason = "midnight_boundary"
-                        rec.check_out_comments = "[SYSTEM AUTO PUNCH-OUT] Day-end boundary cutoff (23:58 IST)"
+                        loc_detail = f" | Location: {rec.check_out_place_name}" if rec.check_out_place_name else ""
+                        rec.check_out_comments = f"[SYSTEM AUTO PUNCH-OUT] Day-end boundary cutoff (23:58 IST){loc_detail}"
                         await db.commit()
 
                         # User notification
@@ -157,10 +184,12 @@ async def check_and_process_attendance():
                             reason = "9h_limit"
                             comment = "[SYSTEM AUTO PUNCH-OUT] 9-hour shift limit reached"
 
+                        apply_auto_checkout_location(rec)
                         rec.check_out_time = punch_out_dt
                         rec.is_auto_punch_out = True
                         rec.auto_punch_out_reason = reason
-                        rec.check_out_comments = comment
+                        loc_detail = f" | Location: {rec.check_out_place_name}" if rec.check_out_place_name else ""
+                        rec.check_out_comments = f"{comment}{loc_detail}"
                         await db.commit()
 
                         formatted_time_str = punch_out_dt.strftime("%I:%M %p")
