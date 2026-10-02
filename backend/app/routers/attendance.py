@@ -70,24 +70,44 @@ class Attendance(Base):
     warning_notification_sent_at = Column(DateTime, nullable=True)
     midnight_warning_sent_at = Column(DateTime, nullable=True)
     
-    # Geofence & Location Tagging
     check_in_location_tag = Column(String(128), nullable=True)
     check_in_distance_meters = Column(Float, nullable=True)
     check_in_office_id = Column(Integer, nullable=True)
+    check_in_accuracy_meters = Column(Float, nullable=True)
+    check_in_place_name = Column(String(256), nullable=True)
     check_out_location_tag = Column(String(128), nullable=True)
     check_out_distance_meters = Column(Float, nullable=True)
     check_out_office_id = Column(Integer, nullable=True)
+    check_out_accuracy_meters = Column(Float, nullable=True)
+    check_out_place_name = Column(String(256), nullable=True)
+
+    # Approvals Workflow
+    approval_status = Column(String(32), default="approved", nullable=False)
+    is_out_of_office = Column(Boolean, default=False, nullable=True)
+    approved_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    rejection_reason = Column(String(512), nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
 
     user = relationship("User", foreign_keys=[user_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_user_id], lazy="selectin")
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
+
+class AttendanceApprovalDecision(BaseModel):
+    reason: Optional[str] = None
+
+
+class BulkApprovalRequest(BaseModel):
+    attendance_ids: List[int]
+
 
 class PunchRequest(BaseModel):
     type: str # "in" or "out"
     latitude: float
     longitude: float
+    accuracyMeters: Optional[float] = None
     deviceFingerprint: str
     photoBase64: str
     comments: Optional[str] = None
@@ -111,6 +131,27 @@ class OfficeLocationUpdate(BaseModel):
 
 
 # ─── Geofencing & Distance Helpers ──────────────────────────────────────────
+
+def reverse_geocode_place(lat: float, lon: float) -> Optional[str]:
+    """Best-effort reverse geocode via OpenStreetMap Nominatim to get nearest place name."""
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+        req = urllib.request.Request(url, headers={"User-Agent": "MyTally/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            # Try to get the most specific place name
+            name = data.get("name")
+            if name:
+                return name[:256]
+            addr = data.get("address", {})
+            # Fallback: use the most specific address component
+            for key in ["shop", "amenity", "building", "road", "neighbourhood", "suburb"]:
+                if addr.get(key):
+                    return addr[key][:256]
+            display = data.get("display_name", "")
+            return display[:256] if display else None
+    except Exception:
+        return None
 
 def haversine_distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Computes Great-Circle distance in meters between two coordinates."""
@@ -328,67 +369,64 @@ async def get_today_attendance(
     user: User = Depends(require_permission("attendance", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(Attendance).where(Attendance.user_id == user.user_id).order_by(desc(Attendance.check_in_time)).limit(1)
+    stmt = (
+        select(Attendance)
+        .options(selectinload(Attendance.approved_by))
+        .where(Attendance.user_id == user.user_id)
+        .order_by(desc(Attendance.check_in_time))
+        .limit(1)
+    )
     res = await db.execute(stmt)
     latest = res.scalars().first()
     
     if not latest:
         return {"success": True, "attendance": None}
         
+    # Helper to serialize record
+    def serialize_att(rec: Attendance):
+        return {
+            "id": rec.id,
+            "userId": rec.user_id,
+            "checkInTime": to_ist_iso(rec.check_in_time),
+            "checkOutTime": to_ist_iso(rec.check_out_time) if rec.check_out_time else None,
+            "checkInLatitude": rec.check_in_latitude,
+            "checkInLongitude": rec.check_in_longitude,
+            "checkOutLatitude": rec.check_out_latitude,
+            "checkOutLongitude": rec.check_out_longitude,
+            "checkInPhotoUrl": rec.check_in_photo_url,
+            "checkOutPhotoUrl": rec.check_out_photo_url,
+            "checkInComments": rec.check_in_comments,
+            "checkOutComments": rec.check_out_comments,
+            "checkInIpAddress": rec.check_in_ip_address,
+            "checkOutIpAddress": rec.check_out_ip_address,
+            "checkInDeviceFingerprint": rec.check_in_device_fingerprint,
+            "checkOutDeviceFingerprint": rec.check_out_device_fingerprint,
+            "isAutoPunchOut": bool(rec.is_auto_punch_out) if rec.is_auto_punch_out else False,
+            "autoPunchOutReason": rec.auto_punch_out_reason,
+            "checkInLocationTag": rec.check_in_location_tag,
+            "checkInDistanceMeters": rec.check_in_distance_meters,
+            "checkInAccuracyMeters": rec.check_in_accuracy_meters,
+            "checkInPlaceName": rec.check_in_place_name,
+            "checkOutLocationTag": rec.check_out_location_tag,
+            "checkOutDistanceMeters": rec.check_out_distance_meters,
+            "checkOutAccuracyMeters": rec.check_out_accuracy_meters,
+            "checkOutPlaceName": rec.check_out_place_name,
+            "approvalStatus": rec.approval_status or "approved",
+            "isOutOfOffice": bool(rec.is_out_of_office) if rec.is_out_of_office else False,
+            "approvedByUserId": rec.approved_by_user_id,
+            "approvedByUsername": rec.approved_by.username if rec.approved_by else None,
+            "approvedAt": to_ist_iso(rec.approved_at) if rec.approved_at else None,
+            "rejectionReason": rec.rejection_reason,
+        }
+
     # If the user is currently clocked in (no check-out time), return it as active session
     if latest.check_out_time is None:
-        return {"success": True, "attendance": {
-            "id": latest.id,
-            "userId": latest.user_id,
-            "checkInTime": to_ist_iso(latest.check_in_time),
-            "checkOutTime": None,
-            "checkInLatitude": latest.check_in_latitude,
-            "checkInLongitude": latest.check_in_longitude,
-            "checkOutLatitude": latest.check_out_latitude,
-            "checkOutLongitude": latest.check_out_longitude,
-            "checkInPhotoUrl": latest.check_in_photo_url,
-            "checkOutPhotoUrl": latest.check_out_photo_url,
-            "checkInComments": latest.check_in_comments,
-            "checkOutComments": latest.check_out_comments,
-            "checkInIpAddress": latest.check_in_ip_address,
-            "checkOutIpAddress": latest.check_out_ip_address,
-            "checkInDeviceFingerprint": latest.check_in_device_fingerprint,
-            "checkOutDeviceFingerprint": latest.check_out_device_fingerprint,
-            "isAutoPunchOut": bool(latest.is_auto_punch_out) if latest.is_auto_punch_out else False,
-            "autoPunchOutReason": latest.auto_punch_out_reason,
-            "checkInLocationTag": latest.check_in_location_tag,
-            "checkInDistanceMeters": latest.check_in_distance_meters,
-            "checkOutLocationTag": latest.check_out_location_tag,
-            "checkOutDistanceMeters": latest.check_out_distance_meters,
-        }}
+        return {"success": True, "attendance": serialize_att(latest)}
         
     # If latest session is completed, only return it if it was checked in today (in IST)
     now_ist = get_ist_now()
     if latest.check_in_time.date() == now_ist.date():
-        return {"success": True, "attendance": {
-            "id": latest.id,
-            "userId": latest.user_id,
-            "checkInTime": to_ist_iso(latest.check_in_time),
-            "checkOutTime": to_ist_iso(latest.check_out_time),
-            "checkInLatitude": latest.check_in_latitude,
-            "checkInLongitude": latest.check_in_longitude,
-            "checkOutLatitude": latest.check_out_latitude,
-            "checkOutLongitude": latest.check_out_longitude,
-            "checkInPhotoUrl": latest.check_in_photo_url,
-            "checkOutPhotoUrl": latest.check_out_photo_url,
-            "checkInComments": latest.check_in_comments,
-            "checkOutComments": latest.check_out_comments,
-            "checkInIpAddress": latest.check_in_ip_address,
-            "checkOutIpAddress": latest.check_out_ip_address,
-            "checkInDeviceFingerprint": latest.check_in_device_fingerprint,
-            "checkOutDeviceFingerprint": latest.check_out_device_fingerprint,
-            "isAutoPunchOut": bool(latest.is_auto_punch_out) if latest.is_auto_punch_out else False,
-            "autoPunchOutReason": latest.auto_punch_out_reason,
-            "checkInLocationTag": latest.check_in_location_tag,
-            "checkInDistanceMeters": latest.check_in_distance_meters,
-            "checkOutLocationTag": latest.check_out_location_tag,
-            "checkOutDistanceMeters": latest.check_out_distance_meters,
-        }}
+        return {"success": True, "attendance": serialize_att(latest)}
         
     return {"success": True, "attendance": None}
 
@@ -426,6 +464,9 @@ async def punch_attendance(
     offices = offices_res.scalars().all()
     loc_tag, dist_m, off_id = resolve_location_tag(req.latitude, req.longitude, offices)
     
+    # Check whether the punch coordinate is outside the office geofence
+    is_out = not loc_tag.startswith("In Office:")
+    
     if req.type == "in":
         # Check if already clocked in (either active session or already checkin today in IST)
         stmt = select(Attendance).where(Attendance.user_id == user.user_id).order_by(desc(Attendance.check_in_time)).limit(1)
@@ -437,6 +478,8 @@ async def punch_attendance(
             if latest.check_in_time.date() == now_ist.date():
                 raise HTTPException(status_code=400, detail="You have already completed your shift today.")
             
+        approval_status = "pending" if is_out else "approved"
+        
         attendance = Attendance(
             user_id=user.user_id,
             check_in_time=now_ist,
@@ -449,30 +492,54 @@ async def punch_attendance(
             check_in_location_tag=loc_tag,
             check_in_distance_meters=dist_m,
             check_in_office_id=off_id,
+            check_in_accuracy_meters=req.accuracyMeters,
+            is_out_of_office=is_out,
+            approval_status=approval_status,
         )
+
+        # Best-effort reverse geocode for human-readable place name
+        place_name = None
+        try:
+            place_name = reverse_geocode_place(req.latitude, req.longitude)
+            attendance.check_in_place_name = place_name
+        except Exception:
+            pass
+
         db.add(attendance)
         await db.commit()
         await db.refresh(attendance)
 
         # Notify admins of punch in
         from app.routers.notifications import notify_admins
+        if is_out:
+            notif_title = "Attendance Approval Required: Clock-In"
+            notif_msg = f"{user.username} clocked in OUTSIDE office geofence ({loc_tag}) at {formatted_ist}. Admin approval required."
+        else:
+            notif_title = "Attendance: Clock-In"
+            notif_msg = f"{user.username} clocked in at {formatted_ist} ({loc_tag})"
+
         await notify_admins(
             db=db,
             company_id=user.company_id,
             type="attendance",
-            title="Attendance: Clock-In",
-            message=f"{user.username} clocked in at {formatted_ist} ({loc_tag})",
+            title=notif_title,
+            message=notif_msg,
             reference_id=str(attendance.id),
             reference_type="attendance",
             exclude_user_id=user.user_id,
             auto_commit=True,
         )
 
+        resp_msg = "Clocked in successfully. Pending admin approval (Outside office geofence)." if is_out else "Clocked in successfully"
         return {
             "success": True, 
-            "message": "Clocked in successfully",
+            "message": resp_msg,
             "locationTag": loc_tag,
-            "distanceMeters": dist_m
+            "distanceMeters": dist_m,
+            "accuracyMeters": req.accuracyMeters,
+            "placeName": place_name,
+            "approvalStatus": approval_status,
+            "isOutOfOffice": is_out
         }
     else:
         # Check checkout session
@@ -492,28 +559,55 @@ async def punch_attendance(
         latest.check_out_location_tag = loc_tag
         latest.check_out_distance_meters = dist_m
         latest.check_out_office_id = off_id
+        latest.check_out_accuracy_meters = req.accuracyMeters
+        
+        # Best-effort reverse geocode for place name
+        checkout_place_name = None
+        try:
+            checkout_place_name = reverse_geocode_place(req.latitude, req.longitude)
+            latest.check_out_place_name = checkout_place_name
+        except Exception:
+            pass
+        
+        # If punch-out was out of office, flag is_out_of_office and require approval if not already rejected
+        if is_out:
+            latest.is_out_of_office = True
+            if latest.approval_status != "rejected":
+                latest.approval_status = "pending"
         
         await db.commit()
 
         # Notify admins of punch out
         from app.routers.notifications import notify_admins
+        if latest.approval_status == "pending":
+            notif_title = "Attendance Approval Required: Clock-Out"
+            notif_msg = f"{user.username} clocked out OUTSIDE office geofence ({loc_tag}) at {formatted_ist}. Admin approval required."
+        else:
+            notif_title = "Attendance: Clock-Out"
+            notif_msg = f"{user.username} clocked out at {formatted_ist} ({loc_tag})"
+
         await notify_admins(
             db=db,
             company_id=user.company_id,
             type="attendance",
-            title="Attendance: Clock-Out",
-            message=f"{user.username} clocked out at {formatted_ist} ({loc_tag})",
+            title=notif_title,
+            message=notif_msg,
             reference_id=str(latest.id),
             reference_type="attendance",
             exclude_user_id=user.user_id,
             auto_commit=True,
         )
 
+        resp_msg = "Clocked out successfully. Pending admin approval (Outside office geofence)." if latest.approval_status == "pending" else "Clocked out successfully"
         return {
             "success": True, 
-            "message": "Clocked out successfully",
+            "message": resp_msg,
             "locationTag": loc_tag,
-            "distanceMeters": dist_m
+            "distanceMeters": dist_m,
+            "accuracyMeters": req.accuracyMeters,
+            "placeName": checkout_place_name,
+            "approvalStatus": latest.approval_status,
+            "isOutOfOffice": latest.is_out_of_office
         }
 
 
@@ -523,7 +617,13 @@ async def get_attendance_history(
     user: User = Depends(require_permission("attendance", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(Attendance).where(Attendance.user_id == user.user_id).order_by(desc(Attendance.check_in_time)).limit(limit)
+    stmt = (
+        select(Attendance)
+        .options(selectinload(Attendance.approved_by))
+        .where(Attendance.user_id == user.user_id)
+        .order_by(desc(Attendance.check_in_time))
+        .limit(limit)
+    )
     res = await db.execute(stmt)
     history = res.scalars().all()
     
@@ -551,8 +651,18 @@ async def get_attendance_history(
                 "autoPunchOutReason": h.auto_punch_out_reason,
                 "checkInLocationTag": h.check_in_location_tag,
                 "checkInDistanceMeters": h.check_in_distance_meters,
+                "checkInAccuracyMeters": h.check_in_accuracy_meters,
+                "checkInPlaceName": h.check_in_place_name,
                 "checkOutLocationTag": h.check_out_location_tag,
                 "checkOutDistanceMeters": h.check_out_distance_meters,
+                "checkOutAccuracyMeters": h.check_out_accuracy_meters,
+                "checkOutPlaceName": h.check_out_place_name,
+                "approvalStatus": h.approval_status or "approved",
+                "isOutOfOffice": bool(h.is_out_of_office) if h.is_out_of_office else False,
+                "approvedByUserId": h.approved_by_user_id,
+                "approvedByUsername": h.approved_by.username if h.approved_by else None,
+                "approvedAt": to_ist_iso(h.approved_at) if h.approved_at else None,
+                "rejectionReason": h.rejection_reason,
             }
             for h in history
         ]
@@ -568,7 +678,7 @@ async def get_team_attendance_for_admin(
     # Verify Admin role
     role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
     role = role_q.scalars().first()
-    if not role or role.name != "Admin":
+    if not role or role.name.lower() not in ("admin", "superadmin", "owner"):
         raise HTTPException(status_code=403, detail="Unauthorized")
         
     target_date = datetime.strptime(dateStr, "%Y-%m-%d").date() if dateStr else get_ist_date()
@@ -587,11 +697,15 @@ async def get_team_attendance_for_admin(
     start_of_target = datetime.combine(target_date, datetime.min.time())
     end_of_target = datetime.combine(target_date, datetime.max.time())
     
-    stmt = select(Attendance).where(
-        and_(
-            Attendance.user_id.in_(user_ids),
-            Attendance.check_in_time >= start_of_target,
-            Attendance.check_in_time <= end_of_target
+    stmt = (
+        select(Attendance)
+        .options(selectinload(Attendance.approved_by))
+        .where(
+            and_(
+                Attendance.user_id.in_(user_ids),
+                Attendance.check_in_time >= start_of_target,
+                Attendance.check_in_time <= end_of_target
+            )
         )
     )
     res_att = await db.execute(stmt)
@@ -623,8 +737,18 @@ async def get_team_attendance_for_admin(
                 "autoPunchOutReason": rec.auto_punch_out_reason if rec else None,
                 "checkInLocationTag": rec.check_in_location_tag if rec else None,
                 "checkInDistanceMeters": rec.check_in_distance_meters if rec else None,
+                "checkInAccuracyMeters": rec.check_in_accuracy_meters if rec else None,
+                "checkInPlaceName": rec.check_in_place_name if rec else None,
                 "checkOutLocationTag": rec.check_out_location_tag if rec else None,
                 "checkOutDistanceMeters": rec.check_out_distance_meters if rec else None,
+                "checkOutAccuracyMeters": rec.check_out_accuracy_meters if rec else None,
+                "checkOutPlaceName": rec.check_out_place_name if rec else None,
+                "approvalStatus": rec.approval_status if rec else None,
+                "isOutOfOffice": bool(rec.is_out_of_office) if (rec and rec.is_out_of_office) else False,
+                "approvedByUserId": rec.approved_by_user_id if rec else None,
+                "approvedByUsername": rec.approved_by.username if (rec and rec.approved_by) else None,
+                "approvedAt": to_ist_iso(rec.approved_at) if (rec and rec.approved_at) else None,
+                "rejectionReason": rec.rejection_reason if rec else None,
             } if rec else None
         })
         
@@ -640,7 +764,7 @@ async def get_full_team_attendance_history(
 ):
     role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
     role = role_q.scalars().first()
-    if not role or role.name != "Admin":
+    if not role or role.name.lower() not in ("admin", "superadmin", "owner"):
         raise HTTPException(status_code=403, detail="Unauthorized")
         
     start_date = datetime.strptime(startDateStr, "%Y-%m-%d")
@@ -648,7 +772,7 @@ async def get_full_team_attendance_history(
     
     stmt = (
         select(Attendance)
-        .options(selectinload(Attendance.user))
+        .options(selectinload(Attendance.user), selectinload(Attendance.approved_by))
         .join(User, Attendance.user_id == User.user_id)
         .where(
             and_(
@@ -686,11 +810,280 @@ async def get_full_team_attendance_history(
                 "autoPunchOutReason": h.auto_punch_out_reason,
                 "checkInLocationTag": h.check_in_location_tag,
                 "checkInDistanceMeters": h.check_in_distance_meters,
+                "checkInAccuracyMeters": h.check_in_accuracy_meters,
+                "checkInPlaceName": h.check_in_place_name,
                 "checkOutLocationTag": h.check_out_location_tag,
                 "checkOutDistanceMeters": h.check_out_distance_meters,
+                "checkOutAccuracyMeters": h.check_out_accuracy_meters,
+                "checkOutPlaceName": h.check_out_place_name,
+                "approvalStatus": h.approval_status or "approved",
+                "isOutOfOffice": bool(h.is_out_of_office) if h.is_out_of_office else False,
+                "approvedByUserId": h.approved_by_user_id,
+                "approvedByUsername": h.approved_by.username if h.approved_by else None,
+                "approvedAt": to_ist_iso(h.approved_at) if h.approved_at else None,
+                "rejectionReason": h.rejection_reason,
             }
             for h in history
         ]
+    }
+
+
+# ─── Attendance Approvals Endpoints ──────────────────────────────────────────
+
+@router.get("/admin/approvals")
+async def get_attendance_approvals(
+    status_filter: Optional[str] = "pending",  # "pending", "approved", "rejected", "all"
+    limit: int = 100,
+    user: User = Depends(require_permission("attendance", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetches attendance records that require or have had admin approval for out-of-office punches.
+    """
+    role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
+    role = role_q.scalars().first()
+    if not role or role.name.lower() not in ("admin", "superadmin", "owner"):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    base_query = (
+        select(Attendance)
+        .options(selectinload(Attendance.user), selectinload(Attendance.approved_by))
+        .join(User, Attendance.user_id == User.user_id)
+        .where(User.company_id == user.company_id)
+    )
+
+    if status_filter and status_filter != "all":
+        base_query = base_query.where(Attendance.approval_status == status_filter)
+    else:
+        # Show all out of office or pending approval
+        base_query = base_query.where(
+            (Attendance.is_out_of_office == True) | (Attendance.approval_status == "pending")
+        )
+
+    base_query = base_query.order_by(desc(Attendance.check_in_time)).limit(limit)
+
+    res = await db.execute(base_query)
+    records = res.scalars().all()
+
+    # Total pending count in company
+    pending_count_stmt = (
+        select(func.count(Attendance.id))
+        .join(User, Attendance.user_id == User.user_id)
+        .where(
+            User.company_id == user.company_id,
+            Attendance.approval_status == "pending"
+        )
+    )
+    pending_res = await db.execute(pending_count_stmt)
+    pending_count = pending_res.scalar() or 0
+
+    return {
+        "success": True,
+        "pendingCount": pending_count,
+        "records": [
+            {
+                "id": r.id,
+                "userId": r.user_id,
+                "username": r.user.username if r.user else f"User #{r.user_id}",
+                "checkInTime": to_ist_iso(r.check_in_time),
+                "checkOutTime": to_ist_iso(r.check_out_time),
+                "checkInLatitude": r.check_in_latitude,
+                "checkInLongitude": r.check_in_longitude,
+                "checkOutLatitude": r.check_out_latitude,
+                "checkOutLongitude": r.check_out_longitude,
+                "checkInLocationTag": r.check_in_location_tag,
+                "checkInDistanceMeters": r.check_in_distance_meters,
+                "checkInAccuracyMeters": r.check_in_accuracy_meters,
+                "checkInPlaceName": r.check_in_place_name,
+                "checkOutLocationTag": r.check_out_location_tag,
+                "checkOutDistanceMeters": r.check_out_distance_meters,
+                "checkOutAccuracyMeters": r.check_out_accuracy_meters,
+                "checkOutPlaceName": r.check_out_place_name,
+                "checkInPhotoUrl": r.check_in_photo_url,
+                "checkOutPhotoUrl": r.check_out_photo_url,
+                "checkInComments": r.check_in_comments,
+                "checkOutComments": r.check_out_comments,
+                "approvalStatus": r.approval_status or "approved",
+                "isOutOfOffice": bool(r.is_out_of_office),
+                "approvedByUserId": r.approved_by_user_id,
+                "approvedByUsername": r.approved_by.username if r.approved_by else None,
+                "approvedAt": to_ist_iso(r.approved_at) if r.approved_at else None,
+                "rejectionReason": r.rejection_reason,
+                "isAutoPunchOut": bool(r.is_auto_punch_out),
+            }
+            for r in records
+        ]
+    }
+
+
+@router.post("/admin/approve/{attendance_id}")
+async def approve_attendance(
+    attendance_id: int,
+    user: User = Depends(require_permission("attendance", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Approves an out-of-office attendance punch.
+    """
+    role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
+    role = role_q.scalars().first()
+    if not role or role.name.lower() not in ("admin", "superadmin", "owner"):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    stmt = (
+        select(Attendance)
+        .options(selectinload(Attendance.user))
+        .join(User, Attendance.user_id == User.user_id)
+        .where(
+            Attendance.id == attendance_id,
+            User.company_id == user.company_id
+        )
+    )
+    res = await db.execute(stmt)
+    rec = res.scalars().first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+
+    rec.approval_status = "approved"
+    rec.approved_by_user_id = user.user_id
+    rec.approved_at = get_ist_now()
+    rec.rejection_reason = None
+    await db.commit()
+
+    # Notify employee
+    from app.routers.notifications import notify_user
+    date_str = rec.check_in_time.strftime("%d %b %Y") if rec.check_in_time else "recent shift"
+    await notify_user(
+        db=db,
+        company_id=user.company_id,
+        user_id=rec.user_id,
+        type="attendance",
+        title="Attendance Approved",
+        message=f"Your out-of-office attendance for {date_str} has been approved by Admin ({user.username}).",
+        reference_id=str(rec.id),
+        reference_type="attendance",
+        auto_commit=True,
+    )
+
+    return {
+        "success": True,
+        "message": f"Attendance #{rec.id} for {rec.user.username if rec.user else 'User'} approved successfully."
+    }
+
+
+@router.post("/admin/reject/{attendance_id}")
+async def reject_attendance(
+    attendance_id: int,
+    req: AttendanceApprovalDecision,
+    user: User = Depends(require_permission("attendance", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Rejects an out-of-office attendance punch with optional reason.
+    """
+    role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
+    role = role_q.scalars().first()
+    if not role or role.name.lower() not in ("admin", "superadmin", "owner"):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    stmt = (
+        select(Attendance)
+        .options(selectinload(Attendance.user))
+        .join(User, Attendance.user_id == User.user_id)
+        .where(
+            Attendance.id == attendance_id,
+            User.company_id == user.company_id
+        )
+    )
+    res = await db.execute(stmt)
+    rec = res.scalars().first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+
+    rec.approval_status = "rejected"
+    rec.approved_by_user_id = user.user_id
+    rec.approved_at = get_ist_now()
+    rec.rejection_reason = req.reason or "Rejected by admin"
+    await db.commit()
+
+    # Notify employee
+    from app.routers.notifications import notify_user
+    date_str = rec.check_in_time.strftime("%d %b %Y") if rec.check_in_time else "recent shift"
+    reason_text = f" Reason: {req.reason}" if req.reason else ""
+    await notify_user(
+        db=db,
+        company_id=user.company_id,
+        user_id=rec.user_id,
+        type="attendance",
+        title="Attendance Rejected",
+        message=f"Your out-of-office attendance for {date_str} was rejected by Admin ({user.username}).{reason_text}",
+        reference_id=str(rec.id),
+        reference_type="attendance",
+        auto_commit=True,
+    )
+
+    return {
+        "success": True,
+        "message": f"Attendance #{rec.id} for {rec.user.username if rec.user else 'User'} rejected."
+    }
+
+
+@router.post("/admin/bulk-approve")
+async def bulk_approve_attendance(
+    req: BulkApprovalRequest,
+    user: User = Depends(require_permission("attendance", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Approves multiple out-of-office attendance records in bulk.
+    """
+    role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
+    role = role_q.scalars().first()
+    if not role or role.name.lower() not in ("admin", "superadmin", "owner"):
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    if not req.attendance_ids:
+        raise HTTPException(status_code=400, detail="No attendance IDs provided.")
+
+    stmt = (
+        select(Attendance)
+        .options(selectinload(Attendance.user))
+        .join(User, Attendance.user_id == User.user_id)
+        .where(
+            Attendance.id.in_(req.attendance_ids),
+            User.company_id == user.company_id
+        )
+    )
+    res = await db.execute(stmt)
+    records = res.scalars().all()
+
+    now_ist = get_ist_now()
+    from app.routers.notifications import notify_user
+    approved_count = 0
+    for rec in records:
+        rec.approval_status = "approved"
+        rec.approved_by_user_id = user.user_id
+        rec.approved_at = now_ist
+        rec.rejection_reason = None
+        approved_count += 1
+
+        date_str = rec.check_in_time.strftime("%d %b %Y") if rec.check_in_time else "recent shift"
+        await notify_user(
+            db=db,
+            company_id=user.company_id,
+            user_id=rec.user_id,
+            type="attendance",
+            title="Attendance Approved",
+            message=f"Your out-of-office attendance for {date_str} has been approved by Admin ({user.username}).",
+            reference_id=str(rec.id),
+            reference_type="attendance",
+            auto_commit=False,
+        )
+
+    await db.commit()
+    return {
+        "success": True,
+        "message": f"Successfully approved {approved_count} attendance records."
     }
 
 
@@ -789,29 +1182,38 @@ async def get_monthly_muster_roll(
                     dur_sec = (now_ist - rec.check_in_time).total_seconds()
                     hours = max(0.0, round(dur_sec / 3600.0, 1))
 
-                emp_hours += hours
-                if rec.is_auto_punch_out:
-                    auto_punch_count += 1
-
-                # Status threshold
-                if hours >= 7.5 or (rec.check_out_time is None and day_date == today_date):
-                    status_code = "P"
-                    pres_count += 1
-                elif 4.0 <= hours < 7.5:
-                    status_code = "HD"
-                    hd_count += 1
+                # Check approval status
+                is_rejected = (rec.approval_status == "rejected")
+                if is_rejected:
+                    status_code = "A"
+                    abs_count += 1
+                    effective_hours = 0.0
                 else:
-                    status_code = "HD"
-                    hd_count += 1
+                    effective_hours = hours
+                    emp_hours += effective_hours
+                    # Status threshold
+                    if hours >= 7.5 or (rec.check_out_time is None and day_date == today_date):
+                        status_code = "P"
+                        pres_count += 1
+                    elif 4.0 <= hours < 7.5:
+                        status_code = "HD"
+                        hd_count += 1
+                    else:
+                        status_code = "HD"
+                        hd_count += 1
 
                 emp_days[str(d)] = {
                     "status": status_code,
                     "checkIn": rec.check_in_time.strftime("%I:%M %p"),
                     "checkOut": rec.check_out_time.strftime("%I:%M %p") if rec.check_out_time else None,
-                    "hours": hours,
+                    "hours": effective_hours,
                     "locationTag": rec.check_in_location_tag or "Remote / Field",
                     "isAutoPunchOut": bool(rec.is_auto_punch_out),
                     "photoUrl": rec.check_in_photo_url,
+                    "approvalStatus": rec.approval_status or "approved",
+                    "isOutOfOffice": bool(rec.is_out_of_office) if rec.is_out_of_office else False,
+                    "attendanceId": rec.id,
+                    "rejectionReason": rec.rejection_reason,
                 }
             else:
                 if day_date > today_date:
@@ -831,6 +1233,10 @@ async def get_monthly_muster_roll(
                     "locationTag": None,
                     "isAutoPunchOut": False,
                     "photoUrl": None,
+                    "approvalStatus": "approved",
+                    "isOutOfOffice": False,
+                    "attendanceId": None,
+                    "rejectionReason": None,
                 }
 
         effective_days = pres_count + (0.5 * hd_count)

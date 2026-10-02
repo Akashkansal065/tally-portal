@@ -4,6 +4,7 @@ export interface StampingResult {
   photoBase64: string
   lat: number | null
   lng: number | null
+  accuracy: number | null
   address: string | null
 }
 
@@ -47,6 +48,7 @@ export async function stampPhoto(
 ): Promise<StampingResult> {
   let lat: number | null = null
   let lng: number | null = null
+  let accuracy: number | null = null
   let addressInfo: any = null
   let displayAddress: string | null = null
 
@@ -73,6 +75,7 @@ export async function stampPhoto(
       const pos = await getCoords()
       lat = pos.coords.latitude
       lng = pos.coords.longitude
+      accuracy = pos.coords.accuracy != null ? Math.round(pos.coords.accuracy) : null
     } catch (err) {
       console.warn('High accuracy geolocation failed, trying low accuracy...', err)
       try {
@@ -92,6 +95,7 @@ export async function stampPhoto(
         if (lowPos) {
           lat = lowPos.coords.latitude
           lng = lowPos.coords.longitude
+          accuracy = lowPos.coords.accuracy != null ? Math.round(lowPos.coords.accuracy) : null
         }
       } catch (_) {}
     }
@@ -232,7 +236,8 @@ export async function stampPhoto(
           // Lat/Lng info
           ctx.fillStyle = '#a1a1aa'
           ctx.font = '11px sans-serif'
-          ctx.fillText(`Latitude: ${lat}°  Longitude: ${lng}°`, textX, textY)
+          const accStr = accuracy != null ? `  Accuracy: ±${accuracy}m` : ''
+          ctx.fillText(`Latitude: ${lat}°  Longitude: ${lng}°${accStr}`, textX, textY)
 
           // Date time
           textY += 16
@@ -288,6 +293,7 @@ export async function stampPhoto(
           photoBase64: base64Str,
           lat,
           lng,
+          accuracy,
           address: displayAddress
         })
       }

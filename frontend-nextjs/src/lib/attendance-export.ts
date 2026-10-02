@@ -16,6 +16,10 @@ export interface EmployeeDayAttendance {
   locationTag: string | null
   isAutoPunchOut: boolean
   photoUrl?: string | null
+  approvalStatus?: 'approved' | 'pending' | 'rejected'
+  isOutOfOffice?: boolean | null
+  attendanceId?: number | null
+  rejectionReason?: string | null
 }
 
 export interface EmployeeMusterRoll {

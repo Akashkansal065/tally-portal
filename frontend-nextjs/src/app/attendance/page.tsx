@@ -35,7 +35,10 @@ import {
   Compass,
   RefreshCw,
   Table as TableIcon,
-  LayoutGrid
+  LayoutGrid,
+  AlertCircle,
+  CheckSquare,
+  Square
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -67,8 +70,19 @@ type AttendanceRecord = {
   autoPunchOutReason?: string | null
   checkInLocationTag?: string | null
   checkInDistanceMeters?: number | null
+  checkInAccuracyMeters?: number | null
+  checkInPlaceName?: string | null
   checkOutLocationTag?: string | null
   checkOutDistanceMeters?: number | null
+  checkOutAccuracyMeters?: number | null
+  checkOutPlaceName?: string | null
+  // Approvals Workflow Fields
+  approvalStatus?: 'approved' | 'pending' | 'rejected' | null
+  isOutOfOffice?: boolean | null
+  approvedByUserId?: number | null
+  approvedByUsername?: string | null
+  approvedAt?: string | null
+  rejectionReason?: string | null
 }
 
 type OfficeLocation = {
@@ -114,13 +128,25 @@ export default function AttendancePage() {
   
   // Navigation tabs
   const [activeTab, setActiveTab] = useState<'punch' | 'history' | 'admin'>('punch')
-  const [adminSubTab, setAdminSubTab] = useState<'today' | 'muster' | 'history' | 'offices'>('today')
+  const [adminSubTab, setAdminSubTab] = useState<'today' | 'approvals' | 'muster' | 'history' | 'offices'>('today')
 
   // Attendance states
   const [todayAttendance, setTodayAttendance] = useState<AttendanceRecord | null>(null)
   const [history, setHistory] = useState<AttendanceRecord[]>([])
   const [teamAttendance, setTeamAttendance] = useState<TeamAttendanceItem[]>([])
   const [teamHistory, setTeamHistory] = useState<AttendanceRecord[]>([])
+
+  // Approvals states
+  const [approvalsFilter, setApprovalsFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending')
+  const [approvalsList, setApprovalsList] = useState<AttendanceRecord[]>([])
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState<number>(0)
+  const [loadingApprovals, setLoadingApprovals] = useState<boolean>(false)
+  const [actionProcessingId, setActionProcessingId] = useState<number | null>(null)
+  const [rejectingRecord, setRejectingRecord] = useState<AttendanceRecord | null>(null)
+  const [rejectionReasonInput, setRejectionReasonInput] = useState<string>('')
+  const [selectedApprovalIds, setSelectedApprovalIds] = useState<number[]>([])
+  const [bulkApproving, setBulkApproving] = useState<boolean>(false)
+  const [approvalSearchTerm, setApprovalSearchTerm] = useState<string>('')
 
   // Geofencing & Offices states
   const [offices, setOffices] = useState<OfficeLocation[]>([])
@@ -153,7 +179,7 @@ export default function AttendancePage() {
   // Punch inputs
   const [comments, setComments] = useState('')
   const [photo, setPhoto] = useState<string | null>(null)
-  const [stampedCoords, setStampedCoords] = useState<{ lat: number | null, lng: number | null } | null>(null)
+  const [stampedCoords, setStampedCoords] = useState<{ lat: number | null, lng: number | null, accuracy: number | null } | null>(null)
   const [processingPhoto, setProcessingPhoto] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [showPhotoRequiredModal, setShowPhotoRequiredModal] = useState(false)
@@ -182,20 +208,41 @@ export default function AttendancePage() {
     }
   }, [token, permissions, router])
 
+  // Check URL query parameters (e.g. from notifications: /attendance?tab=admin&sub=approvals)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const tabParam = params.get('tab')
+      const subParam = params.get('sub')
+      if (tabParam === 'admin') {
+        setActiveTab('admin')
+        if (subParam === 'approvals' || subParam === 'today' || subParam === 'muster' || subParam === 'history' || subParam === 'offices') {
+          setAdminSubTab(subParam as any)
+        }
+      }
+    }
+  }, [])
+
   // Fetch initial personal details and offices
   useEffect(() => {
     if (!token) return
     fetchTodayStatus()
     fetchPersonalHistory()
     fetchOffices()
-  }, [token])
+    if (user?.permissions?.isAdmin) {
+      fetchPendingCountOnly()
+    }
+  }, [token, user?.permissions?.isAdmin])
 
   // Fetch admin sub-views when active
   useEffect(() => {
     if (!token || !user?.permissions?.isAdmin) return
     if (activeTab === 'admin') {
+      fetchPendingCountOnly()
       if (adminSubTab === 'today') {
         fetchTeamAttendance()
+      } else if (adminSubTab === 'approvals') {
+        fetchApprovals(approvalsFilter)
       } else if (adminSubTab === 'history') {
         fetchTeamHistory()
       } else if (adminSubTab === 'muster') {
@@ -204,7 +251,7 @@ export default function AttendancePage() {
         fetchOffices()
       }
     }
-  }, [activeTab, adminSubTab, filterDate, rangeStart, rangeEnd, musterYear, musterMonth, token])
+  }, [activeTab, adminSubTab, filterDate, rangeStart, rangeEnd, musterYear, musterMonth, approvalsFilter, token])
 
   // Refresh clock every second
   useEffect(() => {
@@ -552,6 +599,157 @@ export default function AttendancePage() {
     }
   }
 
+  const fetchApprovals = async (status = approvalsFilter) => {
+    setLoadingApprovals(true)
+    try {
+      const res = await fetch(`${API_BASE}/attendance/admin/approvals?status_filter=${status}`, {
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setApprovalsList(data.records || [])
+        setPendingApprovalsCount(data.pendingCount || 0)
+      } else {
+        toast.error("Failed to fetch approvals list.")
+      }
+    } catch (e) {
+      console.error(e)
+      toast.error("Network error while loading approvals.")
+    } finally {
+      setLoadingApprovals(false)
+    }
+  }
+
+  const fetchPendingCountOnly = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/attendance/admin/approvals?status_filter=pending&limit=1`, {
+        headers: authHeaders(token)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setPendingApprovalsCount(data.pendingCount || 0)
+      }
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const handleApproveAttendance = async (attendanceId: number) => {
+    setActionProcessingId(attendanceId)
+    try {
+      const res = await fetch(`${API_BASE}/attendance/admin/approve/${attendanceId}`, {
+        method: 'POST',
+        headers: authHeaders(token)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || "Failed to approve attendance.")
+      }
+      toast.success("Attendance approved successfully!")
+      fetchApprovals(approvalsFilter)
+      fetchPendingCountOnly()
+      if (adminSubTab === 'today') fetchTeamAttendance()
+      if (adminSubTab === 'muster') fetchMusterRoll(musterYear, musterMonth)
+      fetchTodayStatus()
+    } catch (e: any) {
+      toast.error(e.message || "Failed to approve attendance.")
+    } finally {
+      setActionProcessingId(null)
+    }
+  }
+
+  const handleOpenRejectModal = (item: AttendanceRecord) => {
+    setRejectingRecord(item)
+    setRejectionReasonInput('')
+  }
+
+  const handleConfirmReject = async () => {
+    if (!rejectingRecord) return
+    setActionProcessingId(rejectingRecord.id)
+    try {
+      const res = await fetch(`${API_BASE}/attendance/admin/reject/${rejectingRecord.id}`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders(token),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ reason: rejectionReasonInput.trim() || undefined })
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || "Failed to reject attendance.")
+      }
+      toast.success("Attendance rejected.")
+      setRejectingRecord(null)
+      setRejectionReasonInput('')
+      fetchApprovals(approvalsFilter)
+      fetchPendingCountOnly()
+      if (adminSubTab === 'today') fetchTeamAttendance()
+      if (adminSubTab === 'muster') fetchMusterRoll(musterYear, musterMonth)
+      fetchTodayStatus()
+    } catch (e: any) {
+      toast.error(e.message || "Failed to reject attendance.")
+    } finally {
+      setActionProcessingId(null)
+    }
+  }
+
+  const handleBulkApprove = async () => {
+    if (selectedApprovalIds.length === 0) return
+    setBulkApproving(true)
+    try {
+      const res = await fetch(`${API_BASE}/attendance/admin/bulk-approve`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders(token),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ attendance_ids: selectedApprovalIds })
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || "Bulk approval failed.")
+      }
+      toast.success(`Successfully approved ${selectedApprovalIds.length} attendance records!`)
+      setSelectedApprovalIds([])
+      fetchApprovals(approvalsFilter)
+      fetchPendingCountOnly()
+      if (adminSubTab === 'today') fetchTeamAttendance()
+      if (adminSubTab === 'muster') fetchMusterRoll(musterYear, musterMonth)
+      fetchTodayStatus()
+    } catch (e: any) {
+      toast.error(e.message || "Bulk approval failed.")
+    } finally {
+      setBulkApproving(false)
+    }
+  }
+
+  const renderApprovalBadge = (status?: string | null, isOut?: boolean | null, className?: string) => {
+    const s = status || 'approved'
+    if (s === 'pending') {
+      return (
+        <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30", className)}>
+          <AlertTriangle className="h-2.5 w-2.5 shrink-0 text-amber-500 animate-pulse" />
+          <span>Pending Admin Approval</span>
+        </span>
+      )
+    }
+    if (s === 'rejected') {
+      return (
+        <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30", className)}>
+          <XCircle className="h-2.5 w-2.5 shrink-0 text-rose-500" />
+          <span>Rejected</span>
+        </span>
+      )
+    }
+    return (
+      <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30", className)}>
+        <CheckCircle2 className="h-2.5 w-2.5 shrink-0 text-emerald-500" />
+        <span>{isOut ? "Approved (Out of Office)" : "Approved"}</span>
+      </span>
+    )
+  }
+
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -560,7 +758,7 @@ export default function AttendancePage() {
     try {
       const stamp = await stampPhoto(file)
       setPhoto(stamp.photoBase64)
-      setStampedCoords({ lat: stamp.lat, lng: stamp.lng })
+      setStampedCoords({ lat: stamp.lat, lng: stamp.lng, accuracy: stamp.accuracy })
     } catch (err: any) {
       alert(err.message || 'Failed to capture geolocation or render canvas.')
     } finally {
@@ -588,6 +786,7 @@ export default function AttendancePage() {
           type: punchType,
           latitude: stampedCoords?.lat || 0.0,
           longitude: stampedCoords?.lng || 0.0,
+          accuracyMeters: stampedCoords?.accuracy ?? null,
           deviceFingerprint: finger,
           photoBase64: photo,
           comments
@@ -600,14 +799,24 @@ export default function AttendancePage() {
       }
 
       const result = await res.json()
-      toast.success(result.message || `Punched ${punchType === 'in' ? 'In' : 'Out'} successfully.`, {
-        description: result.locationTag ? `Location Tag: ${result.locationTag}` : undefined
-      })
+      if (result.approvalStatus === 'pending') {
+        toast.warning(result.message || "Punched outside office geofence. Shift is pending Admin approval.", {
+          description: result.locationTag ? `Location: ${result.locationTag}` : undefined,
+          duration: 6000
+        })
+      } else {
+        toast.success(result.message || `Punched ${punchType === 'in' ? 'In' : 'Out'} successfully.`, {
+          description: result.locationTag ? `Location Tag: ${result.locationTag}` : undefined
+        })
+      }
       setPhoto(null)
       setComments('')
       setStampedCoords(null)
       fetchTodayStatus()
       fetchPersonalHistory()
+      if (user?.permissions?.isAdmin) {
+        fetchPendingCountOnly()
+      }
     } catch (e: any) {
       alert(e.message)
     } finally {
@@ -655,10 +864,13 @@ export default function AttendancePage() {
     }
   }
 
-  const renderLocationBadge = (tag: string | null | undefined, distance?: number | null) => {
+  const renderLocationBadge = (tag: string | null | undefined, distance?: number | null, placeName?: string | null, accuracy?: number | null) => {
     if (!tag) return null
     const isInside = tag.startsWith('In Office:')
     const isOutside = tag.startsWith('Outside Radius:')
+    const titleParts = [tag]
+    if (placeName) titleParts.push(`📍 ${placeName}`)
+    if (accuracy != null) titleParts.push(`GPS accuracy: ±${accuracy}m`)
     
     return (
       <span 
@@ -668,10 +880,11 @@ export default function AttendancePage() {
           isOutside ? "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/25" :
           "bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-500/25"
         )}
-        title={tag}
+        title={titleParts.join('\n')}
       >
         <Compass className="h-2.5 w-2.5 shrink-0" />
-        <span className="truncate max-w-[140px]">{tag}</span>
+        <span className="truncate max-w-[180px]">{placeName ? `${placeName}` : tag}</span>
+        {accuracy != null && <span className="text-[8px] opacity-60 shrink-0">±{accuracy}m</span>}
       </span>
     )
   }
@@ -739,7 +952,13 @@ export default function AttendancePage() {
                   activeTab === 'admin' ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                <Users className="h-3.5 w-3.5" /> Team Logs
+                <Users className="h-3.5 w-3.5" />
+                <span>Team Logs</span>
+                {pendingApprovalsCount > 0 && (
+                  <span className="bg-amber-500 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full min-w-4 text-center leading-tight">
+                    {pendingApprovalsCount}
+                  </span>
+                )}
               </button>
             </div>
           )}
@@ -765,6 +984,46 @@ export default function AttendancePage() {
                     </span>
                   )}
                 </div>
+
+                {/* Out of Office Approval Status Banner */}
+                {todayAttendance && (todayAttendance.isOutOfOffice || todayAttendance.approvalStatus !== 'approved') && (
+                  <div className={cn(
+                    "p-3.5 rounded-xl border text-xs flex items-start gap-2.5 shadow-2xs",
+                    todayAttendance.approvalStatus === 'pending'
+                      ? "bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200"
+                      : todayAttendance.approvalStatus === 'rejected'
+                        ? "bg-rose-500/10 border-rose-500/30 text-rose-800 dark:text-rose-200"
+                        : "bg-emerald-500/10 border-emerald-500/30 text-emerald-800 dark:text-emerald-200"
+                  )}>
+                    <AlertCircle className={cn(
+                      "h-4 w-4 shrink-0 mt-0.5",
+                      todayAttendance.approvalStatus === 'pending'
+                        ? "text-amber-500 animate-pulse"
+                        : todayAttendance.approvalStatus === 'rejected'
+                          ? "text-rose-500"
+                          : "text-emerald-500"
+                    )} />
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-xs">
+                          {todayAttendance.approvalStatus === 'pending'
+                            ? "Out-of-Office: Pending Admin Approval"
+                            : todayAttendance.approvalStatus === 'rejected'
+                              ? "Out-of-Office: Attendance Rejected"
+                              : "Out-of-Office: Approved"}
+                        </span>
+                        {renderApprovalBadge(todayAttendance.approvalStatus, todayAttendance.isOutOfOffice)}
+                      </div>
+                      <p className="text-[11px] opacity-90 leading-snug">
+                        {todayAttendance.approvalStatus === 'pending'
+                          ? "Your punch was recorded outside registered office geofences and requires administrative approval."
+                          : todayAttendance.approvalStatus === 'rejected'
+                            ? (todayAttendance.rejectionReason ? `Reason: ${todayAttendance.rejectionReason}` : "This attendance record was rejected by an administrator.")
+                            : `Verified and approved${todayAttendance.approvedByUsername ? ` by ${todayAttendance.approvedByUsername}` : ''}.`}
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Imminent / Approaching Auto Punch-Out Warning Banners */}
                 {todayAttendance && !todayAttendance.checkOutTime && autoPunchOutInfo && autoPunchOutInfo.urgency === 'urgent' && (
@@ -827,8 +1086,9 @@ export default function AttendancePage() {
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap justify-center">
                       <span className="text-[10px] text-muted-foreground">Clocked in at {formatTimeStr(todayAttendance.checkInTime)}</span>
                       {todayAttendance.checkInLocationTag && (
-                        renderLocationBadge(todayAttendance.checkInLocationTag, todayAttendance.checkInDistanceMeters)
+                        renderLocationBadge(todayAttendance.checkInLocationTag, todayAttendance.checkInDistanceMeters, todayAttendance.checkInPlaceName, todayAttendance.checkInAccuracyMeters)
                       )}
+                      {renderApprovalBadge(todayAttendance.approvalStatus, todayAttendance.isOutOfOffice)}
                       {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
                         <a
                           href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
@@ -862,8 +1122,9 @@ export default function AttendancePage() {
                       </span>
                       <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
                         {todayAttendance.checkInLocationTag && (
-                          renderLocationBadge(todayAttendance.checkInLocationTag, todayAttendance.checkInDistanceMeters)
+                          renderLocationBadge(todayAttendance.checkInLocationTag, todayAttendance.checkInDistanceMeters, todayAttendance.checkInPlaceName, todayAttendance.checkInAccuracyMeters)
                         )}
+                        {renderApprovalBadge(todayAttendance.approvalStatus, todayAttendance.isOutOfOffice)}
                         {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
                           <a
                             href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
@@ -887,8 +1148,9 @@ export default function AttendancePage() {
                       <span className="text-[10px] text-muted-foreground">Total worked: {getWorkingDuration(todayAttendance.checkInTime, todayAttendance.checkOutTime)}</span>
                       <div className="flex items-center gap-2 mt-1 flex-wrap justify-center">
                         {todayAttendance.checkInLocationTag && (
-                          renderLocationBadge(todayAttendance.checkInLocationTag, todayAttendance.checkInDistanceMeters)
+                          renderLocationBadge(todayAttendance.checkInLocationTag, todayAttendance.checkInDistanceMeters, todayAttendance.checkInPlaceName, todayAttendance.checkInAccuracyMeters)
                         )}
+                        {renderApprovalBadge(todayAttendance.approvalStatus, todayAttendance.isOutOfOffice)}
                         {todayAttendance.checkInLatitude && todayAttendance.checkInLongitude && (
                           <a
                             href={`https://www.google.com/maps?q=${encodeURIComponent(`${todayAttendance.checkInLatitude},${todayAttendance.checkInLongitude}`)}`}
@@ -903,7 +1165,7 @@ export default function AttendancePage() {
                           </a>
                         )}
                         {todayAttendance.checkOutLocationTag && (
-                          renderLocationBadge(todayAttendance.checkOutLocationTag, todayAttendance.checkOutDistanceMeters)
+                          renderLocationBadge(todayAttendance.checkOutLocationTag, todayAttendance.checkOutDistanceMeters, todayAttendance.checkOutPlaceName, todayAttendance.checkOutAccuracyMeters)
                         )}
                         {todayAttendance.checkOutLatitude && todayAttendance.checkOutLongitude && (
                           <a
@@ -946,30 +1208,38 @@ export default function AttendancePage() {
                             const info = getClosestOfficeInfo(stampedCoords.lat, stampedCoords.lng)
                             if (!info) return null
                             return (
-                              <div className={cn(
-                                "p-2.5 rounded-xl border text-xs flex items-center justify-between gap-2 shadow-2xs",
-                                info.isInside 
-                                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-800 dark:text-emerald-200"
-                                  : "bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200"
-                              )}>
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <ShieldCheck className={cn("h-4 w-4 shrink-0", info.isInside ? "text-emerald-500" : "text-amber-500")} />
-                                  <div className="truncate">
-                                    <span className="font-bold">{info.isInside ? "In Office: " : "Outside Radius: "}</span>
-                                    <span className="font-semibold">{info.office.name}</span>
-                                    <span className="text-[10px] opacity-80 block sm:inline sm:ml-1">
-                                      ({info.distFormatted} away • radius {info.office.radiusMeters}m)
-                                    </span>
-                                  </div>
-                                </div>
-                                <span className={cn(
-                                  "text-[9px] font-black uppercase px-2 py-0.5 rounded-md shrink-0 border",
+                              <div className="space-y-1.5">
+                                <div className={cn(
+                                  "p-2.5 rounded-xl border text-xs flex items-center justify-between gap-2 shadow-2xs",
                                   info.isInside 
-                                    ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/40" 
-                                    : "bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/40"
+                                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-800 dark:text-emerald-200"
+                                    : "bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-200"
                                 )}>
-                                  {info.isInside ? "In Office" : "Remote / Field"}
-                                </span>
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <ShieldCheck className={cn("h-4 w-4 shrink-0", info.isInside ? "text-emerald-500" : "text-amber-500")} />
+                                    <div className="truncate">
+                                      <span className="font-bold">{info.isInside ? "In Office: " : "Outside Radius: "}</span>
+                                      <span className="font-semibold">{info.office.name}</span>
+                                      <span className="text-[10px] opacity-80 block sm:inline sm:ml-1">
+                                        ({info.distFormatted} away • radius {info.office.radiusMeters}m{stampedCoords.accuracy != null ? ` • GPS ±${stampedCoords.accuracy}m` : ''})
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <span className={cn(
+                                    "text-[9px] font-black uppercase px-2 py-0.5 rounded-md shrink-0 border",
+                                    info.isInside 
+                                      ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/40" 
+                                      : "bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/40"
+                                  )}>
+                                    {info.isInside ? "In Office" : "Remote / Field"}
+                                  </span>
+                                </div>
+                                {!info.isInside && (
+                                  <div className="flex items-center gap-1.5 px-1 text-[11px] text-amber-700 dark:text-amber-300 font-medium">
+                                    <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                                    <span>Outside office radius. Punch will require Admin approval.</span>
+                                  </div>
+                                )}
                               </div>
                             )
                           })()}
@@ -1056,7 +1326,8 @@ export default function AttendancePage() {
                       <div key={item.id} className="p-3 border border-border rounded-xl bg-muted/20 flex flex-col gap-1 text-xs">
                         <div className="flex justify-between items-center font-bold text-[11px] text-foreground">
                           <span>{formatDate(item.checkInTime.split('T')[0])}</span>
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                            {renderApprovalBadge(item.approvalStatus, item.isOutOfOffice)}
                             {item.isAutoPunchOut && (
                               <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.5 px-1.5 rounded-full flex items-center gap-0.5" title={item.checkOutComments || "Auto Punched Out by System"}>
                                 ⚡ {item.autoPunchOutReason === 'midnight_boundary' ? 'Auto Out (23:58)' : 'Auto Out (9h)'}
@@ -1075,6 +1346,11 @@ export default function AttendancePage() {
                           <div className="mt-1">
                             {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters)}
                           </div>
+                        )}
+                        {item.approvalStatus === 'rejected' && item.rejectionReason && (
+                          <p className="text-[10px] font-medium text-rose-600 dark:text-rose-400 mt-0.5">
+                            Rejection Reason: {item.rejectionReason}
+                          </p>
                         )}
                         {item.checkInLatitude && item.checkInLongitude && (
                           <div className="mt-1 flex items-center justify-between text-[10px]">
@@ -1117,6 +1393,21 @@ export default function AttendancePage() {
                   )}
                 >
                   Daily Status
+                </button>
+                <button
+                  onClick={() => setAdminSubTab('approvals')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-bold transition-all text-center flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer",
+                    adminSubTab === 'approvals' ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span>Approvals</span>
+                  {pendingApprovalsCount > 0 && (
+                    <span className="bg-amber-500 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full min-w-4 text-center leading-tight">
+                      {pendingApprovalsCount}
+                    </span>
+                  )}
                 </button>
                 <button
                   onClick={() => setAdminSubTab('muster')}
@@ -1243,7 +1534,7 @@ export default function AttendancePage() {
                   </button>
                 )}
 
-                {adminSubTab !== 'offices' && (
+                {adminSubTab !== 'offices' && adminSubTab !== 'approvals' && (
                   <div className="relative w-full sm:w-48">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                     <input 
@@ -1282,22 +1573,27 @@ export default function AttendancePage() {
                               <span className="text-[10px] text-muted-foreground">User #{item.userId}</span>
                             </div>
                           </div>
-                          {item.attendance ? (
-                            item.attendance.checkOutTime ? (
-                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                                Present
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 text-sky-600 border border-sky-500/20">
-                                <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
-                                In Progress
-                              </span>
-                            )
-                          ) : (
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20">
-                              Absent
-                            </span>
-                          )}
+                          <div className="flex flex-col items-end gap-1">
+                            <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                              {item.attendance && renderApprovalBadge(item.attendance.approvalStatus, item.attendance.isOutOfOffice)}
+                              {item.attendance ? (
+                                item.attendance.checkOutTime ? (
+                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                    Present
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 text-sky-600 border border-sky-500/20">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse" />
+                                    In Progress
+                                  </span>
+                                )
+                              ) : (
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20">
+                                  Absent
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </div>
 
                         {/* Punch In / Out Grid */}
@@ -1416,6 +1712,36 @@ export default function AttendancePage() {
                             Note: {item.attendance.checkInComments}
                           </p>
                         )}
+
+                        {/* Pending Approval Quick Action Card */}
+                        {item.attendance?.approvalStatus === 'pending' && (
+                          <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/60 bg-amber-500/5 -mx-4 -mb-4 p-3 rounded-b-2xl border-t-amber-500/20">
+                            <div className="flex items-center gap-1 text-[11px] font-bold text-amber-700 dark:text-amber-300">
+                              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                              <span>Needs Admin Approval</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleApproveAttendance(item.attendance!.id)}
+                                disabled={actionProcessingId === item.attendance.id}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer disabled:opacity-50"
+                              >
+                                {actionProcessingId === item.attendance.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenRejectModal(item.attendance!)}
+                                disabled={actionProcessingId === item.attendance.id}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer disabled:opacity-50"
+                              >
+                                <XCircle className="h-3 w-3" />
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
@@ -1434,12 +1760,14 @@ export default function AttendancePage() {
                           <th className="p-4">GPS Out</th>
                           <th className="p-4">Duration</th>
                           <th className="p-4 text-center">Status</th>
+                          <th className="p-4 text-center">Approval</th>
+                          <th className="p-4 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border/60 text-xs">
                         {filteredTeamToday.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="p-8 text-center text-muted-foreground">No records matched</td>
+                            <td colSpan={9} className="p-8 text-center text-muted-foreground">No records matched</td>
                           </tr>
                         ) : (
                           filteredTeamToday.map(item => (
@@ -1543,6 +1871,45 @@ export default function AttendancePage() {
                                   <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20">
                                     Absent
                                   </span>
+                                )}
+                              </td>
+                              <td className="p-4 text-center">
+                                {item.attendance ? (
+                                  renderApprovalBadge(item.attendance.approvalStatus, item.attendance.isOutOfOffice)
+                                ) : (
+                                  <span className="text-muted-foreground/40 text-[11px]">--</span>
+                                )}
+                              </td>
+                              <td className="p-4 text-right">
+                                {item.attendance?.approvalStatus === 'pending' ? (
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleApproveAttendance(item.attendance!.id)}
+                                      disabled={actionProcessingId === item.attendance.id}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                                      title="Approve Out-of-Office Attendance"
+                                    >
+                                      {actionProcessingId === item.attendance.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                                      <span>Approve</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRejectModal(item.attendance!)}
+                                      disabled={actionProcessingId === item.attendance.id}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                                      title="Reject Out-of-Office Attendance"
+                                    >
+                                      <XCircle className="h-3 w-3" />
+                                      <span>Reject</span>
+                                    </button>
+                                  </div>
+                                ) : item.attendance?.approvalStatus === 'rejected' ? (
+                                  <span className="text-[10px] font-medium text-rose-600 truncate max-w-[120px] inline-block" title={item.attendance.rejectionReason || "Rejected"}>
+                                    {item.attendance.rejectionReason || "Rejected"}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground/40 text-[11px]">--</span>
                                 )}
                               </td>
                             </tr>
@@ -2192,6 +2559,417 @@ export default function AttendancePage() {
                 )}
               </div>
             )}
+
+            {/* Dedicated Out-of-Office Approvals View */}
+            {adminSubTab === 'approvals' && (
+              <div className="space-y-4">
+                {/* Header card with status pill filters & bulk actions */}
+                <div className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="h-5 w-5 text-sky-500" />
+                        <h3 className="font-extrabold text-sm text-foreground">
+                          Out-of-Office Attendance Approvals
+                        </h3>
+                        {pendingApprovalsCount > 0 && (
+                          <span className="bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                            {pendingApprovalsCount} Pending Review
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Verify and approve or reject employee attendance punches made outside configured office geofences.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => fetchApprovals(approvalsFilter)}
+                        disabled={loadingApprovals}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-semibold hover:bg-muted text-foreground transition-colors cursor-pointer"
+                        title="Refresh approvals"
+                      >
+                        <RefreshCw className={cn("h-3.5 w-3.5", loadingApprovals && "animate-spin text-sky-500")} />
+                        <span>Refresh</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Filter tabs and search */}
+                  <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 pt-1 border-t border-border/60">
+                    <div className="flex overflow-x-auto no-scrollbar gap-1 bg-muted/60 p-1 rounded-xl border border-border w-full md:w-auto">
+                      {(['pending', 'approved', 'rejected', 'all'] as const).map(tab => (
+                        <button
+                          key={tab}
+                          type="button"
+                          onClick={() => {
+                            setApprovalsFilter(tab)
+                            setSelectedApprovalIds([])
+                            fetchApprovals(tab)
+                          }}
+                          className={cn(
+                            "px-3 py-1.5 rounded-lg text-xs font-bold transition-all capitalize whitespace-nowrap cursor-pointer flex items-center gap-1.5",
+                            approvalsFilter === tab
+                              ? "bg-card text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          <span>{tab === 'all' ? 'All Records' : tab}</span>
+                          {tab === 'pending' && pendingApprovalsCount > 0 && (
+                            <span className="bg-amber-500 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full min-w-4 text-center leading-tight">
+                              {pendingApprovalsCount}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-1 md:justify-end">
+                      <div className="relative w-full md:w-64">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                        <input
+                          type="text"
+                          placeholder="Search salesperson or location..."
+                          value={approvalSearchTerm}
+                          onChange={e => setApprovalSearchTerm(e.target.value)}
+                          className="pl-8 pr-3 py-1.5 w-full border border-border rounded-lg bg-background text-xs focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bulk action toolbar when in 'pending' filter */}
+                  {approvalsFilter === 'pending' && approvalsList.length > 0 && (
+                    <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/40 text-xs">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const pendingItems = approvalsList.filter(a => a.approvalStatus === 'pending')
+                            if (selectedApprovalIds.length === pendingItems.length) {
+                              setSelectedApprovalIds([])
+                            } else {
+                              setSelectedApprovalIds(pendingItems.map(a => a.id))
+                            }
+                          }}
+                          className="flex items-center gap-1.5 text-xs font-bold text-foreground cursor-pointer hover:text-sky-600 transition-colors"
+                        >
+                          {selectedApprovalIds.length > 0 && selectedApprovalIds.length === approvalsList.filter(a => a.approvalStatus === 'pending').length ? (
+                            <CheckSquare className="h-4 w-4 text-sky-500" />
+                          ) : (
+                            <Square className="h-4 w-4 text-muted-foreground" />
+                          )}
+                          <span>
+                            {selectedApprovalIds.length === approvalsList.filter(a => a.approvalStatus === 'pending').length
+                              ? "Deselect All"
+                              : `Select All Pending (${approvalsList.filter(a => a.approvalStatus === 'pending').length})`}
+                          </span>
+                        </button>
+                        {selectedApprovalIds.length > 0 && (
+                          <span className="text-[11px] text-muted-foreground">
+                            ({selectedApprovalIds.length} selected)
+                          </span>
+                        )}
+                      </div>
+
+                      {selectedApprovalIds.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleBulkApprove}
+                          disabled={bulkApproving}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-2xs cursor-pointer inline-flex items-center gap-1.5 transition-all"
+                        >
+                          {bulkApproving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                          <span>Approve Selected ({selectedApprovalIds.length})</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Approvals list */}
+                {loadingApprovals ? (
+                  <div className="p-12 flex flex-col items-center justify-center gap-3 text-muted-foreground bg-card border border-border rounded-2xl shadow-sm">
+                    <Loader2 className="h-7 w-7 animate-spin text-sky-500" />
+                    <span className="text-xs font-semibold">Loading out-of-office attendances...</span>
+                  </div>
+                ) : (() => {
+                  const filteredApprovals = approvalsList.filter(item => {
+                    if (!approvalSearchTerm.trim()) return true
+                    const term = approvalSearchTerm.toLowerCase()
+                    return (
+                      item.username?.toLowerCase().includes(term) ||
+                      item.checkInLocationTag?.toLowerCase().includes(term) ||
+                      item.checkOutLocationTag?.toLowerCase().includes(term) ||
+                      item.checkInComments?.toLowerCase().includes(term) ||
+                      item.rejectionReason?.toLowerCase().includes(term)
+                    )
+                  })
+
+                  if (filteredApprovals.length === 0) {
+                    return (
+                      <div className="bg-card border border-dashed border-border rounded-2xl p-12 text-center space-y-2.5">
+                        <ShieldCheck className="h-10 w-10 text-muted-foreground/40 mx-auto" />
+                        <h4 className="font-bold text-sm text-foreground">
+                          {approvalsFilter === 'pending'
+                            ? "No Pending Approvals"
+                            : "No Records Found"}
+                        </h4>
+                        <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+                          {approvalsFilter === 'pending'
+                            ? "All out-of-office punches have been reviewed. Any new punches outside configured office geofences will appear here."
+                            : `No attendance records found under '${approvalsFilter}' filter.`}
+                        </p>
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div className="space-y-3">
+                      {filteredApprovals.map(item => {
+                        const isSelected = selectedApprovalIds.includes(item.id)
+                        const isPending = item.approvalStatus === 'pending'
+                        return (
+                          <div
+                            key={item.id}
+                            className={cn(
+                              "bg-card border rounded-2xl p-4 shadow-sm space-y-3 transition-all",
+                              isPending ? "border-amber-500/30 bg-amber-500/[0.02]" : "border-border",
+                              isSelected && "ring-2 ring-sky-500/40 border-sky-500"
+                            )}
+                          >
+                            {/* Top Row: User details & Approval Status */}
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-border/50 pb-3">
+                              <div className="flex items-center gap-3">
+                                {isPending && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (isSelected) {
+                                        setSelectedApprovalIds(prev => prev.filter(id => id !== item.id))
+                                      } else {
+                                        setSelectedApprovalIds(prev => [...prev, item.id])
+                                      }
+                                    }}
+                                    className="text-muted-foreground hover:text-sky-600 cursor-pointer p-0.5"
+                                  >
+                                    {isSelected ? (
+                                      <CheckSquare className="h-4 w-4 text-sky-500" />
+                                    ) : (
+                                      <Square className="h-4 w-4 text-muted-foreground" />
+                                    )}
+                                  </button>
+                                )}
+                                <div className="h-9 w-9 rounded-full bg-primary/10 text-primary font-bold text-xs flex items-center justify-center uppercase shadow-inner shrink-0">
+                                  {(item.username || 'U').charAt(0)}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <h4 className="font-bold text-sm text-foreground leading-tight">
+                                      {item.username || `User #${item.userId}`}
+                                    </h4>
+                                    <span className="text-[10px] text-muted-foreground font-mono">
+                                      #{item.id}
+                                    </span>
+                                  </div>
+                                  <span className="text-[11px] text-muted-foreground font-medium">
+                                    {formatDate(item.checkInTime.split('T')[0])}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 self-start sm:self-auto">
+                                {renderApprovalBadge(item.approvalStatus, item.isOutOfOffice)}
+                                <span className="text-[11px] font-bold bg-muted/60 text-foreground px-2 py-0.5 rounded-md">
+                                  {getWorkingDuration(item.checkInTime, item.checkOutTime)}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Grid with Check-in / Check-out info & GPS & Selfies */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs bg-muted/20 border border-border/50 rounded-xl p-3">
+                              {/* Check-In Details */}
+                              <div className="space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-black uppercase text-muted-foreground tracking-wider">
+                                    Clock In
+                                  </span>
+                                  <span className="font-extrabold text-foreground text-xs">
+                                    {formatTimeStr(item.checkInTime)}
+                                  </span>
+                                </div>
+
+                                {item.checkInLocationTag && (
+                                  <div>
+                                    {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters)}
+                                  </div>
+                                )}
+
+                                {item.checkInLatitude && item.checkInLongitude ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkInLatitude},${item.checkInLongitude}`)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-600 dark:text-sky-400 hover:underline"
+                                    title="Open check-in coordinates in Google Maps"
+                                  >
+                                    <MapPin className="h-3 w-3 text-sky-500 shrink-0" />
+                                    <span>{item.checkInLatitude.substring(0, 8)}, {item.checkInLongitude.substring(0, 8)}</span>
+                                    <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                                  </a>
+                                ) : (
+                                  <span className="text-[10px] text-muted-foreground/60 italic block">No GPS coordinates</span>
+                                )}
+
+                                {item.checkInPhotoUrl && (
+                                  <div className="pt-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => setPreviewPhotoUrl(item.checkInPhotoUrl || null)}
+                                      className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 bg-sky-500/10 px-2 py-0.5 rounded-md hover:bg-sky-500/20 transition-colors cursor-pointer"
+                                    >
+                                      <Camera className="h-3 w-3" /> View Punch-In Selfie
+                                    </button>
+                                  </div>
+                                )}
+
+                                {item.checkInComments && (
+                                  <p className="text-[10px] italic text-muted-foreground bg-muted/40 p-1.5 rounded border border-border/40">
+                                    &quot;{item.checkInComments}&quot;
+                                  </p>
+                                )}
+                              </div>
+
+                              {/* Check-Out Details */}
+                              <div className="space-y-1.5 md:border-l md:border-border/60 md:pl-3">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-black uppercase text-muted-foreground tracking-wider">
+                                    Clock Out
+                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="font-extrabold text-foreground text-xs">
+                                      {item.checkOutTime ? formatTimeStr(item.checkOutTime) : '--:--'}
+                                    </span>
+                                    {item.isAutoPunchOut && (
+                                      <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.2 px-1 rounded-full" title={item.checkOutComments || "Auto Punch-Out"}>
+                                        ⚡ Auto
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {item.checkOutLocationTag && (
+                                  <div>
+                                    {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters)}
+                                  </div>
+                                )}
+
+                                {item.checkOutLatitude && item.checkOutLongitude ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkOutLatitude},${item.checkOutLongitude}`)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
+                                    title="Open check-out coordinates in Google Maps"
+                                  >
+                                    <MapPin className="h-3 w-3 text-emerald-500 shrink-0" />
+                                    <span>{item.checkOutLatitude.substring(0, 8)}, {item.checkOutLongitude.substring(0, 8)}</span>
+                                    <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                                  </a>
+                                ) : item.isAutoPunchOut ? (
+                                  <span className="text-[10px] text-amber-600/90 font-medium italic block">System Auto Cutoff</span>
+                                ) : item.checkOutTime ? (
+                                  <span className="text-[10px] text-muted-foreground/60 italic block">No GPS coordinates</span>
+                                ) : (
+                                  <span className="text-[10px] text-sky-600 font-semibold italic block">Shift currently in progress</span>
+                                )}
+
+                                {item.checkOutPhotoUrl && (
+                                  <div className="pt-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => setPreviewPhotoUrl(item.checkOutPhotoUrl || null)}
+                                      className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-md hover:bg-emerald-500/20 transition-colors cursor-pointer"
+                                    >
+                                      <Camera className="h-3 w-3" /> View Punch-Out Selfie
+                                    </button>
+                                  </div>
+                                )}
+
+                                {item.checkOutComments && (
+                                  <p className="text-[10px] italic text-muted-foreground bg-muted/40 p-1.5 rounded border border-border/40">
+                                    &quot;{item.checkOutComments}&quot;
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Audit Info or Action Buttons */}
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-border/50 text-xs">
+                              <div className="text-[11px] text-muted-foreground">
+                                {item.approvalStatus === 'approved' && item.approvedAt && (
+                                  <span>
+                                    Approved by <span className="font-bold text-foreground">{item.approvedByUsername || 'Admin'}</span> on {formatDate(item.approvedAt.split('T')[0])} at {formatTimeStr(item.approvedAt)}
+                                  </span>
+                                )}
+                                {item.approvalStatus === 'rejected' && (
+                                  <span className="text-rose-600 dark:text-rose-400 font-medium">
+                                    Rejected: {item.rejectionReason || "No reason specified"}
+                                  </span>
+                                )}
+                                {item.approvalStatus === 'pending' && (
+                                  <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1">
+                                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                                    <span>Punch was made outside office geofence boundary. Requires decision.</span>
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                                {isPending ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleApproveAttendance(item.id)}
+                                      disabled={actionProcessingId === item.id}
+                                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer inline-flex items-center gap-1.5 transition-colors"
+                                    >
+                                      {actionProcessingId === item.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                                      <span>Approve</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRejectModal(item)}
+                                      disabled={actionProcessingId === item.id}
+                                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer inline-flex items-center gap-1.5 transition-colors"
+                                    >
+                                      <XCircle className="h-3.5 w-3.5" />
+                                      <span>Reject</span>
+                                    </button>
+                                  </>
+                                ) : item.approvalStatus === 'rejected' ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleApproveAttendance(item.id)}
+                                    disabled={actionProcessingId === item.id}
+                                    className="px-3 py-1 bg-emerald-600/10 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-500/30 rounded-xl text-xs font-bold cursor-pointer inline-flex items-center gap-1 transition-colors"
+                                  >
+                                    {actionProcessingId === item.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                                    <span>Re-Approve</span>
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2370,6 +3148,73 @@ export default function AttendancePage() {
                 </span>
               </div>
 
+              {/* Approval status in muster cell */}
+              {selectedMusterCell.attendance.approvalStatus && (
+                <div className="p-3 bg-muted/20 border border-border/60 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] uppercase font-bold text-muted-foreground">Approval Status</span>
+                    {renderApprovalBadge(selectedMusterCell.attendance.approvalStatus, selectedMusterCell.attendance.isOutOfOffice)}
+                  </div>
+                  {selectedMusterCell.attendance.approvalStatus === 'rejected' && selectedMusterCell.attendance.rejectionReason && (
+                    <p className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">
+                      Reason: {selectedMusterCell.attendance.rejectionReason}
+                    </p>
+                  )}
+                  {selectedMusterCell.attendance.approvalStatus === 'pending' && user?.permissions?.isAdmin && selectedMusterCell.attendance.attendanceId && (
+                    <div className="pt-1.5 flex items-center justify-between gap-2 border-t border-border/40">
+                      <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400">Needs Approval</span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (selectedMusterCell.attendance.attendanceId) {
+                              await handleApproveAttendance(selectedMusterCell.attendance.attendanceId)
+                              setSelectedMusterCell(null)
+                              fetchMusterRoll(musterYear, musterMonth)
+                            }
+                          }}
+                          disabled={actionProcessingId === selectedMusterCell.attendance.attendanceId}
+                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer inline-flex items-center gap-1 disabled:opacity-50"
+                        >
+                          {actionProcessingId === selectedMusterCell.attendance.attendanceId ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                          <span>Approve</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedMusterCell.attendance.attendanceId) {
+                              setRejectingRecord({
+                                id: selectedMusterCell.attendance.attendanceId,
+                                userId: selectedMusterCell.employee.userId,
+                                username: selectedMusterCell.employee.username,
+                                checkInTime: `${musterYear}-${String(musterMonth).padStart(2, '0')}-${String(selectedMusterCell.day.day).padStart(2, '0')}T00:00:00`,
+                                checkOutTime: null,
+                                checkInLatitude: null,
+                                checkInLongitude: null,
+                                checkOutLatitude: null,
+                                checkOutLongitude: null,
+                                checkInPhotoUrl: null,
+                                checkOutPhotoUrl: null,
+                                checkInComments: null,
+                                checkOutComments: null,
+                                checkInIpAddress: null,
+                                checkOutIpAddress: null
+                              })
+                              setSelectedMusterCell(null)
+                            }
+                          }}
+                          disabled={actionProcessingId === selectedMusterCell.attendance.attendanceId}
+                          className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer inline-flex items-center gap-1 disabled:opacity-50"
+                        >
+                          <XCircle className="h-3 w-3" />
+                          <span>Reject</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {selectedMusterCell.attendance.photoUrl && (
                 <div className="space-y-1 pt-1">
                   <span className="text-[10px] uppercase font-bold text-muted-foreground">Selfie Verification</span>
@@ -2522,6 +3367,108 @@ export default function AttendancePage() {
                 className="px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white font-bold rounded-xl text-xs transition-colors shadow-sm cursor-pointer"
               >
                 {editingOffice ? "Update Geofence" : "Save Geofence"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rejection Reason Modal */}
+      {rejectingRecord && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => {
+            if (!actionProcessingId) {
+              setRejectingRecord(null)
+              setRejectionReasonInput('')
+            }
+          }}
+        >
+          <div 
+            className="bg-card border border-border rounded-3xl p-5 shadow-2xl max-w-md w-full space-y-4 animate-in zoom-in-95 duration-200"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b pb-3">
+              <div className="flex items-center gap-2">
+                <XCircle className="h-5 w-5 text-rose-500" />
+                <h3 className="font-extrabold text-sm text-foreground">
+                  Reject Out-of-Office Attendance
+                </h3>
+              </div>
+              <button 
+                type="button"
+                onClick={() => {
+                  setRejectingRecord(null)
+                  setRejectionReasonInput('')
+                }}
+                disabled={!!actionProcessingId}
+                className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted transition-colors cursor-pointer"
+              >
+                <XCircle className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <p className="text-muted-foreground">
+                You are rejecting the out-of-office attendance for <span className="font-bold text-foreground">{rejectingRecord.username || `User #${rejectingRecord.userId}`}</span> on <span className="font-bold text-foreground">{formatDate(rejectingRecord.checkInTime.split('T')[0])}</span>. This day will be marked as Absent.
+              </p>
+
+              <div>
+                <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide block mb-1">
+                  Rejection Reason *
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Specify why this out-of-office punch is rejected (e.g., Unapproved client visit, Invalid location)..."
+                  value={rejectionReasonInput}
+                  onChange={e => setRejectionReasonInput(e.target.value)}
+                  className="w-full px-3 py-2 bg-muted/40 border border-border rounded-xl text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-rose-500 resize-none font-medium"
+                />
+              </div>
+
+              {/* Quick Preset Buttons */}
+              <div className="space-y-1">
+                <span className="text-[10px] text-muted-foreground font-semibold">Quick Reasons:</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    "Unapproved field work",
+                    "Location verification mismatch",
+                    "Selfie verification failed",
+                    "Did not inform manager in advance"
+                  ].map(reason => (
+                    <button
+                      key={reason}
+                      type="button"
+                      onClick={() => setRejectionReasonInput(reason)}
+                      className="px-2 py-0.5 rounded-md text-[10px] bg-muted hover:bg-muted/80 border border-border text-foreground transition-colors cursor-pointer"
+                    >
+                      {reason}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+              <button
+                type="button"
+                onClick={() => {
+                  setRejectingRecord(null)
+                  setRejectionReasonInput('')
+                }}
+                disabled={!!actionProcessingId}
+                className="px-3.5 py-2 bg-muted hover:bg-muted/80 text-foreground font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReject}
+                disabled={!rejectionReasonInput.trim() || !!actionProcessingId}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition-colors shadow-sm cursor-pointer inline-flex items-center gap-1.5"
+              >
+                {actionProcessingId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5" />}
+                Confirm Rejection
               </button>
             </div>
           </div>
