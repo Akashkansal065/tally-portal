@@ -1,7 +1,10 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 // Support setting server URL via environment variable (e.g. CAPACITOR_SERVER_URL or NEXT_PUBLIC_APP_URL)
-const serverUrl = process.env.CAPACITOR_SERVER_URL || process.env.NEXT_PUBLIC_APP_URL || undefined;
+const serverUrl =
+  process.env.CAPACITOR_SERVER_URL ||
+  process.env.NEXT_PUBLIC_APP_URL ||
+  'https://tally-portal-one.vercel.app';
 
 const config: CapacitorConfig = {
   appId: 'com.snehdistributors.mytally',

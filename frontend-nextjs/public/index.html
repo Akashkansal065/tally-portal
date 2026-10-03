@@ -110,7 +110,7 @@
   <div class="card" id="configCard">
     <div class="card-title">Connect to MyTally Server</div>
     <div class="card-desc">Enter your organization's MyTally portal URL or local server address to begin.</div>
-    <input type="url" id="serverInput" placeholder="https://portal.snehdistributors.com" />
+    <input type="url" id="serverInput" placeholder="https://tally-portal-one.vercel.app" />
     <button id="connectBtn" onclick="handleConnect()">Connect & Save</button>
     <div class="status-msg" id="statusMsg"></div>
   </div>
@@ -150,23 +150,19 @@
     }
 
     // Auto-connect check
+    const DEFAULT_PORTAL_URL = 'https://tally-portal-one.vercel.app';
     const savedUrl = localStorage.getItem(STORAGE_KEY);
-    if (savedUrl) {
-      subtext.textContent = 'Connecting to ' + savedUrl + '...';
-      // Attempt redirect immediately
-      setTimeout(() => {
-        window.location.href = savedUrl;
-      }, 500);
-      // If still here after 5 seconds, server might be unreachable
-      setTimeout(() => {
-        showConfigUI('Unable to connect to ' + savedUrl + '. Check server or update URL:');
-      }, 5000);
-    } else {
-      // If no stored URL and no server.url was configured in capacitor.config, show prompt after 2 seconds
-      setTimeout(() => {
-        showConfigUI();
-      }, 2000);
-    }
+    const targetUrl = savedUrl || DEFAULT_PORTAL_URL;
+
+    subtext.textContent = 'Connecting to ' + targetUrl + '...';
+    setTimeout(() => {
+      window.location.href = targetUrl;
+    }, 400);
+
+    // If still here after 6 seconds, network or server might be unreachable
+    setTimeout(() => {
+      showConfigUI('Unable to reach ' + targetUrl + '. Check internet or update URL:');
+    }, 6000);
   </script>
 </body>
 </html>
