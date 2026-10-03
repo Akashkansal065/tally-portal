@@ -424,114 +424,278 @@ Administrators can override these standard roles with granular user-specific per
 
 ---
 
-## 🛠️ Step-by-Step Installation & Setup
+## 🛠️ Complete Step-by-Step Setup Guide (From Scratch)
 
-### 1. Prerequisites
-- **Python**: Version `3.10` or higher.
-- **Node.js**: Version `18` or higher (with `npm`).
-- **Database**: MySQL Server (or Docker — see `docker-compose.yml`).
-- **Tally Prime**: Local client with XML Server enabled (under *F1 > Settings > Connectivity > Enable XML Server*).
+### 📋 Prerequisites & System Requirements
+
+Before starting, ensure your machine has the following tools installed:
+
+| Component | Minimum Version | Verification Command | Purpose |
+|---|---|---|---|
+| **Python** | 3.10+ | `python3 --version` | FastAPI backend & sync daemons |
+| **Node.js** | 18.x or 20+ | `node -v` & `npm -v` | Next.js frontend & Capacitor CLI |
+| **MySQL** | 8.0+ | `mysql --version` | Primary transactional databases |
+| **Java JDK** | 17 or 21 | `javac -version` & `keytool` | Android APK compilation & signing |
+| **Android SDK** | API 34+ (UpsideDownCake) | `echo $ANDROID_HOME` | Native Android build tools |
+| **Tally Prime** | 3.0+ / 4.0+ | Port `9000` | Local ERP instance (optional for pure web testing) |
 
 ---
 
-### 2. Database Setup (Optional Docker)
+### Step 1: Clone the Repository
 
-To quickly spin up a MySQL instance:
+```bash
+git clone https://github.com/Akashkansal065/tally-portal.git
+cd tally-portal
+```
+
+---
+
+### Step 2: Database Setup
+
+The backend uses a dual-database architecture:
+1. `mytally_db`: Operational data (attendance, shop check-ins, temporary orders, payments, audit logs, users, RBAC).
+2. `tally_sync`: Synced mirror of Tally Prime ledgers, stock items, vouchers, cost centres, and tax masters.
+
+#### Option A: Using Docker (Recommended for quick local setup)
+Start the pre-configured MySQL 8.0 container:
 ```bash
 docker-compose up -d
 ```
+*Starts MySQL on `localhost:3306` with user `root` and default password `root`.*
 
-This starts MySQL 8.0 on port `3306` with database `mytally_db`. The backend will automatically create both `mytally_db` and `tally_sync` databases on first startup.
+#### Option B: Using Existing / Local MySQL Server
+Ensure your local MySQL service is running:
+```sql
+CREATE DATABASE IF NOT EXISTS mytally_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS tally_sync CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
 
 ---
 
-### 3. Backend Setup & Seeding
+### Step 3: Backend Setup & Seeding (FastAPI)
 
-1. Navigate to the `backend` folder:
+1. **Navigate to the backend directory**:
    ```bash
    cd backend
    ```
 
-2. Create a virtual environment:
+2. **Create and activate a Python virtual environment**:
    ```bash
+   # macOS / Linux
    python3 -m venv venv
    source venv/bin/activate
+
+   # Windows (Command Prompt)
+   python -m venv venv
+   venv\Scripts\activate.bat
    ```
 
-3. Install required Python packages:
+3. **Install dependencies**:
    ```bash
+   pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
-4. Configure the environment variables:
-   - Create `backend/.env` and fill in your MySQL details:
-     ```env
-     DATABASE_URL=mysql+aiomysql://YOUR_DB_USER:YOUR_DB_PASSWORD@localhost:3306/mytally_db
-     JWT_SECRET=change-this-to-a-very-secure-secret-key
-     ACCESS_TOKEN_EXPIRE_MINUTES=43200 # 30 days
-     
-     # Tally Database Name
-     TALLY_DATABASE_NAME=tally_sync
-     
-     # SSL Connection (Set to true if using Aiven/cloud databases requiring SSL/TLS)
-     DB_SSL=true
-     
-     # Tally Synchronization Settings
-     TALLY_URL=http://127.0.0.1:9000
-     ERP_URL=http://127.0.0.1:8000
-     ERP_EMAIL=admin_test@test.com
-     ERP_PASSWORD=securepassword123
-     SYNC_FREQUENCY=120
-     ```
+4. **Configure Environment Variables**:
+   Create `backend/.env` with your database and authentication configuration:
+   ```env
+   # Database Connection (aiomysql async driver)
+   DATABASE_URL=mysql+aiomysql://root:root@127.0.0.1:3306/mytally_db
+   TALLY_DATABASE_NAME=tally_sync
 
- 5. Initialize Database and Seed Roles:
-    ```bash
-    python3 -m app.core.seed
-    ```
+   # Security & Session Secrets
+   JWT_SECRET=change-this-to-a-very-secure-random-secret-key-32chars
+   ACCESS_TOKEN_EXPIRE_MINUTES=43200
 
- 6. Seed Default Company and Admin:
-    ```bash
-    python3 scratch/reset_companies.py
-    ```
+   # SSL Connection (Set to true if using cloud managed DB like Aiven/AWS RDS)
+   DB_SSL=false
 
- 7. Start the FastAPI Backend:
-    ```bash
-    uvicorn app.main:app --reload --port 8000
-    ```
+   # Tally Connectivity Defaults
+   TALLY_URL=http://127.0.0.1:9000
+   ERP_URL=http://127.0.0.1:8000
+   ERP_EMAIL=admin@snehdistributors.com
+   ERP_PASSWORD=SecurePassword123!
+   SYNC_FREQUENCY=120
+   ```
 
-> **Note**: On first startup, the backend automatically creates both databases (`mytally_db` and `tally_sync`), runs schema migrations via `auto_sync_all_model_schemas()`, and seeds default roles/permissions if the database is empty.
+5. **Initialize Database Tables & Seed Roles**:
+   ```bash
+   python3 -m app.core.seed
+   ```
+
+6. **Seed Default Company & Admin Workspace**:
+   ```bash
+   python3 scratch/reset_companies.py
+   ```
+
+7. **Start the FastAPI Backend**:
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+   - **API Docs (Swagger UI)**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - **Health Check**: [http://localhost:8000/health](http://localhost:8000/health)
+
+> [!NOTE]
+> On startup, the backend automatically runs `auto_sync_all_model_schemas()` which creates or migrates missing tables in both `mytally_db` and `tally_sync`.
 
 ---
 
-### 4. Frontend Setup
+### Step 4: Web Frontend Setup (Next.js 16 PWA)
 
-1. Open a new terminal and navigate to `frontend-nextjs`:
+1. **Open a new terminal and navigate to the frontend directory**:
    ```bash
    cd frontend-nextjs
    ```
 
-2. Install Node modules:
+2. **Install Node packages**:
    ```bash
    npm install
    ```
 
-3. Configure the environment:
-   ```bash
-   cp .env.local.example .env.local
-   ```
-   Set `NEXT_PUBLIC_API_BASE` to your backend URL (default: `http://127.0.0.1:8000`).
+3. **Configure Environment Variables**:
+   Create `frontend-nextjs/.env.local`:
+   ```env
+   # API Backend Server endpoint
+   NEXT_PUBLIC_API_BASE=http://127.0.0.1:8000
 
-4. Run the Next.js development server:
+   # ImageKit CDN (Optional: for receipt & photo hosting)
+   NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY=your_imagekit_public_key
+   NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT=https://ik.imagekit.io/your_endpoint
+   ```
+
+4. **Start Development Server**:
    ```bash
    npm run dev
    ```
-   *The client dashboard will be available at [http://localhost:3000](http://localhost:3000).*
+   *The web portal is accessible at [http://localhost:3000](http://localhost:3000).*
 
 ---
 
-### 5. Running the Desktop Sync Agent (Windows)
+### Step 5: Mobile App Setup & Build (Capacitor Android & iOS)
 
-For environments where Tally Prime runs on a local Windows PC or VM:
+The mobile client is built on a **co-located Capacitor 7 native shell** inside `frontend-nextjs`, enabling native background GPS tracking, camera proofs, audio notes, biometrics, and push notifications.
+
+```
+frontend-nextjs/
+├── capacitor.config.ts          # Native bridge configuration
+├── android/                    # Complete Android Studio project (Gradle 8.14)
+│   ├── app/build.gradle        # App build config with automated signing
+│   ├── key.properties.example  # Keystore credentials template
+│   └── key.properties          # Local signing secrets (gitignored)
+└── ios/                        # Complete Xcode project (CocoaPods/SPM)
+```
+
+#### 5.1 Native Platform Dependencies
+Ensure Java 17/21 and Android SDK tools are present:
+```bash
+java -version
+keytool
+```
+
+#### 5.2 Synchronize Web Code with Native Shells
+Whenever web code or plugins change, sync the native Android and iOS wrappers:
+```bash
+cd frontend-nextjs
+npm run cap:sync
+```
+
+#### 5.3 Building the Android Debug APK
+Build a debug APK directly from the terminal without opening Android Studio:
+```bash
+npm run build:apk
+```
+*Generated output:*
+`frontend-nextjs/android/app/build/outputs/apk/debug/app-debug.apk`
+
+To install on a connected phone/emulator via ADB:
+```bash
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+---
+
+#### 5.4 Automated Release Signing (Production APK)
+
+Release signing is fully automated via Gradle and `android/key.properties`.
+
+1. **Generate a Release Keystore (One-Time Setup)**:
+   ```bash
+   cd frontend-nextjs/android
+   keytool -genkeypair -v \
+     -keystore mytally-release.keystore \
+     -alias mytally \
+     -keyalg RSA \
+     -keysize 2048 \
+     -validity 10000 \
+     -storepass "YourSecurePassword123!" \
+     -keypass "YourSecurePassword123!" \
+     -dname "CN=MyTally, OU=Mobile, O=Sneh Distributors, L=Noida, ST=UP, C=IN"
+   ```
+
+2. **Configure `android/key.properties`**:
+   Copy the example file:
+   ```bash
+   cp key.properties.example key.properties
+   ```
+   Fill in your keystore credentials:
+   ```properties
+   storeFile=mytally-release.keystore
+   storePassword=YourSecurePassword123!
+   keyAlias=mytally
+   keyPassword=YourSecurePassword123!
+   ```
+   *(Note: `key.properties` and `*.keystore` are protected in `.gitignore` and will never be committed to git).*
+
+3. **Build the Signed Release APK (1-Command Build)**:
+   ```bash
+   cd frontend-nextjs
+   npm run build:apk-release
+   ```
+   *Generated output:*
+   `frontend-nextjs/android/app/build/outputs/apk/release/app-release.apk`
+
+4. **Verify Cryptographic Signature**:
+   ```bash
+   apksigner verify --verbose android/app/build/outputs/apk/release/app-release.apk
+   ```
+   Expected output: `Verifies: true` & `APK Signature Scheme v2: true`.
+
+---
+
+#### 5.5 Native Permissions Configured in `AndroidManifest.xml`
+
+All 30 essential mobile permissions are pre-configured:
+- 📍 **Location**: `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION`
+- 📸 **Camera**: `CAMERA` with autofocus and front-facing support
+- 🎙️ **Microphone**: `RECORD_AUDIO`, `MODIFY_AUDIO_SETTINGS`
+- 📁 **Storage & Media**: `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES/VIDEO/AUDIO`
+- 🔋 **Background Persistence**: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`, `WAKE_LOCK`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+- 🔔 **System**: `POST_NOTIFICATIONS`, `VIBRATE`, `SCHEDULE_EXACT_ALARM`, `RECEIVE_BOOT_COMPLETED`
+- 🔒 **Biometrics & Hardware**: `USE_BIOMETRIC`, `USE_FINGERPRINT`, `CALL_PHONE`, `READ_PHONE_STATE`, `BLUETOOTH_CONNECT`, `BLUETOOTH_SCAN`
+
+---
+
+#### 5.6 Background GPS & OEM Battery Bypass
+
+Field force tracking requires location updates while the app is closed or the screen is locked:
+1. **Foreground Service Notification**: While attendance is active, Android displays a sticky status notification: *"MyTally Shift Active — Recording field location"*, preventing OS kills.
+2. **OEM Battery Killer Bypass**: Devices from Xiaomi, Samsung, Vivo, and Oppo aggressively kill background tasks. The app provides built-in guidance (`getOEMBatteryGuidance()`) directing users to set battery optimization to **"Unrestricted / No restrictions"**.
+
+---
+
+#### 5.7 iOS Platform Setup (Optional)
+To test or build on iOS (macOS with Xcode required):
+```bash
+cd frontend-nextjs
+npx cap open ios
+```
+All 12 required `Info.plist` usage descriptions (Camera, Location, Microphone, Photo Library, Biometrics, Motion) and `UIBackgroundModes` (`location`, `fetch`, `remote-notification`, `audio`) are pre-configured.
+
+---
+
+### Step 6: Desktop Sync Agent Setup (Windows)
+
+For environments where Tally Prime runs on a local Windows machine or VM:
 
 1. Navigate to `desktop-sync-agent/`.
 2. Configure `agent_config.json`:
@@ -540,13 +704,13 @@ For environments where Tally Prime runs on a local Windows PC or VM:
        "backend_url": "http://your-cloud-backend:8000",
        "tally_url": "http://127.0.0.1:9000",
        "auth_token": "",
-       "company_name": "Your Company Name",
+       "company_name": "Sneh Distributors",
        "sync_interval_seconds": 5,
        "inbound_interval_seconds": 60,
        "auto_discover_paths": true
    }
    ```
-3. Run discovery to verify Tally connectivity:
+3. Test Tally discovery:
    ```bash
    python agent.py --discover
    ```
@@ -554,17 +718,16 @@ For environments where Tally Prime runs on a local Windows PC or VM:
    ```bash
    python agent.py
    ```
-
-**For standalone distribution** (no Python needed on client machines):
-```cmd
-cd installer
-build_windows_exe.bat
-```
-→ Output: `dist/SnehDistribuorsSync.exe`
+5. **Build Standalone Windows `.exe`** (no Python required on client machines):
+   ```cmd
+   cd desktop-sync-agent/installer
+   build_windows_exe.bat
+   ```
+   *Generated output:* `desktop-sync-agent/dist/SnehDistribuorsSync.exe`
 
 ---
 
-### 6. Running the Legacy Tally Sync Daemon
+### Step 7: Running the Legacy Tally Sync Daemon (Optional)
 
 To run the cloud-side background sync utility (alternative to the Desktop Sync Agent):
 
