@@ -14,7 +14,12 @@ const config: CapacitorConfig = {
     ...(serverUrl ? { url: serverUrl } : {}),
     cleartext: true,
     androidScheme: 'https',
-    allowNavigation: ['*'],
+    allowNavigation: [
+      'tally-portal-one.vercel.app',
+      '*.vercel.app',
+      'localhost',
+      '127.0.0.1',
+    ],
   },
   android: {
     allowMixedContent: true,
