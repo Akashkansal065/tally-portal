@@ -573,7 +573,7 @@ CREATE DATABASE IF NOT EXISTS tally_sync CHARACTER SET utf8mb4 COLLATE utf8mb4_u
 
 ### Step 5: Mobile App Setup & Build (Capacitor Android & iOS)
 
-The mobile client is built on a **co-located Capacitor 7 native shell** inside `frontend-nextjs`, enabling native background GPS tracking, camera proofs, audio notes, biometrics, and push notifications.
+The mobile client is built on a **co-located Capacitor 8 native shell** inside `frontend-nextjs`, enabling native background GPS tracking, camera proofs, audio notes, biometrics, and push notifications.
 
 ```
 frontend-nextjs/

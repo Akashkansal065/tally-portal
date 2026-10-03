@@ -1,0 +1,6 @@
+# Android Release Keystore Configuration Template
+# Copy this file to key.properties and replace with your secrets
+storeFile=mytally-release.keystore
+storePassword=YOUR_KEYSTORE_PASSWORD
+keyAlias=mytally
+keyPassword=YOUR_KEY_PASSWORD

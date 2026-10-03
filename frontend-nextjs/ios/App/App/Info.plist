@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CAPACITOR_DEBUG</key>
+	<string>$(CAPACITOR_DEBUG)</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+        <string>MyTally</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+    <false/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array>
+        <dict>
+            <key>UISceneConfigurationName</key>
+            <string>Default Configuration</string>
+            <key>UISceneDelegateClassName</key>
+            <string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+            <key>UISceneStoryboardFile</key>
+            <string>Main</string>
+        </dict>
+      </array>
+    </dict>
+	</dict>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>armv7</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<true/>
+
+	<!-- Location & Background Tracking -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>MyTally needs your location to record attendance check-in/out coordinates and verify shop visits.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>MyTally tracks your location in the background to keep your attendance position updated for auto-checkout accuracy.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>MyTally needs background location access to continuously track attendance and provide accurate auto-checkout locations.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>fetch</string>
+		<string>remote-notification</string>
+		<string>audio</string>
+	</array>
+
+	<!-- Camera -->
+	<key>NSCameraUsageDescription</key>
+	<string>MyTally needs camera access to capture attendance selfies, shop visit photos, and expense receipts.</string>
+
+	<!-- Microphone / Audio -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>MyTally needs microphone access for voice recordings and audio notes during field visits.</string>
+
+	<!-- Photo Library -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>MyTally needs photo library access to upload existing photos for shop visits and receipts.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>MyTally saves stamped photos to your library for offline access and records.</string>
+
+	<!-- Contacts -->
+	<key>NSContactsUsageDescription</key>
+	<string>MyTally accesses contacts for quick customer lookups and phone number matching.</string>
+
+	<!-- Biometrics / Face ID -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>MyTally uses Face ID for secure, quick biometric login authentication.</string>
+
+	<!-- Bluetooth -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>MyTally uses Bluetooth for nearby device pairing and POS printer connectivity.</string>
+
+	<!-- Calendar -->
+	<key>NSCalendarsUsageDescription</key>
+	<string>MyTally can add planner events and visit reminders to your calendar.</string>
+
+	<!-- Motion Sensors -->
+	<key>NSMotionUsageDescription</key>
+	<string>MyTally uses motion sensors for step counting and activity detection during field visits.</string>
+</dict>
+</plist>

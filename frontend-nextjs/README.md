@@ -137,9 +137,9 @@ Follow the interactive prompts to complete deployment.
 
 ---
 
-## 📱 Mobile Native App Setup (Capacitor 7)
+## 📱 Mobile Native App Setup (Capacitor 8)
 
-`frontend-nextjs` is equipped with a co-located **Capacitor 7** native wrapper that generates true native Android and iOS applications with full background tracking capabilities, camera access, voice recording, and push notifications.
+`frontend-nextjs` is equipped with a co-located **Capacitor 8** native wrapper that generates true native Android and iOS applications with full background tracking capabilities, camera access, voice recording, and push notifications.
 
 ### 📦 Mobile Project Structure
 

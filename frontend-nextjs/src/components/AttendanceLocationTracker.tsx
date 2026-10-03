@@ -1,8 +1,14 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders } from '@/lib/utils'
+
+import { isNativePlatform } from '@/lib/capacitor'
+import {
+  startNativeBackgroundTracking,
+  stopNativeBackgroundTracking,
+} from '@/lib/capacitor-bg-geo'
 
 const PING_INTERVAL_MS = 10 * 60 * 1000 // Ping every 10 minutes while active
 const MIN_THROTTLE_MS = 3 * 60 * 1000  // At least 3 minutes between pings
@@ -14,7 +20,7 @@ export function AttendanceLocationTracker() {
   const isPingingRef = useRef<boolean>(false)
   const shiftCheckedRef = useRef<boolean>(false)
 
-  const sendPing = async () => {
+  const sendPing = useCallback(async () => {
     if (!isAuthenticated || !token) return
     if (typeof window === 'undefined' || !navigator.geolocation) return
 
@@ -109,22 +115,32 @@ export function AttendanceLocationTracker() {
     } catch {
       isPingingRef.current = false
     }
-  }
+  }, [isAuthenticated, token])
 
   useEffect(() => {
     if (!isAuthenticated || !token) return
 
-    // Trigger initial check/ping shortly after mount
+    // 🟢 NATIVE PLATFORM: Start background geolocation service
+    if (isNativePlatform()) {
+      startNativeBackgroundTracking(token).catch((err) => {
+        console.warn('[AttendanceLocationTracker] Native tracking init failed, falling back to web ping:', err)
+        sendPing()
+      })
+
+      return () => {
+        stopNativeBackgroundTracking().catch(() => {})
+      }
+    }
+
+    // 🟡 WEB / PWA PLATFORM: Periodic ping while tab is open/active
     const initialTimer = setTimeout(() => {
       sendPing()
     }, 4000)
 
-    // Periodic ping timer
     const intervalId = setInterval(() => {
       sendPing()
     }, PING_INTERVAL_MS)
 
-    // Ping on tab visibility restore
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         sendPing()
@@ -137,7 +153,7 @@ export function AttendanceLocationTracker() {
       clearInterval(intervalId)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [isAuthenticated, token])
+  }, [isAuthenticated, token, sendPing])
 
   return null
 }
