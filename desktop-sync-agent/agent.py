@@ -416,7 +416,7 @@ class DesktopSyncAgent:
                 size_kb = len(xml_data.encode("utf-8")) / 1024.0
                 logger.info(f"   • [{idx}/{len(collections)}] Exported '{label}' from Tally ({size_kb:.1f} KB). Pushing to cloud...")
                 
-                ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name)
+                ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=force_all)
                 dur = res.get("duration_seconds", 0.0)
                 
                 if ok:

@@ -196,6 +196,7 @@ async def run_inbound_sync_background(xml_data: str, user_id: int, company_name:
 async def inbound_sync(
     request: Request,
     company_name: Optional[str] = Query(None),
+    force: bool = Query(False),
     user: User = Depends(require_permission("ledgers", "create")),
     db: AsyncSession = Depends(get_db)
 ):
@@ -205,6 +206,7 @@ async def inbound_sync(
     if not company_name:
         company_name = request.headers.get("x-company-name")
         
+    is_force = force or (request.headers.get("x-force-sync", "").strip().lower() in ("true", "1", "yes"))
     body = await request.body()
     # Auto detect UTF-16 or UTF-8 to prevent UnicodeDecodeError on raw file uploads
     if body.startswith(b'\xff\xfe') or body.startswith(b'\xfe\xff'):
@@ -226,7 +228,11 @@ async def inbound_sync(
         
     async with sync_lock:
         try:
-            result = await import_tally_xml(xml_data, db, user.user_id, override_company_name=company_name)
+            result = await import_tally_xml(
+                xml_data, db, user.user_id,
+                override_company_name=company_name,
+                force_overwrite=is_force
+            )
             company_id = result.get("company_id")
             if company_id:
                 from app.core.cache import clear_company_cache

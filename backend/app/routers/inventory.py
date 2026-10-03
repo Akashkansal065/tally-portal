@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.logging_config import get_logger
 from app.core.pagination import PaginationParams, apply_pagination_headers
 from app.core.permissions import require_permission, get_current_user, get_effective_permission
+from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 
 logger = get_logger("app.routers.inventory")
 from app.models.portal_core import User, DeletedRecordAudit, SyncQueue
@@ -763,6 +764,7 @@ async def create_stock_item(
     )
     db.add(sync_item)
     await db.commit()
+    clear_company_cache(user.company_id)
     
     from app.routers.sync import try_push_stock_item_realtime
     await try_push_stock_item_realtime(item.stock_item_id, sync_item.sync_id, "Create", db)
@@ -1002,6 +1004,7 @@ async def update_stock_item(
     )
     db.add(sync_item)
     await db.commit()
+    clear_company_cache(user.company_id)
     
     from app.routers.sync import try_push_stock_item_realtime
     await try_push_stock_item_realtime(item_id, sync_item.sync_id, "Alter", db)
@@ -1114,6 +1117,7 @@ async def delete_stock_item(
 
     await db.delete(item)
     await db.commit()
+    clear_company_cache(user.company_id)
     return {
         "message": "Stock item deleted successfully in MyTally.",
         "tally_synced": tally_ok,
@@ -1148,6 +1152,14 @@ async def get_stock_items(
     # Determine whether user has access to full financial stock details (quantities, values, GP%)
     user_stock_scope = getattr(user, "stock_scope", "full") or "full"
     has_full_stock_access = can_read_inv and user_stock_scope != "catalog_only"
+
+    # Check in-memory cache to serve immediately without hitting MySQL
+    cache_key = f"stock_items_{user.company_id}_{has_full_stock_access}"
+    cached_out = get_cached_response(user.company_id, cache_key)
+    if cached_out is not None:
+        total = len(cached_out)
+        apply_pagination_headers(response, total, pagination)
+        return pagination.slice_list(cached_out)
 
     stmt = (
         select(MstStockItem)
@@ -1191,9 +1203,12 @@ async def get_stock_items(
                 gp_value=Decimal("0.00"),
                 gp_percent=Decimal("0.00")
             ))
-        return out
+        set_cached_response(user.company_id, cache_key, out, ttl_seconds=600)
+        total = len(out)
+        apply_pagination_headers(response, total, pagination)
+        return pagination.slice_list(out)
 
-    # Fetch all stock entries for this company scoped to current financial year
+    # Fetch aggregated stock totals directly in SQL (GROUP BY) instead of downloading 26k+ raw transaction rows
     from datetime import timedelta
     from sqlalchemy import func
     from app.models.portal_core import Company
@@ -1208,7 +1223,12 @@ async def get_stock_items(
         fy_anchor_date = date(2026, 4, 1)
 
     entry_stmt = (
-        select(TrnInventory)
+        select(
+            TrnInventory.stock_item_id,
+            TrnInventory.is_inward,
+            func.coalesce(func.sum(TrnInventory.quantity), 0).label("tot_qty"),
+            func.coalesce(func.sum(TrnInventory.amount), 0).label("tot_val"),
+        )
         .join(TrnVoucher, TrnInventory.voucher_id == TrnVoucher.voucher_id)
         .where(
             TrnVoucher.company_id == user.company_id,
@@ -1216,32 +1236,37 @@ async def get_stock_items(
             func.coalesce(TrnVoucher.is_cancelled, False) == False,
             func.coalesce(TrnVoucher.is_optional, False) == False,
         )
+        .group_by(TrnInventory.stock_item_id, TrnInventory.is_inward)
     )
     entry_res = await db.execute(entry_stmt)
-    entries = entry_res.scalars().all()
-
-    # Group entries by stock_item_id
-    entries_by_item = {}
-    for entry in entries:
-        if entry.stock_item_id not in entries_by_item:
-            entries_by_item[entry.stock_item_id] = []
-        entries_by_item[entry.stock_item_id].append(entry)
+    
+    # Map item_id -> aggregated statistics
+    item_stats = {}
+    for row in entry_res.fetchall():
+        sid = row.stock_item_id
+        if sid not in item_stats:
+            item_stats[sid] = {
+                "in_qty": Decimal("0.000"),
+                "in_val": Decimal("0.00"),
+                "out_qty": Decimal("0.000"),
+                "out_val": Decimal("0.00"),
+                "has_entries": True
+            }
+        if row.is_inward:
+            item_stats[sid]["in_qty"] = Decimal(str(row.tot_qty or 0))
+            item_stats[sid]["in_val"] = Decimal(str(row.tot_val or 0))
+        else:
+            item_stats[sid]["out_qty"] = Decimal(str(row.tot_qty or 0))
+            item_stats[sid]["out_val"] = Decimal(str(row.tot_val or 0))
 
     out = []
     for item in items:
-        in_qty = Decimal("0.000")
-        in_val = Decimal("0.00")
-        out_qty = Decimal("0.000")
-        out_val = Decimal("0.00")
-
-        item_entries = entries_by_item.get(item.stock_item_id, [])
-        for entry in item_entries:
-            if entry.is_inward:
-                in_qty += entry.quantity or Decimal("0.000")
-                in_val += entry.amount or Decimal("0.00")
-            else:
-                out_qty += entry.quantity or Decimal("0.000")
-                out_val += entry.amount or Decimal("0.00")
+        stats = item_stats.get(item.stock_item_id)
+        in_qty = stats["in_qty"] if stats else Decimal("0.000")
+        in_val = stats["in_val"] if stats else Decimal("0.00")
+        out_qty = stats["out_qty"] if stats else Decimal("0.000")
+        out_val = stats["out_val"] if stats else Decimal("0.00")
+        has_entries = bool(stats)
 
         op_qty = item.opening_qty or Decimal("0.000")
         op_rate = item.opening_rate or Decimal("0.00")
@@ -1264,7 +1289,7 @@ async def get_stock_items(
             gp_percent = (gp_value / out_val) * 100
 
         # Calculate closing quantity, value, and rate dynamically
-        if item_entries or op_qty > 0:
+        if has_entries or op_qty > 0:
             calc_closing_qty = total_in_qty - out_qty
             calc_closing_val = max(Decimal("0.00"), total_in_val - cons_value) if calc_closing_qty > 0 else Decimal("0.00")
             calc_closing_rate = avg_cost if avg_cost > 0 else (item.closing_rate or Decimal("0.00"))
@@ -1304,6 +1329,9 @@ async def get_stock_items(
             gp_value=gp_value,
             gp_percent=gp_percent
         ))
+
+    # Cache calculated list in memory for 10 minutes (auto-cleared on sync/voucher updates)
+    set_cached_response(user.company_id, cache_key, out, ttl_seconds=600)
 
     total = len(out)
     apply_pagination_headers(response, total, pagination)

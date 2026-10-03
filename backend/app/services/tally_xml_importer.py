@@ -445,7 +445,13 @@ async def get_or_create_group(db: AsyncSession, company_id: int, name: str, pare
     await db.flush()
     return group
 
-async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, override_company_name: Optional[str] = None) -> dict:
+async def import_tally_xml(
+    xml_data: str,
+    db: AsyncSession,
+    user_id: int,
+    override_company_name: Optional[str] = None,
+    force_overwrite: bool = False
+) -> dict:
     if not xml_data or not xml_data.strip():
         return {"status": "error", "message": "Empty XML payload."}
         
@@ -987,7 +993,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
         existing_vt = (await db.execute(stmt)).scalars().first()
         
         if existing_vt:
-            if alter_id and existing_vt.tally_alter_id and existing_vt.tally_alter_id >= alter_id:
+            if not force_overwrite and alter_id and existing_vt.tally_alter_id and existing_vt.tally_alter_id >= alter_id:
                 continue
                 
             existing_vt.parent_type = parent_name
@@ -1282,7 +1288,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
             item = res.scalars().first()
             
             if item:
-                if alter_id and item.tally_alter_id and item.tally_alter_id >= alter_id:
+                if not force_overwrite and alter_id and item.tally_alter_id and item.tally_alter_id >= alter_id:
                     continue
                 if stock_group:
                     item.stock_group_id = stock_group.stock_group_id
@@ -1610,7 +1616,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 )
                 db.add(ledger)
             else:
-                if ledger.tally_alter_id and ledger.tally_alter_id >= alter_id:
+                if not force_overwrite and ledger.tally_alter_id and ledger.tally_alter_id >= alter_id:
                     continue
                 ledger.opening_balance = op_bal_val
                 ledger.opening_balance_type = bal_type
@@ -1815,12 +1821,57 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
     # 3. Parse Vouchers (<VOUCHER>)
     # Filter out empty/metadata VOUCHER tags (like <VOUCHER>14</VOUCHER> in CMPINFO) by ensuring they have child elements
     voucher_nodes = [v for v in root.findall(".//VOUCHER") if len(v) > 0]
-    for v_node in voucher_nodes:
+
+    # Session-level caches to eliminate N+1 select queries across thousands of vouchers
+    vtypes_by_name: Dict[str, MstVoucherType] = {}
+    vt_res = await db.execute(select(MstVoucherType).where(MstVoucherType.company_id == company_id))
+    for vt in vt_res.scalars().all():
+        vtypes_by_name[vt.name.strip().lower()] = vt
+
+    ledgers_by_name: Dict[str, MstLedger] = {}
+    items_by_name: Dict[str, MstStockItem] = {}
+    uoms_by_symbol: Dict[str, MstUom] = {}
+
+    # Pre-extract GUIDs for batch lookup
+    node_guid_map: Dict[int, str] = {}
+    for idx, v_node in enumerate(voucher_nodes):
         guid = v_node.findtext("GUID") or v_node.get("GUID")
         if not guid:
             guid = v_node.findtext("REMOTEID") or v_node.get("REMOTEID")
         if not guid:
             guid = f"GEN-{uuid.uuid4().hex[:12]}"
+        node_guid_map[idx] = guid
+
+    all_guids = list(node_guid_map.values())
+
+    # Pre-fetch deleted vouchers audit in bulk (1 query instead of N queries)
+    deleted_guids = set()
+    if all_guids:
+        for i in range(0, len(all_guids), 1000):
+            batch = all_guids[i:i+1000]
+            del_check_stmt = select(DeletedRecordAudit.tally_guid).where(
+                DeletedRecordAudit.company_id == company_id,
+                DeletedRecordAudit.entity_type == "Voucher",
+                DeletedRecordAudit.tally_guid.in_(batch)
+            )
+            del_res = await db.execute(del_check_stmt)
+            deleted_guids.update(del_res.scalars().all())
+
+    # Pre-fetch existing vouchers by GUID in bulk (1 query instead of N queries)
+    vouchers_by_guid: Dict[str, TrnVoucher] = {}
+    if all_guids:
+        for i in range(0, len(all_guids), 1000):
+            batch = all_guids[i:i+1000]
+            stmt = select(TrnVoucher).where(
+                TrnVoucher.company_id == company_id,
+                TrnVoucher.tally_guid.in_(batch)
+            )
+            res = await db.execute(stmt)
+            for v in res.scalars().all():
+                vouchers_by_guid[v.tally_guid] = v
+
+    for idx, v_node in enumerate(voucher_nodes):
+        guid = node_guid_map[idx]
             
         v_num = v_node.findtext("VOUCHERNUMBER") or guid[:10]
         vtype_name = v_node.findtext("VOUCHERTYPENAME") or v_node.get("VOUCHERTYPENAME") or "Journal"
@@ -1882,36 +1933,31 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
             irn_cancel_reason = v_node.findtext("IRNCANCELREASON")
             irn_source = v_node.findtext("IRNIRPSOURCE")
             
-            # Get or create MstVoucherType
-            vt_stmt = select(MstVoucherType).where(MstVoucherType.company_id == company_id, MstVoucherType.name == vtype_name)
-            vt_res = await db.execute(vt_stmt)
-            vtype = vt_res.scalars().first()
+            # Get or create MstVoucherType with in-memory lookup
+            vtype_key = vtype_name.strip().lower()
+            vtype = vtypes_by_name.get(vtype_key)
             if not vtype:
-                vtype = MstVoucherType(
-                    company_id=company_id,
-                    name=vtype_name,
-                    is_system_defined=False,
-                    next_number=1
-                )
-                db.add(vtype)
-                await db.flush()
+                vt_stmt = select(MstVoucherType).where(MstVoucherType.company_id == company_id, MstVoucherType.name == vtype_name)
+                vt_res = await db.execute(vt_stmt)
+                vtype = vt_res.scalars().first()
+                if not vtype:
+                    vtype = MstVoucherType(
+                        company_id=company_id,
+                        name=vtype_name,
+                        is_system_defined=False,
+                        next_number=1
+                    )
+                    db.add(vtype)
+                    await db.flush()
+                vtypes_by_name[vtype_key] = vtype
                 
             # Zombie-Resurrection Guard: Skip re-importing vouchers that were explicitly deleted in MyTally
-            del_check = await db.execute(
-                select(DeletedRecordAudit).where(
-                    DeletedRecordAudit.company_id == company_id,
-                    DeletedRecordAudit.entity_type == "Voucher",
-                    DeletedRecordAudit.tally_guid == guid
-                )
-            )
-            if del_check.scalars().first():
+            if guid in deleted_guids:
                 logger.info(f"🛡️ [ZOMBIE GUARD] Skipping inbound import of deleted voucher (GUID: {guid}, #{v_num})")
                 continue
 
-            # Check if voucher already exists by GUID (idempotency/update)
-            stmt = select(TrnVoucher).where(TrnVoucher.company_id == company_id, TrnVoucher.tally_guid == guid)
-            res = await db.execute(stmt)
-            voucher = res.scalars().first()
+            # Check if voucher already exists by GUID (in-memory lookup)
+            voucher = vouchers_by_guid.get(guid)
             
             # Fallback dedup lookup: by (company_id, voucher_type_id, voucher_number, voucher_date) if GUID is generated/absent
             if not voucher and guid.startswith("GEN-"):
@@ -1926,6 +1972,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 if voucher:
                     logger.info(f"🔗 [VOUCHER MATCH] Matched existing voucher #{v_num} by (type, number, date). Linking GUID: {guid}")
                     voucher.tally_guid = guid
+                    vouchers_by_guid[guid] = voucher
             
             # Auto-provision user if voucher contains entered_by / altered_by
             v_user_id = user_id
@@ -1934,10 +1981,12 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 tally_user = await ensure_tally_user_exists(db, company_id, entered_by)
                 if tally_user:
                     v_user_id = tally_user.user_id
+                if tally_user:
+                    v_user_id = tally_user.user_id
 
             if voucher:
-                # If present and alter_id is same or lower, skip to prevent overriding local changes
-                if voucher.tally_alter_id and voucher.tally_alter_id >= alter_id:
+                # If present and alter_id is same or lower, skip unless force_overwrite is True
+                if not force_overwrite and voucher.tally_alter_id and voucher.tally_alter_id >= alter_id:
                     logger.debug(f"⏭️ [VOUCHER SKIP] Voucher #{v_num} (ID: {voucher.voucher_id}) alter_id {voucher.tally_alter_id} >= {alter_id}")
                     continue
                 
@@ -2008,6 +2057,7 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 )
                 db.add(voucher)
                 await db.flush()
+                vouchers_by_guid[guid] = voucher
                 
             voucher.voucher_number = v_num
             voucher.voucher_date = v_date
@@ -2046,21 +2096,25 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 if not led_name:
                     continue
                     
-                # Get ledger
-                l_stmt = select(MstLedger).where(MstLedger.company_id == company_id, MstLedger.name == led_name)
-                l_res = await db.execute(l_stmt)
-                ledger = l_res.scalars().first()
+                # Get ledger (with in-memory cache to prevent N+1 queries)
+                led_key = led_name.strip().lower()
+                ledger = ledgers_by_name.get(led_key)
                 if not ledger:
-                    # Auto create missing ledger under standard suspense/current group
-                    grp = await get_or_create_group(db, company_id, "Suspense Accounts")
-                    ledger = MstLedger(
-                        company_id=company_id,
-                        name=led_name,
-                        group_id=grp.group_id,
-                        opening_balance=0.00
-                    )
-                    db.add(ledger)
-                    await db.flush()
+                    l_stmt = select(MstLedger).where(MstLedger.company_id == company_id, func.lower(MstLedger.name) == led_key)
+                    l_res = await db.execute(l_stmt)
+                    ledger = l_res.scalars().first()
+                    if not ledger:
+                        # Auto create missing ledger under standard suspense/current group
+                        grp = await get_or_create_group(db, company_id, "Suspense Accounts")
+                        ledger = MstLedger(
+                            company_id=company_id,
+                            name=led_name,
+                            group_id=grp.group_id,
+                            opening_balance=0.00
+                        )
+                        db.add(ledger)
+                        await db.flush()
+                    ledgers_by_name[led_key] = ledger
                     
                 amt_str = ent_node.findtext("AMOUNT") or "0"
                 try:
@@ -2279,31 +2333,38 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                 except Exception:
                     inv_amt = Decimal("0.00")
                     
-                # Get or create MstUom
-                uom_stmt = select(MstUom).where(MstUom.company_id == company_id, MstUom.symbol == uom_name)
-                uom_res = await db.execute(uom_stmt)
-                uom = uom_res.scalars().first()
+                # Get or create MstUom (with in-memory cache)
+                uom_key = uom_name.strip().lower()
+                uom = uoms_by_symbol.get(uom_key)
                 if not uom:
-                    uom = MstUom(
-                        company_id=company_id,
-                        name=uom_name,
-                        symbol=uom_name,
-                        decimal_places=0
-                    )
-                    db.add(uom)
-                    await db.flush()
+                    uom_stmt = select(MstUom).where(MstUom.company_id == company_id, func.lower(MstUom.symbol) == uom_key)
+                    uom_res = await db.execute(uom_stmt)
+                    uom = uom_res.scalars().first()
+                    if not uom:
+                        uom = MstUom(
+                            company_id=company_id,
+                            name=uom_name,
+                            symbol=uom_name,
+                            decimal_places=0
+                        )
+                        db.add(uom)
+                        await db.flush()
+                    uoms_by_symbol[uom_key] = uom
                     
                 # Determine stock group candidate and party context
                 cand_group_raw = inv_node.findtext("GSTSTOCKGROUPSOURCE") or inv_node.findtext("HSNSTOCKGROUPSOURCE")
                 party_context = v_node.findtext("PARTYLEDGERNAME") or v_node.findtext("PARTYNAME") or buyer_name or ""
 
-                # Get or create MstStockItem
+                # Get or create MstStockItem (with in-memory cache)
                 is_deemed_pos = inv_node.findtext("ISDEEMEDPOSITIVE") or "No"
                 is_inward = is_deemed_pos.strip().lower() == "yes"
 
-                item_stmt = select(MstStockItem).where(MstStockItem.company_id == company_id, MstStockItem.name == item_name)
-                item_res = await db.execute(item_stmt)
-                item = item_res.scalars().first()
+                item_key = item_name.strip().lower()
+                item = items_by_name.get(item_key)
+                if not item:
+                    item_stmt = select(MstStockItem).where(MstStockItem.company_id == company_id, func.lower(MstStockItem.name) == item_key)
+                    item_res = await db.execute(item_stmt)
+                    item = item_res.scalars().first()
 
                 if not item:
                     stock_group = await resolve_stock_group_dynamically(
@@ -2330,7 +2391,9 @@ async def import_tally_xml(xml_data: str, db: AsyncSession, user_id: int, overri
                     )
                     db.add(item)
                     await db.flush()
+                    items_by_name[item_key] = item
                 else:
+                    items_by_name[item_key] = item
                     if item.stock_group_id is None:
                         stock_group = await resolve_stock_group_dynamically(
                             db=db,

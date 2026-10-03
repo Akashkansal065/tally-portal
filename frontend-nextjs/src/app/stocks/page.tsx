@@ -334,6 +334,8 @@ function StocksContent() {
       result = result.filter(item => (item.closing_balance || 0) > 0)
     } else if (stockStatus === 'Out of Stock') {
       result = result.filter(item => (item.closing_balance || 0) <= 0)
+    } else if (stockStatus === 'Negative Stock') {
+      result = result.filter(item => (item.closing_balance || 0) < 0)
     }
 
     // Movement filter
@@ -651,6 +653,7 @@ function StocksContent() {
                   <option value="All Items">All Items</option>
                   <option value="In Stock">In Stock</option>
                   <option value="Out of Stock">Out of Stock</option>
+                  <option value="Negative Stock">Negative Stock (Anomalies)</option>
                 </select>
               </div>
 

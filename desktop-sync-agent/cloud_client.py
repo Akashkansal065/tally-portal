@@ -156,7 +156,7 @@ class CloudClient:
                 logger.debug(f"Acknowledge on {endpoint} failed: {e}")
         return False
 
-    def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None) -> Tuple[bool, Dict[str, Any]]:
+    def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None, force: bool = False) -> Tuple[bool, Dict[str, Any]]:
         """Uploads exported Tally XML to MyTally backend to update the database with comprehensive diagnostics."""
         headers = {
             "Content-Type": "text/xml;charset=utf-8"
@@ -165,6 +165,8 @@ class CloudClient:
             headers["Authorization"] = f"Bearer {self.token}"
         if company_name:
             headers["x-company-name"] = company_name
+        if force:
+            headers["x-force-sync"] = "true"
 
         payload_bytes = xml_data.encode("utf-8")
         payload_size_kb = len(payload_bytes) / 1024.0
@@ -180,8 +182,13 @@ class CloudClient:
 
         for endpoint in ["/sync/inbound", "/api/v1/sync/inbound"]:
             url = f"{self.backend_url}{endpoint}"
+            params = []
             if company_name:
-                url += f"?company_name={urllib.parse.quote(company_name)}"
+                params.append(f"company_name={urllib.parse.quote(company_name)}")
+            if force:
+                params.append("force=true")
+            if params:
+                url += "?" + "&".join(params)
             
             start_t = time.time()
             try:

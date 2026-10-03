@@ -516,6 +516,21 @@ async def list_notifications(
     return notifications
 
 
+# In-memory cache: (user_id, company_id) -> (count, expiry_timestamp)
+_unread_count_cache: dict[tuple[int, int], tuple[int, float]] = {}
+
+def invalidate_unread_count(user_id: Optional[int] = None, company_id: Optional[int] = None):
+    global _unread_count_cache
+    if user_id is not None and company_id is not None:
+        _unread_count_cache.pop((user_id, company_id), None)
+    elif user_id is not None:
+        _unread_count_cache = {k: v for k, v in _unread_count_cache.items() if k[0] != user_id}
+    elif company_id is not None:
+        _unread_count_cache = {k: v for k, v in _unread_count_cache.items() if k[1] != company_id}
+    else:
+        _unread_count_cache.clear()
+
+
 @router.get("/unread-count", response_model=UnreadCountResponse)
 async def get_unread_count(
     current_user: User = Depends(get_current_user),
@@ -523,7 +538,14 @@ async def get_unread_count(
 ):
     """
     Get the count of unread notifications for the active user badge.
+    Cached for 30s in-memory to prevent repeated DB hits from tab-switching and intervals.
     """
+    now = time.time()
+    cache_key = (current_user.user_id, current_user.company_id)
+    cached = _unread_count_cache.get(cache_key)
+    if cached and cached[1] > now:
+        return {"count": cached[0]}
+
     stmt = (
         select(func.count(Notification.id))
         .where(
@@ -534,6 +556,7 @@ async def get_unread_count(
     )
     res = await db.execute(stmt)
     count = res.scalar() or 0
+    _unread_count_cache[cache_key] = (count, now + 30.0)
     return {"count": count}
 
 
@@ -556,6 +579,7 @@ async def mark_all_as_read(
     )
     result = await db.execute(stmt)
     await db.commit()
+    invalidate_unread_count(current_user.user_id, current_user.company_id)
     return {"success": True, "updated": result.rowcount}
 
 
@@ -576,6 +600,7 @@ async def clear_all_notifications(
     )
     result = await db.execute(stmt)
     await db.commit()
+    invalidate_unread_count(current_user.user_id, current_user.company_id)
     return {"success": True, "deleted": result.rowcount}
 
 
@@ -600,6 +625,7 @@ async def mark_as_read(
 
     notif.is_read = True
     await db.commit()
+    invalidate_unread_count(current_user.user_id, current_user.company_id)
     return {"success": True, "id": notification_id, "is_read": True}
 
 
@@ -622,6 +648,7 @@ async def delete_notification(
     )
     result = await db.execute(stmt)
     await db.commit()
+    invalidate_unread_count(current_user.user_id, current_user.company_id)
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"success": True, "id": notification_id}

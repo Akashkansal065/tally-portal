@@ -227,8 +227,12 @@ export function GlobalHeader() {
     }
   }
 
-  const fetchUnreadCount = async () => {
+  const lastUnreadFetchTime = useRef<number>(0)
+  const fetchUnreadCount = async (force: boolean = false) => {
     if (!token) return
+    const now = Date.now()
+    if (!force && now - lastUnreadFetchTime.current < 20000) return
+    lastUnreadFetchTime.current = now
     try {
       const res = await fetch(`${API_BASE}/notifications/unread-count`, {
         headers: authHeaders(token),
@@ -389,15 +393,15 @@ export function GlobalHeader() {
 
   useEffect(() => {
     if (!token) return
-    fetchUnreadCount()
+    fetchUnreadCount(true)
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return
-      fetchUnreadCount()
+      fetchUnreadCount(true)
     }, 120000)
 
     const handleVisibilityChange = () => {
       if (typeof document !== 'undefined' && !document.hidden) {
-        fetchUnreadCount()
+        fetchUnreadCount(false)
       }
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
