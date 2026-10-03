@@ -22,13 +22,13 @@ import { cn } from "@/lib/utils";
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
 export const metadata: Metadata = {
-  title: 'MyTally — Sneh Distributors',
+  title: 'SnehDist. — Sneh Distributors',
   description: 'Inventory and ledger management for Sneh Distributors',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'MyTally',
+    title: 'SnehDist.',
   },
   icons: {
     icon: '/icon-192.png',

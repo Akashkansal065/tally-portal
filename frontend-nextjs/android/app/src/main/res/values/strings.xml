@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">MyTally</string>
-    <string name="title_activity_main">MyTally</string>
+    <string name="app_name">SnehDist.</string>
+    <string name="title_activity_main">SnehDist.</string>
     <string name="package_name">com.snehdistributors.mytally</string>
     <string name="custom_url_scheme">com.snehdistributors.mytally</string>
 </resources>

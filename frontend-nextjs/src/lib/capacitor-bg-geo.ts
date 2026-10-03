@@ -137,8 +137,8 @@ export async function startNativeBackgroundTracking(token: string): Promise<bool
   try {
     const watcherId = await plugin.addWatcher(
       {
-        backgroundMessage: 'MyTally is recording your field location during active shift.',
-        backgroundTitle: 'MyTally Shift Active',
+        backgroundMessage: 'SnehDist. is recording your field location during active shift.',
+        backgroundTitle: 'SnehDist. Shift Active',
         requestPermissions: true,
         stale: false,
         distanceFilter: 25, // Update every 25 meters of movement
@@ -214,7 +214,7 @@ export async function getOEMBatteryGuidance(): Promise<{
     return {
       manufacturer: 'Xiaomi / Redmi / POCO',
       instructions: [
-        'Open Settings -> Apps -> Manage Apps -> MyTally',
+        'Open Settings -> Apps -> Manage Apps -> SnehDist.',
         'Enable "Autostart"',
         'Tap "Battery saver" and choose "No restrictions"',
       ],
@@ -227,7 +227,7 @@ export async function getOEMBatteryGuidance(): Promise<{
       instructions: [
         'Open Settings -> Battery and device care -> Battery',
         'Tap "Background usage limits" -> "Never sleeping apps"',
-        'Add MyTally to the list',
+        'Add SnehDist. to the list',
       ],
       settingsActionText: 'Open Battery Settings',
     }
@@ -237,7 +237,7 @@ export async function getOEMBatteryGuidance(): Promise<{
       manufacturer: 'Vivo / iQOO',
       instructions: [
         'Open Settings -> Battery -> High background power consumption',
-        'Turn ON MyTally to allow background running',
+        'Turn ON SnehDist. to allow background running',
       ],
       settingsActionText: 'Open App Settings',
     }
@@ -246,7 +246,7 @@ export async function getOEMBatteryGuidance(): Promise<{
     return {
       manufacturer: 'Oppo / Realme / OnePlus',
       instructions: [
-        'Open Settings -> Battery -> App Battery Management -> MyTally',
+        'Open Settings -> Battery -> App Battery Management -> SnehDist.',
         'Enable "Allow background activity" & "Allow auto-launch"',
       ],
       settingsActionText: 'Open App Settings',
@@ -256,7 +256,7 @@ export async function getOEMBatteryGuidance(): Promise<{
   return {
     manufacturer: 'Android Device',
     instructions: [
-      'Open Settings -> Apps -> MyTally -> Battery',
+      'Open Settings -> Apps -> SnehDist. -> Battery',
       'Select "Unrestricted" to keep attendance tracking alive',
     ],
     settingsActionText: 'Open App Settings',

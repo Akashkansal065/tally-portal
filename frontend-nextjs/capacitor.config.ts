@@ -8,7 +8,7 @@ const serverUrl =
 
 const config: CapacitorConfig = {
   appId: 'com.snehdistributors.mytally',
-  appName: 'MyTally',
+  appName: 'SnehDist.',
   webDir: 'public',
   server: {
     ...(serverUrl ? { url: serverUrl } : {}),

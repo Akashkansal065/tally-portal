@@ -1,6 +1,6 @@
 {
-  "name": "MyTally — Sneh Distributors",
-  "short_name": "MyTally",
+  "name": "SnehDist. — Sneh Distributors",
+  "short_name": "SnehDist.",
   "description": "Mobile ERP for inventory and ledger management",
   "start_url": "/?source=pwa",
   "scope": "/",
