@@ -1,4 +1,5 @@
 import jsPDF from 'jspdf'
+import { saveOrSharePdf } from './capacitor-pdf'
 
 export interface MusterRollDay {
   day: number
@@ -262,5 +263,5 @@ export function exportMusterRollToPdf({
   )
 
   const filename = `Attendance_Muster_Roll_${monthName}_${year}.pdf`
-  doc.save(filename)
+  saveOrSharePdf(doc, filename)
 }

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Share, PlusSquare, X, Smartphone, CheckCircle, Download } from 'lucide-react'
+import { isNativePlatform } from '@/lib/capacitor'
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
@@ -16,6 +17,9 @@ export function MobileInstallPrompt() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
+
+    // If running in native Android/iOS shell, never show PWA install prompt
+    if (isNativePlatform()) return
 
     // Check if already in standalone app mode
     const isStandalone =

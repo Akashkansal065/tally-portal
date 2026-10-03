@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf'
 import { toTitleCase } from './utils'
+import { saveOrSharePdf } from './capacitor-pdf'
 
 export interface ExportTransaction {
   id: number
@@ -566,11 +567,11 @@ export function exportLedgerToPdf({
 
   drawPageFooter(currentPage)
 
-  // Trigger browser download
+  // Trigger browser download or native Android/iOS share
   const cleanParty = partyName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30)
   const cleanFilter = filterType.replace(/[^a-zA-Z0-9_-]/g, '_')
   const fileName = `${cleanParty}_Statement_${cleanFilter}_${startDate || 'all'}_to_${endDate || 'all'}.pdf`
-  doc.save(fileName)
+  saveOrSharePdf(doc, fileName)
 }
 
 /**

@@ -11,6 +11,7 @@ import { DatePickerInitializer } from '@/components/DatePickerInitializer'
 import { MobileInstallPrompt } from '@/components/MobileInstallPrompt'
 import { SessionRestorer } from '@/components/SessionRestorer'
 import { AttendanceLocationTracker } from '@/components/AttendanceLocationTracker'
+import { NativeAppBridge } from '@/components/NativeAppBridge'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
@@ -79,6 +80,7 @@ export default function RootLayout({
               <MobileInstallPrompt />
               <SessionRestorer />
               <AttendanceLocationTracker />
+              <NativeAppBridge />
               <Toaster richColors position="top-center" closeButton />
               {/* Top Header */}
               <GlobalHeader />
