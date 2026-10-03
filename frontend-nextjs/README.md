@@ -134,3 +134,82 @@ cd frontend-nextjs
 npx vercel
 ```
 Follow the interactive prompts to complete deployment.
+
+---
+
+## 📱 Mobile Native App Setup (Capacitor 7)
+
+`frontend-nextjs` is equipped with a co-located **Capacitor 7** native wrapper that generates true native Android and iOS applications with full background tracking capabilities, camera access, voice recording, and push notifications.
+
+### 📦 Mobile Project Structure
+
+```text
+frontend-nextjs/
+├── capacitor.config.ts          # Bridge configuration & splash settings
+├── android/                    # Android Studio project (Gradle 8.14)
+│   ├── app/build.gradle        # Automated signing configs
+│   ├── key.properties          # Signing credentials (gitignored)
+│   ├── key.properties.example  # Signing credentials template
+│   └── app/src/main/
+│       └── AndroidManifest.xml # 30 pre-configured native permissions
+├── ios/                        # Xcode project (CocoaPods/SPM)
+│   └── App/App/Info.plist      # 12 iOS usage descriptions & background modes
+└── src/lib/
+    ├── capacitor.ts            # Platform detection (isNativePlatform)
+    ├── capacitor-bg-geo.ts     # True background GPS tracking & OEM bypass
+    └── capacitor-media.ts      # Native camera & voice recording helpers
+```
+
+### ⚡ 1-Command Build Scripts
+
+| Command | Action | Output Artifact |
+|---|---|---|
+| `npm run cap:sync` | Syncs web assets & native plugins to Android & iOS | `android/`, `ios/` |
+| `npm run build:apk` | Compiles an Android Debug APK | `android/app/build/outputs/apk/debug/app-debug.apk` |
+| `npm run build:apk-release` | Syncs & generates a cryptographically signed Release APK | `android/app/build/outputs/apk/release/app-release.apk` |
+
+### 🔑 Automated Release Signing Setup
+
+1. **Copy the keystore template**:
+   ```bash
+   cp android/key.properties.example android/key.properties
+   ```
+
+2. **Generate your release keystore** (if you don't already have one):
+   ```bash
+   cd android
+   keytool -genkeypair -v \
+     -keystore mytally-release.keystore \
+     -alias mytally \
+     -keyalg RSA \
+     -keysize 2048 \
+     -validity 10000 \
+     -storepass "YourSecurePassword123!" \
+     -keypass "YourSecurePassword123!" \
+     -dname "CN=MyTally, OU=Mobile, O=Sneh Distributors, L=Noida, ST=UP, C=IN"
+   cd ..
+   ```
+
+3. **Fill in `android/key.properties`**:
+   ```properties
+   storeFile=mytally-release.keystore
+   storePassword=YourSecurePassword123!
+   keyAlias=mytally
+   keyPassword=YourSecurePassword123!
+   ```
+
+4. **Build the Signed APK**:
+   ```bash
+   npm run build:apk-release
+   ```
+
+5. **Verify with `apksigner`**:
+   ```bash
+   apksigner verify --verbose android/app/build/outputs/apk/release/app-release.apk
+   ```
+
+### 📍 True Background Geolocation & OEM Battery Protection
+
+- **Sticky Foreground Notification**: Android requires a persistent notification (`FOREGROUND_SERVICE_LOCATION`) while recording location in the background. MyTally displays *"MyTally Shift Active — Recording field location"* whenever a shift is in progress.
+- **OEM Battery Killers**: Phones from Xiaomi, Samsung, Vivo, and Oppo aggressively kill background tasks. The app includes built-in guidance (`getOEMBatteryGuidance()`) directing field staff to whitelist MyTally as **"No Restrictions / Never Sleeping App"**.
+- **Web Fallback**: When run in a regular browser (desktop/mobile PWA), the app gracefully falls back to standard periodic browser geolocation pings without throwing errors.
