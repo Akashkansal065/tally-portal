@@ -9,7 +9,10 @@ import hashlib
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import verify_password, get_password_hash, create_access_token, decode_access_token
-from app.core.permissions import get_current_user, oauth2_scheme, get_all_user_permissions, get_user_permission_toggles
+from app.core.permissions import (
+    get_current_user, oauth2_scheme, get_all_user_permissions, get_user_permission_toggles,
+    invalidate_auth_cache
+)
 from app.core.seed import seed_company_defaults
 from app.core.rate_limiter import limiter
 from app.models.portal_core import Company
@@ -288,6 +291,7 @@ async def logout(
     if session:
         session.revoked_at = datetime.now(timezone.utc)
         await db.commit()
+        invalidate_auth_cache(token_hash=token_hash, user_id=user.user_id)
         return {"detail": "Successfully logged out"}
         
     raise HTTPException(
@@ -330,8 +334,8 @@ async def get_me(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Eagerly load role
-    await db.refresh(user, ["role"])
+    if not user.role:
+        await db.refresh(user, ["role"])
     r_name = user.role.name if user.role else "User"
     user_perms = await get_all_user_permissions(user.user_id, user.role_id, r_name, db)
     toggles = user_perms["toggles"]
@@ -410,6 +414,7 @@ async def switch_active_company(
         
     user.company_id = payload.company_id
     await db.commit()
+    invalidate_auth_cache(user_id=user.user_id)
     return {"detail": "Active company switched successfully."}
 
 class MyCompanyResponse(BaseModel):

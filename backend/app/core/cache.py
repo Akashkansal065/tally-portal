@@ -37,16 +37,24 @@ def set_cached_response(company_id: int, cache_key: str, data: Any, ttl_seconds:
     key = (company_id, cache_key)
     with _cache_lock:
         _in_memory_cache[key] = (data, expiry)
-        logger.info(f"💾 [CACHE STORE] Company #{company_id} | Key: '{cache_key}' (Stored in memory with {ttl_seconds // 3600}h TTL)")
+        ttl_display = f"{ttl_seconds // 3600}h" if ttl_seconds >= 3600 else f"{ttl_seconds // 60}m"
+        logger.info(f"💾 [CACHE STORE] Company #{company_id} | Key: '{cache_key}' (Stored in memory with {ttl_display} TTL)")
 
-def clear_company_cache(company_id: int) -> int:
-    """Clear all cached entries for a specific company. Returns count of evicted entries."""
+def clear_company_cache(company_id: int, key_prefix: Optional[str] = None) -> int:
+    """
+    Clear cached entries for a specific company. Returns count of evicted entries.
+    If key_prefix is provided, only evicts entries whose cache_key starts with that prefix.
+    """
     with _cache_lock:
-        keys_to_del = [k for k in _in_memory_cache.keys() if k[0] == company_id]
+        keys_to_del = [
+            k for k in _in_memory_cache.keys()
+            if k[0] == company_id and (key_prefix is None or k[1].startswith(key_prefix))
+        ]
         for k in keys_to_del:
             del _in_memory_cache[k]
         evicted_count = len(keys_to_del)
-        logger.info(f"🧹 [CACHE CLEAR] Company #{company_id} | Evicted {evicted_count} cached entries")
+        prefix_info = f" with prefix '{key_prefix}'" if key_prefix else ""
+        logger.info(f"🧹 [CACHE CLEAR] Company #{company_id}{prefix_info} | Evicted {evicted_count} cached entries")
         return evicted_count
 
 def clear_all_cache() -> int:

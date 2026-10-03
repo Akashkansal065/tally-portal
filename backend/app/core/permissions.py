@@ -1,4 +1,7 @@
 import hashlib
+import time
+import copy
+from typing import Dict, Any, Optional, Set
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.future import select
@@ -9,9 +12,58 @@ from datetime import datetime, timezone
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import decode_access_token
-from app.models.portal_core import User, UserSession, UserPermissionOverride, Permission, Module, UserDataScope
+from app.models.portal_core import (
+    User, UserSession, UserPermissionOverride, Permission, Module, UserDataScope,
+    UserCompanyAccess, Company
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login")
+
+# In-memory auth and permissions caches with 60s TTL
+AUTH_CACHE_TTL_SECONDS = 300
+PERMISSIONS_CACHE_TTL_SECONDS = 300
+
+# Cache storage:
+# _auth_cache: token_hash -> {"user": User, "user_id": int, "allowed_company_ids": Set[int], "expires_at": float}
+_auth_cache: Dict[str, Dict[str, Any]] = {}
+
+# _permissions_cache: user_id -> {"role_id": int, "data": dict, "expires_at": float}
+_permissions_cache: Dict[int, Dict[str, Any]] = {}
+
+def _prune_expired_caches(now: float):
+    global _auth_cache, _permissions_cache
+    if len(_auth_cache) > 100:
+        expired_tokens = [k for k, v in _auth_cache.items() if v.get("expires_at", 0) <= now]
+        for k in expired_tokens:
+            _auth_cache.pop(k, None)
+    if len(_permissions_cache) > 100:
+        expired_users = [k for k, v in _permissions_cache.items() if v.get("expires_at", 0) <= now]
+        for k in expired_users:
+            _permissions_cache.pop(k, None)
+
+def invalidate_auth_cache(token_hash: Optional[str] = None, user_id: Optional[int] = None):
+    """Invalidate cached session/user entry for a given token hash or user_id."""
+    global _auth_cache
+    if token_hash:
+        _auth_cache.pop(token_hash, None)
+    if user_id is not None:
+        to_del = [th for th, entry in _auth_cache.items() if entry.get("user_id") == user_id]
+        for th in to_del:
+            _auth_cache.pop(th, None)
+
+def invalidate_permissions_cache(user_id: Optional[int] = None):
+    """Invalidate cached permissions for a given user_id or all users."""
+    global _permissions_cache
+    if user_id is not None:
+        _permissions_cache.pop(user_id, None)
+    else:
+        _permissions_cache.clear()
+
+def clear_all_auth_and_permission_caches():
+    """Clear all cached sessions and permissions."""
+    global _auth_cache, _permissions_cache
+    _auth_cache.clear()
+    _permissions_cache.clear()
 
 async def get_current_user(
     request: Request,
@@ -37,6 +89,28 @@ async def get_current_user(
     # Hash the token to compare with database token_hash
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     
+    now = time.time()
+    _prune_expired_caches(now)
+
+    # 1. Check in-memory auth cache (0 DB queries on cache hit)
+    cached_entry = _auth_cache.get(token_hash)
+    if cached_entry and cached_entry.get("expires_at", 0) > now:
+        cached_user = cached_entry["user"]
+        # Merge user into current session identity map without querying DB
+        user = await db.merge(cached_user, load=False)
+        allowed_company_ids = cached_entry["allowed_company_ids"]
+
+        header_company_id = request.headers.get("x-company-id") or request.headers.get("X-Company-ID")
+        if header_company_id:
+            try:
+                h_cid = int(header_company_id)
+                if h_cid != user.company_id and h_cid in allowed_company_ids:
+                    user.company_id = h_cid
+            except ValueError:
+                pass
+        return user
+
+    # 2. Cache miss: Validate active session from DB
     session_query = await db.execute(
         select(UserSession).where(
             UserSession.user_id == user_id,
@@ -59,21 +133,41 @@ async def get_current_user(
     user = user_query.scalars().first()
     if user is None:
         raise credentials_exception
-        
+
+    # Query allowed companies for the user to avoid DB hits on header company switching
+    allowed_company_ids: Set[int] = {user.company_id}
+    r_name = user.role.name if user.role else ""
+    is_admin = bool(r_name and r_name.lower() in ("admin", "superadmin", "owner"))
+    if is_admin:
+        comp_res = await db.execute(select(Company.company_id).where(Company.is_active == True))
+        for cid in comp_res.scalars().all():
+            allowed_company_ids.add(cid)
+    else:
+        acc_stmt = select(UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == user.user_id)
+        acc_res = await db.execute(acc_stmt)
+        for cid in acc_res.scalars().all():
+            allowed_company_ids.add(cid)
+
+    # Determine session expiry timestamp
+    sess_exp = db_session.expires_at
+    if sess_exp.tzinfo is None:
+        sess_exp = sess_exp.replace(tzinfo=timezone.utc)
+    cache_expiry = min(now + AUTH_CACHE_TTL_SECONDS, sess_exp.timestamp())
+
+    _auth_cache[token_hash] = {
+        "user": user,
+        "user_id": user.user_id,
+        "allowed_company_ids": allowed_company_ids,
+        "expires_at": cache_expiry
+    }
+
     # Support dynamic company switching via X-Company-ID request header
     header_company_id = request.headers.get("x-company-id") or request.headers.get("X-Company-ID")
     if header_company_id:
         try:
             h_cid = int(header_company_id)
-            if h_cid != user.company_id:
-                from app.models.portal_core import UserCompanyAccess
-                acc_stmt = select(UserCompanyAccess).where(
-                    UserCompanyAccess.user_id == user.user_id,
-                    UserCompanyAccess.company_id == h_cid
-                )
-                acc_res = await db.execute(acc_stmt)
-                if acc_res.scalars().first():
-                    user.company_id = h_cid
+            if h_cid != user.company_id and h_cid in allowed_company_ids:
+                user.company_id = h_cid
         except ValueError:
             pass
 
@@ -162,6 +256,11 @@ async def get_all_user_permissions(
     allowing granular removal/customization of permissions for admin users if desired.
     """
     is_admin = bool(role_name and role_name.lower() in ("admin", "superadmin", "owner"))
+
+    now = time.time()
+    cached_perm = _permissions_cache.get(user_id)
+    if cached_perm and cached_perm.get("expires_at", 0) > now and cached_perm.get("role_id") == role_id:
+        return copy.deepcopy(cached_perm["data"])
 
     # Initialize capabilities with defaults (admin defaults to True, others to False)
     capabilities = {}
@@ -269,12 +368,20 @@ async def get_all_user_permissions(
     allowed_ids = scope_query.scalars().all()
     allowed_voucher_type_ids = list(allowed_ids) if allowed_ids else None
 
-    return {
+    result = {
         "toggles": toggles,
         "capabilities": capabilities,
         "voucher_action_scope": voucher_action_scope,
         "allowed_voucher_type_ids": allowed_voucher_type_ids,
     }
+
+    _permissions_cache[user_id] = {
+        "data": result,
+        "role_id": role_id,
+        "expires_at": now + PERMISSIONS_CACHE_TTL_SECONDS
+    }
+
+    return copy.deepcopy(result)
 
 
 async def get_effective_permission(
@@ -431,6 +538,11 @@ async def get_user_allowed_voucher_type_ids(
     Returns the list of allowed voucher_type_ids for the given user from user_data_scopes.
     Returns None if the user has unrestricted access to all voucher types (no scope configured).
     """
+    now = time.time()
+    cached_perm = _permissions_cache.get(user_id)
+    if cached_perm and cached_perm.get("expires_at", 0) > now:
+        return copy.deepcopy(cached_perm["data"]["allowed_voucher_type_ids"])
+
     # Query user_data_scopes for VoucherType scope rows
     scope_query = await db.execute(
         select(UserDataScope.scope_ref_id).where(

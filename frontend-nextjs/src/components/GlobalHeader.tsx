@@ -122,7 +122,10 @@ export function GlobalHeader() {
       }
     }
     fetchSyncHealth()
-    const interval = setInterval(fetchSyncHealth, 30000)
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      fetchSyncHealth()
+    }, 60000)
     return () => clearInterval(interval)
   }, [token])
 
@@ -387,8 +390,22 @@ export function GlobalHeader() {
   useEffect(() => {
     if (!token) return
     fetchUnreadCount()
-    const interval = setInterval(fetchUnreadCount, 30000)
-    return () => clearInterval(interval)
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      fetchUnreadCount()
+    }, 120000)
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        fetchUnreadCount()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [token, user?.company_id])
 
   const [formData, setFormData] = useState({

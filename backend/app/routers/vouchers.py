@@ -10,7 +10,7 @@ import json
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.datetime_utils import to_ist_iso
+from app.core.datetime_utils import to_ist_iso, get_current_fy_start, is_historical_period
 from app.core.permissions import require_permission, get_current_user, require_voucher_read_permission, get_user_allowed_voucher_type_ids
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.core.pagination import PaginationParams, apply_pagination_headers
@@ -46,12 +46,23 @@ async def get_voucher_types(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(MstVoucherType).where(MstVoucherType.company_id == user.company_id)
     allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+    cache_key = f"voucher_types_{user.company_id}"
+    if allowed_ids is not None:
+        cache_key += f"_user_{user.user_id}"
+
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        return cached
+
+    stmt = select(MstVoucherType).where(MstVoucherType.company_id == user.company_id)
     if allowed_ids is not None:
         stmt = stmt.where(MstVoucherType.voucher_type_id.in_(allowed_ids))
     res = await db.execute(stmt)
-    return res.scalars().all()
+    vtypes = res.scalars().all()
+    result = [{c.name: getattr(vt, c.name) for c in vt.__table__.columns} for vt in vtypes]
+    set_cached_response(user.company_id, cache_key, result, ttl_seconds=7200) # 2 hours
+    return result
 
 # --- Voucher Posting Logic ---
 
@@ -1153,7 +1164,14 @@ async def get_vouchers(
     apply_pagination_headers(response, total, pagination)
     paginated_result = pagination.slice_list(result)
 
-    set_cached_response(user.company_id, cache_key, {"items": paginated_result, "total": total} if pagination.is_paginated else paginated_result)
+    is_historical = is_historical_period(to_date_str=to_date, date_str=date)
+    ttl = 86400 if is_historical else 600  # 24h for closed/historical FY, 10 min for active period
+    set_cached_response(
+        user.company_id,
+        cache_key,
+        {"items": paginated_result, "total": total} if pagination.is_paginated else paginated_result,
+        ttl_seconds=ttl
+    )
     return paginated_result
 
 @router.get("/{voucher_id}")
@@ -1162,6 +1180,17 @@ async def get_voucher_detail(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
+    cache_key = f"voucher_detail_{voucher_id}"
+    cached = get_cached_response(user.company_id, cache_key)
+    if cached is not None:
+        allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
+        if allowed_ids is not None and cached.get("voucher_type_id") not in allowed_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to view vouchers of this type."
+            )
+        return cached
+
     stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.voucher_type),
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
@@ -1375,4 +1404,9 @@ async def get_voucher_detail(
         "sync_id": sync_id,
         "bank_reconciliation": bank_recon_info,
     }
+
+    is_historical = is_historical_period(check_date=voucher.voucher_date)
+    ttl = 86400 if is_historical else 600  # 24h for closed/historical FY, 10 min for active period
+    set_cached_response(user.company_id, cache_key, output, ttl_seconds=ttl)
+
     return output

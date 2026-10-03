@@ -13,7 +13,10 @@ from app.core.permissions import (
     get_all_user_permissions,
     get_user_permission_toggles,
     get_effective_permission,
-    get_user_allowed_voucher_type_ids
+    get_user_allowed_voucher_type_ids,
+    invalidate_auth_cache,
+    invalidate_permissions_cache,
+    clear_all_auth_and_permission_caches,
 )
 from app.core.security import get_password_hash
 from app.models.portal_core import (
@@ -427,6 +430,7 @@ async def reset_user_password(
     password_hash = get_password_hash(payload.password)
     user.password_hash = password_hash
     await db.commit()
+    invalidate_auth_cache(user_id=user_id)
     return {"success": True, "message": f"Password reset successfully for user: {user.username}"}
 
 class UserRoleToggle(BaseModel):
@@ -473,6 +477,8 @@ async def update_user_role(
     # Reset any explicit user overrides so the user inherits their role's permissions cleanly
     await db.execute(delete(UserPermissionOverride).where(UserPermissionOverride.user_id == user_id))
     await db.commit()
+    invalidate_auth_cache(user_id=user_id)
+    invalidate_permissions_cache(user_id=user_id)
     return {"detail": f"User role updated to {role.name} successfully."}
 
 @router.get("/roles", response_model=List[RoleResponse])
@@ -743,6 +749,7 @@ async def update_role_permissions(
         )
 
     await db.commit()
+    clear_all_auth_and_permission_caches()
     return {"success": True, "detail": f"Permissions for role '{role.name}' updated successfully."}
 
 @router.get("/modules", response_model=List[ModuleResponse])
@@ -808,6 +815,7 @@ async def update_permissions(
             )
 
     await db.commit()
+    clear_all_auth_and_permission_caches()
     return {"detail": "Permissions matrix updated successfully."}
 
 
@@ -921,6 +929,7 @@ async def update_user_companies(
             target_user.company_id = payload.company_ids[0]
 
     await db.commit()
+    invalidate_auth_cache(user_id=user_id)
     return {"detail": "User company access updated successfully."}
 
 @router.get("/users/{user_id}/permissions", response_model=List[UserPermissionOverrideItem])
@@ -1062,6 +1071,7 @@ async def update_user_permissions(
                 await db.delete(override)
                 
     await db.commit()
+    invalidate_permissions_cache(user_id=user_id)
     return {"success": True}
 
 @router.put("/users/{user_id}/scopes")
@@ -1088,6 +1098,8 @@ async def update_user_scopes(
     user.allowed_report_categories = payload.allowedReportCategories
     
     await db.commit()
+    invalidate_auth_cache(user_id=user_id)
+    invalidate_permissions_cache(user_id=user_id)
     return {"success": True}
 
 @router.put("/users/{user_id}/voucher-scopes")
@@ -1159,6 +1171,7 @@ async def update_user_voucher_scopes(
             ))
 
     await db.commit()
+    invalidate_permissions_cache(user_id=user_id)
     return {"success": True}
 
 @router.put("/users/{user_id}/status")
@@ -1185,6 +1198,8 @@ async def update_user_status(
         
     user.is_active = payload.isActive
     await db.commit()
+    invalidate_auth_cache(user_id=user_id)
+    invalidate_permissions_cache(user_id=user_id)
     return {"success": True}
 
 @router.get("/audit-logs")
