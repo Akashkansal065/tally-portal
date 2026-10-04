@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc, and_, Date, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc, and_, Date, Boolean, JSON
 from sqlalchemy.orm import relationship, selectinload
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -87,6 +87,7 @@ class Attendance(Base):
     last_known_accuracy_meters = Column(Float, nullable=True)
     last_known_place_name = Column(String(256), nullable=True)
     last_known_time = Column(DateTime, nullable=True)
+    movement_trail = Column(JSON, nullable=True)
 
     # Approvals Workflow
     approval_status = Column(String(32), default="approved", nullable=False)
@@ -99,6 +100,24 @@ class Attendance(Base):
 
     user = relationship("User", foreign_keys=[user_id])
     approved_by = relationship("User", foreign_keys=[approved_by_user_id], lazy="selectin")
+
+
+class AttendanceLocationLog(Base):
+    __tablename__ = "portal_attendance_locations"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    attendance_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.portal_attendance.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    latitude = Column(String(32), nullable=False)
+    longitude = Column(String(32), nullable=False)
+    accuracy_meters = Column(Float, nullable=True)
+    distance_from_prev_meters = Column(Float, nullable=True)
+    place_name = Column(String(256), nullable=True)
+    recorded_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
+
+    attendance = relationship("Attendance", backref="location_logs")
+    user = relationship("User", foreign_keys=[user_id])
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -457,7 +476,8 @@ async def ping_location(
 ):
     """
     Periodic background location ping from the active web app / mobile wrapper.
-    Updates 'last_known_location' on the user's active attendance session.
+    Records every movement (>= 1 meter threshold) in portal_attendance_locations
+    and updates 'last_known_location' on the user's active attendance session.
     """
     stmt = (
         select(Attendance)
@@ -478,38 +498,85 @@ async def ping_location(
 
     now_ist = get_ist_now()
 
-    # Determine if we should refresh reverse geocoding
-    # Only reverse geocode if place_name is empty OR if user moved > 100m from previous ping
-    place_name = rec.last_known_place_name
-    should_geocode = not place_name
-
-    if not should_geocode and rec.last_known_latitude and rec.last_known_longitude:
+    # Calculate distance moved from previous location
+    dist_moved = 0.0
+    has_prev = False
+    if rec.last_known_latitude and rec.last_known_longitude:
         try:
             prev_lat = float(rec.last_known_latitude)
             prev_lon = float(rec.last_known_longitude)
             dist_moved = haversine_distance_meters(prev_lat, prev_lon, req.latitude, req.longitude)
-            if dist_moved >= 100.0:
-                should_geocode = True
+            has_prev = True
         except (ValueError, TypeError):
-            should_geocode = True
+            dist_moved = 0.0
+    elif rec.check_in_latitude and rec.check_in_longitude:
+        try:
+            prev_lat = float(rec.check_in_latitude)
+            prev_lon = float(rec.check_in_longitude)
+            dist_moved = haversine_distance_meters(prev_lat, prev_lon, req.latitude, req.longitude)
+            has_prev = True
+        except (ValueError, TypeError):
+            dist_moved = 0.0
+
+    # Determine if we should refresh reverse geocoding
+    # Refresh if place_name is empty OR if user moved >= 25m from previous geocode
+    place_name = rec.last_known_place_name
+    should_geocode = not place_name or (dist_moved >= 25.0)
 
     if should_geocode:
         geocoded = reverse_geocode_place(req.latitude, req.longitude)
         if geocoded:
             place_name = geocoded
 
+    # Update latest known location on attendance record
     rec.last_known_latitude = str(req.latitude)
     rec.last_known_longitude = str(req.longitude)
     rec.last_known_accuracy_meters = req.accuracyMeters
     rec.last_known_place_name = place_name
     rec.last_known_time = now_ist
 
+    # Store breadcrumb in portal_attendance_locations
+    # Save if:
+    # 1. User moved >= 1.0 meter (for testing/verification and fine-grained tracking)
+    # 2. No previous breadcrumb exists yet
+    # 3. Or >= 10 minutes have elapsed since last recorded time (stationary heartbeat)
+    time_diff_sec = (now_ist - rec.last_known_time.replace(tzinfo=None)).total_seconds() if (rec.last_known_time and has_prev) else 999999
+    should_log = (dist_moved >= 1.0) or (not has_prev) or (time_diff_sec >= 600)
+
+    if should_log:
+        breadcrumb = AttendanceLocationLog(
+            attendance_id=rec.id,
+            user_id=user.user_id,
+            latitude=str(req.latitude),
+            longitude=str(req.longitude),
+            accuracy_meters=req.accuracyMeters,
+            distance_from_prev_meters=round(dist_moved, 1),
+            place_name=place_name,
+            recorded_at=now_ist
+        )
+        db.add(breadcrumb)
+
+        # Append to movement_trail JSON on attendance session
+        point_json = {
+            "lat": round(req.latitude, 6),
+            "lng": round(req.longitude, 6),
+            "time": to_ist_iso(now_ist),
+            "acc": req.accuracyMeters,
+            "dist": round(dist_moved, 1),
+            "place": place_name
+        }
+        current_trail = list(rec.movement_trail) if rec.movement_trail else []
+        current_trail.append(point_json)
+        rec.movement_trail = current_trail
+
     await db.commit()
     return {
         "success": True,
         "active": True,
         "lastKnownTime": to_ist_iso(now_ist),
-        "placeName": place_name
+        "placeName": place_name,
+        "distanceMovedMeters": round(dist_moved, 1),
+        "recorded": should_log
     }
 
 
@@ -598,6 +665,32 @@ async def punch_attendance(
         await db.commit()
         await db.refresh(attendance)
 
+        # Record initial check-in location breadcrumb
+        try:
+            init_log = AttendanceLocationLog(
+                attendance_id=attendance.id,
+                user_id=user.user_id,
+                latitude=str(req.latitude),
+                longitude=str(req.longitude),
+                accuracy_meters=req.accuracyMeters,
+                distance_from_prev_meters=0.0,
+                place_name=place_name,
+                recorded_at=now_ist
+            )
+            db.add(init_log)
+
+            attendance.movement_trail = [{
+                "lat": round(req.latitude, 6),
+                "lng": round(req.longitude, 6),
+                "time": to_ist_iso(now_ist),
+                "acc": req.accuracyMeters,
+                "dist": 0.0,
+                "place": place_name
+            }]
+            await db.commit()
+        except Exception as e:
+            print("Error logging check-in location breadcrumb:", e)
+
         # Notify admins of punch in
         from app.routers.notifications import notify_admins
         if is_out:
@@ -663,7 +756,43 @@ async def punch_attendance(
             latest.is_out_of_office = True
             if latest.approval_status != "rejected":
                 latest.approval_status = "pending"
-        
+
+        # Record checkout location breadcrumb
+        dist_from_last = 0.0
+        if latest.last_known_latitude and latest.last_known_longitude:
+            try:
+                dist_from_last = haversine_distance_meters(
+                    float(latest.last_known_latitude), float(latest.last_known_longitude),
+                    req.latitude, req.longitude
+                )
+            except Exception:
+                dist_from_last = 0.0
+
+        checkout_log = AttendanceLocationLog(
+            attendance_id=latest.id,
+            user_id=user.user_id,
+            latitude=str(req.latitude),
+            longitude=str(req.longitude),
+            accuracy_meters=req.accuracyMeters,
+            distance_from_prev_meters=round(dist_from_last, 1),
+            place_name=checkout_place_name or latest.last_known_place_name,
+            recorded_at=now_ist
+        )
+        db.add(checkout_log)
+
+        # Append checkout point to movement_trail JSON
+        checkout_point = {
+            "lat": round(req.latitude, 6),
+            "lng": round(req.longitude, 6),
+            "time": to_ist_iso(now_ist),
+            "acc": req.accuracyMeters,
+            "dist": round(dist_from_last, 1),
+            "place": checkout_place_name or latest.last_known_place_name
+        }
+        current_trail = list(latest.movement_trail) if latest.movement_trail else []
+        current_trail.append(checkout_point)
+        latest.movement_trail = current_trail
+
         await db.commit()
 
         # Notify admins of punch out
@@ -746,6 +875,11 @@ async def get_attendance_history(
                 "checkOutDistanceMeters": h.check_out_distance_meters,
                 "checkOutAccuracyMeters": h.check_out_accuracy_meters,
                 "checkOutPlaceName": h.check_out_place_name,
+                "lastKnownLatitude": h.last_known_latitude,
+                "lastKnownLongitude": h.last_known_longitude,
+                "lastKnownAccuracyMeters": h.last_known_accuracy_meters,
+                "lastKnownPlaceName": h.last_known_place_name,
+                "lastKnownTime": to_ist_iso(h.last_known_time) if h.last_known_time else None,
                 "approvalStatus": h.approval_status or "approved",
                 "isOutOfOffice": bool(h.is_out_of_office) if h.is_out_of_office else False,
                 "approvedByUserId": h.approved_by_user_id,
@@ -832,6 +966,11 @@ async def get_team_attendance_for_admin(
                 "checkOutDistanceMeters": rec.check_out_distance_meters if rec else None,
                 "checkOutAccuracyMeters": rec.check_out_accuracy_meters if rec else None,
                 "checkOutPlaceName": rec.check_out_place_name if rec else None,
+                "lastKnownLatitude": rec.last_known_latitude if rec else None,
+                "lastKnownLongitude": rec.last_known_longitude if rec else None,
+                "lastKnownAccuracyMeters": rec.last_known_accuracy_meters if rec else None,
+                "lastKnownPlaceName": rec.last_known_place_name if rec else None,
+                "lastKnownTime": to_ist_iso(rec.last_known_time) if (rec and rec.last_known_time) else None,
                 "approvalStatus": rec.approval_status if rec else None,
                 "isOutOfOffice": bool(rec.is_out_of_office) if (rec and rec.is_out_of_office) else False,
                 "approvedByUserId": rec.approved_by_user_id if rec else None,
@@ -905,6 +1044,11 @@ async def get_full_team_attendance_history(
                 "checkOutDistanceMeters": h.check_out_distance_meters,
                 "checkOutAccuracyMeters": h.check_out_accuracy_meters,
                 "checkOutPlaceName": h.check_out_place_name,
+                "lastKnownLatitude": h.last_known_latitude,
+                "lastKnownLongitude": h.last_known_longitude,
+                "lastKnownAccuracyMeters": h.last_known_accuracy_meters,
+                "lastKnownPlaceName": h.last_known_place_name,
+                "lastKnownTime": to_ist_iso(h.last_known_time) if h.last_known_time else None,
                 "approvalStatus": h.approval_status or "approved",
                 "isOutOfOffice": bool(h.is_out_of_office) if h.is_out_of_office else False,
                 "approvedByUserId": h.approved_by_user_id,
@@ -915,6 +1059,110 @@ async def get_full_team_attendance_history(
             for h in history
         ]
     }
+
+
+@router.get("/{attendance_id}/trail")
+async def get_attendance_trail(
+    attendance_id: int,
+    user: User = Depends(require_permission("attendance", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Returns the chronological location trail (breadcrumbs) for a specific attendance session.
+    Allowed for the attendance record owner or managers/admins.
+    """
+    att_res = await db.execute(
+        select(Attendance)
+        .options(selectinload(Attendance.user))
+        .where(Attendance.id == attendance_id)
+    )
+    att = att_res.scalars().first()
+    if not att:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+
+    # Authorization: Owner or Admin/Manager
+    if att.user_id != user.user_id:
+        role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
+        role = role_q.scalars().first()
+        if not role or role.name.lower() not in ("admin", "superadmin", "owner", "manager"):
+            raise HTTPException(status_code=403, detail="Unauthorized to view this location trail")
+
+    logs_res = await db.execute(
+        select(AttendanceLocationLog)
+        .where(AttendanceLocationLog.attendance_id == attendance_id)
+        .order_by(AttendanceLocationLog.recorded_at.asc())
+    )
+    logs = logs_res.scalars().all()
+
+    total_dist = 0.0
+    trail_points = []
+    for l in logs:
+        dist = l.distance_from_prev_meters or 0.0
+        total_dist += dist
+        try:
+            lat_f = float(l.latitude)
+            lon_f = float(l.longitude)
+        except (ValueError, TypeError):
+            continue
+        trail_points.append({
+            "id": l.id,
+            "latitude": lat_f,
+            "longitude": lon_f,
+            "accuracyMeters": l.accuracy_meters,
+            "distanceFromPrevMeters": round(dist, 1),
+            "placeName": l.place_name,
+            "recordedAt": to_ist_iso(l.recorded_at),
+            "mapsUrl": f"https://www.google.com/maps?q={l.latitude},{l.longitude}"
+        })
+
+    # Clean JSON format for long movement lists, export and client-side processing
+    clean_trail_json = att.movement_trail or [
+        {
+            "lat": p["latitude"],
+            "lng": p["longitude"],
+            "time": p["recordedAt"],
+            "acc": p["accuracyMeters"],
+            "dist": p["distanceFromPrevMeters"],
+            "place": p["placeName"]
+        } for p in trail_points
+    ]
+
+    return {
+        "success": True,
+        "attendanceId": att.id,
+        "userId": att.user_id,
+        "employeeName": att.user.username if att.user else "Employee",
+        "checkInTime": to_ist_iso(att.check_in_time),
+        "checkOutTime": to_ist_iso(att.check_out_time) if att.check_out_time else None,
+        "checkInPlace": att.check_in_place_name,
+        "checkOutPlace": att.check_out_place_name,
+        "lastKnownPlace": att.last_known_place_name,
+        "lastKnownTime": to_ist_iso(att.last_known_time) if att.last_known_time else None,
+        "totalPoints": len(trail_points),
+        "totalDistanceMeters": round(total_dist, 1),
+        "trail": trail_points,
+        "trailJson": clean_trail_json
+    }
+
+
+@router.get("/{attendance_id}/trail/export")
+async def export_attendance_trail_json(
+    attendance_id: int,
+    user: User = Depends(require_permission("attendance", "read")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Downloads the entire movement trail as a formatted JSON document.
+    """
+    trail_data = await get_attendance_trail(attendance_id, user, db)
+    json_bytes = json.dumps(trail_data, indent=2).encode('utf-8')
+    emp_name = trail_data.get('employeeName', 'user').replace(' ', '_')
+    filename = f"movement_trail_{emp_name}_att_{attendance_id}.json"
+    return Response(
+        content=json_bytes,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 # ─── Attendance Approvals Endpoints ──────────────────────────────────────────

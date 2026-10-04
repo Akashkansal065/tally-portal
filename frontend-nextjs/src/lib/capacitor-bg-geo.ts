@@ -35,8 +35,9 @@ let lastLatitude: number | null = null
 let lastLongitude: number | null = null
 let isSendingPing = false
 
-const MIN_PING_INTERVAL_MS = 2 * 60 * 1000 // At least 2 minutes between pings
-const MIN_DISTANCE_METERS = 50 // Or moved by 50 meters
+const MIN_DISTANCE_METERS = 1 // 1 meter threshold for testing & movement verification
+const BURST_THROTTLE_MS = 3 * 1000 // 3 seconds debounce to prevent GPS sensor jitter
+const STATIONARY_HEARTBEAT_MS = 5 * 60 * 1000 // 5 minutes periodic heartbeat when stationary
 
 function calculateDistance(
   lat1: number,
@@ -77,8 +78,15 @@ async function handleLocationUpdate(loc: Location, token: string) {
     )
   }
 
-  // Throttle: only ping if enough time elapsed or moved enough distance
-  if (lastPingTime > 0 && timeSinceLastPing < MIN_PING_INTERVAL_MS && movedMeters < MIN_DISTANCE_METERS) {
+  // Burst protection: at least 3 seconds between pings to prevent rapid GPS jitter
+  if (lastPingTime > 0 && timeSinceLastPing < BURST_THROTTLE_MS) {
+    return
+  }
+
+  // If moved >= 1 meter, send ping immediately to track movement trail!
+  // If stationary (moved < 1 meter), throttle to stationary heartbeat (5 minutes)
+  const hasMoved = lastLatitude === null || movedMeters >= MIN_DISTANCE_METERS
+  if (lastPingTime > 0 && !hasMoved && timeSinceLastPing < STATIONARY_HEARTBEAT_MS) {
     return
   }
 
@@ -141,7 +149,7 @@ export async function startNativeBackgroundTracking(token: string): Promise<bool
         backgroundTitle: 'SnehDist. Shift Active',
         requestPermissions: true,
         stale: false,
-        distanceFilter: 25, // Update every 25 meters of movement
+        distanceFilter: 1, // Fires on 1 meter of movement for testing verification & trail tracking
       },
       (loc, error) => {
         if (error) {

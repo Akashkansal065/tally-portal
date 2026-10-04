@@ -2,8 +2,22 @@
 
 import React, { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate } from '@/lib/utils'
+
+const AttendanceTrailMap = dynamic(
+  () => import('@/components/AttendanceTrailMap'),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-[360px] rounded-2xl bg-muted/30 border border-border flex flex-col items-center justify-center gap-2 text-muted-foreground animate-pulse">
+        <div className="h-6 w-6 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+        <span className="text-xs font-semibold">Initializing interactive movement map...</span>
+      </div>
+    )
+  }
+)
 import { stampPhoto } from '@/lib/photo-stamping'
 import { 
   Clock, 
@@ -38,7 +52,9 @@ import {
   LayoutGrid,
   AlertCircle,
   CheckSquare,
-  Square
+  Square,
+  Route,
+  Footprints,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -49,6 +65,11 @@ import {
   EmployeeMusterRoll, 
   CompanyMusterSummary 
 } from '@/lib/attendance-export'
+import { 
+  startHeadlessNativeTracking, 
+  stopHeadlessNativeTracking, 
+  requestNativeBatteryExemption 
+} from '@/lib/capacitor-native-tracking'
 
 type AttendanceRecord = {
   id: number
@@ -127,6 +148,34 @@ type MusterRollResponse = {
   companySummary: CompanyMusterSummary
 }
 
+type LocationTrailPoint = {
+  id: number
+  latitude: number
+  longitude: number
+  accuracyMeters?: number | null
+  distanceFromPrevMeters: number
+  placeName?: string | null
+  recordedAt: string
+  mapsUrl: string
+}
+
+type LocationTrailResponse = {
+  success: boolean
+  attendanceId: number
+  userId: number
+  employeeName: string
+  checkInTime: string
+  checkOutTime?: string | null
+  checkInPlace?: string | null
+  checkOutPlace?: string | null
+  lastKnownPlace?: string | null
+  lastKnownTime?: string | null
+  totalPoints: number
+  totalDistanceMeters: number
+  trail: LocationTrailPoint[]
+  trailJson?: any[]
+}
+
 export default function AttendancePage() {
   const router = useRouter()
   const { token, user, permissions } = useAuth()
@@ -140,6 +189,12 @@ export default function AttendancePage() {
   const [history, setHistory] = useState<AttendanceRecord[]>([])
   const [teamAttendance, setTeamAttendance] = useState<TeamAttendanceItem[]>([])
   const [teamHistory, setTeamHistory] = useState<AttendanceRecord[]>([])
+
+  // Location Trail modal states
+  const [trailModalOpen, setTrailModalOpen] = useState(false)
+  const [loadingTrail, setLoadingTrail] = useState(false)
+  const [trailData, setTrailData] = useState<LocationTrailResponse | null>(null)
+  const [trailEmployeeTitle, setTrailEmployeeTitle] = useState('')
 
   // Approvals states
   const [approvalsFilter, setApprovalsFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending')
@@ -611,6 +666,29 @@ export default function AttendancePage() {
     }
   }
 
+  const handleOpenTrailModal = async (attendanceId: number, title?: string) => {
+    setTrailEmployeeTitle(title || "Movement Route")
+    setTrailModalOpen(true)
+    setLoadingTrail(true)
+    setTrailData(null)
+    try {
+      const res = await fetch(`${API_BASE}/attendance/${attendanceId}/trail`, {
+        headers: authHeaders(token),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setTrailData(data)
+      } else {
+        const err = await res.json().catch(() => ({}))
+        toast.error(err.detail || "Failed to load movement trail.")
+      }
+    } catch {
+      toast.error("Network error loading movement trail.")
+    } finally {
+      setLoadingTrail(false)
+    }
+  }
+
   const fetchApprovals = async (status = approvalsFilter) => {
     setLoadingApprovals(true)
     try {
@@ -820,6 +898,16 @@ export default function AttendancePage() {
         toast.success(result.message || `Punched ${punchType === 'in' ? 'In' : 'Out'} successfully.`, {
           description: result.locationTag ? `Location Tag: ${result.locationTag}` : undefined
         })
+      }
+      if (punchType === 'out') {
+        localStorage.removeItem('mytally_shift_active')
+        stopHeadlessNativeTracking().catch(() => {})
+      } else if (punchType === 'in') {
+        localStorage.setItem('mytally_shift_active', '1')
+        if (token) {
+          startHeadlessNativeTracking(token).catch(() => {})
+          requestNativeBatteryExemption().catch(() => {})
+        }
       }
       setPhoto(null)
       setComments('')
@@ -1115,6 +1203,28 @@ export default function AttendancePage() {
                         </a>
                       )}
                     </div>
+
+                    {todayAttendance.lastKnownTime && (
+                      <div className="flex items-center gap-1.5 mt-2 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-xl text-[11px] text-emerald-700 dark:text-emerald-300 w-full justify-between flex-wrap">
+                        <div className="flex items-center gap-1.5 truncate max-w-[280px]">
+                          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping shrink-0" />
+                          <span className="font-semibold text-[10px]">Live GPS:</span>
+                          <span className="truncate text-[10px] font-medium">{todayAttendance.lastKnownPlaceName || "Coordinates locked"}</span>
+                        </div>
+                        <span className="text-[9px] opacity-75 font-mono">({formatTimeStr(todayAttendance.lastKnownTime)})</span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 mt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenTrailModal(todayAttendance.id, "My Movement Route")}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/30 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs"
+                      >
+                        <Route className="h-3.5 w-3.5 text-sky-500" />
+                        <span>View My Movement Trail</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -1401,6 +1511,14 @@ export default function AttendancePage() {
                               <span>{item.checkInLatitude.substring(0, 7)}, {item.checkInLongitude.substring(0, 7)}</span>
                               <ExternalLink className="h-2.5 w-2.5 opacity-60" />
                             </a>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenTrailModal(item.id, `My Route (${formatDate(item.checkInTime.split('T')[0])})`)}
+                              className="inline-flex items-center gap-1 text-[10px] font-bold text-sky-600 dark:text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded hover:bg-sky-500/20 transition-colors cursor-pointer"
+                            >
+                              <Route className="h-2.5 w-2.5" />
+                              <span>View Route</span>
+                            </button>
                           </div>
                         )}
                         {item.checkInComments && (
@@ -1743,6 +1861,28 @@ export default function AttendancePage() {
                             </span>
                           </div>
                         )}
+
+                        {item.attendance && (
+                          <div className="flex items-center justify-between pt-2 border-t border-border/40 gap-2 flex-wrap">
+                            {item.attendance.lastKnownTime ? (
+                              <div className="flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                                <span className="truncate max-w-[150px]">{item.attendance.lastKnownPlaceName || "Live GPS Active"}</span>
+                                <span className="opacity-70 font-mono text-[9px]">({formatTimeStr(item.attendance.lastKnownTime)})</span>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground/60">GPS Logged</span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenTrailModal(item.attendance!.id, `${item.username}'s Route`)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                            >
+                              <Route className="h-3 w-3" />
+                              <span>View Route</span>
+                            </button>
+                          </div>
+                        )}
                         {item.attendance?.checkInComments && (
                           <p className="text-[10px] italic text-muted-foreground/80 bg-muted/20 p-2 rounded-lg border border-border/40">
                             Note: {item.attendance.checkInComments}
@@ -1917,36 +2057,49 @@ export default function AttendancePage() {
                                 )}
                               </td>
                               <td className="p-4 text-right">
-                                {item.attendance?.approvalStatus === 'pending' ? (
-                                  <div className="flex items-center justify-end gap-1.5">
+                                <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                  {item.attendance && (
                                     <button
                                       type="button"
-                                      onClick={() => handleApproveAttendance(item.attendance!.id)}
-                                      disabled={actionProcessingId === item.attendance.id}
-                                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
-                                      title="Approve Out-of-Office Attendance"
+                                      onClick={() => handleOpenTrailModal(item.attendance!.id, `${item.username}'s Route`)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                      title="View movement trail & breadcrumbs"
                                     >
-                                      {actionProcessingId === item.attendance.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
-                                      <span>Approve</span>
+                                      <Route className="h-3 w-3" />
+                                      <span>Route</span>
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenRejectModal(item.attendance!)}
-                                      disabled={actionProcessingId === item.attendance.id}
-                                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
-                                      title="Reject Out-of-Office Attendance"
-                                    >
-                                      <XCircle className="h-3 w-3" />
-                                      <span>Reject</span>
-                                    </button>
-                                  </div>
-                                ) : item.attendance?.approvalStatus === 'rejected' ? (
-                                  <span className="text-[10px] font-medium text-rose-600 truncate max-w-[120px] inline-block" title={item.attendance.rejectionReason || "Rejected"}>
-                                    {item.attendance.rejectionReason || "Rejected"}
-                                  </span>
-                                ) : (
-                                  <span className="text-muted-foreground/40 text-[11px]">--</span>
-                                )}
+                                  )}
+                                  {item.attendance?.approvalStatus === 'pending' ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleApproveAttendance(item.attendance!.id)}
+                                        disabled={actionProcessingId === item.attendance.id}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                                        title="Approve Out-of-Office Attendance"
+                                      >
+                                        {actionProcessingId === item.attendance.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                                        <span>Approve</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenRejectModal(item.attendance!)}
+                                        disabled={actionProcessingId === item.attendance.id}
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                                        title="Reject Out-of-Office Attendance"
+                                      >
+                                        <XCircle className="h-3 w-3" />
+                                        <span>Reject</span>
+                                      </button>
+                                    </>
+                                  ) : item.attendance?.approvalStatus === 'rejected' ? (
+                                    <span className="text-[10px] font-medium text-rose-600 truncate max-w-[120px] inline-block" title={item.attendance.rejectionReason || "Rejected"}>
+                                      {item.attendance.rejectionReason || "Rejected"}
+                                    </span>
+                                  ) : !item.attendance ? (
+                                    <span className="text-muted-foreground/40 text-[11px]">--</span>
+                                  ) : null}
+                                </div>
                               </td>
                             </tr>
                           ))
@@ -2351,6 +2504,18 @@ export default function AttendancePage() {
                           </div>
                         </div>
 
+                        <div className="flex items-center justify-between pt-2 border-t border-border/40 gap-2">
+                          <span className="text-[10px] text-muted-foreground">Historical Trail</span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenTrailModal(item.id, `${item.username}'s Route (${formatDate(item.checkInTime.split('T')[0])})`)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                          >
+                            <Route className="h-3 w-3" />
+                            <span>View Route</span>
+                          </button>
+                        </div>
+
                         {item.checkInComments && (
                           <p className="text-[10px] italic text-muted-foreground/80 bg-muted/20 p-2 rounded-lg border border-border/40">
                             Note: {item.checkInComments}
@@ -2374,12 +2539,13 @@ export default function AttendancePage() {
                           <th className="p-4">GPS In</th>
                           <th className="p-4">GPS Out</th>
                           <th className="p-4">Working hours</th>
+                          <th className="p-4 text-right">Route</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border/60 text-xs">
                         {filteredTeamHistory.length === 0 ? (
                           <tr>
-                            <td colSpan={7} className="p-8 text-center text-muted-foreground">No records in selected date range</td>
+                            <td colSpan={8} className="p-8 text-center text-muted-foreground">No records in selected date range</td>
                           </tr>
                         ) : (
                           filteredTeamHistory.map(item => (
@@ -2467,6 +2633,17 @@ export default function AttendancePage() {
                               </td>
 
                               <td className="p-4 font-bold text-foreground">{getWorkingDuration(item.checkInTime, item.checkOutTime)}</td>
+                              <td className="p-4 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenTrailModal(item.id, `${item.username}'s Route (${formatDate(item.checkInTime.split('T')[0])})`)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                  title="View movement route trail"
+                                >
+                                  <Route className="h-3 w-3" />
+                                  <span>Route</span>
+                                </button>
+                              </td>
                             </tr>
                           ))
                         )}
@@ -3009,6 +3186,223 @@ export default function AttendancePage() {
           </div>
         )}
       </div>
+
+      {/* Location Trail & Breadcrumbs Modal */}
+      {trailModalOpen && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setTrailModalOpen(false)}
+        >
+          <div 
+            className="bg-card border border-border rounded-3xl p-5 sm:p-6 shadow-2xl max-w-4xl w-full max-h-[92vh] flex flex-col space-y-4 animate-in zoom-in-95 duration-200 relative overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-border/70 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="h-9 w-9 rounded-2xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-600 dark:text-sky-400">
+                  <Route className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base text-foreground leading-tight">
+                    {trailEmployeeTitle || "Movement Route"}
+                  </h3>
+                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                    <span className="inline-flex items-center gap-1 text-emerald-600 font-semibold">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      1-Meter Accuracy Tracking
+                    </span>
+                    <span>•</span>
+                    <span>Background Geolocation</span>
+                  </div>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setTrailModalOpen(false)}
+                className="text-muted-foreground hover:text-foreground p-1.5 rounded-xl hover:bg-muted transition-colors cursor-pointer"
+              >
+                <XCircle className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Content Body */}
+            {loadingTrail ? (
+              <div className="py-16 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                <Loader2 className="h-8 w-8 animate-spin text-sky-500" />
+                <p className="text-xs font-semibold">Loading continuous movement route & GPS trail...</p>
+              </div>
+            ) : !trailData || trailData.trail.length === 0 ? (
+              <div className="py-12 px-4 text-center space-y-3">
+                <div className="h-12 w-12 rounded-full bg-muted/60 text-muted-foreground flex items-center justify-center mx-auto">
+                  <Footprints className="h-6 w-6 opacity-60" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="font-bold text-sm text-foreground">No Movement Checkpoints Yet</h4>
+                  <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+                    As the employee moves with their device (threshold: 1 meter), real-time background GPS pings will record their path chronologically here.
+                  </p>
+                </div>
+                {trailData?.lastKnownPlace && (
+                  <div className="p-3 bg-muted/30 border border-border/50 rounded-xl text-xs inline-flex items-center gap-2">
+                    <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0" />
+                    <span className="font-semibold text-foreground">Last Recorded Location:</span>
+                    <span className="text-muted-foreground">{trailData.lastKnownPlace}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                {/* Interactive Leaflet Route Map & JSON Trail Viewer */}
+                <div className="rounded-2xl overflow-hidden border border-border/70 shadow-sm">
+                  <AttendanceTrailMap 
+                    trail={trailData.trail}
+                    isLive={!trailData.checkOutTime}
+                    employeeName={trailData.employeeName}
+                    checkInTime={trailData.checkInTime}
+                    checkOutTime={trailData.checkOutTime}
+                    totalDistanceMeters={trailData.totalDistanceMeters}
+                    height="380px"
+                    rawJson={trailData.trailJson}
+                  />
+                </div>
+
+                {/* Stats Summary Bar */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-muted/40 border border-border/60 rounded-2xl p-3 text-center space-y-0.5">
+                    <span className="text-[10px] uppercase font-black text-muted-foreground tracking-wider block">Checkpoints</span>
+                    <span className="text-lg font-black text-foreground">{trailData.totalPoints}</span>
+                  </div>
+                  <div className="bg-sky-500/10 border border-sky-500/20 rounded-2xl p-3 text-center space-y-0.5">
+                    <span className="text-[10px] uppercase font-black text-sky-600 dark:text-sky-400 tracking-wider block">Total Moved</span>
+                    <span className="text-lg font-black text-sky-600 dark:text-sky-400">
+                      {trailData.totalDistanceMeters >= 1000 
+                        ? `${(trailData.totalDistanceMeters / 1000).toFixed(2)} km` 
+                        : `${Math.round(trailData.totalDistanceMeters)} m`}
+                    </span>
+                  </div>
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-3 text-center space-y-0.5">
+                    <span className="text-[10px] uppercase font-black text-emerald-600 dark:text-emerald-400 tracking-wider block">Status</span>
+                    <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 truncate block">
+                      {trailData.checkOutTime ? 'Shift Completed' : 'In Field (Active)'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Direct Google Maps Action Buttons */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {trailData.trail.length > 0 && (
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${trailData.trail[trailData.trail.length - 1].latitude},${trailData.trail[trailData.trail.length - 1].longitude}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 py-2 px-3 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                    >
+                      <MapPin className="h-3.5 w-3.5" />
+                      <span>Open Latest Pin in Maps</span>
+                      <ExternalLink className="h-3 w-3 opacity-80" />
+                    </a>
+                  )}
+                  {trailData.trail.length > 1 && (
+                    <a
+                      href={`https://www.google.com/maps/dir/?api=1&origin=${trailData.trail[0].latitude},${trailData.trail[0].longitude}&destination=${trailData.trail[trailData.trail.length - 1].latitude},${trailData.trail[trailData.trail.length - 1].longitude}&travelmode=walking`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all"
+                    >
+                      <Navigation className="h-3.5 w-3.5" />
+                      <span>Directions</span>
+                      <ExternalLink className="h-3 w-3 opacity-80" />
+                    </a>
+                  )}
+                </div>
+
+                {/* Timeline List of Points */}
+                <div className="space-y-2 pt-2">
+                  <span className="text-[11px] font-black text-muted-foreground uppercase tracking-wider block">
+                    Recorded Movement History (Chronological)
+                  </span>
+
+                  <div className="relative pl-5 border-l-2 border-sky-500/30 space-y-3 my-2">
+                    {trailData.trail.map((point, idx) => {
+                      const isFirst = idx === 0
+                      const isLast = idx === trailData.trail.length - 1
+                      return (
+                        <div key={point.id} className="relative group">
+                          {/* Node circle */}
+                          <div className={cn(
+                            "absolute -left-[27px] top-1.5 h-3.5 w-3.5 rounded-full border-2 border-card flex items-center justify-center transition-transform group-hover:scale-125",
+                            isLast ? "bg-emerald-500 ring-4 ring-emerald-500/20" : isFirst ? "bg-sky-500" : "bg-muted-foreground/60"
+                          )} />
+
+                          <div className="p-3 bg-card border border-border/70 hover:border-sky-500/40 rounded-2xl shadow-2xs space-y-1 transition-all">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-xs text-foreground">
+                                  {formatTimeStr(point.recordedAt)}
+                                </span>
+                                {isFirst && (
+                                  <span className="text-[9px] font-bold bg-sky-500/15 text-sky-600 border border-sky-500/20 px-1.5 py-0.2 rounded-full">
+                                    Start / Clock-In
+                                  </span>
+                                )}
+                                {isLast && (
+                                  <span className="text-[9px] font-bold bg-emerald-500/15 text-emerald-600 border border-emerald-500/20 px-1.5 py-0.2 rounded-full flex items-center gap-1">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                    Latest Point
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                {!isFirst && (
+                                  <span className="text-[10px] font-bold text-sky-600 dark:text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded-md">
+                                    +{point.distanceFromPrevMeters >= 1000 ? `${(point.distanceFromPrevMeters / 1000).toFixed(2)} km` : `${point.distanceFromPrevMeters} m`}
+                                  </span>
+                                )}
+                                {point.accuracyMeters != null && (
+                                  <span className="text-[9px] text-muted-foreground font-mono">
+                                    ±{Math.round(point.accuracyMeters)}m
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-start justify-between gap-3 pt-0.5">
+                              <p className="text-[11px] text-foreground font-medium flex items-center gap-1.5">
+                                <MapPin className="h-3 w-3 text-sky-500 shrink-0 mt-0.5" />
+                                <span>{point.placeName || `${point.latitude.toFixed(6)}, ${point.longitude.toFixed(6)}`}</span>
+                              </p>
+                              
+                              <a
+                                href={point.mapsUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="shrink-0 text-[10px] font-bold text-sky-600 hover:text-sky-700 hover:underline flex items-center gap-1"
+                              >
+                                <span>Pin</span>
+                                <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setTrailModalOpen(false)}
+              className="w-full py-2.5 bg-muted/60 hover:bg-muted text-foreground font-bold rounded-xl text-xs transition-colors cursor-pointer mt-1"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Selfie Preview Modal */}
       {previewPhotoUrl && (

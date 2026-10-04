@@ -11,6 +11,7 @@ import com.getcapacitor.BridgeWebViewClient;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(NativeTrackingPlugin.class);
         super.onCreate(savedInstanceState);
 
         if (bridge != null && bridge.getWebView() != null) {

@@ -9,9 +9,14 @@ import {
   startNativeBackgroundTracking,
   stopNativeBackgroundTracking,
 } from '@/lib/capacitor-bg-geo'
+import {
+  startHeadlessNativeTracking,
+  stopHeadlessNativeTracking,
+  requestNativeBatteryExemption,
+} from '@/lib/capacitor-native-tracking'
 
-const PING_INTERVAL_MS = 10 * 60 * 1000 // Ping every 10 minutes while active
-const MIN_THROTTLE_MS = 3 * 60 * 1000  // At least 3 minutes between pings
+const PING_INTERVAL_MS = 30 * 1000 // Ping every 30s during active shift for testing verification
+const MIN_THROTTLE_MS = 10 * 1000  // At least 10 seconds between web pings
 
 export function AttendanceLocationTracker() {
   const { token, user } = useAuth()
@@ -122,13 +127,20 @@ export function AttendanceLocationTracker() {
 
     // 🟢 NATIVE PLATFORM: Start background geolocation service
     if (isNativePlatform()) {
+      // 1. Start pure native Java service that survives app force-close/swiping
+      startHeadlessNativeTracking(token).catch(() => {})
+
+      // 2. Request battery optimization exemption (so Android never kills process in deep sleep)
+      requestNativeBatteryExemption().catch(() => {})
+
+      // 3. Start Capacitor background geolocation watcher
       startNativeBackgroundTracking(token).catch((err) => {
         console.warn('[AttendanceLocationTracker] Native tracking init failed, falling back to web ping:', err)
         sendPing()
       })
 
       return () => {
-        stopNativeBackgroundTracking().catch(() => {})
+        // Do not stop service on unmount while shift is active
       }
     }
 
