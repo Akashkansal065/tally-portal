@@ -7,7 +7,10 @@ from app.models.tally_core import *
 
 class SyncQueue(Base):
     __tablename__ = "sync_queue"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_sync_queue_company_processed", "company_id", "is_processed"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
     
     sync_id = Column(BigInteger, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
@@ -26,7 +29,11 @@ class SyncQueue(Base):
 
 class SyncTrafficLog(Base):
     __tablename__ = "sync_traffic_logs"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_sync_traffic_company_status", "company_id", "status"),
+        Index("ix_sync_traffic_company_created", "company_id", "created_at"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     log_id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
@@ -53,7 +60,10 @@ class SyncTrafficLog(Base):
 
 class DeletedRecordAudit(Base):
     __tablename__ = "deleted_records_audit"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_deleted_audit_company_status", "company_id", "tally_sync_status"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     audit_id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
@@ -1047,7 +1057,10 @@ class CustomerProfile(Base):
 
 class CustomerLocationLog(Base):
     __tablename__ = "customer_location_logs"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_customer_location_logs_latest", "company_id", "customer_profile_id", "created_at"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
@@ -1137,7 +1150,10 @@ class CustomerOwner(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_notifications_user_unread", "user_id", "company_id", "is_read"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     SESSION_PURGE_EXPIRED_AFTER_DAYS: int = 30
     SESSION_PURGE_REVOKED_AFTER_DAYS: int = 90
 
+    # Successful sync traffic logs older than this are deleted daily; failed ones stay until an admin clears them
+    SYNC_LOG_PURGE_SUCCESS_AFTER_DAYS: int = 30
+
     # Pagination Settings
     DEFAULT_PAGE_SIZE: int = 50
     MAX_PAGE_SIZE: int = 50000

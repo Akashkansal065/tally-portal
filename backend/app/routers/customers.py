@@ -18,6 +18,7 @@ from app.core.pagination import PaginationParams, apply_pagination_headers
 
 logger = get_logger("app.routers.customers")
 
+from app.core.cache_invalidation import watch
 from app.core.database import get_db
 from app.core.permissions import get_current_user, require_permission, get_effective_permission, require_customer_read_permission
 from app.models.portal_core import User, CustomerProfile, CustomerLocationLog, CustomerPhoto, CustomerOwner
@@ -178,35 +179,39 @@ def extract_locality_and_city(address: Optional[str]):
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
-@router.get("")
-async def list_customers(
-    response: Response,
-    search: Optional[str] = Query(None, description="Search by name, contact, phone, locality"),
-    locality: Optional[str] = Query(None, description="Filter by locality"),
-    city: Optional[str] = Query(None, description="Filter by city"),
-    route_name: Optional[str] = Query(None, description="Filter by route/beat"),
-    location_status: Optional[str] = Query("all", description="all, tagged, missing"),
-    verification_filter: Optional[str] = Query("all", description="all, verified, mismatch, nearby, unverified"),
-    radius_km: Optional[float] = Query(None, description="Radius filter in km (0.5, 1, 3, 5)"),
-    visit_recency: Optional[str] = Query(None, description="all, visited_recent, due_soon, overdue, critical, never"),
-    health_grade: Optional[str] = Query(None, description="all, HEALTHY, FAIR, AT_RISK"),
-    sort_by: Optional[str] = Query("name_asc", description="name_asc, name_desc, nearest, missing_gps, last_visited, health_asc, health_desc"),
-    my_lat: Optional[float] = Query(None, description="Current salesperson latitude"),
-    my_lon: Optional[float] = Query(None, description="Current salesperson longitude"),
-    pagination: PaginationParams = Depends(),
-    user: User = Depends(require_customer_read_permission),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    List all customers (Tally debtors read-only + field profiles).
-    Zero accounting modification. Includes GPS coords, verification audit status,
-    Customer Health Score, Days Since Last Visit badges, and Nearby Radius filters.
-    """
+# The built customer list is the same for every user in a company (access is checked per request, and the
+# list has no per-user scope), so it is cached per company. Filters, distance, sorting and paging stay per
+# request. Writes to the tables it reads clear it automatically (see app/core/cache_invalidation.py).
+CUSTOMER_LIST_CACHE_KEY = "customers_list"
+CUSTOMER_LIST_TTL_SECONDS = 180
+# TrnAccounting has no company_id; edits through the portal also change the voucher row, and the TTL covers the rest
+watch(CUSTOMER_LIST_CACHE_KEY, CustomerProfile, CustomerOwner, CustomerPhoto, CustomerLocationLog,
+      MstLedger, MstGroup, TrnVoucher)
+
+
+def _latest_location_logs(company_id: int, source: Optional[str] = None):
+    """Newest location log per customer profile (optionally only one source), newest by created_at as before."""
+    rank = func.row_number().over(
+        partition_by=CustomerLocationLog.customer_profile_id,
+        order_by=(CustomerLocationLog.created_at.desc(), CustomerLocationLog.id.desc()),
+    ).label("rank")
+    ranked = select(CustomerLocationLog.id, rank).where(
+        CustomerLocationLog.company_id == company_id,
+        CustomerLocationLog.customer_profile_id.isnot(None),
+    )
+    if source:
+        ranked = ranked.where(CustomerLocationLog.source == source)
+    ranked = ranked.subquery()
+    return select(CustomerLocationLog).join(ranked, ranked.c.id == CustomerLocationLog.id).where(ranked.c.rank == 1)
+
+
+async def _build_customer_list(db: AsyncSession, company_id: int) -> List[Dict[str, Any]]:
+    """Tally sundry debtors plus standalone field profiles, with health, recency and verification status."""
     now = get_ist_now()
 
     # 1. Fetch all groups to identify Sundry Debtors
     grp_res = await db.execute(
-        select(MstGroup).where(MstGroup.company_id == user.company_id)
+        select(MstGroup).where(MstGroup.company_id == company_id)
     )
     groups = grp_res.scalars().all()
     groups_dict = {g.group_id: g for g in groups}
@@ -224,13 +229,13 @@ async def list_customers(
 
     # 2. Fetch Tally ledgers for this company
     ledger_res = await db.execute(
-        select(MstLedger).where(MstLedger.company_id == user.company_id)
+        select(MstLedger).where(MstLedger.company_id == company_id)
     )
     all_ledgers = ledger_res.scalars().all()
 
     # 3. Fetch all CustomerProfiles in portal DB for this company
     profiles_res = await db.execute(
-        select(CustomerProfile).where(CustomerProfile.company_id == user.company_id)
+        select(CustomerProfile).where(CustomerProfile.company_id == company_id)
     )
     profiles = profiles_res.scalars().all()
     profile_by_ledger = {p.ledger_id: p for p in profiles if p.ledger_id is not None}
@@ -238,26 +243,18 @@ async def list_customers(
 
     # 4. Fetch latest location log for each customer to get real-time audit status
     # Specifically index both field check-in logs and general logs so admin edits don't mask check-in status
-    latest_logs_stmt = (
-        select(CustomerLocationLog)
-        .where(CustomerLocationLog.company_id == user.company_id)
-        .order_by(desc(CustomerLocationLog.created_at))
-    )
-    logs_res = await db.execute(latest_logs_stmt)
-    all_logs = logs_res.scalars().all()
-    latest_checkin_by_profile = {}
-    latest_log_by_profile = {}
-    for log in all_logs:
-        if log.customer_profile_id:
-            if log.customer_profile_id not in latest_log_by_profile:
-                latest_log_by_profile[log.customer_profile_id] = log
-            if log.source == "check_in" and log.customer_profile_id not in latest_checkin_by_profile:
-                latest_checkin_by_profile[log.customer_profile_id] = log
+    latest_log_by_profile = {
+        log.customer_profile_id: log for log in (await db.execute(_latest_location_logs(company_id))).scalars()
+    }
+    latest_checkin_by_profile = {
+        log.customer_profile_id: log
+        for log in (await db.execute(_latest_location_logs(company_id, source="check_in"))).scalars()
+    }
 
     # 5. Fetch all owners for this company
     owners_res = await db.execute(
         select(CustomerOwner)
-        .where(CustomerOwner.company_id == user.company_id)
+        .where(CustomerOwner.company_id == company_id)
         .order_by(CustomerOwner.is_primary.desc(), CustomerOwner.id.asc())
     )
     all_owners = owners_res.scalars().all()
@@ -286,7 +283,7 @@ async def list_customers(
             )
             .join(TrnVoucher, TrnVoucher.voucher_id == TrnAccounting.voucher_id)
             .where(
-                TrnVoucher.company_id == user.company_id,
+                TrnVoucher.company_id == company_id,
                 TrnVoucher.is_cancelled == False
             )
             .group_by(TrnAccounting.ledger_id)
@@ -305,7 +302,7 @@ async def list_customers(
                 CustomerPhoto.customer_profile_id,
                 func.count(CustomerPhoto.id).label("photo_count")
             )
-            .where(CustomerPhoto.company_id == user.company_id)
+            .where(CustomerPhoto.company_id == company_id)
             .group_by(CustomerPhoto.customer_profile_id)
         )
         p_res = await db.execute(photos_stmt)
@@ -341,10 +338,6 @@ async def list_customers(
 
         latest_log = latest_log_by_profile.get(p.id) if p else None
 
-        # Proximity to salesperson
-        dist_from_me = None
-        if my_lat is not None and my_lon is not None and lat is not None and lon is not None:
-            dist_from_me = calculate_haversine_distance(my_lat, my_lon, lat, lon)
 
         # Visit Recency calculation
         recency = calculate_visit_recency(p.last_visit_at if p else None, now)
@@ -389,7 +382,7 @@ async def list_customers(
             "has_location": lat is not None and lon is not None,
             "location_verified": p.location_verified if p else False,
             "maps_url": build_maps_url(lat, lon, addr_clean),
-            "distance_from_me_meters": dist_from_me,
+            "distance_from_me_meters": None,  # set per request in list_customers
             "last_visit_at": to_ist_iso(p.last_visit_at) if (p and p.last_visit_at) else None,
             "days_since_last_visit": recency["days"],
             "visit_recency_category": recency["category"],
@@ -417,9 +410,6 @@ async def list_customers(
     # Process standalone field profiles (prospects / non-accounting shop profiles)
     for p in standalone_profiles:
         latest_log = latest_log_by_profile.get(p.id)
-        dist_from_me = None
-        if my_lat is not None and my_lon is not None and p.latitude is not None and p.longitude is not None:
-            dist_from_me = calculate_haversine_distance(my_lat, my_lon, p.latitude, p.longitude)
 
         e_loc, e_city = extract_locality_and_city(p.address)
         loc = (p.locality.strip() if p.locality else e_loc) or ""
@@ -467,7 +457,7 @@ async def list_customers(
             "has_location": p.latitude is not None and p.longitude is not None,
             "location_verified": p.location_verified,
             "maps_url": build_maps_url(p.latitude, p.longitude, p.address),
-            "distance_from_me_meters": dist_from_me,
+            "distance_from_me_meters": None,  # set per request in list_customers
             "last_visit_at": to_ist_iso(p.last_visit_at) if p.last_visit_at else None,
             "days_since_last_visit": recency["days"],
             "visit_recency_category": recency["category"],
@@ -492,8 +482,49 @@ async def list_customers(
         }
         customers.append(cust)
 
-    # 8. Apply filters in memory
-    filtered = customers
+    return customers
+
+
+@router.get("")
+async def list_customers(
+    response: Response,
+    search: Optional[str] = Query(None, description="Search by name, contact, phone, locality"),
+    locality: Optional[str] = Query(None, description="Filter by locality"),
+    city: Optional[str] = Query(None, description="Filter by city"),
+    route_name: Optional[str] = Query(None, description="Filter by route/beat"),
+    location_status: Optional[str] = Query("all", description="all, tagged, missing"),
+    verification_filter: Optional[str] = Query("all", description="all, verified, mismatch, nearby, unverified"),
+    radius_km: Optional[float] = Query(None, description="Radius filter in km (0.5, 1, 3, 5)"),
+    visit_recency: Optional[str] = Query(None, description="all, visited_recent, due_soon, overdue, critical, never"),
+    health_grade: Optional[str] = Query(None, description="all, HEALTHY, FAIR, AT_RISK"),
+    sort_by: Optional[str] = Query("name_asc", description="name_asc, name_desc, nearest, missing_gps, last_visited, health_asc, health_desc"),
+    my_lat: Optional[float] = Query(None, description="Current salesperson latitude"),
+    my_lon: Optional[float] = Query(None, description="Current salesperson longitude"),
+    pagination: PaginationParams = Depends(),
+    user: User = Depends(require_customer_read_permission),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List all customers (Tally debtors read-only + field profiles).
+    Zero accounting modification. Includes GPS coords, verification audit status,
+    Customer Health Score, Days Since Last Visit badges, and Nearby Radius filters.
+    """
+    from app.core.cache import get_cached_response, set_cached_response
+    customers = get_cached_response(user.company_id, CUSTOMER_LIST_CACHE_KEY)
+    if customers is None:
+        customers = await _build_customer_list(db, user.company_id)
+        set_cached_response(user.company_id, CUSTOMER_LIST_CACHE_KEY, customers, ttl_seconds=CUSTOMER_LIST_TTL_SECONDS)
+
+    # Proximity to salesperson, on copies so the cached rows never change
+    if my_lat is not None and my_lon is not None:
+        customers = [
+            {**c, "distance_from_me_meters": calculate_haversine_distance(my_lat, my_lon, c["latitude"], c["longitude"])}
+            if c["has_location"] else c
+            for c in customers
+        ]
+
+    # 8. Apply filters in memory (a copy: sorting below is in place and must not reorder the cached list)
+    filtered = list(customers)
 
     if search and isinstance(search, str):
         s_lower = search.strip().lower()
@@ -2367,7 +2398,7 @@ async def add_customer_owner(
     db.add(new_owner)
 
     # Sync primary owner contact to customer_profile
-    if should_be_primary:
+    if is_primary:
         profile.contact_person = new_owner.name
         if new_owner.phone:
             profile.phone = new_owner.phone

@@ -123,6 +123,8 @@ sequenceDiagram
 
 - **Sessions are server-side and revocable.** The JWT alone isn't enough: its SHA-256 hash must match a live `user_sessions` row. Every token carries a unique `jti`, so two logins never share a token.
 - **Device sessions** (`app/core/sessions.py`). Clients send `X-Device-Id`, `X-Client-Type` and (native) `X-Device-Name`/`X-Device-Type` at login; each session row records the device, IP, User-Agent and a throttled `last_active_at`. A new login from the same device replaces its old session; a role's `max_active_devices` signs out the least recently used device. Admins list, sign out and block devices (`/admin/users/{id}/sessions`, `/admin/sessions`, `/admin/sessions/{id}/block`); users manage their own (`/auth/me/sessions`). Every revoke records `revoke_reason` and clears the token from the auth cache, so the device's next request gets 401 with an `X-Auth-Reason` header. The web app's fetch wrapper (`AuthContext`) signs out and explains why; the Sync Agent logs back in only for `expired`/`invalid`/`replaced` and otherwise pauses until credentials are re-entered. Blocking is per user and device id, checked at login after the password. Device ids come from the client, so blocking is a soft control: to lock a person out, deactivate the user or reset the password.
+- **Response caching** (`app/core/cache.py`, per company, in process). Reports, ledger lists, vouchers and stock items are cached for 10 minutes to 24 hours, and a Tally sync clears the company's entries. The customer list (3 min) and master-data lists such as groups, units, godowns, cost centres and voucher types (30 min, `core/master_cache.py`) are also cleared automatically after any committed ORM write to the tables they read (`core/cache_invalidation.py`). `/sync/health` is shared per company for 30 s. Each cache sits behind its endpoint's permission check, and user-scoped data (voucher-type scopes) carries the scope in the key. Responses over 1 KB are gzipped (`core/compression.py`).
+- **Location pings** (`POST /attendance/ping-location`). The Android app tracks with its native service (25 m / 30 s thresholds) and uses the Capacitor watcher only as a fallback; the web app pings every 2 minutes. The server answers a ping that arrives within 15 s of the last one it processed from memory, so older app builds that ping every few seconds don't reach the database.
 - **RBAC** = `Role → Permission(module, can_create/read/update/delete)`, plus `UserPermissionOverride` per module, plus `UserDataScope` (allowed voucher types, ledger/stock group restrictions). `GET /auth/me` returns the resolved toggles and capabilities that the frontend's `AuthContext.can()` uses to show or hide UI. **The backend re-checks on every endpoint through `require_permission`.**
 
 ---
@@ -227,11 +229,12 @@ If the setup is incomplete (for example no settlement ledger), it records the er
 ```text
 app/main.py          lifespan: create DBs → create_all → auto-add missing columns → seed RBAC → start workers
 app/core/            config · database (engine, auto schema sync) · permissions (auth + RBAC + caches)
-                     cache (per-company TTL cache) · rate_limiter · logging_config (request IDs) · seed
+                     cache (per-company TTL cache) · cache_invalidation (clears on writes) · master_cache
+                     compression (gzip) · rate_limiter · logging_config (request IDs) · seed
 app/models/          portal_core.py (mytally_db) · tally_core.py (tally_sync)
 app/routers/         HTTP layer + much of the domain logic (sync.py ≈ 4.5k lines, customers/reports/gst ≈ 2.3k each)
 app/services/        tally_xml_importer (inbound parser/upserter) · tally_xml_builder (escaped XML)
-                     gst/, geo, imagekit, customer_health, attendance_worker
+                     gst/, geo, imagekit, customer_health, attendance_worker, daily_cleanup
 ```
 
 **Schema management.** There are no migrations. On every boot, `Base.metadata.create_all()` creates missing tables and `auto_sync_all_model_schemas()` adds missing columns or widens `VARCHAR`s. It never drops, renames or retypes anything. Treat model changes as additive only.
@@ -244,7 +247,7 @@ These are deliberate simplifications today. Keep them in mind before you scale o
 
 | Constraint | Where | Consequence if violated | Path forward |
 |---|---|---|---|
-| **Single process** | `core/cache.py`, `core/permissions.py` caches, `sync_lock` (`asyncio.Lock`), slowapi memory storage, lifespan workers | With N workers or replicas: logout/permission changes lag up to 5 min on other workers, imports run concurrently, rate limits multiply by N, and auto-punch-out and notifications fire N times | Move caches, rate limits and locks to Redis (`redis` is already a dependency). Run workers as a separate process or use a DB advisory lock (`GET_LOCK`) |
+| **Single process** | `core/cache.py`, `core/permissions.py` caches, the location-ping guard in `routers/attendance.py`, `sync_lock` (`asyncio.Lock`), slowapi memory storage, lifespan workers | With N workers or replicas: logout/permission changes lag up to 5 min on other workers, imports run concurrently, rate limits multiply by N, and auto-punch-out and notifications fire N times | Move caches, rate limits and locks to Redis (`redis` is already a dependency). Run workers as a separate process or use a DB advisory lock (`GET_LOCK`) |
 | **Boot-time schema sync** | `core/database.py` | Concurrent boots race on `ALTER TABLE`. Type changes are silently ignored | Adopt Alembic (already in `requirements.txt`) |
 | **Agent identity = a user account** | `desktop-sync-agent/cloud_client.py` | The agent endpoints require the `sync` permission (Admins have it; grant it to a dedicated role for a non-admin agent account). Only admins can auto-create companies from imported XML. The agent still stores that account's password for re-login | Scoped, revocable machine token per agent instead of a user password |
 | **Inline realtime Tally push** | `try_push_*_realtime` awaited inside create handlers | If `TALLY_URL` is set but unreachable, each write waits up to the 5–10 s timeout | Push from a background task and rely on the queue |

@@ -12,9 +12,11 @@ from app.core.pagination import PaginationParams, apply_pagination_headers
 
 logger = get_logger("app.routers.ledgers")
 
+from app.core import master_cache
 from app.core.database import get_db
+from app.core.master_cache import as_schema_list, cached_master
 from app.core.permissions import require_permission, get_current_user, get_effective_permission, get_all_user_permissions
-from app.models.portal_core import User
+from app.models.portal_core import User, DeletedRecordAudit
 from app.models.portal_core import SyncQueue
 from app.models.tally_core import MstGroup, MstLedger, MstLedgerBankDetail, CostCenter, BankTransactionType, MstLedgerMsmeDetail
 from app.models.portal_core import GstRegistrationType
@@ -91,40 +93,44 @@ async def get_groups(
     user: User = Depends(require_permission("ledger_groups", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    query = await db.execute(
-        select(MstGroup).options(
-            selectinload(MstGroup.gst_details)
-        ).where(MstGroup.company_id == user.company_id)
-    )
-    return query.scalars().all()
+    async def load():
+        query = await db.execute(
+            select(MstGroup).options(
+                selectinload(MstGroup.gst_details)
+            ).where(MstGroup.company_id == user.company_id)
+        )
+        return as_schema_list(AccountGroupResponse, query.scalars().all())
+    return await cached_master(user.company_id, master_cache.ACCOUNT_GROUPS, load)
 
 @router.get("/groups/tree", response_model=List[AccountGroupTreeNode])
 async def get_groups_tree(
     user: User = Depends(require_permission("ledger_groups", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    query = await db.execute(
-        select(MstGroup).options(
-            selectinload(MstGroup.gst_details)
-        ).where(MstGroup.company_id == user.company_id)
-    )
-    groups = query.scalars().all()
-    
-    # Build tree
-    group_dict = {
-        g.group_id: AccountGroupTreeNode(**AccountGroupResponse.model_validate(g).model_dump(), children=[])
-        for g in groups
-    }
-    tree = []
-    
-    for g in groups:
-        node = group_dict[g.group_id]
-        if g.parent_group_id and g.parent_group_id in group_dict:
-            group_dict[g.parent_group_id].children.append(node)
-        else:
-            tree.append(node)
-            
-    return tree
+    async def load():
+        query = await db.execute(
+            select(MstGroup).options(
+                selectinload(MstGroup.gst_details)
+            ).where(MstGroup.company_id == user.company_id)
+        )
+        groups = query.scalars().all()
+
+        # Build tree
+        group_dict = {
+            g.group_id: AccountGroupTreeNode(**AccountGroupResponse.model_validate(g).model_dump(), children=[])
+            for g in groups
+        }
+        tree = []
+
+        for g in groups:
+            node = group_dict[g.group_id]
+            if g.parent_group_id and g.parent_group_id in group_dict:
+                group_dict[g.parent_group_id].children.append(node)
+            else:
+                tree.append(node)
+
+        return tree
+    return await cached_master(user.company_id, f"{master_cache.ACCOUNT_GROUPS}_tree", load)
 
 @router.get("/groups/{group_id}", response_model=AccountGroupResponse)
 async def get_group(
@@ -824,7 +830,9 @@ async def get_ledger_by_id(
     cache_key = f"ledger_detail_{ledger_id}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
-        return cached
+        # The permission check runs on every request; the cache only remembers which module the ledger falls under
+        await _require_ledger_read(user, cached["module_code"], db)
+        return cached["data"]
 
     ledger_query = await db.execute(
         select(MstLedger).options(selectinload(MstLedger.group)).where(
@@ -843,12 +851,7 @@ async def get_ledger_by_id(
     is_debtor = await is_ancestor_group(ledger.group_id, "Sundry Debtors", user.company_id, db)
     is_creditor = await is_ancestor_group(ledger.group_id, "Sundry Creditors", user.company_id, db)
     module_code = "ledger_customer" if is_debtor else "ledger_supplier" if is_creditor else "ledgers"
-    perms = await get_effective_permission(user, module_code, db)
-    if not perms.get("can_read", False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"You do not have permission to view {module_code}."
-        )
+    await _require_ledger_read(user, module_code, db)
 
     output = {
         "ledger_id": ledger.ledger_id,
@@ -856,20 +859,29 @@ async def get_ledger_by_id(
         "group_id": ledger.group_id,
         "group_name": ledger.group.name if ledger.group else None,
         "name": ledger.name,
-        "alias": ledger.alias,
+        "alias": ledger.alias_name,
         "opening_balance": float(ledger.opening_balance or 0.0),
         "opening_balance_type": ledger.opening_balance_type,
         "gstin": ledger.gstin,
         "address": ledger.address,
         "state": ledger.state,
         "pincode": ledger.pincode,
-        "pan_itn": ledger.pan_itn,
+        "pan_itn": ledger.pan_number,
         "credit_period_days": ledger.credit_period_days,
         "credit_limit": float(ledger.credit_limit or 0.0) if ledger.credit_limit else None,
     }
 
-    set_cached_response(user.company_id, cache_key, output)
+    set_cached_response(user.company_id, cache_key, {"module_code": module_code, "data": output})
     return output
+
+
+async def _require_ledger_read(user: User, module_code: str, db: AsyncSession) -> None:
+    perms = await get_effective_permission(user, module_code, db)
+    if not perms.get("can_read", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You do not have permission to view {module_code}."
+        )
 
 
 @router.get("/{ledger_id}/statement")

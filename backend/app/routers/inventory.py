@@ -4,6 +4,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from datetime import datetime, date
+from decimal import Decimal
 from pydantic import BaseModel
 
 from app.core.database import get_db
@@ -12,6 +13,8 @@ from app.core.logging_config import get_logger
 from app.core.pagination import PaginationParams, apply_pagination_headers
 from app.core.permissions import require_permission, get_current_user, get_effective_permission
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
+from app.core import master_cache
+from app.core.master_cache import as_schema_list, cached_master
 
 logger = get_logger("app.routers.inventory")
 from app.models.portal_core import User, DeletedRecordAudit, SyncQueue
@@ -181,12 +184,15 @@ async def get_uoms(
     db: AsyncSession = Depends(get_db)
 ):
     from sqlalchemy import func
-    stmt = select(MstUom).where(
-        MstUom.company_id == user.company_id,
-        func.trim(func.lower(MstUom.symbol)) != 'not applicable'
-    ).order_by(MstUom.symbol.asc())
-    res = await db.execute(stmt)
-    return res.scalars().all()
+
+    async def load():
+        stmt = select(MstUom).where(
+            MstUom.company_id == user.company_id,
+            func.trim(func.lower(MstUom.symbol)) != 'not applicable'
+        ).order_by(MstUom.symbol.asc())
+        res = await db.execute(stmt)
+        return as_schema_list(UnitOfMeasureResponse, res.scalars().all())
+    return await cached_master(user.company_id, master_cache.UNITS, load)
 
 # --- Stock Groups ---
 
@@ -309,9 +315,11 @@ async def get_stock_groups(
     user: User = Depends(require_permission("stock_groups", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.company_id == user.company_id)
-    res = await db.execute(stmt)
-    return res.scalars().all()
+    async def load():
+        stmt = select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.company_id == user.company_id)
+        res = await db.execute(stmt)
+        return as_schema_list(StockGroupResponse, res.scalars().all())
+    return await cached_master(user.company_id, master_cache.STOCK_GROUPS, load)
 
 # --- Stock Categories ---
 
@@ -426,9 +434,11 @@ async def get_stock_categories(
     user: User = Depends(require_permission("stock_categories", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(MstStockCategory).where(MstStockCategory.company_id == user.company_id)
-    res = await db.execute(stmt)
-    return res.scalars().all()
+    async def load():
+        stmt = select(MstStockCategory).where(MstStockCategory.company_id == user.company_id)
+        res = await db.execute(stmt)
+        return as_schema_list(StockCategoryResponse, res.scalars().all())
+    return await cached_master(user.company_id, master_cache.STOCK_CATEGORIES, load)
 
 # --- Godowns ---
 
@@ -549,9 +559,11 @@ async def get_godowns(
     user: User = Depends(require_permission("godowns", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(MstGodown).where(MstGodown.company_id == user.company_id)
-    res = await db.execute(stmt)
-    return res.scalars().all()
+    async def load():
+        stmt = select(MstGodown).where(MstGodown.company_id == user.company_id)
+        res = await db.execute(stmt)
+        return as_schema_list(GodownResponse, res.scalars().all())
+    return await cached_master(user.company_id, master_cache.GODOWNS, load)
 
 # --- Price Levels ---
 
@@ -601,9 +613,11 @@ async def get_price_levels(
     user: User = Depends(require_permission("price_lists", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(MstPriceLevel).where(MstPriceLevel.company_id == user.company_id)
-    res = await db.execute(stmt)
-    return res.scalars().all()
+    async def load():
+        stmt = select(MstPriceLevel).where(MstPriceLevel.company_id == user.company_id)
+        res = await db.execute(stmt)
+        return as_schema_list(PriceLevelResponse, res.scalars().all())
+    return await cached_master(user.company_id, master_cache.PRICE_LEVELS, load)
 
 @router.post("/price-levels/{level_id}/rates")
 async def save_price_level_rates(

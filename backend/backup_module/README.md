@@ -29,13 +29,17 @@ A completely isolated, self-contained microservice for creating exact, high-fide
 
 ### Option A: Standalone Server (Port 8001)
 
+The standalone server has no user logins, so it only answers requests that send a shared key. Set
+`BACKUP_API_KEY` (in the environment or `backend/.env`) to a long random value, and send it as the
+`X-Backup-Key` header on every request. Without the setting, every backup route returns 503.
+
 ```bash
 cd backend
-python3 -m backup_module.main
+BACKUP_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" python3 -m backup_module.main
 ```
-Or with Uvicorn:
+Or with Uvicorn (prefer `--host 127.0.0.1` unless other machines must reach it):
 ```bash
-uvicorn backup_module.main:app --host 0.0.0.0 --port 8001 --reload
+uvicorn backup_module.main:app --host 127.0.0.1 --port 8001
 ```
 
 Interactive Swagger API docs will be available at:
@@ -45,11 +49,14 @@ Interactive Swagger API docs will be available at:
 
 ### Option B: Mount in Existing FastAPI App (`app/main.py`)
 
-Add just 2 lines to your existing `app/main.py`:
+This is how MyTally runs it. Mount the router behind an admin check, since a backup holds a company's full
+Tally data and a restore writes into Tally:
 ```python
+from fastapi import Depends
 from backup_module.router import backup_router
+from app.routers.admin import require_admin
 
-app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"])
+app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"], dependencies=[Depends(require_admin)])
 ```
 
 Endpoints will be accessible at:

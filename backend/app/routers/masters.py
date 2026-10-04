@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.core.database import get_db
+from app.core import master_cache
+from app.core.master_cache import as_schema_list, cached_master
 from app.models.tally_core import MstCostCategory, MstCostCentre, MstCostCentreClass, MstCostCentreClassAllocation
 from app.schemas.masters import (
     CostCategoryCreate, CostCategoryUpdate, CostCategoryResponse,
@@ -31,12 +33,14 @@ async def list_cost_categories(
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} fetching list of cost categories for company {user.company_id}")
-    result = await db.execute(
-        select(MstCostCategory)
-        .where(MstCostCategory.company_id == user.company_id)
-        .order_by(MstCostCategory.name)
-    )
-    return result.scalars().all()
+    async def load():
+        result = await db.execute(
+            select(MstCostCategory)
+            .where(MstCostCategory.company_id == user.company_id)
+            .order_by(MstCostCategory.name)
+        )
+        return as_schema_list(CostCategoryResponse, result.scalars().all())
+    return await cached_master(user.company_id, master_cache.COST_CATEGORIES, load)
 
 @router.post("/cost-categories", response_model=CostCategoryResponse)
 async def create_cost_category(
@@ -152,29 +156,31 @@ async def list_cost_centres(
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} fetching list of cost centres for company {user.company_id}")
-    result = await db.execute(
-        select(MstCostCentre, MstCostCategory.name.label("category_name"))
-        .outerjoin(MstCostCategory, MstCostCentre.category_id == MstCostCategory.category_id)
-        .where(MstCostCentre.company_id == user.company_id)
-        .order_by(MstCostCentre.name.asc())
-    )
-    rows = result.all()
+    async def load():
+        result = await db.execute(
+            select(MstCostCentre, MstCostCategory.name.label("category_name"))
+            .outerjoin(MstCostCategory, MstCostCentre.category_id == MstCostCategory.category_id)
+            .where(MstCostCentre.company_id == user.company_id)
+            .order_by(MstCostCentre.name.asc())
+        )
+        rows = result.all()
     
-    response = []
-    for row in rows:
-        cc, cat_name = row
-        cc_dict = {
-            "cost_centre_id": cc.cost_centre_id,
-            "company_id": cc.company_id,
-            "name": cc.name,
-            "alias": cc.alias,
-            "category_id": cc.category_id,
-            "parent_id": cc.parent_id,
-            "is_active": cc.is_active,
-            "category_name": cat_name
-        }
-        response.append(CostCentreResponse(**cc_dict))
-    return response
+        response = []
+        for row in rows:
+            cc, cat_name = row
+            cc_dict = {
+                "cost_centre_id": cc.cost_centre_id,
+                "company_id": cc.company_id,
+                "name": cc.name,
+                "alias": cc.alias,
+                "category_id": cc.category_id,
+                "parent_id": cc.parent_id,
+                "is_active": cc.is_active,
+                "category_name": cat_name
+            }
+            response.append(CostCentreResponse(**cc_dict))
+        return response
+    return await cached_master(user.company_id, master_cache.COST_CENTRES, load)
 
 @router.get("/cost-centres/tree", response_model=List[CostCentreTreeNode])
 async def get_cost_centres_tree(
@@ -182,37 +188,39 @@ async def get_cost_centres_tree(
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.user_id} fetching cost centres tree for company {user.company_id}")
-    result = await db.execute(
-        select(MstCostCentre, MstCostCategory.name.label("category_name"))
-        .outerjoin(MstCostCategory, MstCostCentre.category_id == MstCostCategory.category_id)
-        .where(MstCostCentre.company_id == user.company_id)
-        .order_by(MstCostCentre.name.asc())
-    )
-    rows = result.all()
-
-    node_map = {}
-    for row in rows:
-        cc, cat_name = row
-        node_map[cc.cost_centre_id] = CostCentreTreeNode(
-            cost_centre_id=cc.cost_centre_id,
-            company_id=cc.company_id,
-            name=cc.name,
-            alias=cc.alias,
-            category_id=cc.category_id,
-            parent_id=cc.parent_id,
-            is_active=cc.is_active,
-            category_name=cat_name,
-            children=[]
+    async def load():
+        result = await db.execute(
+            select(MstCostCentre, MstCostCategory.name.label("category_name"))
+            .outerjoin(MstCostCategory, MstCostCentre.category_id == MstCostCategory.category_id)
+            .where(MstCostCentre.company_id == user.company_id)
+            .order_by(MstCostCentre.name.asc())
         )
+        rows = result.all()
 
-    tree = []
-    for node_id, node in node_map.items():
-        if node.parent_id and node.parent_id in node_map:
-            node_map[node.parent_id].children.append(node)
-        else:
-            tree.append(node)
+        node_map = {}
+        for row in rows:
+            cc, cat_name = row
+            node_map[cc.cost_centre_id] = CostCentreTreeNode(
+                cost_centre_id=cc.cost_centre_id,
+                company_id=cc.company_id,
+                name=cc.name,
+                alias=cc.alias,
+                category_id=cc.category_id,
+                parent_id=cc.parent_id,
+                is_active=cc.is_active,
+                category_name=cat_name,
+                children=[]
+            )
 
-    return tree
+        tree = []
+        for node_id, node in node_map.items():
+            if node.parent_id and node.parent_id in node_map:
+                node_map[node.parent_id].children.append(node)
+            else:
+                tree.append(node)
+
+        return tree
+    return await cached_master(user.company_id, f"{master_cache.COST_CENTRES}_tree", load)
 
 @router.post("/cost-centres", response_model=CostCentreResponse, status_code=status.HTTP_201_CREATED)
 async def create_cost_centre(
@@ -350,34 +358,36 @@ async def list_cost_centre_classes(
     db: AsyncSession = Depends(get_db)
 ):
     from sqlalchemy.orm import selectinload
-    stmt = select(MstCostCentreClass).options(
-        selectinload(MstCostCentreClass.allocations).selectinload(MstCostCentreClassAllocation.category),
-        selectinload(MstCostCentreClass.allocations).selectinload(MstCostCentreClassAllocation.cost_centre)
-    ).where(MstCostCentreClass.company_id == user.company_id)
-    res = await db.execute(stmt)
-    classes = res.scalars().all()
+    async def load():
+        stmt = select(MstCostCentreClass).options(
+            selectinload(MstCostCentreClass.allocations).selectinload(MstCostCentreClassAllocation.category),
+            selectinload(MstCostCentreClass.allocations).selectinload(MstCostCentreClassAllocation.cost_centre)
+        ).where(MstCostCentreClass.company_id == user.company_id)
+        res = await db.execute(stmt)
+        classes = res.scalars().all()
     
-    result = []
-    for cls in classes:
-        cls_dict = {
-            "class_id": cls.class_id,
-            "company_id": cls.company_id,
-            "name": cls.name,
-            "allocations": []
-        }
-        for alloc in cls.allocations:
-            cls_dict["allocations"].append({
-                "allocation_id": alloc.allocation_id,
-                "class_id": alloc.class_id,
-                "category_id": alloc.category_id,
-                "cost_centre_id": alloc.cost_centre_id,
-                "percentage": alloc.percentage,
-                "category_name": alloc.category.name if alloc.category else None,
-                "cost_centre_name": alloc.cost_centre.name if alloc.cost_centre else None
-            })
-        result.append(cls_dict)
+        result = []
+        for cls in classes:
+            cls_dict = {
+                "class_id": cls.class_id,
+                "company_id": cls.company_id,
+                "name": cls.name,
+                "allocations": []
+            }
+            for alloc in cls.allocations:
+                cls_dict["allocations"].append({
+                    "allocation_id": alloc.allocation_id,
+                    "class_id": alloc.class_id,
+                    "category_id": alloc.category_id,
+                    "cost_centre_id": alloc.cost_centre_id,
+                    "percentage": alloc.percentage,
+                    "category_name": alloc.category.name if alloc.category else None,
+                    "cost_centre_name": alloc.cost_centre.name if alloc.cost_centre else None
+                })
+            result.append(cls_dict)
     
-    return result
+        return result
+    return await cached_master(user.company_id, master_cache.COST_CENTRE_CLASSES, load)
 
 @router.post("/cost-centre-classes", response_model=CostCentreClassResponse, status_code=status.HTTP_201_CREATED)
 async def create_cost_centre_class(

@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Any, Tuple, Optional
 
 logger = logging.getLogger("uvicorn.error")
+# Hits, misses and stores log at DEBUG (they happen on most requests); clears that evict something log at INFO
 
 # Structure: { (company_id, cache_key): (data, expiry_timestamp) }
 _in_memory_cache: Dict[Tuple[int, str], Tuple[Any, float]] = {}
@@ -21,14 +22,14 @@ def get_cached_response(company_id: int, cache_key: str) -> Optional[Any]:
             data, expiry = _in_memory_cache[key]
             if now < expiry:
                 remaining_sec = int(expiry - now)
-                logger.info(f"⚡ [CACHE HIT] Company #{company_id} | Key: '{cache_key}' (Serving from in-memory cache, expires in {remaining_sec // 60}m {remaining_sec % 60}s)")
+                logger.debug(f"⚡ [CACHE HIT] Company #{company_id} | Key: '{cache_key}' (Serving from in-memory cache, expires in {remaining_sec // 60}m {remaining_sec % 60}s)")
                 return data
             else:
                 # Expired -> Evict key
-                logger.info(f"⌛ [CACHE EXPIRED] Company #{company_id} | Key: '{cache_key}' (Expired, evicting entry)")
+                logger.debug(f"⌛ [CACHE EXPIRED] Company #{company_id} | Key: '{cache_key}' (Expired, evicting entry)")
                 del _in_memory_cache[key]
         else:
-            logger.info(f"🔍 [CACHE MISS] Company #{company_id} | Key: '{cache_key}' (Fetching fresh data from Database)")
+            logger.debug(f"🔍 [CACHE MISS] Company #{company_id} | Key: '{cache_key}' (Fetching fresh data from Database)")
     return None
 
 def set_cached_response(company_id: int, cache_key: str, data: Any, ttl_seconds: int = DEFAULT_CACHE_TTL):
@@ -38,7 +39,7 @@ def set_cached_response(company_id: int, cache_key: str, data: Any, ttl_seconds:
     with _cache_lock:
         _in_memory_cache[key] = (data, expiry)
         ttl_display = f"{ttl_seconds // 3600}h" if ttl_seconds >= 3600 else f"{ttl_seconds // 60}m"
-        logger.info(f"💾 [CACHE STORE] Company #{company_id} | Key: '{cache_key}' (Stored in memory with {ttl_display} TTL)")
+        logger.debug(f"💾 [CACHE STORE] Company #{company_id} | Key: '{cache_key}' (Stored in memory with {ttl_display} TTL)")
 
 def clear_company_cache(company_id: int, key_prefix: Optional[str] = None) -> int:
     """
@@ -53,9 +54,20 @@ def clear_company_cache(company_id: int, key_prefix: Optional[str] = None) -> in
         for k in keys_to_del:
             del _in_memory_cache[k]
         evicted_count = len(keys_to_del)
-        prefix_info = f" with prefix '{key_prefix}'" if key_prefix else ""
-        logger.info(f"🧹 [CACHE CLEAR] Company #{company_id}{prefix_info} | Evicted {evicted_count} cached entries")
+        if evicted_count:
+            prefix_info = f" with prefix '{key_prefix}'" if key_prefix else ""
+            logger.info(f"🧹 [CACHE CLEAR] Company #{company_id}{prefix_info} | Evicted {evicted_count} cached entries")
         return evicted_count
+
+def clear_cache_prefix(key_prefix: str) -> int:
+    """Clear entries whose cache_key starts with key_prefix, for every company. Returns count of evicted entries."""
+    with _cache_lock:
+        keys_to_del = [k for k in _in_memory_cache.keys() if k[1].startswith(key_prefix)]
+        for k in keys_to_del:
+            del _in_memory_cache[k]
+    if keys_to_del:
+        logger.info(f"🧹 [CACHE CLEAR] All companies with prefix '{key_prefix}' | Evicted {len(keys_to_del)} cached entries")
+    return len(keys_to_del)
 
 def clear_all_cache() -> int:
     """Clear the entire in-memory cache across all companies. Returns count of evicted entries."""

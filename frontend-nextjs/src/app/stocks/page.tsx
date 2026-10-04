@@ -22,6 +22,32 @@ type SortKey =
 
 type SortDirection = 'asc' | 'desc'
 
+const SORT_OPTIONS: { value: `${SortKey}-${SortDirection}`; label: string }[] = [
+  { value: 'closing_balance-desc', label: 'Closing Qty (High to Low)' },
+  { value: 'closing_balance-asc', label: 'Closing Qty (Low to High)' },
+  { value: 'closing_value-desc', label: 'Closing Value (High to Low)' },
+  { value: 'closing_value-asc', label: 'Closing Value (Low to High)' },
+  { value: 'closing_rate-desc', label: 'Price / Qty (High to Low)' },
+  { value: 'closing_rate-asc', label: 'Price / Qty (Low to High)' },
+  { value: 'name-asc', label: 'Name (A to Z)' },
+  { value: 'name-desc', label: 'Name (Z to A)' },
+  { value: 'inward_qty-desc', label: 'Inward Qty (High to Low)' },
+  { value: 'inward_qty-asc', label: 'Inward Qty (Low to High)' },
+  { value: 'inward_value-desc', label: 'Inward Value (High to Low)' },
+  { value: 'inward_value-asc', label: 'Inward Value (Low to High)' },
+  { value: 'outward_qty-desc', label: 'Outward Qty (High to Low)' },
+  { value: 'outward_qty-asc', label: 'Outward Qty (Low to High)' },
+  { value: 'outward_value-desc', label: 'Outward Value (High to Low)' },
+  { value: 'outward_value-asc', label: 'Outward Value (Low to High)' },
+  { value: 'cons_value-desc', label: 'Cons. Value (High to Low)' },
+  { value: 'cons_value-asc', label: 'Cons. Value (Low to High)' },
+  { value: 'gp_value-desc', label: 'Gross Profit (High to Low)' },
+  { value: 'gp_value-asc', label: 'Gross Profit (Low to High)' },
+  { value: 'gp_percent-desc', label: 'Gross Profit % (High to Low)' },
+  { value: 'gp_percent-asc', label: 'Gross Profit % (Low to High)' },
+]
+const DEFAULT_SORT = 'closing_balance-desc'
+
 type StockItem = {
   item_id: number
   name: string
@@ -47,6 +73,7 @@ type StockItem = {
 
 import { getProductDetails } from '@/lib/kgoc-mapping'
 import { filterAndSortBySearch } from '@/lib/search'
+import { ActiveFiltersSummary, FiltersToggle, useCollapsibleFilters } from '@/components/CollapsibleFilters'
 
 function StocksContent() {
   const { user, token, permissions, can } = useAuth()
@@ -210,6 +237,21 @@ function StocksContent() {
   const [profitFilter, setProfitFilter] = useState('All Profit')
   const [sortField, setSortField] = useState<SortKey>('closing_balance')
   const [sortDir, setSortDir] = useState<SortDirection>('desc')
+  const groupFilters = useCollapsibleFilters('stocks-group')
+  const sortValue = `${sortField}-${sortDir}`
+  const activeGroupFilters = [
+    stockStatus !== 'All Items' && stockStatus,
+    movement !== 'All Movement' && movement,
+    profitFilter !== 'All Profit' && profitFilter,
+    sortValue !== DEFAULT_SORT && `Sorted by ${SORT_OPTIONS.find(o => o.value === sortValue)?.label ?? sortValue}`,
+  ].filter((label): label is string => Boolean(label))
+  const resetGroupFilters = () => {
+    setStockStatus('All Items')
+    setMovement('All Movement')
+    setProfitFilter('All Profit')
+    setSortField('closing_balance')
+    setSortDir('desc')
+  }
 
   const handleSort = (field: SortKey) => {
     if (sortField === field) {
@@ -592,9 +634,9 @@ function StocksContent() {
         // DETAIL ITEMS VIEW FOR SELECTED GROUP MATCHING MOCKUP PRECISELY
         <div className="flex-1 flex flex-col min-h-0 bg-muted/10">
           {/* Combined Search and Filters Container */}
-          <div className="px-4 py-3 bg-background border-b border-border flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            {/* Search Block */}
-            <div className="flex items-center gap-4 flex-1 min-w-0 max-w-md">
+          <div className="px-4 py-3 bg-background border-b border-border flex flex-wrap items-center md:items-start gap-x-4 gap-y-3">
+            {/* Search Block, with the button that minimises the filters so the list gets the screen */}
+            <div className="flex items-center gap-3 basis-full md:basis-96 md:flex-none min-w-0">
               <button
                 onClick={handleBackFromGroup}
                 className="text-sm font-extrabold text-blue-600 dark:text-blue-400 hover:text-blue-800 flex items-center gap-1.5 focus:outline-none shrink-0"
@@ -619,10 +661,22 @@ function StocksContent() {
                   </button>
                 )}
               </div>
+              <FiltersToggle state={groupFilters} active={activeGroupFilters} />
             </div>
 
+            <ActiveFiltersSummary
+              state={groupFilters}
+              active={activeGroupFilters}
+              onReset={resetGroupFilters}
+              className="basis-full"
+            />
+
             {/* Filters Block */}
-            <div className="flex flex-wrap items-center gap-3 md:gap-4 text-xs font-semibold text-muted-foreground">
+            <div
+              id={groupFilters.panelId}
+              hidden={groupFilters.collapsed}
+              className="flex flex-wrap items-center gap-3 md:gap-4 md:basis-0 md:flex-1 md:min-w-0 md:justify-end text-xs font-semibold text-muted-foreground"
+            >
               {/* GST Display Mode Toggle */}
               <button
                 onClick={() => setIsGrossGst(!isGrossGst)}
@@ -686,7 +740,7 @@ function StocksContent() {
               <div className="flex items-center justify-between md:justify-start gap-1 md:gap-2">
                 <span>SORT BY:</span>
                 <select
-                  value={`${sortField}-${sortDir}`}
+                  value={sortValue}
                   onChange={e => {
                     const [f, d] = e.target.value.split('-') as [SortKey, SortDirection]
                     setSortField(f)
@@ -694,28 +748,9 @@ function StocksContent() {
                   }}
                   className="bg-card text-foreground border border-border rounded px-2 py-1 focus:outline-none text-xs font-semibold"
                 >
-                  <option value="closing_balance-desc">Closing Qty (High to Low)</option>
-                  <option value="closing_balance-asc">Closing Qty (Low to High)</option>
-                  <option value="closing_value-desc">Closing Value (High to Low)</option>
-                  <option value="closing_value-asc">Closing Value (Low to High)</option>
-                  <option value="closing_rate-desc">Price / Qty (High to Low)</option>
-                  <option value="closing_rate-asc">Price / Qty (Low to High)</option>
-                  <option value="name-asc">Name (A to Z)</option>
-                  <option value="name-desc">Name (Z to A)</option>
-                  <option value="inward_qty-desc">Inward Qty (High to Low)</option>
-                  <option value="inward_qty-asc">Inward Qty (Low to High)</option>
-                  <option value="inward_value-desc">Inward Value (High to Low)</option>
-                  <option value="inward_value-asc">Inward Value (Low to High)</option>
-                  <option value="outward_qty-desc">Outward Qty (High to Low)</option>
-                  <option value="outward_qty-asc">Outward Qty (Low to High)</option>
-                  <option value="outward_value-desc">Outward Value (High to Low)</option>
-                  <option value="outward_value-asc">Outward Value (Low to High)</option>
-                  <option value="cons_value-desc">Cons. Value (High to Low)</option>
-                  <option value="cons_value-asc">Cons. Value (Low to High)</option>
-                  <option value="gp_value-desc">Gross Profit (High to Low)</option>
-                  <option value="gp_value-asc">Gross Profit (Low to High)</option>
-                  <option value="gp_percent-desc">Gross Profit % (High to Low)</option>
-                  <option value="gp_percent-asc">Gross Profit % (Low to High)</option>
+                  {SORT_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
                 </select>
               </div>
             </div>

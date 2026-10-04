@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.core.permissions import (
     get_current_user,
     get_all_user_permissions,
+    get_permissions_for_users,
     get_user_permission_toggles,
     get_effective_permission,
     get_user_allowed_voucher_type_ids,
@@ -160,12 +161,13 @@ async def get_users(
     )
     users = query.scalars().all()
     device_stats = await _device_stats_by_user(db, [u.user_id for u in users])
-    
+    perms_by_user = await get_permissions_for_users(users, db)
+
     response = []
     for u in users:
         stats = device_stats.get(u.user_id, {})
         r_name = u.role.name if u.role else "Unknown"
-        user_perms = await get_all_user_permissions(u.user_id, u.role_id, r_name, db)
+        user_perms = perms_by_user[u.user_id]
         toggles = user_perms["toggles"]
         response.append(AdminUserResponse(
             user_id=u.user_id,

@@ -2,7 +2,8 @@ import hashlib
 import logging
 import time
 import copy
-from typing import Dict, Any, Optional, Set
+from collections import defaultdict
+from typing import Dict, Any, Optional, Sequence, Set
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import update
@@ -328,12 +329,98 @@ async def get_all_user_permissions(
     Admin/Superadmin/Owner queries database permissions and user overrides too,
     allowing granular removal/customization of permissions for admin users if desired.
     """
-    is_admin = bool(role_name and role_name.lower() in ("admin", "superadmin", "owner"))
-
     now = time.time()
     cached_perm = _permissions_cache.get(user_id)
     if cached_perm and cached_perm.get("expires_at", 0) > now and cached_perm.get("role_id") == role_id:
         return copy.deepcopy(cached_perm["data"])
+
+    # 1. Role permissions joined with Module
+    role_perms = (await db.execute(
+        select(Permission, Module.code)
+        .join(Module, Permission.module_id == Module.module_id)
+        .where(Permission.role_id == role_id)
+    )).all()
+
+    # 2. User-specific overrides joined with Module
+    overrides = (await db.execute(
+        select(UserPermissionOverride, Module.code)
+        .join(Module, UserPermissionOverride.module_id == Module.module_id)
+        .where(UserPermissionOverride.user_id == user_id)
+    )).all()
+
+    # 3. user_data_scopes rows for VoucherType
+    allowed_ids = (await db.execute(
+        select(UserDataScope.scope_ref_id).where(
+            UserDataScope.user_id == user_id,
+            UserDataScope.scope_type == 'VoucherType'
+        )
+    )).scalars().all()
+
+    result = _resolve_permissions(role_name, role_perms, overrides, allowed_ids)
+    _store_permissions(user_id, role_id, result, now)
+    return copy.deepcopy(result)
+
+
+async def get_permissions_for_users(users: Sequence[User], db: AsyncSession) -> Dict[int, dict]:
+    """get_all_user_permissions for many users with three queries in total instead of three per user.
+    Users with a fresh cache entry are served from it; the rest are resolved and cached."""
+    now = time.time()
+    results: Dict[int, dict] = {}
+    to_load = []
+    for user in users:
+        cached_perm = _permissions_cache.get(user.user_id)
+        if cached_perm and cached_perm.get("expires_at", 0) > now and cached_perm.get("role_id") == user.role_id:
+            results[user.user_id] = copy.deepcopy(cached_perm["data"])
+        else:
+            to_load.append(user)
+    if not to_load:
+        return results
+
+    user_ids = [u.user_id for u in to_load]
+    perms_by_role: Dict[int, list] = defaultdict(list)
+    for perm, code in (await db.execute(
+        select(Permission, Module.code)
+        .join(Module, Permission.module_id == Module.module_id)
+        .where(Permission.role_id.in_({u.role_id for u in to_load}))
+    )).all():
+        perms_by_role[perm.role_id].append((perm, code))
+    overrides_by_user: Dict[int, list] = defaultdict(list)
+    for override, code in (await db.execute(
+        select(UserPermissionOverride, Module.code)
+        .join(Module, UserPermissionOverride.module_id == Module.module_id)
+        .where(UserPermissionOverride.user_id.in_(user_ids))
+    )).all():
+        overrides_by_user[override.user_id].append((override, code))
+    scopes_by_user: Dict[int, list] = defaultdict(list)
+    for scope_user_id, ref_id in (await db.execute(
+        select(UserDataScope.user_id, UserDataScope.scope_ref_id).where(
+            UserDataScope.user_id.in_(user_ids),
+            UserDataScope.scope_type == 'VoucherType'
+        )
+    )).all():
+        scopes_by_user[scope_user_id].append(ref_id)
+
+    for user in to_load:
+        role_name = user.role.name if user.role else "Unknown"
+        result = _resolve_permissions(role_name, perms_by_role[user.role_id], overrides_by_user[user.user_id],
+                                      scopes_by_user[user.user_id])
+        _store_permissions(user.user_id, user.role_id, result, now)
+        results[user.user_id] = copy.deepcopy(result)
+    return results
+
+
+def _store_permissions(user_id: int, role_id: int, result: dict, now: float) -> None:
+    _permissions_cache[user_id] = {
+        "data": result,
+        "role_id": role_id,
+        "expires_at": now + PERMISSIONS_CACHE_TTL_SECONDS
+    }
+
+
+def _resolve_permissions(role_name: str, role_perms, overrides, allowed_ids) -> dict:
+    """Capabilities, UI toggles, voucher action scope and voucher-type scope from a user's rows.
+    role_perms and overrides are (row, module code) pairs in query order."""
+    is_admin = bool(role_name and role_name.lower() in ("admin", "superadmin", "owner"))
 
     # Initialize capabilities with defaults (admin defaults to True, others to False)
     capabilities = {}
@@ -346,13 +433,8 @@ async def get_all_user_permissions(
             "can_delete": default_bool,
         }
 
-    # 1. Fetch role permissions joined with Module
-    perm_q = await db.execute(
-        select(Permission, Module.code)
-        .join(Module, Permission.module_id == Module.module_id)
-        .where(Permission.role_id == role_id)
-    )
-    for perm, mod_code in perm_q.all():
+    # 1. Role permissions
+    for perm, mod_code in role_perms:
         m_code = mod_code.lower()
         capabilities[m_code] = {
             "can_create": bool(perm.can_create),
@@ -361,13 +443,8 @@ async def get_all_user_permissions(
             "can_delete": bool(perm.can_delete),
         }
 
-    # 2. Fetch user-specific overrides joined with Module
-    override_q = await db.execute(
-        select(UserPermissionOverride, Module.code)
-        .join(Module, UserPermissionOverride.module_id == Module.module_id)
-        .where(UserPermissionOverride.user_id == user_id)
-    )
-    for override, mod_code in override_q.all():
+    # 2. User-specific overrides
+    for override, mod_code in overrides:
         m_code = mod_code.lower()
         if m_code not in capabilities:
             capabilities[m_code] = {
@@ -431,30 +508,15 @@ async def get_all_user_permissions(
     else:
         voucher_action_scope = "view_only"
 
-    # 5. Query user_data_scopes for VoucherType scope rows
-    scope_query = await db.execute(
-        select(UserDataScope.scope_ref_id).where(
-            UserDataScope.user_id == user_id,
-            UserDataScope.scope_type == 'VoucherType'
-        )
-    )
-    allowed_ids = scope_query.scalars().all()
+    # 5. Voucher-type scope: None means every voucher type is allowed
     allowed_voucher_type_ids = list(allowed_ids) if allowed_ids else None
 
-    result = {
+    return {
         "toggles": toggles,
         "capabilities": capabilities,
         "voucher_action_scope": voucher_action_scope,
         "allowed_voucher_type_ids": allowed_voucher_type_ids,
     }
-
-    _permissions_cache[user_id] = {
-        "data": result,
-        "role_id": role_id,
-        "expires_at": now + PERMISSIONS_CACHE_TTL_SECONDS
-    }
-
-    return copy.deepcopy(result)
 
 
 async def get_effective_permission(

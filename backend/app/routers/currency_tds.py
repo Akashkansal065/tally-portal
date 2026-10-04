@@ -6,6 +6,8 @@ from datetime import datetime, date
 import logging
 
 from app.core.database import get_db
+from app.core import master_cache
+from app.core.master_cache import as_schema_list, cached_master
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.models.tally_core import MstLedger
@@ -289,8 +291,10 @@ async def get_currencies(
     db: AsyncSession = Depends(get_db)
 ):
     # Fetch all global currencies and eager load their exchange rates for the user's company
-    res = await db.execute(select(Currency).options(selectinload(Currency.rates.and_(ExchangeRate.company_id == user.company_id))))
-    return res.scalars().all()
+    async def load():
+        res = await db.execute(select(Currency).options(selectinload(Currency.rates.and_(ExchangeRate.company_id == user.company_id))))
+        return as_schema_list(CurrencyResponse, res.scalars().all())
+    return await cached_master(user.company_id, master_cache.CURRENCIES, load)
     
 @router.delete("/currency/{currency_id}")
 async def delete_currency(
@@ -326,9 +330,11 @@ async def get_tds_sections(
     user: User = Depends(require_permission("settings", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(TdsSection).where(TdsSection.company_id == user.company_id)
-    res = await db.execute(stmt)
-    return res.scalars().all()
+    async def load():
+        stmt = select(TdsSection).where(TdsSection.company_id == user.company_id)
+        res = await db.execute(stmt)
+        return as_schema_list(TdsSectionResponse, res.scalars().all())
+    return await cached_master(user.company_id, master_cache.TDS_SECTIONS, load)
 
 @router.post("/tds/sections", response_model=TdsSectionResponse)
 async def create_tds_section(

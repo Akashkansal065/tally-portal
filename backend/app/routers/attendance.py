@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc, and_, Date, Boolean, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, desc, and_, Date, Boolean, JSON, Index
 from sqlalchemy.orm import relationship, selectinload
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -49,7 +49,10 @@ class OfficeLocation(Base):
 
 class Attendance(Base):
     __tablename__ = "portal_attendance"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_portal_attendance_user_checkin", "user_id", "check_in_time"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
@@ -106,7 +109,10 @@ class Attendance(Base):
 
 class AttendanceLocationLog(Base):
     __tablename__ = "portal_attendance_locations"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_attendance_locations_latest", "attendance_id", "recorded_at"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
     attendance_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.portal_attendance.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -497,6 +503,17 @@ MIN_BREADCRUMB_DISTANCE_METERS = 15.0
 STATIONARY_HEARTBEAT_SECONDS = 600
 GEOCODE_REFRESH_DISTANCE_METERS = 25.0
 
+# Older app builds ping every 3-10 seconds on 1 m of movement. A ping that arrives sooner than this after the
+# last one the server processed is answered from memory without touching the database. The state lives in
+# this process, which is fine because the backend runs a single worker.
+PING_MIN_INTERVAL_SECONDS = 15
+_last_processed_ping: Dict[int, tuple] = {}  # user_id -> (time.monotonic() when processed, shift was active)
+
+
+def forget_ping_state(user_id: int) -> None:
+    """Called when a shift starts or ends so the user's next ping reads the database."""
+    _last_processed_ping.pop(user_id, None)
+
 
 async def _last_breadcrumb(db: AsyncSession, attendance_id: int) -> Optional["AttendanceLocationLog"]:
     return (await db.execute(
@@ -525,7 +542,13 @@ async def ping_location(
     Always refreshes 'last_known_*' on the active attendance session. Adds a breadcrumb to
     portal_attendance_locations when the user has moved beyond GPS noise since the previous
     breadcrumb, or as a heartbeat every STATIONARY_HEARTBEAT_SECONDS while stationary.
+    Pings closer together than PING_MIN_INTERVAL_SECONDS are acknowledged without a database query.
     """
+    processed_at = time.monotonic()
+    last = _last_processed_ping.get(user.user_id)
+    if last and processed_at - last[0] < PING_MIN_INTERVAL_SECONDS:
+        return {"success": True, "active": last[1], "recorded": False, "throttled": True}
+
     stmt = (
         select(Attendance)
         .where(
@@ -541,6 +564,7 @@ async def ping_location(
     rec = res.scalars().first()
 
     if not rec:
+        _last_processed_ping[user.user_id] = (processed_at, False)
         return {"success": True, "active": False, "message": "No active shift"}
 
     now_ist = get_ist_now()
@@ -593,6 +617,7 @@ async def ping_location(
         ))
 
     await db.commit()
+    _last_processed_ping[user.user_id] = (processed_at, True)
     return {
         "success": True,
         "active": True,
@@ -684,6 +709,7 @@ async def punch_attendance(
         db.add(attendance)
         await db.commit()
         await db.refresh(attendance)
+        forget_ping_state(user.user_id)
 
         # Record initial check-in location breadcrumb
         try:
@@ -785,6 +811,7 @@ async def punch_attendance(
         db.add(checkout_log)
 
         await db.commit()
+        forget_ping_state(user.user_id)
 
         # Notify admins of punch out
         from app.routers.notifications import notify_admins

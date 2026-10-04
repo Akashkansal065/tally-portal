@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import { toast } from 'sonner'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate, cn } from '@/lib/utils'
 import {
@@ -109,6 +110,7 @@ export default function BackupPage() {
   // Delete modal state
   const [deleteConfirmBackup, setDeleteConfirmBackup] = useState<BackupRecord | null>(null)
   const [deleting, setDeleting] = useState<boolean>(false)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
 
   // Polling timers
   const backupPollRef = useRef<NodeJS.Timeout | null>(null)
@@ -335,6 +337,33 @@ export default function BackupPage() {
       alert(`Error deleting backup: ${e.message}`)
     } finally {
       setDeleting(false)
+    }
+  }
+
+  // 8. Download a backup archive. The API needs the login token, which a plain link can't send.
+  const handleDownloadBackup = async (backup: BackupRecord) => {
+    setDownloadingId(backup.id)
+    try {
+      const res = await fetch(`${API_BASE}/backup/${backup.id}/download`, {
+        headers: authHeaders(token)
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => null)
+        throw new Error(data?.detail || `Download failed (HTTP ${res.status}).`)
+      }
+      const url = URL.createObjectURL(await res.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = backup.file_name
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      // Give the browser a moment to start the download before releasing the file from memory
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Download failed.')
+    } finally {
+      setDownloadingId(null)
     }
   }
 
@@ -769,14 +798,17 @@ export default function BackupPage() {
                       <td className="py-3.5 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
                           {/* Download */}
-                          <a
-                            href={`${API_BASE}/backup/${b.id}/download`}
-                            download
-                            className="p-1.5 rounded-lg border border-border hover:bg-accent text-foreground transition-colors"
-                            title="Download ZIP Archive"
+                          <button
+                            onClick={() => handleDownloadBackup(b)}
+                            disabled={b.status !== 'completed' || downloadingId === b.id}
+                            className="p-1.5 rounded-lg border border-border hover:bg-accent text-foreground transition-colors disabled:opacity-40"
+                            title={downloadingId === b.id ? 'Downloading…' : 'Download ZIP Archive'}
+                            aria-label={`Download ${b.file_name}`}
                           >
-                            <Download className="w-3.5 h-3.5" />
-                          </a>
+                            {downloadingId === b.id
+                              ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              : <Download className="w-3.5 h-3.5" />}
+                          </button>
 
                           {/* Restore */}
                           <button

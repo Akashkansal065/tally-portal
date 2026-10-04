@@ -2,7 +2,7 @@
 Test harness: the real models and routers on throwaway SQLite databases.
 
 Run from backend/:
-    pip install -r requirements-dev.txt
+    pip install -r requirements.txt
     pytest tests
 
 The portal and Tally schemas are attached as two SQLite databases so cross-schema models work.
@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import asyncio  # noqa: E402
 import hashlib  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 from datetime import date, timedelta  # noqa: E402
 
 import pytest  # noqa: E402
@@ -44,6 +45,7 @@ def _bigint_as_integer(type_, compiler, **kw):
 
 
 from app.core.database import Base, get_db  # noqa: E402
+from app.core.cache import clear_all_cache  # noqa: E402
 from app.core.permissions import clear_all_auth_and_permission_caches  # noqa: E402
 from app.core.security import create_access_token, get_password_hash  # noqa: E402
 import app.models.portal_core as P  # noqa: E402
@@ -81,9 +83,11 @@ class Harness:
             yield session
 
     def app(self, *routers) -> TestClient:
+        """Routers to mount; pass (router, "/prefix") for one main.py mounts under a prefix."""
         app = FastAPI()
         for router in routers:
-            app.include_router(router)
+            router, prefix = router if isinstance(router, tuple) else (router, "")
+            app.include_router(router, prefix=prefix)
         app.dependency_overrides[get_db] = self._get_db
         return TestClient(app)
 
@@ -113,6 +117,20 @@ class Harness:
                 await db.commit()
         run(go())
 
+    @contextmanager
+    def count_queries(self):
+        """Collects every SQL statement sent to the database inside the block."""
+        statements = []
+
+        def before_execute(conn, cursor, statement, *args):
+            statements.append(statement)
+
+        event.listen(self.engine.sync_engine, "before_cursor_execute", before_execute)
+        try:
+            yield statements
+        finally:
+            event.remove(self.engine.sync_engine, "before_cursor_execute", before_execute)
+
     def role(self, name, max_active_devices=None):
         return self.add(P.Role(name=name, max_active_devices=max_active_devices))
 
@@ -138,8 +156,10 @@ class Harness:
 @pytest.fixture
 def harness(tmp_path):
     clear_all_auth_and_permission_caches()
+    clear_all_cache()
     yield Harness(tmp_path)
     clear_all_auth_and_permission_caches()
+    clear_all_cache()
 
 
 # ── device header presets ──

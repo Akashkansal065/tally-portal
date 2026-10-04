@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import text
@@ -43,8 +43,19 @@ async def lifespan(app: FastAPI):
 
     # Indexes added to existing tables after they were created (create_all skips existing tables)
     from app.core.database import ensure_table_indexes
-    from app.models.portal_core import UserSession
-    await ensure_table_indexes(UserSession.__table__)
+    from app.models import portal_core as portal
+    from app.routers import attendance as attendance_models
+    for table, index_names in (
+        (portal.UserSession.__table__, ["ix_user_sessions_token", "ix_user_sessions_active", "ix_user_sessions_device"]),
+        (portal.SyncTrafficLog.__table__, ["ix_sync_traffic_company_status", "ix_sync_traffic_company_created"]),
+        (portal.SyncQueue.__table__, ["ix_sync_queue_company_processed"]),
+        (portal.DeletedRecordAudit.__table__, ["ix_deleted_audit_company_status"]),
+        (portal.Notification.__table__, ["ix_notifications_user_unread"]),
+        (portal.CustomerLocationLog.__table__, ["ix_customer_location_logs_latest"]),
+        (attendance_models.Attendance.__table__, ["ix_portal_attendance_user_checkin"]),
+        (attendance_models.AttendanceLocationLog.__table__, ["ix_attendance_locations_latest"]),
+    ):
+        await ensure_table_indexes(table, index_names)
         
     # Seed global default roles, modules, and permissions.
     def sync_seed(connection):
@@ -65,17 +76,17 @@ async def lifespan(app: FastAPI):
     from app.services.attendance_worker import attendance_auto_checkout_worker
     attendance_worker_task = asyncio.create_task(attendance_auto_checkout_worker(60))
 
-    # 6. Daily purge of old login sessions
-    from app.services.session_cleanup import session_cleanup_worker
-    session_cleanup_task = asyncio.create_task(session_cleanup_worker())
+    # 6. Daily purge of old login sessions and old successful sync logs
+    from app.services.daily_cleanup import daily_cleanup_worker
+    daily_cleanup_task = asyncio.create_task(daily_cleanup_worker())
                 
     try:
         yield
     finally:
         keep_alive_task.cancel()
         attendance_worker_task.cancel()
-        session_cleanup_task.cancel()
-        await asyncio.gather(keep_alive_task, attendance_worker_task, session_cleanup_task, return_exceptions=True)
+        daily_cleanup_task.cancel()
+        await asyncio.gather(keep_alive_task, attendance_worker_task, daily_cleanup_task, return_exceptions=True)
 
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -90,6 +101,10 @@ app.add_middleware(RequestLoggingMiddleware)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+# Response compression (skips backup downloads and server-sent events)
+from app.core.compression import ApiGZipMiddleware
+app.add_middleware(ApiGZipMiddleware)
 
 # Configure CORS
 app.add_middleware(
@@ -137,7 +152,9 @@ app.include_router(bank_recon.router)
 # Mount isolated Backup & Restore module
 try:
     from backup_module.router import backup_router
-    app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"])
+    from app.routers.admin import require_admin
+    # A backup holds a company's full Tally data and a restore writes into Tally, so every route is admin-only
+    app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"], dependencies=[Depends(require_admin)])
 except Exception as e:
     import logging
     logging.getLogger("uvicorn.error").warning(f"Could not load backup_module: {e}")

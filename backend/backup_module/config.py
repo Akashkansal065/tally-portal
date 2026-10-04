@@ -40,6 +40,10 @@ class BackupSettings:
     # Standalone server settings
     SERVER_HOST: str = os.getenv("BACKUP_SERVER_HOST", "0.0.0.0")
     SERVER_PORT: int = int(os.getenv("BACKUP_SERVER_PORT", "8001"))
+    # The standalone server has no user logins: every request must send this value in X-Backup-Key.
+    # Without it set, the standalone server refuses all backup requests. (Mounted in the main app, the
+    # routes require an admin login instead.)
+    API_KEY: str = os.getenv("BACKUP_API_KEY", "")
 
 settings = BackupSettings()
 settings.BACKUP_DIR.mkdir(parents=True, exist_ok=True)

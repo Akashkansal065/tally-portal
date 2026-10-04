@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import AsyncSessionLocal
 from app.core.datetime_utils import get_ist_now
-from app.routers.attendance import Attendance
+from app.routers.attendance import Attendance, forget_ping_state
 from app.models.portal_core import User
 from app.routers.notifications import notify_user, notify_admins
 
@@ -100,6 +100,7 @@ async def check_and_process_attendance():
                         loc_detail = f" | Location: {rec.check_out_place_name}" if rec.check_out_place_name else ""
                         rec.check_out_comments = f"[SYSTEM AUTO PUNCH-OUT] Day-end boundary cutoff (23:58 IST){loc_detail}"
                         await db.commit()
+                        forget_ping_state(user_id)
 
                         formatted_date_str = check_in_date.strftime("%d %b %Y")
                         # User notification
@@ -141,6 +142,7 @@ async def check_and_process_attendance():
                         loc_detail = f" | Location: {rec.check_out_place_name}" if rec.check_out_place_name else ""
                         rec.check_out_comments = f"[SYSTEM AUTO PUNCH-OUT] Day-end boundary cutoff (23:58 IST){loc_detail}"
                         await db.commit()
+                        forget_ping_state(user_id)
 
                         # User notification
                         await notify_user(
@@ -191,6 +193,7 @@ async def check_and_process_attendance():
                         loc_detail = f" | Location: {rec.check_out_place_name}" if rec.check_out_place_name else ""
                         rec.check_out_comments = f"{comment}{loc_detail}"
                         await db.commit()
+                        forget_ping_state(user_id)
 
                         formatted_time_str = punch_out_dt.strftime("%I:%M %p")
                         # User notification

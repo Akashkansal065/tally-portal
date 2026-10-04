@@ -7,7 +7,7 @@ import app.models.portal_core as P
 from app.core.config import settings
 from app.core.sessions import utcnow
 from app.routers import admin as admin_router, auth as auth_router
-from app.services.session_cleanup import purge_old_sessions
+from app.services.daily_cleanup import purge_old_sessions
 from tests.conftest import ANDROID_APP, CHROME_WINDOWS, PASSWORD, bearer, login, run
 from tests.test_device_sessions import me, setup_company
 

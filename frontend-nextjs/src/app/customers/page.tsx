@@ -52,6 +52,7 @@ import {
   Check
 } from 'lucide-react'
 import { saveOfflineDirectory, getOfflineDirectory } from '@/lib/offline-storage'
+import { FiltersToggle, useCollapsibleFilters } from '@/components/CollapsibleFilters'
 
 interface LocalityItem {
   name: string
@@ -160,6 +161,18 @@ export default function CustomersPage() {
   const [viewMode, setViewMode] = useState<'list' | 'grid' | 'route'>('list')
   const [selectedRadius, setSelectedRadius] = useState<number | null>(null)
   const [selectedRecency, setSelectedRecency] = useState<string>('all')
+  const directoryFilters = useCollapsibleFilters('customers')
+  // Settings away from their defaults; the "Active" bar below names them even while the filters are minimised
+  const activeDirectoryFilters = [
+    selectedLocality !== 'all' && selectedLocality,
+    selectedCity !== 'all' && selectedCity,
+    selectedRoute !== 'all' && selectedRoute,
+    locationFilter !== 'all' && locationFilter,
+    verificationFilter !== 'all' && verificationFilter,
+    selectedRadius !== null && `${selectedRadius} km`,
+    selectedRecency !== 'all' && selectedRecency,
+    sortBy !== 'name_asc' && sortBy,
+  ].filter((label): label is string => Boolean(label))
   const [plannerRoute, setPlannerRoute] = useState<string>('all')
   const [isOffline, setIsOffline] = useState(false)
   const [offlineCachedAt, setOfflineCachedAt] = useState<string | null>(null)
@@ -1251,7 +1264,7 @@ export default function CustomersPage() {
         <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden divide-y divide-border">
           
           {/* 1. TOP LOCALITY FILTER SECTION */}
-          <div className="p-3.5 sm:p-4 bg-muted/15">
+          <div id={`${directoryFilters.panelId}-locality`} hidden={directoryFilters.collapsed} className="p-3.5 sm:p-4 bg-muted/15">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               {/* Left: Title & Active Indicator */}
               <div className="flex items-center gap-2.5 min-w-0">
@@ -1407,7 +1420,7 @@ export default function CustomersPage() {
               </button>
             </div>
           </div>          {/* 2. SEARCH & CONTROLS ROW */}
-          <div className="p-4 space-y-3">
+          <div className="p-4 flex flex-col gap-3">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               {/* Main search input */}
               <form onSubmit={handleSearchSubmit} className="flex gap-2 flex-1 max-w-xl">
@@ -1438,8 +1451,14 @@ export default function CustomersPage() {
                 </button>
               </form>
 
-              {/* View Mode Toggle */}
-              <div className="flex items-center justify-end gap-2">
+              {/* View Mode Toggle, and the button that minimises the filters so the list gets the screen.
+                  Wraps on narrow phones rather than clipping either control. */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <FiltersToggle
+                  state={directoryFilters}
+                  active={activeDirectoryFilters}
+                  controls={`${directoryFilters.panelId}-locality ${directoryFilters.panelId}`}
+                />
                 <div className="flex items-center bg-muted/60 p-0.5 rounded-xl border border-border">
                   <button
                     type="button"
@@ -1487,6 +1506,7 @@ export default function CustomersPage() {
               </div>
             </div>
 
+            <div id={directoryFilters.panelId} hidden={directoryFilters.collapsed} className="space-y-3">
             {/* Quick Intelligence Filter Strips (Radius, Recency, Health) */}
             <div className="pt-2 border-t border-border/60 space-y-2">
               {/* Radius / Distance Filter */}
@@ -1695,6 +1715,7 @@ export default function CustomersPage() {
                   <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground text-[10px]">▼</div>
                 </div>
               </div>
+            </div>
             </div>
 
           </div>

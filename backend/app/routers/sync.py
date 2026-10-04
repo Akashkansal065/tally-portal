@@ -3617,6 +3617,10 @@ async def query_vouchers_from_tally(
 # SYNC HEALTH, TRAFFIC AUDIT & RETRY APIS
 # ==========================================
 
+SYNC_HEALTH_CACHE_KEY = "sync_health"
+SYNC_HEALTH_TTL_SECONDS = 30
+
+
 @router.get("/health")
 async def get_sync_health(
     user: User = Depends(get_current_user),
@@ -3624,51 +3628,37 @@ async def get_sync_health(
 ):
     """
     Returns high-level Sync Health metrics: Synced, Pending, Failed, Exceptions, and Discrepancies.
+    Every admin's header polls this each minute, so the result is shared per company for 30 seconds;
+    a sync, clearing resolved logs or deleting a log clears it.
     """
-    # 1. Total Pending in SyncQueue
-    pending_count_res = await db.execute(
-        select(func.count(SyncQueue.sync_id)).where(
-            SyncQueue.company_id == user.company_id,
-            SyncQueue.is_processed == False
-        )
-    )
-    pending_count = pending_count_res.scalar() or 0
+    from app.core.cache import get_cached_response, set_cached_response
+    cached = get_cached_response(user.company_id, SYNC_HEALTH_CACHE_KEY)
+    if cached is not None:
+        return cached
 
-    # 2. Total Synced / Succeeded (is_processed == True)
-    synced_count_res = await db.execute(
-        select(func.count(SyncQueue.sync_id)).where(
-            SyncQueue.company_id == user.company_id,
-            SyncQueue.is_processed == True
-        )
-    )
-    synced_count = synced_count_res.scalar() or 0
+    # 1. Queue: pending vs processed in one grouped count
+    queue_counts = dict((await db.execute(
+        select(SyncQueue.is_processed, func.count(SyncQueue.sync_id))
+        .where(SyncQueue.company_id == user.company_id)
+        .group_by(SyncQueue.is_processed)
+    )).all())
+    pending_count = queue_counts.get(False, 0)  # rows with a NULL flag count as neither, as before
+    synced_count = queue_counts.get(True, 0)
 
-    # 3. Total Traffic Logs Stats
-    success_logs_res = await db.execute(
-        select(func.count(SyncTrafficLog.log_id)).where(
+    # 2. Traffic log outcomes in one grouped count
+    status_counts = dict((await db.execute(
+        select(SyncTrafficLog.status, func.count(SyncTrafficLog.log_id))
+        .where(
             SyncTrafficLog.company_id == user.company_id,
-            SyncTrafficLog.status == "SUCCESS"
+            SyncTrafficLog.status.in_(["SUCCESS", "FAILED", "TIMEOUT", "EXCEPTION"])
         )
-    )
-    success_logs = success_logs_res.scalar() or 0
+        .group_by(SyncTrafficLog.status)
+    )).all())
+    success_logs = status_counts.get("SUCCESS", 0)
+    failed_logs = status_counts.get("FAILED", 0) + status_counts.get("TIMEOUT", 0)
+    exception_logs = status_counts.get("EXCEPTION", 0)
 
-    failed_logs_res = await db.execute(
-        select(func.count(SyncTrafficLog.log_id)).where(
-            SyncTrafficLog.company_id == user.company_id,
-            SyncTrafficLog.status.in_(["FAILED", "TIMEOUT"])
-        )
-    )
-    failed_logs = failed_logs_res.scalar() or 0
-
-    exception_logs_res = await db.execute(
-        select(func.count(SyncTrafficLog.log_id)).where(
-            SyncTrafficLog.company_id == user.company_id,
-            SyncTrafficLog.status == "EXCEPTION"
-        )
-    )
-    exception_logs = exception_logs_res.scalar() or 0
-
-    # 4. Total deleted records out of sync (not deleted in Tally)
+    # 3. Total deleted records out of sync (not deleted in Tally)
     unreconciled_del_res = await db.execute(
         select(func.count(DeletedRecordAudit.audit_id)).where(
             DeletedRecordAudit.company_id == user.company_id,
@@ -3678,15 +3668,17 @@ async def get_sync_health(
     unreconciled_deleted_count = unreconciled_del_res.scalar() or 0
     total_sync_issues = failed_logs + exception_logs + unreconciled_deleted_count
 
-    # 5. Recent 5 logs
-    recent_logs_res = await db.execute(
-        select(SyncTrafficLog).where(
+    # 4. Recent 5 logs: only the short columns, never the stored XML payloads
+    recent_logs = (await db.execute(
+        select(
+            SyncTrafficLog.log_id, SyncTrafficLog.entity_type, SyncTrafficLog.entity_name, SyncTrafficLog.action,
+            SyncTrafficLog.status, SyncTrafficLog.error_summary, SyncTrafficLog.duration_ms, SyncTrafficLog.created_at,
+        ).where(
             SyncTrafficLog.company_id == user.company_id
         ).order_by(SyncTrafficLog.created_at.desc()).limit(5)
-    )
-    recent_logs = recent_logs_res.scalars().all()
+    )).all()
 
-    return {
+    output = {
         "status": "healthy" if total_sync_issues == 0 else "degraded",
         "pending_queue_count": pending_count,
         "synced_queue_count": synced_count,
@@ -3709,6 +3701,9 @@ async def get_sync_health(
             for l in recent_logs
         ]
     }
+    set_cached_response(user.company_id, SYNC_HEALTH_CACHE_KEY, output, ttl_seconds=SYNC_HEALTH_TTL_SECONDS)
+    return output
+
 
 @router.get("/logs")
 async def get_sync_traffic_logs(
@@ -4311,6 +4306,8 @@ async def clear_resolved_traffic_logs(
         )
     )
     await db.commit()
+    from app.core.cache import clear_company_cache
+    clear_company_cache(user.company_id, SYNC_HEALTH_CACHE_KEY)
     return {"detail": "All historical sync issues and discrepancies cleared successfully."}
 
 @router.delete("/traffic-logs/{log_id}")
@@ -4330,6 +4327,8 @@ async def delete_traffic_log(
         )
     )
     await db.commit()
+    from app.core.cache import clear_company_cache
+    clear_company_cache(user.company_id, SYNC_HEALTH_CACHE_KEY)
     return {"detail": f"Traffic log #{log_id} deleted."}
 
 

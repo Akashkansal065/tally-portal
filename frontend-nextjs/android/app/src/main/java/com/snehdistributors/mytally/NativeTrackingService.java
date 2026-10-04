@@ -62,8 +62,9 @@ public class NativeTrackingService extends Service {
     private long lastPingTime = 0;
     private boolean isRequestingUpdates = false;
 
-    private static final float MIN_DISTANCE_METERS = 1.0f; // 1 meter threshold for testing
-    private static final long BURST_DEBOUNCE_MS = 3 * 1000;  // 3s debounce to prevent sensor jitter
+    // Phone GPS drifts 5-50 m while standing still, so smaller thresholds mostly record noise and load the server
+    private static final float MIN_DISTANCE_METERS = 25.0f; // movement that counts as a real move
+    private static final long BURST_DEBOUNCE_MS = 30 * 1000;  // at least 30s between pings, even while driving
     private static final long HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 min periodic heartbeat
 
     @Override
@@ -157,16 +158,16 @@ public class NativeTrackingService extends Service {
         try {
             LocationRequest locationRequest;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                locationRequest = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000)
+                locationRequest = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 30000)
                         .setMinUpdateDistanceMeters(MIN_DISTANCE_METERS)
-                        .setMinUpdateIntervalMillis(3000)
-                        .setMaxUpdateDelayMillis(15000)
+                        .setMinUpdateIntervalMillis(15000)
+                        .setMaxUpdateDelayMillis(60000)
                         .build();
             } else {
                 locationRequest = LocationRequest.create()
                         .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY)
-                        .setInterval(10000)
-                        .setFastestInterval(3000)
+                        .setInterval(30000)
+                        .setFastestInterval(15000)
                         .setSmallestDisplacement(MIN_DISTANCE_METERS);
             }
 
@@ -207,12 +208,12 @@ public class NativeTrackingService extends Service {
             dist = 0.0;
         }
 
-        // Throttle rapid sensor bursts (at least 3 seconds)
-        if (lastPingTime != 0 && (now - lastPingTime) < BURST_DEBOUNCE_MS && dist < MIN_DISTANCE_METERS) {
+        // At most one ping per BURST_DEBOUNCE_MS, whether or not the phone is moving
+        if (lastPingTime != 0 && (now - lastPingTime) < BURST_DEBOUNCE_MS) {
             return;
         }
 
-        // Must move >= 1 meter OR 5 minutes elapsed (heartbeat)
+        // Must move >= MIN_DISTANCE_METERS OR 5 minutes elapsed (heartbeat)
         if (lastPingTime != 0 && dist < MIN_DISTANCE_METERS && (now - lastPingTime) < HEARTBEAT_INTERVAL_MS) {
             return;
         }

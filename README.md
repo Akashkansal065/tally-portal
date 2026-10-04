@@ -272,13 +272,13 @@ npx cap open ios
 | `uvicorn app.main:app --reload --port 8000` | Dev server |
 | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1` | Production-style run (see the single-worker note below) |
 | `python -m app.core.seed` | Re-seed global roles, modules and permissions (idempotent; also runs on every startup) |
-| `pip install -r requirements.txt` then `pytest` | Automated tests (device sessions, blocking, device limits, cleanup). Use throwaway SQLite databases and never touch the database in `.env` |
+| `pip install -r requirements.txt` then `pytest` | Automated tests (device sessions, blocking, device limits, caching and cache clearing, location pings, sync health, cleanup). Use throwaway SQLite databases and never touch the database in `.env` |
 | `python tests/e2e_vouchers/run_all_vouchers_e2e.py` | End-to-end voucher round trips. **Needs the API running and Tally reachable.** Writes `e2e_voucher_trace_report.json` |
 | `python scratch/check_sync_counts.py` | Compare row counts between Tally and the mirror |
 | `python scratch/reset_sync.py` | ⚠️ Truncate synced vouchers and reset AlterIDs so the next sync is a full re-import |
 | `python scratch/wipe_all.py` | ⚠️ Delete **all** data. Dev only |
 
-> **Run the backend with one worker.** The response cache, auth/permission cache, sync lock, rate limiter and background workers (DB keep-alive, attendance auto-punch-out) all live in process memory. More workers means stale permissions, duplicate notifications and a sync lock that no longer serializes imports. See `architecture.md` → *Scaling constraints*.
+> **Run the backend with one worker.** The response cache, auth/permission cache, sync lock, rate limiter location-ping guard and background workers (DB keep-alive, attendance auto-punch-out, daily cleanup) all live in process memory. More workers means stale permissions, duplicate notifications and a sync lock that no longer serializes imports. See `architecture.md` → *Scaling constraints*.
 
 ### Desktop Sync Agent (`desktop-sync-agent/`)
 
@@ -320,6 +320,7 @@ Automated suites: `backend/tests/` (run `pytest` from `backend/`) and `desktop-s
 | `LOG_LEVEL`, `LOG_FORMAT` | | `INFO`, `text` | `json` for structured logs |
 | `DEVICE_LIMIT_POLICY` | | `evict_oldest` | When a role's device limit is reached: `evict_oldest` signs out the least recently used device, `refuse` rejects the new login |
 | `SESSION_PURGE_EXPIRED_AFTER_DAYS`, `SESSION_PURGE_REVOKED_AFTER_DAYS` | | `30`, `90` | Daily cleanup of old login sessions |
+| `SYNC_LOG_PURGE_SUCCESS_AFTER_DAYS` | | `30` | Daily cleanup of successful sync traffic logs (failed ones stay until cleared) |
 
 ### `frontend-nextjs/.env.local` (template: `frontend-nextjs/.env.example`)
 
