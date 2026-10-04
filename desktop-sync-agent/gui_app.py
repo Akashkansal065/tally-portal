@@ -647,6 +647,8 @@ class SetupView(ctk.CTkFrame):
             self.app.config.username = email
             self.app.config.password = password
             self.app.config.auth_token = token
+            # Re-entering credentials resumes an agent an admin had signed out (a blocked PC still can't sign in)
+            self.app.config.auth_halt_reason = ""
             self.app.config.tally_url = tally_url
             if company_name:
                 self.app.config.company_name = company_name
@@ -1028,7 +1030,11 @@ class DashboardView(ctk.CTkFrame):
 
         # Cloud card
         c_ok = status.get("cloud_connected", False)
-        if c_ok:
+        halt_reason = status.get("auth_halt_reason")
+        if halt_reason:
+            label = "● Blocked by admin" if halt_reason in ("blocked", "device_blocked") else "● Signed out by admin"
+            self.cloud_badge.configure(text=label, text_color=ERROR_RED)
+        elif c_ok:
             self.cloud_badge.configure(text="● Connected", text_color=SUCCESS_GREEN)
         else:
             self.cloud_badge.configure(text="● Offline", text_color=ERROR_RED)

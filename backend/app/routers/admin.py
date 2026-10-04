@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete, func
+from sqlalchemy import and_, case, delete, func, or_
 from sqlalchemy.orm import selectinload
-from typing import List, Optional
-from datetime import date
-from pydantic import BaseModel
+from typing import List, Literal, Optional
+from datetime import date, datetime, timedelta
+from pydantic import BaseModel, Field
 
 from app.core.database import get_db
 from app.core.permissions import (
@@ -20,9 +20,13 @@ from app.core.permissions import (
     revoke_all_user_sessions,
 )
 from app.core.security import get_password_hash
+from app.core.sessions import (
+    ACTIVE_NOW_SECONDS, add_audit, blocked_device_to_dict, current_token_hash, forget_tokens,
+    live_session_conditions, revoke_sessions, session_to_dict, stale_legacy_condition, to_utc_iso, utcnow
+)
 from app.models.portal_core import (
     User, Role, Permission, Module, UserPermissionOverride, UserDataScope, AuditLog,
-    Company, UserCompanyAccess
+    Company, UserCompanyAccess, UserSession, BlockedDevice
 )
 
 router = APIRouter(prefix="/admin", tags=["Admin Panel"])
@@ -56,6 +60,10 @@ class AdminUserResponse(BaseModel):
     allowedReportCategories: Optional[str] = None
     voucherActionScope: str = "full"
     allowedVoucherTypeIds: Optional[List[int]] = None
+    # Device sessions: devices signed in and used since tracking began, unused pre-tracking sessions
+    active_devices: int = 0
+    older_sessions: int = 0
+    last_active_at: Optional[str] = None
 
 class AdminUserCreate(BaseModel):
     username: str
@@ -91,6 +99,7 @@ class RoleResponse(BaseModel):
     description: Optional[str] = None
     user_count: int = 0
     is_system: bool = False
+    max_active_devices: Optional[int] = None
     permissions: List[RolePermissionItem] = []
 
 class RoleCreate(BaseModel):
@@ -101,6 +110,8 @@ class RoleCreate(BaseModel):
 class RoleUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    # Max simultaneously signed-in devices per user of this role; null or 0 = unlimited
+    max_active_devices: Optional[int] = Field(None, ge=0, le=50)
 
 class ModuleResponse(BaseModel):
     module_id: int
@@ -148,9 +159,11 @@ async def get_users(
         select(User).options(selectinload(User.role)).where(User.company_id == admin.company_id)
     )
     users = query.scalars().all()
+    device_stats = await _device_stats_by_user(db, [u.user_id for u in users])
     
     response = []
     for u in users:
+        stats = device_stats.get(u.user_id, {})
         r_name = u.role.name if u.role else "Unknown"
         user_perms = await get_all_user_permissions(u.user_id, u.role_id, r_name, db)
         toggles = user_perms["toggles"]
@@ -182,6 +195,9 @@ async def get_users(
             allowedReportCategories=u.allowed_report_categories,
             voucherActionScope=user_perms["voucher_action_scope"],
             allowedVoucherTypeIds=user_perms["allowed_voucher_type_ids"],
+            active_devices=stats.get("active_devices", 0),
+            older_sessions=stats.get("older_sessions", 0),
+            last_active_at=stats.get("last_active_at"),
         ))
     return response
 
@@ -341,7 +357,11 @@ async def update_user(
     # A new password or deactivation must log the user out everywhere, including old tokens
     credentials_revoked = password_changed or payload.is_active is False
     if credentials_revoked:
-        await revoke_all_user_sessions(user.user_id, db)
+        await revoke_all_user_sessions(
+            user.user_id, db,
+            reason="deactivated" if payload.is_active is False else "password_change",
+            by_user_id=admin.user_id,
+        )
 
     await db.commit()
     await db.refresh(user)
@@ -439,7 +459,7 @@ async def reset_user_password(
 
     password_hash = get_password_hash(payload.password)
     user.password_hash = password_hash
-    await revoke_all_user_sessions(user_id, db)
+    await revoke_all_user_sessions(user_id, db, reason="password_change", by_user_id=admin.user_id)
     await db.commit()
     invalidate_auth_cache(user_id=user_id)
     return {"success": True, "message": f"Password reset successfully for user: {user.username}"}
@@ -548,6 +568,7 @@ async def get_roles(
             description=r.description or "",
             user_count=counts.get(r.role_id, 0),
             is_system=is_sys,
+            max_active_devices=r.max_active_devices,
             permissions=role_perms
         ))
     return result
@@ -634,6 +655,9 @@ async def update_role(
         
     if payload.description is not None:
         role.description = payload.description
+
+    if "max_active_devices" in payload.model_fields_set:
+        role.max_active_devices = payload.max_active_devices or None
         
     await db.commit()
     await db.refresh(role)
@@ -644,7 +668,8 @@ async def update_role(
         name=role.name,
         description=role.description or "",
         user_count=cnt,
-        is_system=role.name.lower() in ("admin", "sales")
+        is_system=role.name.lower() in ("admin", "sales"),
+        max_active_devices=role.max_active_devices
     )
 
 @router.delete("/roles/{role_id}")
@@ -1240,4 +1265,309 @@ async def get_audit_logs(
             "created_at": l.created_at.isoformat() if l.created_at else None,
         })
     return output
+
+
+# ─── Device sessions ─────────────────────────────────────────────────────────
+# Admins only ever see and act on users of their own (active) company, like the rest of this router.
+
+class RevokeAllSessionsRequest(BaseModel):
+    keep_current: bool = True
+
+class BlockDeviceRequest(BaseModel):
+    reason: Optional[str] = Field(None, max_length=255)
+
+
+async def _device_stats_by_user(db: AsyncSession, user_ids: List[int]) -> dict:
+    """Per user: live devices in use, unused pre-tracking sessions, and last activity on any session."""
+    if not user_ids:
+        return {}
+    now = utcnow()
+    stale = stale_legacy_condition()
+    stats = {uid: {"active_devices": 0, "older_sessions": 0, "last_active_at": None} for uid in user_ids}
+    live_rows = (await db.execute(
+        select(
+            UserSession.user_id,
+            func.sum(case((stale, 0), else_=1)),
+            func.sum(case((stale, 1), else_=0)),
+        )
+        .where(UserSession.user_id.in_(user_ids), *live_session_conditions(now))
+        .group_by(UserSession.user_id)
+    )).all()
+    for uid, active, older in live_rows:
+        stats[uid]["active_devices"] = int(active or 0)
+        stats[uid]["older_sessions"] = int(older or 0)
+    last_rows = (await db.execute(
+        select(UserSession.user_id, func.max(UserSession.last_active_at))
+        .where(UserSession.user_id.in_(user_ids))
+        .group_by(UserSession.user_id)
+    )).all()
+    for uid, last in last_rows:
+        stats[uid]["last_active_at"] = to_utc_iso(last)
+    return stats
+
+
+async def _company_user(db: AsyncSession, admin: User, user_id: int) -> User:
+    user = (await db.execute(
+        select(User).where(User.user_id == user_id, User.company_id == admin.company_id)
+    )).scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return user
+
+
+async def _company_session(db: AsyncSession, admin: User, session_id: int):
+    row = (await db.execute(
+        select(UserSession, User)
+        .join(User, User.user_id == UserSession.user_id)
+        .where(UserSession.session_id == session_id, User.company_id == admin.company_id)
+    )).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Device session not found.")
+    return row[0], row[1]
+
+
+async def _blocked_device_ids(db: AsyncSession, user_ids: List[int]) -> dict:
+    if not user_ids:
+        return {}
+    rows = (await db.execute(
+        select(BlockedDevice.user_id, BlockedDevice.device_id).where(BlockedDevice.user_id.in_(user_ids))
+    )).all()
+    blocked: dict = {}
+    for uid, device_id in rows:
+        blocked.setdefault(uid, set()).add(device_id)
+    return blocked
+
+
+@router.get("/users/{user_id}/sessions")
+async def list_user_sessions(
+    user_id: int,
+    request: Request,
+    status_filter: Literal["active", "all"] = Query("active", alias="status"),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """A user's devices: signed-in ones (status=active) or the full history including signed-out ones."""
+    target = await _company_user(db, admin, user_id)
+    now = utcnow()
+    query = select(UserSession).where(UserSession.user_id == target.user_id)
+    if status_filter == "active":
+        query = query.where(*live_session_conditions(now))
+    query = query.order_by(
+        case((UserSession.revoked_at.is_(None), 0), else_=1),
+        func.coalesce(UserSession.last_active_at, UserSession.created_at).desc(),
+    ).limit(limit)
+    sessions = (await db.execute(query)).scalars().all()
+    blocked = (await _blocked_device_ids(db, [target.user_id])).get(target.user_id, set())
+    current = current_token_hash(request)
+    return [
+        session_to_dict(s, current_token_hash=current, blocked_device_ids=blocked, username=target.username, now=now)
+        for s in sessions
+    ]
+
+
+@router.post("/sessions/{session_id}/revoke")
+async def admin_revoke_session(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Sign out one device. Its next request gets 401 with X-Auth-Reason: admin_revoke."""
+    session, target = await _company_session(db, admin, session_id)
+    revoked = await revoke_sessions(db, reason="admin_revoke", session_ids=[session.session_id], by_user_id=admin.user_id)
+    if revoked:
+        add_audit(db, company_id=admin.company_id, actor_id=admin.user_id, action="SESSION_REVOKE",
+                  entity_type="UserSession", entity_id=session.session_id,
+                  new_value={"user_id": target.user_id, "device_name": session.device_name, "device_id": session.device_id})
+    await db.commit()
+    forget_tokens(revoked)
+    return {"revoked": len(revoked)}
+
+
+@router.post("/users/{user_id}/sessions/revoke-all")
+async def admin_revoke_all_sessions(
+    user_id: int,
+    request: Request,
+    payload: Optional[RevokeAllSessionsRequest] = None,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Sign out every device of a user. Admins acting on themselves keep the current session by default."""
+    target = await _company_user(db, admin, user_id)
+    keep_current = payload.keep_current if payload else True
+    exclude: List[int] = []
+    if keep_current and target.user_id == admin.user_id:
+        exclude = list((await db.execute(
+            select(UserSession.session_id).where(
+                UserSession.user_id == admin.user_id, UserSession.token_hash == current_token_hash(request)
+            )
+        )).scalars().all())
+    revoked = await revoke_sessions(db, reason="admin_revoke_all", user_id=target.user_id,
+                                    by_user_id=admin.user_id, exclude_session_ids=exclude)
+    if revoked:
+        add_audit(db, company_id=admin.company_id, actor_id=admin.user_id, action="SESSION_REVOKE_ALL",
+                  entity_type="User", entity_id=target.user_id, new_value={"revoked": len(revoked)})
+    await db.commit()
+    forget_tokens(revoked)
+    return {"revoked": len(revoked)}
+
+
+@router.get("/sessions")
+async def list_company_sessions(
+    request: Request,
+    user_id: Optional[int] = None,
+    client_type: Optional[str] = Query(None, max_length=20),
+    device_type: Optional[str] = Query(None, max_length=20),
+    q: Optional[str] = Query(None, max_length=100),
+    active_now: bool = False,
+    include_older: bool = False,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Every signed-in device in the admin's company, with a summary for the Active Devices tab.
+    Unused pre-tracking sessions are left out unless include_older=true."""
+    now = utcnow()
+    stale = stale_legacy_condition()
+    active_cutoff = now - timedelta(seconds=ACTIVE_NOW_SECONDS)
+    base = [User.company_id == admin.company_id, *live_session_conditions(now)]
+
+    in_use = ~stale
+    summary_row = (await db.execute(
+        select(
+            func.sum(case((in_use, 1), else_=0)),
+            func.sum(case((and_(in_use, UserSession.last_active_at >= active_cutoff), 1), else_=0)),
+            func.sum(case((and_(in_use, UserSession.device_type == "mobile"), 1), else_=0)),
+            func.sum(case((and_(in_use, UserSession.device_type == "tablet"), 1), else_=0)),
+            func.sum(case((and_(in_use, UserSession.device_type == "desktop", UserSession.client_type != "sync-agent"), 1), else_=0)),
+            func.sum(case((and_(in_use, UserSession.client_type == "sync-agent"), 1), else_=0)),
+            func.sum(case((stale, 1), else_=0)),
+        )
+        .select_from(UserSession)
+        .join(User, User.user_id == UserSession.user_id)
+        .where(*base)
+    )).first()
+    keys = ("total", "active_now", "mobile", "tablet", "desktop", "sync_agent", "older_sessions")
+    summary = {k: int(v or 0) for k, v in zip(keys, summary_row or ())}
+
+    conditions = list(base)
+    if not include_older:
+        conditions.append(in_use)
+    if user_id is not None:
+        conditions.append(UserSession.user_id == user_id)
+    if client_type:
+        conditions.append(UserSession.client_type == client_type)
+    if device_type:
+        conditions.append(UserSession.device_type == device_type)
+    if active_now:
+        conditions.append(UserSession.last_active_at >= active_cutoff)
+    if q:
+        like = f"%{q.strip()}%"
+        conditions.append(or_(
+            User.username.ilike(like), User.email.ilike(like),
+            UserSession.device_name.ilike(like), UserSession.ip_address.ilike(like),
+        ))
+
+    rows = (await db.execute(
+        select(UserSession, User.username)
+        .join(User, User.user_id == UserSession.user_id)
+        .where(*conditions)
+        .order_by(func.coalesce(UserSession.last_active_at, UserSession.created_at).desc())
+        .offset(offset)
+        .limit(limit)
+    )).all()
+    blocked = await _blocked_device_ids(db, list({s.user_id for s, _ in rows}))
+    current = current_token_hash(request)
+    return {
+        "summary": summary,
+        "sessions": [
+            session_to_dict(s, current_token_hash=current, blocked_device_ids=blocked.get(s.user_id, set()),
+                            username=username, now=now)
+            for s, username in rows
+        ],
+    }
+
+
+@router.post("/sessions/{session_id}/block")
+async def admin_block_device(
+    session_id: int,
+    request: Request,
+    payload: Optional[BlockDeviceRequest] = None,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Sign out this device and stop it signing in again as this user (until unblocked)."""
+    session, target = await _company_session(db, admin, session_id)
+    if not session.device_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This device signed in before device tracking, so it can't be identified for blocking. Sign it out instead.",
+        )
+    if session.token_hash == current_token_hash(request):
+        raise HTTPException(status_code=400, detail="You can't block the device you're using right now.")
+
+    blocked = (await db.execute(
+        select(BlockedDevice).where(BlockedDevice.user_id == target.user_id, BlockedDevice.device_id == session.device_id)
+    )).scalars().first()
+    if not blocked:
+        blocked = BlockedDevice(
+            company_id=admin.company_id,
+            user_id=target.user_id,
+            device_id=session.device_id,
+            device_name=session.device_name,
+            client_type=session.client_type,
+            device_type=session.device_type,
+            reason=(payload.reason.strip() or None) if payload and payload.reason else None,
+            blocked_by_user_id=admin.user_id,
+            created_at=utcnow(),
+        )
+        db.add(blocked)
+        await db.flush()
+    revoked = await revoke_sessions(db, reason="blocked", user_id=target.user_id, device_id=session.device_id,
+                                    by_user_id=admin.user_id)
+    add_audit(db, company_id=admin.company_id, actor_id=admin.user_id, action="DEVICE_BLOCK",
+              entity_type="BlockedDevice", entity_id=blocked.blocked_device_id,
+              new_value={"user_id": target.user_id, "device_id": session.device_id,
+                         "device_name": session.device_name, "reason": blocked.reason})
+    await db.commit()
+    forget_tokens(revoked)
+    return {"revoked": len(revoked), "blocked_device_id": blocked.blocked_device_id}
+
+
+@router.get("/users/{user_id}/blocked-devices")
+async def list_blocked_devices(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    target = await _company_user(db, admin, user_id)
+    rows = (await db.execute(
+        select(BlockedDevice, User.username)
+        .outerjoin(User, User.user_id == BlockedDevice.blocked_by_user_id)
+        .where(BlockedDevice.user_id == target.user_id)
+        .order_by(BlockedDevice.created_at.desc())
+    )).all()
+    return [blocked_device_to_dict(b, blocked_by=name) for b, name in rows]
+
+
+@router.delete("/blocked-devices/{blocked_device_id}", status_code=204)
+async def unblock_device(
+    blocked_device_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    blocked = (await db.execute(
+        select(BlockedDevice).where(
+            BlockedDevice.blocked_device_id == blocked_device_id,
+            BlockedDevice.company_id == admin.company_id,
+        )
+    )).scalars().first()
+    if not blocked:
+        raise HTTPException(status_code=404, detail="Blocked device not found.")
+    add_audit(db, company_id=admin.company_id, actor_id=admin.user_id, action="DEVICE_UNBLOCK",
+              entity_type="BlockedDevice", entity_id=blocked.blocked_device_id,
+              new_value={"user_id": blocked.user_id, "device_id": blocked.device_id, "device_name": blocked.device_name})
+    await db.delete(blocked)
+    await db.commit()
 

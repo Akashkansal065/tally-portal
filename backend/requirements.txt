@@ -161,3 +161,7 @@ wcwidth==0.8.2
 websockets==15.0.1
 yarl==1.24.5
 zipp==4.1.0
+
+# Test dependencies (run tests from backend/ with: pytest tests)
+aiosqlite==0.22.1
+pytest==9.1.1

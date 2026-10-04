@@ -1,13 +1,65 @@
 import urllib.request
 import urllib.error
 import urllib.parse
+import hashlib
 import json
 import logging
+import platform
 import time
 import socket
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Callable, Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("CloudClient")
+
+AGENT_VERSION = "1.1.0"
+
+# Reasons (X-Auth-Reason) after which the agent may log in again by itself with the saved password.
+# "replaced" means a newer login from this same PC (e.g. the GUI's Test Connection), so logging in
+# again is safe. Anything else (signed out by an admin, device blocked, password changed, account
+# deactivated, device limit) means a person decided this PC should stop, so the agent halts until
+# someone re-enters the password in Settings.
+AUTO_RELOGIN_REASONS = {None, "", "expired", "invalid", "replaced"}
+
+HALT_MESSAGES = {
+    "admin_revoke": "Signed out by an administrator. Re-enter the password in Settings to resume.",
+    "admin_revoke_all": "Signed out by an administrator. Re-enter the password in Settings to resume.",
+    "blocked": "This PC was blocked by an administrator.",
+    "device_blocked": "This PC was blocked by an administrator.",
+    "password_change": "The account password was changed. Enter the new password in Settings.",
+    "deactivated": "The sync account was deactivated. Contact your administrator.",
+    "device_limit": "Signed out because the account signed in on another device. Re-enter the password in Settings.",
+    "self_revoke": "Signed out from another device. Re-enter the password in Settings to resume.",
+    "logout": "Signed out. Re-enter the password in Settings to resume.",
+}
+
+
+def halt_message(reason: Optional[str]) -> str:
+    return HALT_MESSAGES.get(reason or "", "Signed out by the server. Re-enter the password in Settings to resume.")
+
+
+def _auth_reason(error: urllib.error.HTTPError) -> Optional[str]:
+    try:
+        return error.headers.get("X-Auth-Reason") if error.headers else None
+    except Exception:
+        return None
+
+
+def device_identity_headers() -> Dict[str, str]:
+    """Identifies this PC to the backend so admins can see, sign out and block it."""
+    try:
+        from security import _get_machine_identifier
+        device_id = "agent-" + hashlib.sha256(_get_machine_identifier()).hexdigest()[:32]
+    except Exception:
+        device_id = "agent-" + hashlib.sha256(platform.node().encode("utf-8")).hexdigest()[:32]
+    host = (platform.node() or "Windows PC").split(".")[0][:100]
+    return {
+        "User-Agent": f"SnehDistSyncAgent/{AGENT_VERSION} ({platform.system()} {platform.release()})",
+        "X-Device-Id": device_id,
+        "X-Client-Type": "sync-agent",
+        "X-Device-Type": "desktop",
+        "X-Device-Name": host,
+        "X-App-Version": AGENT_VERSION,
+    }
 
 def _inbound_result(res_json: Dict[str, Any], status_code: int, endpoint: str) -> Tuple[bool, Dict[str, Any]]:
     """Only an explicit success counts: the server answers HTTP 200 {"status": "error"} for refused imports."""
@@ -28,7 +80,9 @@ class CloudClient:
         timeout: int = 10,
         email: str = "",
         password: str = "",
-        on_token_refreshed: Optional[Any] = None
+        on_token_refreshed: Optional[Any] = None,
+        auth_halt_reason: str = "",
+        on_auth_halted: Optional[Callable[[str], None]] = None
     ):
         self.backend_url = backend_url.rstrip("/")
         self.token = token
@@ -36,9 +90,25 @@ class CloudClient:
         self.email = email
         self.password = password
         self.on_token_refreshed = on_token_refreshed
+        # Non-empty while the server has told this agent to stop (see AUTO_RELOGIN_REASONS)
+        self.auth_halt_reason = auth_halt_reason or ""
+        self.on_auth_halted = on_auth_halted
+        self.identity_headers = device_identity_headers()
+
+    def _halt(self, reason: str) -> None:
+        if self.auth_halt_reason == reason:
+            return
+        self.auth_halt_reason = reason
+        logger.error(f"⛔ Sync paused: {halt_message(reason)} (reason: {reason})")
+        if self.on_auth_halted:
+            try:
+                self.on_auth_halted(reason)
+            except Exception as ex:
+                logger.debug(f"Error calling on_auth_halted: {ex}")
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
+            **self.identity_headers,
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
@@ -52,7 +122,7 @@ class CloudClient:
             url = f"{self.backend_url}{endpoint}"
             try:
                 payload = json.dumps({"email": username_or_email, "password": password}).encode("utf-8")
-                req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+                req = urllib.request.Request(url, data=payload, headers={**self.identity_headers, "Content-Type": "application/json"})
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     token = data.get("access_token") or data.get("token")
@@ -60,6 +130,7 @@ class CloudClient:
                         self.token = token
                         self.email = username_or_email
                         self.password = password
+                        self.auth_halt_reason = ""
                         return True, self.token
             except urllib.error.HTTPError as e:
                 try:
@@ -67,13 +138,22 @@ class CloudClient:
                     detail = err_json.get("detail", f"HTTP {e.code}")
                 except Exception:
                     detail = f"HTTP {e.code}"
+                reason = _auth_reason(e)
+                if e.code == 403 and reason in ("device_blocked", "device_limit"):
+                    self._halt(reason)
                 return False, detail
             except Exception as e:
                 logger.debug(f"Auth attempt on {endpoint} failed: {e}")
         return False, "Incorrect email/username or password"
 
-    def reauthenticate(self) -> bool:
-        """Attempts to obtain a fresh access token if credentials are saved."""
+    def reauthenticate(self, reason: Optional[str] = None) -> bool:
+        """Attempts to obtain a fresh access token if credentials are saved, unless the server ended
+        the session on purpose (see AUTO_RELOGIN_REASONS) or the agent is already halted."""
+        if self.auth_halt_reason:
+            return False
+        if reason not in AUTO_RELOGIN_REASONS:
+            self._halt(reason)
+            return False
         if not self.email or not self.password:
             return False
         logger.info(f"🔄 Access token expired. Auto-reauthenticating as '{self.email}'...")
@@ -120,7 +200,7 @@ class CloudClient:
             except urllib.error.HTTPError as e:
                 if e.code == 401:
                     logger.warning("⚠️ Received HTTP 401 on outbound-queue. Attempting auto-reauth...")
-                    if self.reauthenticate():
+                    if self.reauthenticate(_auth_reason(e)):
                         try:
                             req_retry = urllib.request.Request(url, headers=self._get_headers())
                             with urllib.request.urlopen(req_retry, timeout=self.timeout) as resp:
@@ -129,7 +209,7 @@ class CloudClient:
                                     return items, None
                         except Exception as retry_ex:
                             logger.error(f"Retry after reauth failed: {retry_ex}")
-                    last_error = f"Authentication Required (HTTP 401). Please check email/password in config."
+                    last_error = halt_message(self.auth_halt_reason) if self.auth_halt_reason else "Authentication Required (HTTP 401). Please check email/password in config."
                     break  # Do not fallback to /api/v1 when auth fails
                 else:
                     last_error = f"HTTP {e.code} on {endpoint}: {e.reason}"
@@ -154,7 +234,7 @@ class CloudClient:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return resp.status == 200
             except urllib.error.HTTPError as e:
-                if e.code == 401 and self.reauthenticate():
+                if e.code == 401 and self.reauthenticate(_auth_reason(e)):
                     try:
                         req_retry = urllib.request.Request(url, data=payload, headers=self._get_headers())
                         with urllib.request.urlopen(req_retry, timeout=self.timeout) as resp:
@@ -170,6 +250,7 @@ class CloudClient:
     def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None, force: bool = False) -> Tuple[bool, Dict[str, Any]]:
         """Uploads exported Tally XML to MyTally backend to update the database with comprehensive diagnostics."""
         headers = {
+            **self.identity_headers,
             "Content-Type": "text/xml;charset=utf-8"
         }
         if self.token:
@@ -228,7 +309,7 @@ class CloudClient:
                 # Handle 401 token expiration with auto-reauthentication
                 if e.code == 401:
                     logger.warning(f"⚠️ Inbound push returned HTTP 401 (token expired). Auto-reauthenticating...")
-                    if self.reauthenticate():
+                    if self.reauthenticate(_auth_reason(e)):
                         headers["Authorization"] = f"Bearer {self.token}"
                         retry_start = time.time()
                         try:
@@ -345,7 +426,7 @@ class CloudClient:
                     stk_alt = int(data.get("last_stock_item_alter_id", 0))
                     return max(max_alt, led_alt, vch_alt, stk_alt), vch_alt
             except urllib.error.HTTPError as e:
-                if e.code == 401 and self.reauthenticate():
+                if e.code == 401 and self.reauthenticate(_auth_reason(e)):
                     try:
                         req_retry = urllib.request.Request(url, headers=self._get_headers())
                         with urllib.request.urlopen(req_retry, timeout=self.timeout) as resp:

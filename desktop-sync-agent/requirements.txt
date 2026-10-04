@@ -5,3 +5,6 @@ pyinstaller>=5.13.0
 requests>=2.31.0
 cryptography>=41.0.0
 keyring>=25.0.0
+
+# Test dependencies (run tests from desktop-sync-agent/ with: pytest tests)
+pytest==9.1.1

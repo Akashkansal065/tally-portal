@@ -15,7 +15,7 @@ import {
   IndianRupee,
   MapPin,
   MapPinOff,
-  LogOut,
+  LogOut, MonitorSmartphone,
   Sun,
   Moon,
   Menu,
@@ -1033,7 +1033,8 @@ export function GlobalHeader() {
               )}
             </nav>
 
-            <div className="p-3 border-t border-border">
+            <div className="p-3 border-t border-border space-y-1">
+              <DrawerLink href="/account/devices" icon={MonitorSmartphone} label="My Devices" onClick={() => setDrawerOpen(false)} />
               <button
                 onClick={logout}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-destructive hover:bg-destructive/10 text-sm font-medium transition-colors"

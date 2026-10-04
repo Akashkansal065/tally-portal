@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE } from '@/lib/utils'
+import { getDeviceHeaders } from '@/lib/device'
 import { Eye, EyeOff, LogIn } from 'lucide-react'
 
 export default function LoginPage() {
@@ -108,7 +109,7 @@ export default function LoginPage() {
         // Log in immediately after registration
         const loginRes = await fetch(`${API_BASE}/auth/login`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(await getDeviceHeaders()) },
           body: JSON.stringify({ email, password }),
           cache: 'no-store',
         })
@@ -122,7 +123,7 @@ export default function LoginPage() {
         // Normal Sign In
         const res = await fetch(`${API_BASE}/auth/login`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(await getDeviceHeaders()) },
           body: JSON.stringify({ email, password }),
           cache: 'no-store',
         })
@@ -159,7 +160,7 @@ export default function LoginPage() {
           {error && (
             <div className="mb-4 p-3 rounded-xl bg-destructive/10 text-destructive text-sm flex items-start gap-2">
               <span>⚠️</span>
-              <span className="break-all">{error}</span>
+              <span className="break-words">{error}</span>
             </div>
           )}
 

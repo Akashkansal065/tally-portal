@@ -41,6 +41,7 @@ MyTally fixes this in three parts:
 - **GST.** GSTR summaries, HSN summary, 2B reconciliation, and a pluggable GST provider adapter.
 - **Field force.** GPS attendance with geofencing and a background location trail (native Android foreground service), shop check-ins, order capture, payment collection with photo proof, expenses, and a visit planner.
 - **Admin.** Multi-company tenancy, role-based permissions with per-user overrides and data scopes (ledger, stock and voucher-type restrictions), maker-checker approval rules, and web push notifications.
+- **Device sessions.** Every login records the device it came from (phone app, browser, Sync Agent). Admins see each user's devices and every signed-in device in the company (Admin → Active Devices), sign any of them out, block a device from signing in again, and cap devices per role. Every user can review and sign out their own devices (menu → My Devices).
 - **Payments.** Razorpay payment links with webhook auto-receipting, and UPI.
 - **Backup.** Tally master and voucher backup/restore module (`backend/backup_module/`).
 
@@ -271,6 +272,7 @@ npx cap open ios
 | `uvicorn app.main:app --reload --port 8000` | Dev server |
 | `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1` | Production-style run (see the single-worker note below) |
 | `python -m app.core.seed` | Re-seed global roles, modules and permissions (idempotent; also runs on every startup) |
+| `pip install -r requirements.txt` then `pytest` | Automated tests (device sessions, blocking, device limits, cleanup). Use throwaway SQLite databases and never touch the database in `.env` |
 | `python tests/e2e_vouchers/run_all_vouchers_e2e.py` | End-to-end voucher round trips. **Needs the API running and Tally reachable.** Writes `e2e_voucher_trace_report.json` |
 | `python scratch/check_sync_counts.py` | Compare row counts between Tally and the mirror |
 | `python scratch/reset_sync.py` | ⚠️ Truncate synced vouchers and reset AlterIDs so the next sync is a full re-import |
@@ -288,10 +290,11 @@ npx cap open ios
 | `python agent.py --discover` | Detect the Tally host and open companies only |
 | `python agent.py --sync-all` | Force a full (non-incremental) inbound sync |
 | `python agent.py --install-startup` / `--uninstall-startup` | Toggle auto-start on Windows boot |
+| `pip install -r requirements.txt` then `pytest tests` | Agent tests (sign-out handling, inbound retry) against a fake backend |
 
 ### Tests and CI
 
-There's no unit-test suite yet. `backend/tests/e2e_vouchers/` holds integration scripts that need a live backend and Tally. GitHub Actions currently runs only OpenSSF Scorecard (`.github/workflows/scorecard.yml`). Before opening a PR, run at least `npm run lint`, `npx tsc --noEmit` and a manual smoke test of the screens you touched.
+Automated suites: `backend/tests/` (run `pytest` from `backend/`) and `desktop-sync-agent/tests/` (run `pytest tests` from `desktop-sync-agent/`). `backend/tests/e2e_vouchers/` holds older integration scripts that need a live backend and Tally. GitHub Actions currently runs only OpenSSF Scorecard (`.github/workflows/scorecard.yml`). Before opening a PR, run at least `npm run lint`, `npx tsc --noEmit` and a manual smoke test of the screens you touched.
 
 ---
 
@@ -315,6 +318,8 @@ There's no unit-test suite yet. `backend/tests/e2e_vouchers/` holds integration 
 | `GST_PROVIDER_URL` / `GST_PROVIDER_API_KEY` | | — | GST API adapter |
 | `RATE_LIMIT_ENABLED`, `LOGIN_RATE_LIMIT`, `REGISTER_RATE_LIMIT` | | `true`, `5/minute`, `5/minute; 20/hour` | slowapi limits |
 | `LOG_LEVEL`, `LOG_FORMAT` | | `INFO`, `text` | `json` for structured logs |
+| `DEVICE_LIMIT_POLICY` | | `evict_oldest` | When a role's device limit is reached: `evict_oldest` signs out the least recently used device, `refuse` rejects the new login |
+| `SESSION_PURGE_EXPIRED_AFTER_DAYS`, `SESSION_PURGE_REVOKED_AFTER_DAYS` | | `30`, `90` | Daily cleanup of old login sessions |
 
 ### `frontend-nextjs/.env.local` (template: `frontend-nextjs/.env.example`)
 

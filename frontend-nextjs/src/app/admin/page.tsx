@@ -37,10 +37,14 @@ import {
   Activity,
   ArrowUpRight,
   ShieldCheck,
+  MonitorSmartphone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
 import { RolesManagement } from '@/components/admin/RolesManagement'
+import { DeviceSessionsModal } from '@/components/admin/DeviceSessionsModal'
+import { ActiveDevicesPanel } from '@/components/admin/ActiveDevicesPanel'
+import { relativeTime } from '@/lib/device-sessions'
 import rolesConfig from '@/lib/roles.json'
 
 type UserItem = {
@@ -51,6 +55,11 @@ type UserItem = {
   role_id: number
   role_name: string
   created_at?: string
+  /** Devices signed in and used since device tracking began */
+  active_devices?: number
+  /** Unused sessions from before device tracking */
+  older_sessions?: number
+  last_active_at?: string | null
   showLedger: boolean
   showSalesLedgers: boolean
   showPurchaseLedgers: boolean
@@ -137,7 +146,8 @@ export default function AdminPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
   
-  const [tab, setTab] = useState<'users' | 'roles' | 'sync' | 'logs' | 'einvoice' | 'cache'>('users')
+  const [tab, setTab] = useState<'users' | 'roles' | 'sessions' | 'sync' | 'logs' | 'einvoice' | 'cache'>('users')
+  const [devicesUser, setDevicesUser] = useState<UserItem | null>(null)
   const [users, setUsers] = useState<UserItem[]>([])
   const [logs, setLogs] = useState<AuditLog[]>([])
   const [loading, setLoading] = useState(false)
@@ -1166,6 +1176,15 @@ const handleSavePermissions = async () => {
             <ShieldCheck className="h-4 w-4" /> Roles & Permissions
           </button>
           <button
+            onClick={() => setTab('sessions')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'sessions' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <MonitorSmartphone className="h-4 w-4" /> Active Devices
+          </button>
+          <button
             onClick={() => setTab('sync')}
             className={cn(
               'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
@@ -1256,10 +1275,24 @@ const handleSavePermissions = async () => {
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-[10px] font-bold px-2 py-0.5 bg-muted text-muted-foreground rounded-lg uppercase tracking-wider">
                           Role: {u.role_name}
                         </span>
+                        <button
+                          onClick={() => setDevicesUser(u)}
+                          className={cn(
+                            'text-[10px] font-bold px-2 py-0.5 rounded-lg border flex items-center gap-1 cursor-pointer transition-colors',
+                            (u.active_devices ?? 0) > 0
+                              ? 'bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20 hover:bg-sky-500/20'
+                              : 'bg-muted text-muted-foreground border-border hover:bg-muted/70'
+                          )}
+                          title="Show this user's devices"
+                        >
+                          <MonitorSmartphone className="w-3 h-3" />
+                          {(u.active_devices ?? 0) === 1 ? '1 active device' : `${u.active_devices ?? 0} active devices`}
+                          {(u.older_sessions ?? 0) > 0 && <span className="font-medium opacity-80">· {u.older_sessions} older</span>}
+                        </button>
                       </div>
                     </div>
 
@@ -1267,6 +1300,10 @@ const handleSavePermissions = async () => {
                       <div className="flex items-center justify-between text-[11px] text-muted-foreground font-medium">
                         <span>Created Date</span>
                         <span>{formatDate(u.created_at || '2026-06-02')}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground font-medium">
+                        <span>Last Active</span>
+                        <span>{relativeTime(u.last_active_at ?? null) ?? 'Not since device tracking began'}</span>
                       </div>
 
                       <div className="flex items-center justify-end gap-2 pt-1 flex-wrap">
@@ -1293,6 +1330,12 @@ const handleSavePermissions = async () => {
                           className="h-8 px-3 text-xs font-bold border border-border/80 hover:bg-muted text-foreground rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
                         >
                           <Users className="w-3.5 h-3.5" /> Companies
+                        </button>
+                        <button
+                          onClick={() => setDevicesUser(u)}
+                          className="h-8 px-3 text-xs font-bold border border-border/80 hover:bg-muted text-foreground rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <MonitorSmartphone className="w-3.5 h-3.5" /> Devices
                         </button>
                         <button
                           onClick={() => deleteUserItem(u)}
@@ -2044,6 +2087,8 @@ const handleSavePermissions = async () => {
                 <div className="text-center py-8 text-muted-foreground text-xs">No audit logs logged.</div>
               )}
             </div>
+          ) : tab === 'sessions' ? (
+            <ActiveDevicesPanel token={token} />
           ) : tab === 'einvoice' ? (
             <form onSubmit={saveEinvSettings} className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm font-sans text-sm">
               <div>
@@ -2235,6 +2280,16 @@ const handleSavePermissions = async () => {
           )}
         </div>
       </div>
+
+      {/* Per-user devices: sign out, block, history */}
+      {devicesUser && (
+        <DeviceSessionsModal
+          user={devicesUser}
+          token={token}
+          onClose={() => setDevicesUser(null)}
+          onChanged={fetchData}
+        />
+      )}
 
       {/* Create User Modal */}
       {showCreateUser && (

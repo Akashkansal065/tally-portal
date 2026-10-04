@@ -22,7 +22,8 @@ import {
   Loader2,
   Sparkles,
   Layers,
-  AlertCircle
+  AlertCircle,
+  MonitorSmartphone
 } from 'lucide-react'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -34,6 +35,8 @@ export interface RoleItem {
   description?: string
   user_count: number
   is_system: boolean
+  /** Max simultaneously signed-in devices per user; null = unlimited */
+  max_active_devices?: number | null
   permissions?: PermissionItem[]
 }
 
@@ -144,6 +147,10 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
   const [editRoleName, setEditRoleName] = useState('')
   const [editRoleDesc, setEditRoleDesc] = useState('')
   const [editLoading, setEditLoading] = useState(false)
+
+  const [limitRole, setLimitRole] = useState<RoleItem | null>(null)
+  const [limitValue, setLimitValue] = useState('')
+  const [limitSaving, setLimitSaving] = useState(false)
 
   const [deleteLoadingId, setDeleteLoadingId] = useState<number | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
@@ -337,6 +344,39 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
     }
   }
 
+  // Device limit (works for system roles too, unlike name/description editing)
+  const handleSaveDeviceLimit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!token || !limitRole) return
+    const limit = limitValue.trim() === '' ? 0 : Number(limitValue)
+    if (!Number.isInteger(limit) || limit < 0 || limit > 50) {
+      toast.error('Enter a whole number from 0 to 50 (0 means unlimited).')
+      return
+    }
+    setLimitSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/admin/roles/${limitRole.role_id}`, {
+        method: 'PUT',
+        headers: authHeaders(token),
+        body: JSON.stringify({ max_active_devices: limit }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(typeof err.detail === 'string' ? err.detail : 'Failed to update device limit')
+      }
+      const updated: RoleItem = await res.json()
+      onRolesChange(roles.map((r) => (r.role_id === updated.role_id ? { ...r, max_active_devices: updated.max_active_devices ?? null } : r)))
+      toast.success(updated.max_active_devices
+        ? `${updated.name}: up to ${updated.max_active_devices} device${updated.max_active_devices === 1 ? '' : 's'} per user.`
+        : `${updated.name}: no device limit.`)
+      setLimitRole(null)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Error updating device limit')
+    } finally {
+      setLimitSaving(false)
+    }
+  }
+
   // Delete Role
   const handleDeleteRole = async (role: RoleItem) => {
     if (!token) return
@@ -491,10 +531,23 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
               </div>
 
               <div className="mt-4 pt-3 border-t border-border/60 flex items-center justify-between text-xs">
-                <span className="text-muted-foreground font-medium flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5 text-muted-foreground/70" />
-                  <strong className="text-foreground">{r.user_count}</strong> user{r.user_count === 1 ? '' : 's'}
-                </span>
+                <div className="flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-muted-foreground font-medium flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-muted-foreground/70" />
+                    <strong className="text-foreground">{r.user_count}</strong> user{r.user_count === 1 ? '' : 's'}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setLimitRole(r)
+                      setLimitValue(r.max_active_devices ? String(r.max_active_devices) : '')
+                    }}
+                    title="Set how many devices each user of this role can be signed in on"
+                    className="text-[10px] font-bold px-2 py-0.5 rounded-lg border border-border bg-muted/60 text-muted-foreground hover:text-foreground hover:bg-muted flex items-center gap-1 cursor-pointer"
+                  >
+                    <MonitorSmartphone className="w-3 h-3" />
+                    {r.max_active_devices ? `Max ${r.max_active_devices} device${r.max_active_devices === 1 ? '' : 's'}` : 'Any number of devices'}
+                  </button>
+                </div>
 
                 <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                   {/* Clone button */}
@@ -955,6 +1008,63 @@ export function RolesManagement({ roles, onRolesChange, token, onPermissionsSave
                   className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 active:scale-98 text-white font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer disabled:opacity-50"
                 >
                   {createLoading ? 'Creating...' : 'Create Role'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* DEVICE LIMIT MODAL */}
+      {limitRole && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-card w-full max-w-md rounded-3xl shadow-xl overflow-hidden animate-in zoom-in-95 duration-200 border border-border">
+            <div className="px-6 py-5 border-b border-border flex justify-between items-center">
+              <div>
+                <h3 className="font-black text-lg text-foreground flex items-center gap-2">
+                  <MonitorSmartphone className="w-5 h-5 text-emerald-500" />
+                  Device limit · {limitRole.name}
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">How many devices each user with this role can be signed in on at once.</p>
+              </div>
+              <button
+                onClick={() => setLimitRole(null)}
+                aria-label="Close"
+                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveDeviceLimit} className="p-6 space-y-4">
+              <div className="space-y-1.5">
+                <label htmlFor="role-device-limit" className="text-xs font-bold text-foreground ml-1">Maximum devices per user</label>
+                <input
+                  id="role-device-limit"
+                  type="number"
+                  min={0}
+                  max={50}
+                  step={1}
+                  inputMode="numeric"
+                  value={limitValue}
+                  onChange={(e) => setLimitValue(e.target.value)}
+                  placeholder="Empty or 0 = no limit"
+                  className="w-full px-4 py-2.5 bg-muted/40 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                />
+                <p className="text-[11px] text-muted-foreground ml-1">
+                  When a user signs in on one device too many, the device they used least recently is signed out. Signing in again on the same device never counts twice.
+                </p>
+                {limitRole.name.toLowerCase() === 'admin' && (
+                  <p className="text-[11px] font-semibold text-amber-600 ml-1">
+                    This applies to administrators too. If the Desktop Sync Agent signs in as an admin, count it as one of the devices.
+                  </p>
+                )}
+              </div>
+              <div className="pt-3 flex gap-2">
+                <button type="button" onClick={() => setLimitRole(null)} className="flex-1 py-2.5 bg-muted hover:bg-muted/80 text-foreground font-bold rounded-xl text-xs transition-colors cursor-pointer">
+                  Cancel
+                </button>
+                <button type="submit" disabled={limitSaving} className="flex-1 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer disabled:opacity-50">
+                  {limitSaving ? 'Saving...' : 'Save limit'}
                 </button>
               </div>
             </form>

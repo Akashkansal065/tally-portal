@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "text"  # 'text' or 'json'
 
+    # Device sessions
+    # What happens when a role's max_active_devices is reached: "evict_oldest" signs out the
+    # least recently used device; "refuse" rejects the new login
+    DEVICE_LIMIT_POLICY: str = "evict_oldest"
+    SESSION_PURGE_EXPIRED_AFTER_DAYS: int = 30
+    SESSION_PURGE_REVOKED_AFTER_DAYS: int = 90
+
     # Pagination Settings
     DEFAULT_PAGE_SIZE: int = 50
     MAX_PAGE_SIZE: int = 50000

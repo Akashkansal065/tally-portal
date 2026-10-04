@@ -18,7 +18,7 @@ from config import (
     uninstall_startup as cfg_uninstall_startup
 )
 from tally_client import TallyClient
-from cloud_client import CloudClient
+from cloud_client import CloudClient, halt_message
 
 # Configure Logging with both Console and Rotating File Handler in safe logs directory
 logs_dir = get_logs_dir()
@@ -105,7 +105,9 @@ class DesktopSyncAgent:
             token=self.config.auth_token,
             email=self.config.email or self.config.username,
             password=self.config.password,
-            on_token_refreshed=self._on_token_refreshed
+            on_token_refreshed=self._on_token_refreshed,
+            auth_halt_reason=self.config.auth_halt_reason,
+            on_auth_halted=self._on_auth_halted
         )
         self.last_inbound_time = 0
         self.active_company_name = self.config.company_name
@@ -167,7 +169,10 @@ class DesktopSyncAgent:
         self.immediate_sync_requested = True
 
     def get_status(self) -> dict:
-        if self.is_paused:
+        halt_reason = self.cloud.auth_halt_reason
+        if halt_reason:
+            status_text = "BLOCKED" if halt_reason in ("blocked", "device_blocked") else "SIGNED OUT"
+        elif self.is_paused:
             status_text = "PAUSED"
         elif self.is_syncing:
             status_text = "SYNCING"
@@ -195,6 +200,8 @@ class DesktopSyncAgent:
             "last_sync_status": self.last_sync_status,
             "is_paused": self.is_paused,
             "is_syncing": self.is_syncing,
+            "auth_halt_reason": halt_reason,
+            "auth_halt_message": halt_message(halt_reason) if halt_reason else "",
         }
 
     def reload_config(self, new_config: Optional[AgentConfig] = None):
@@ -208,7 +215,9 @@ class DesktopSyncAgent:
             token=self.config.auth_token,
             email=self.config.email or self.config.username,
             password=self.config.password,
-            on_token_refreshed=self._on_token_refreshed
+            on_token_refreshed=self._on_token_refreshed,
+            auth_halt_reason=self.config.auth_halt_reason,
+            on_auth_halted=self._on_auth_halted
         )
         self.active_company_name = self.config.company_name
         logger.info("🔄 Agent configuration reloaded.")
@@ -216,6 +225,14 @@ class DesktopSyncAgent:
     def _on_token_refreshed(self, new_token: str):
         self.config.auth_token = new_token
         save_config(self.config, self.config_path)
+
+    def _on_auth_halted(self, reason: str):
+        """The server signed this PC out on purpose or blocked it: stop syncing until credentials are re-entered."""
+        self.config.auth_halt_reason = reason
+        self.config.auth_token = ""
+        save_config(self.config, self.config_path)
+        self.cloud_message = halt_message(reason)
+        self.last_sync_status = halt_message(reason)
 
     def discover_and_report(self):
         logger.info(f"🔍 Contacting Tally XML Server at {self.config.tally_url}...")
@@ -263,8 +280,11 @@ class DesktopSyncAgent:
         else:
             logger.warning(f"⚠️ Cloud Connection: WARNING ({cloud_msg})")
 
-        # Authenticate if credentials are provided
-        if self.config.email and self.config.password:
+        # Authenticate if credentials are provided (not while an admin has signed this PC out or blocked it)
+        if self.config.auth_halt_reason:
+            self.cloud_message = halt_message(self.config.auth_halt_reason)
+            logger.warning(f"⛔ Not signing in: {self.cloud_message}")
+        elif self.config.email and self.config.password:
             auth_ok, auth_res = self.cloud.authenticate(self.config.email, self.config.password)
             if auth_ok:
                 logger.info(f"🔑 Authenticated as '{self.config.email}' successfully.")
@@ -317,6 +337,8 @@ class DesktopSyncAgent:
 
     def sync_outbound_cycle(self) -> int:
         """Pulls pending voucher/ledger creation requests from Cloud and pushes them to Tally."""
+        if self.cloud.auth_halt_reason:
+            return 0
         self.check_and_handle_company_switch()
 
         tasks, err = self.cloud.fetch_outbound_queue()
@@ -367,7 +389,7 @@ class DesktopSyncAgent:
 
     def sync_inbound_cycle(self, is_incremental: bool = False):
         """Pulls masters and vouchers from Tally and pushes them into MyTally Cloud database with deep diagnostics."""
-        if not self.active_company_name:
+        if not self.active_company_name or self.cloud.auth_halt_reason:
             return
 
         # Pre-flight check: if Tally was offline, quickly test before attempting 9 collection exports

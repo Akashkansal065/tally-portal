@@ -40,6 +40,11 @@ async def lifespan(app: FastAPI):
         
     # 3. Dynamically sync all model schemas & missing columns automatically
     await auto_sync_all_model_schemas()
+
+    # Indexes added to existing tables after they were created (create_all skips existing tables)
+    from app.core.database import ensure_table_indexes
+    from app.models.portal_core import UserSession
+    await ensure_table_indexes(UserSession.__table__)
         
     # Seed global default roles, modules, and permissions.
     def sync_seed(connection):
@@ -59,13 +64,18 @@ async def lifespan(app: FastAPI):
     # 5. Start background Attendance Auto Punch-Out worker task (checks every 60 seconds)
     from app.services.attendance_worker import attendance_auto_checkout_worker
     attendance_worker_task = asyncio.create_task(attendance_auto_checkout_worker(60))
+
+    # 6. Daily purge of old login sessions
+    from app.services.session_cleanup import session_cleanup_worker
+    session_cleanup_task = asyncio.create_task(session_cleanup_worker())
                 
     try:
         yield
     finally:
         keep_alive_task.cancel()
         attendance_worker_task.cancel()
-        await asyncio.gather(keep_alive_task, attendance_worker_task, return_exceptions=True)
+        session_cleanup_task.cancel()
+        await asyncio.gather(keep_alive_task, attendance_worker_task, session_cleanup_task, return_exceptions=True)
 
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -93,6 +103,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Lets the browser app read why a session ended (signed out by admin, blocked, ...)
+    expose_headers=["X-Auth-Reason"],
 )
 
 app.include_router(health.router)

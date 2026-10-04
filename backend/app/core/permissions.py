@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import time
 import copy
 from typing import Dict, Any, Optional, Set
@@ -28,12 +29,18 @@ def is_admin_user(user: Optional[User]) -> bool:
     """True if the user's role is one of the administrator roles (role must be loaded)."""
     return bool(user is not None and user.role is not None and user.role.name and user.role.name.lower() in ADMIN_ROLE_NAMES)
 
+logger = logging.getLogger("app.core.permissions")
+
+# How often a session's last_active_at is written while it's in use
+LAST_ACTIVE_WRITE_INTERVAL_SECONDS = 300
+
 # In-memory auth and permissions caches with 60s TTL
 AUTH_CACHE_TTL_SECONDS = 300
 PERMISSIONS_CACHE_TTL_SECONDS = 300
 
 # Cache storage:
-# _auth_cache: token_hash -> {"user": User, "user_id": int, "allowed_company_ids": Set[int], "expires_at": float}
+# _auth_cache: token_hash -> {"user": User, "user_id": int, "allowed_company_ids": Set[int], "expires_at": float,
+#                             "session_id": int, "last_active_written": float}
 # "user" is a detached snapshot that is only ever merged (copied) into request sessions, never mutated.
 _auth_cache: Dict[str, Dict[str, Any]] = {}
 
@@ -61,14 +68,26 @@ def invalidate_auth_cache(token_hash: Optional[str] = None, user_id: Optional[in
         for th in to_del:
             _auth_cache.pop(th, None)
 
-async def revoke_all_user_sessions(user_id: int, db: AsyncSession) -> None:
+async def revoke_all_user_sessions(user_id: int, db: AsyncSession, reason: str = "password_change",
+                                   by_user_id: Optional[int] = None) -> None:
     """Stage revocation of every live session for a user (password change, deactivation).
     The caller commits, then calls invalidate_auth_cache(user_id=...) so no request re-caches a revoked session."""
-    await db.execute(
-        update(UserSession)
-        .where(UserSession.user_id == user_id, UserSession.revoked_at == None)
-        .values(revoked_at=datetime.now(timezone.utc))
-    )
+    from app.core.sessions import revoke_sessions
+    await revoke_sessions(db, reason=reason, user_id=user_id, by_user_id=by_user_id)
+
+
+async def _touch_session(db: AsyncSession, session_id: int) -> None:
+    """Record activity on a session in its own short transaction, so the request's work is never committed here."""
+    try:
+        async with AsyncSession(db.bind, expire_on_commit=False) as touch_db:
+            await touch_db.execute(
+                update(UserSession)
+                .where(UserSession.session_id == session_id)
+                .values(last_active_at=datetime.now(timezone.utc).replace(tzinfo=None))
+            )
+            await touch_db.commit()
+    except Exception as e:  # activity tracking must never fail a request
+        logger.warning(f"Could not update last_active_at for session {session_id}: {e}")
 
 def invalidate_permissions_cache(user_id: Optional[int] = None):
     """Invalidate cached permissions for a given user_id or all users."""
@@ -96,6 +115,8 @@ async def get_current_user(
     )
     
     payload = decode_access_token(token)
+    # Covers malformed and JWT-expired tokens (the JWT expires together with its session)
+    credentials_exception.headers["X-Auth-Reason"] = "invalid"
     user_id_str = payload.get("sub")
     if user_id_str is None:
         raise credentials_exception
@@ -114,6 +135,9 @@ async def get_current_user(
     # 1. Check in-memory auth cache (0 DB queries on cache hit)
     cached_entry = _auth_cache.get(token_hash)
     if cached_entry and cached_entry.get("expires_at", 0) > now:
+        if cached_entry.get("session_id") and now - cached_entry.get("last_active_written", 0) >= LAST_ACTIVE_WRITE_INTERVAL_SECONDS:
+            cached_entry["last_active_written"] = now
+            await _touch_session(db, cached_entry["session_id"])
         return await _request_user(db, request, cached_entry["user"], cached_entry["allowed_company_ids"])
 
     # 2. Cache miss: Validate active session from DB
@@ -127,10 +151,12 @@ async def get_current_user(
     )
     db_session = session_query.scalars().first()
     if not db_session:
+        from app.core.sessions import session_end_reason
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired or revoked",
-            headers={"WWW-Authenticate": "Bearer"},
+            # Lets clients explain the sign-out (and the Sync Agent decide whether to log in again)
+            headers={"WWW-Authenticate": "Bearer", "X-Auth-Reason": await session_end_reason(db, user_id, token_hash)},
         )
         
     user_query = await db.execute(
@@ -138,7 +164,18 @@ async def get_current_user(
     )
     user = user_query.scalars().first()
     if user is None:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer", "X-Auth-Reason": "deactivated"},
+        )
+
+    # Throttled activity heartbeat (also on the cached path above)
+    last_active = db_session.last_active_at
+    last_active_epoch = last_active.replace(tzinfo=timezone.utc).timestamp() if last_active else 0.0
+    if now - last_active_epoch >= LAST_ACTIVE_WRITE_INTERVAL_SECONDS:
+        await _touch_session(db, db_session.session_id)
+        last_active_epoch = now
 
     # Query allowed companies for the user to avoid DB hits on header company switching
     allowed_company_ids: Set[int] = {user.company_id}
@@ -168,7 +205,9 @@ async def get_current_user(
         "user": user,
         "user_id": user.user_id,
         "allowed_company_ids": allowed_company_ids,
-        "expires_at": cache_expiry
+        "expires_at": cache_expiry,
+        "session_id": db_session.session_id,
+        "last_active_written": last_active_epoch,
     }
 
     return await _request_user(db, request, user, allowed_company_ids)

@@ -1,7 +1,60 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { toast } from 'sonner'
 import { API_BASE, authHeaders } from '@/lib/utils'
+import { signOutMessage } from '@/lib/device'
+import { stopHeadlessNativeTracking } from '@/lib/capacitor-native-tracking'
+
+// ─── Session-ended handling ──────────────────────────────────────────────────
+// Most screens call fetch() directly, so one wrapper around window.fetch notices when the server
+// rejects the current token (signed out by an admin, device blocked, password changed, ...) and
+// signs the user out with an explanation. Only 401s for requests that carried the current token
+// count; network errors and 403 permission errors never sign anyone out.
+let activeToken = ''
+let onSessionEnded: ((reason: string | null) => void) | null = null
+let fetchPatched = false
+
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input
+  if (input instanceof URL) return input.href
+  return input.url
+}
+
+function requestAuthorization(input: RequestInfo | URL, init?: RequestInit): string | null {
+  const headers = init?.headers ?? (input instanceof Request ? input.headers : undefined)
+  if (!headers) return null
+  if (headers instanceof Headers) return headers.get('Authorization')
+  if (Array.isArray(headers)) return headers.find(([k]) => k.toLowerCase() === 'authorization')?.[1] ?? null
+  const record = headers as Record<string, string>
+  return record.Authorization ?? record.authorization ?? null
+}
+
+function installSessionEndedInterceptor() {
+  if (fetchPatched || typeof window === 'undefined') return
+  fetchPatched = true
+  const originalFetch = window.fetch.bind(window)
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await originalFetch(input, init)
+    if (response.status === 401 && activeToken && onSessionEnded) {
+      const url = requestUrl(input)
+      if (url.startsWith(API_BASE) && !url.includes('/auth/login') && requestAuthorization(input, init) === `Bearer ${activeToken}`) {
+        onSessionEnded(response.headers.get('X-Auth-Reason'))
+      }
+    }
+    return response
+  }
+}
+
+/** Remove everything that belongs to the signed-in session on this device. */
+function clearLocalSession() {
+  activeToken = ''
+  localStorage.removeItem('mytally_token')
+  localStorage.removeItem('mytally_email')
+  // Don't let the next person on a shared phone inherit an "active shift"
+  localStorage.removeItem('mytally_shift_active')
+  stopHeadlessNativeTracking().catch(() => {})
+}
 
 export interface UserPermissions {
   showLedger: boolean
@@ -197,8 +250,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (isAuthError && typeof window !== 'undefined' && localStorage.getItem('mytally_token') === tok) {
         setUser(null)
         setToken('')
-        localStorage.removeItem('mytally_token')
-        localStorage.removeItem('mytally_email')
+        clearLocalSession()
       }
       throw err
     } finally {
@@ -209,6 +261,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const saved = localStorage.getItem('mytally_token')
     if (saved) {
+      activeToken = saved
       setToken(saved)
       fetchMe(saved).catch(() => {})
     } else {
@@ -216,19 +269,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchMe])
 
+  // Keep the interceptor pointed at the current token and handler
+  useEffect(() => {
+    activeToken = token
+  }, [token])
+
+  useEffect(() => {
+    installSessionEndedInterceptor()
+    onSessionEnded = (reason) => {
+      if (!activeToken) return
+      clearLocalSession()
+      setUser(null)
+      setToken('')
+      toast.error(signOutMessage(reason), { id: 'session-ended', duration: 8000 })
+    }
+    return () => {
+      onSessionEnded = null
+    }
+  }, [])
+
   const login = async (tok: string, email: string) => {
     setIsLoading(true)
     setToken(tok)
+    activeToken = tok
     localStorage.setItem('mytally_token', tok)
     localStorage.setItem('mytally_email', email)
     await fetchMe(tok)
   }
 
   const logout = () => {
+    const tok = token
+    // Stop the interceptor reacting to this request, then end the session on the server too
+    // (keepalive lets it finish while the page navigates away). Without this the token stayed
+    // valid on the server for 30 days after "logging out".
+    clearLocalSession()
+    if (tok) {
+      fetch(`${API_BASE}/auth/logout`, { method: 'POST', headers: authHeaders(tok), keepalive: true }).catch(() => {})
+    }
     setUser(null)
     setToken('')
-    localStorage.removeItem('mytally_token')
-    localStorage.removeItem('mytally_email')
   }
 
   const switchCompany = async (company_id: number) => {

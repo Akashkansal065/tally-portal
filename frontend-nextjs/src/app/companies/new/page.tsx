@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE } from '@/lib/utils'
+import { getDeviceHeaders } from '@/lib/device'
 
 export default function NewCompanyPage() {
   const { user, login, token } = useAuth()
@@ -65,7 +66,7 @@ export default function NewCompanyPage() {
         // If not logged in, they just registered. We should log them in now.
         const loginRes = await fetch(`${API_BASE}/auth/login`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(await getDeviceHeaders()) },
           body: JSON.stringify({ email: formData.user_email, password: formData.password }),
         })
         if (loginRes.ok) {

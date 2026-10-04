@@ -121,7 +121,8 @@ sequenceDiagram
     P-->>C: 200 / 401 / 403
 ```
 
-- **Sessions are server-side and revocable.** The JWT alone isn't enough: its SHA-256 hash must match a live `user_sessions` row. Logout sets `revoked_at` and evicts the cache entry.
+- **Sessions are server-side and revocable.** The JWT alone isn't enough: its SHA-256 hash must match a live `user_sessions` row. Every token carries a unique `jti`, so two logins never share a token.
+- **Device sessions** (`app/core/sessions.py`). Clients send `X-Device-Id`, `X-Client-Type` and (native) `X-Device-Name`/`X-Device-Type` at login; each session row records the device, IP, User-Agent and a throttled `last_active_at`. A new login from the same device replaces its old session; a role's `max_active_devices` signs out the least recently used device. Admins list, sign out and block devices (`/admin/users/{id}/sessions`, `/admin/sessions`, `/admin/sessions/{id}/block`); users manage their own (`/auth/me/sessions`). Every revoke records `revoke_reason` and clears the token from the auth cache, so the device's next request gets 401 with an `X-Auth-Reason` header. The web app's fetch wrapper (`AuthContext`) signs out and explains why; the Sync Agent logs back in only for `expired`/`invalid`/`replaced` and otherwise pauses until credentials are re-entered. Blocking is per user and device id, checked at login after the password. Device ids come from the client, so blocking is a soft control: to lock a person out, deactivate the user or reset the password.
 - **RBAC** = `Role → Permission(module, can_create/read/update/delete)`, plus `UserPermissionOverride` per module, plus `UserDataScope` (allowed voucher types, ledger/stock group restrictions). `GET /auth/me` returns the resolved toggles and capabilities that the frontend's `AuthContext.can()` uses to show or hide UI. **The backend re-checks on every endpoint through `require_permission`.**
 
 ---

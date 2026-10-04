@@ -57,6 +57,9 @@ class AgentConfig:
     # Company name -> AlterID to re-pull from after a failed inbound cycle. Without it, a later
     # collection's higher AlterIDs advance the server watermark past records that never arrived.
     inbound_retry_floors: Dict[str, int] = field(default_factory=dict)
+    # Set when the server signed this PC out on purpose or blocked it (see cloud_client.AUTO_RELOGIN_REASONS).
+    # Kept across restarts so autostart doesn't silently sign back in; cleared when credentials are re-entered.
+    auth_halt_reason: str = ""
 
 def is_autostart_registered() -> bool:
     """Checks if the application is currently registered to start with Windows."""

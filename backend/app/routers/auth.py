@@ -9,12 +9,16 @@ import hashlib
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.security import verify_password, get_password_hash, create_access_token
+from app.core.security import verify_password, get_password_hash
 from app.core.permissions import (
     get_current_user, get_optional_current_user, is_admin_user, oauth2_scheme,
     get_all_user_permissions, get_user_permission_toggles, invalidate_auth_cache
 )
 from app.core.seed import seed_company_defaults
+from app.core.sessions import (
+    create_user_session, revoke_sessions, forget_tokens, current_token_hash, session_to_dict,
+    live_session_conditions, utcnow
+)
 from app.core.rate_limiter import limiter
 from app.models.portal_core import Company
 from app.models.portal_core import User, Role, UserSession, UserCompanyAccess
@@ -189,21 +193,8 @@ async def login(
             detail="Incorrect email or password"
         )
         
-    # Generate Token
-    access_token = create_access_token(subject=user.user_id)
-    token_hash = hashlib.sha256(access_token.encode()).hexdigest()
-    
-    # Save session
-    session = UserSession(
-        user_id=user.user_id,
-        token_hash=token_hash,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    db.add(session)
-    
-    # Update last login
-    user.last_login = datetime.now(timezone.utc)
-    await db.commit()
+    # Session with device details; refuses blocked devices, applies device limits (commits)
+    access_token = await create_user_session(db, user, request)
     
     return {
         "access_token": access_token,
@@ -227,21 +218,8 @@ async def swagger_login(
             detail="Incorrect email or password"
         )
         
-    # Generate Token
-    access_token = create_access_token(subject=user.user_id)
-    token_hash = hashlib.sha256(access_token.encode()).hexdigest()
-    
-    # Save session
-    session = UserSession(
-        user_id=user.user_id,
-        token_hash=token_hash,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    db.add(session)
-    
-    # Update last login
-    user.last_login = datetime.now(timezone.utc)
-    await db.commit()
+    # Session with device details; refuses blocked devices, applies device limits (commits)
+    access_token = await create_user_session(db, user, request)
     
     return {
         "access_token": access_token,
@@ -264,9 +242,9 @@ async def logout(
     )
     session = session_query.scalars().first()
     if session:
-        session.revoked_at = datetime.now(timezone.utc)
+        revoked = await revoke_sessions(db, reason="logout", session_ids=[session.session_id])
         await db.commit()
-        invalidate_auth_cache(token_hash=token_hash, user_id=user.user_id)
+        forget_tokens(revoked)
         return {"detail": "Successfully logged out"}
         
     raise HTTPException(
@@ -439,3 +417,69 @@ async def get_my_companies(
             companies.append(primary_comp)
             
     return companies
+
+
+# ─── My devices (self-service) ───────────────────────────────────────────────
+
+@router.get("/me/sessions")
+async def list_my_sessions(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """The caller's signed-in devices, current device first."""
+    now = utcnow()
+    sessions = (await db.execute(
+        select(UserSession).where(UserSession.user_id == user.user_id, *live_session_conditions(now))
+    )).scalars().all()
+    current = current_token_hash(request)
+    items = [session_to_dict(s, current_token_hash=current, now=now) for s in sessions]
+    items.sort(key=lambda d: (not d["is_current"], d["legacy"], -(datetime.fromisoformat(d["last_active_at"]).timestamp() if d["last_active_at"] else 0)))
+    return items
+
+
+async def _own_live_session(db: AsyncSession, user: User, session_id: int) -> UserSession:
+    session = (await db.execute(
+        select(UserSession).where(
+            UserSession.session_id == session_id,
+            UserSession.user_id == user.user_id,
+            *live_session_conditions()
+        )
+    )).scalars().first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device session not found.")
+    return session
+
+
+@router.post("/me/sessions/{session_id}/revoke")
+async def revoke_my_session(
+    session_id: int,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Sign out one of the caller's devices. Revoking the current device is the same as logging out."""
+    session = await _own_live_session(db, user, session_id)
+    is_current = session.token_hash == current_token_hash(request)
+    revoked = await revoke_sessions(db, reason="logout" if is_current else "self_revoke", session_ids=[session.session_id])
+    await db.commit()
+    forget_tokens(revoked)
+    return {"revoked": len(revoked), "was_current": is_current}
+
+
+@router.post("/me/sessions/revoke-others")
+async def revoke_my_other_sessions(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Sign out every device except the one making this request (for a lost or shared phone)."""
+    current = current_token_hash(request)
+    current_ids = (await db.execute(
+        select(UserSession.session_id).where(UserSession.user_id == user.user_id, UserSession.token_hash == current)
+    )).scalars().all()
+    revoked = await revoke_sessions(db, reason="self_revoke", user_id=user.user_id, exclude_session_ids=current_ids)
+    await db.commit()
+    forget_tokens(revoked)
+    return {"revoked": len(revoked)}
+

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Date, Boolean, DateTime, ForeignKey, Enum, Numeric, Text, TEXT, JSON, Float, Double
+from sqlalchemy import Column, Integer, BigInteger, String, Date, Boolean, DateTime, ForeignKey, Enum, Numeric, Text, TEXT, JSON, Float, Double, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -228,6 +228,8 @@ class Role(Base):
     role_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(50), nullable=False, unique=True)
     description = Column(String(200), nullable=True)
+    # Maximum simultaneously signed-in devices for users of this role; NULL = unlimited
+    max_active_devices = Column(Integer, nullable=True)
     
     users = relationship("User", back_populates="role")
     permissions = relationship("Permission", back_populates="role", cascade="all, delete-orphan")
@@ -266,7 +268,7 @@ class User(Base):
     
     company = relationship("Company", back_populates="users")
     role = relationship("Role", back_populates="users")
-    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
+    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan", foreign_keys="[UserSession.user_id]")
     overrides = relationship("UserPermissionOverride", back_populates="user", cascade="all, delete-orphan", foreign_keys="[UserPermissionOverride.user_id]")
     granted_overrides = relationship("UserPermissionOverride", back_populates="granter", foreign_keys="[UserPermissionOverride.granted_by]")
     company_access = relationship("UserCompanyAccess", back_populates="user", cascade="all, delete-orphan")
@@ -330,18 +332,57 @@ class UserDataScope(Base):
 
 class UserSession(Base):
     __tablename__ = "user_sessions"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    # Indexes are also created on existing databases at startup (ensure_table_indexes), since the
+    # schema sync only adds columns
+    __table_args__ = (
+        Index("ix_user_sessions_token", "token_hash"),
+        Index("ix_user_sessions_active", "user_id", "revoked_at", "expires_at"),
+        Index("ix_user_sessions_device", "user_id", "device_id"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
     
     session_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     token_hash = Column(String(255), nullable=False)
     ip_address = Column(String(45), nullable=True)
-    user_agent = Column(String(255), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+    # Device identity and description (see app/core/sessions.py); NULL on sessions created before tracking
+    device_id = Column(String(64), nullable=True)
+    client_type = Column(String(20), nullable=True)   # web | android | ios | sync-agent | api
+    device_type = Column(String(20), nullable=True)   # mobile | tablet | desktop
+    device_name = Column(String(120), nullable=True)
+    os_name = Column(String(60), nullable=True)
+    browser_name = Column(String(60), nullable=True)
+    app_version = Column(String(30), nullable=True)
+    # Timestamps written by the app are UTC; legacy created_at values came from MySQL NOW() in IST
     created_at = Column(DateTime, server_default=func.now())
     expires_at = Column(DateTime, nullable=False)
+    last_active_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
+    revoked_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    revoke_reason = Column(String(30), nullable=True)
     
-    user = relationship("User", back_populates="sessions")
+    user = relationship("User", back_populates="sessions", foreign_keys=[user_id])
+
+
+class BlockedDevice(Base):
+    """A device that may no longer sign in as a given user (device ids come from the client; see sessions.py)."""
+    __tablename__ = "blocked_devices"
+    __table_args__ = (
+        UniqueConstraint("user_id", "device_id", name="uq_blocked_devices_user_device"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    blocked_device_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
+    device_id = Column(String(64), nullable=False)
+    device_name = Column(String(120), nullable=True)
+    client_type = Column(String(20), nullable=True)
+    device_type = Column(String(20), nullable=True)
+    reason = Column(String(255), nullable=True)
+    blocked_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False)
 
 class Company(Base):
     __tablename__ = "companies"

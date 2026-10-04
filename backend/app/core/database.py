@@ -215,6 +215,26 @@ async def auto_sync_all_model_schemas():
 
         await seed_gst_registration_types(conn)
 
+async def ensure_table_indexes(table) -> None:
+    """Create the named indexes declared on a model's table if the database doesn't have them yet.
+    Base.metadata.create_all only creates indexes for brand-new tables, and the column sync above
+    doesn't touch indexes, so tables that gain an index later need this. Pass specific tables only:
+    building an index on a large table locks it while it runs."""
+    if "sqlite" in settings.DATABASE_URL:
+        return
+    schema_name = table.schema or settings.PORTAL_DATABASE_NAME
+    async with engine.begin() as conn:
+        existing = {row[0] for row in (await conn.execute(text(
+            "SELECT DISTINCT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS "
+            "WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table"
+        ), {"schema": schema_name, "table": table.name})).fetchall()}
+        for index in table.indexes:
+            if index.name and index.name not in existing:
+                columns = ", ".join(f"`{col.name}`" for col in index.columns)
+                print(f"Auto Schema Synchronizer: Creating index {index.name} on `{schema_name}`.`{table.name}` ({columns})...")
+                await conn.execute(text(f"CREATE INDEX `{index.name}` ON `{schema_name}`.`{table.name}` ({columns})"))
+
+
 async def seed_gst_registration_types(conn):
     try:
         check_sql = text(f"SELECT COUNT(*) FROM `{settings.PORTAL_DATABASE_NAME}`.`gst_registration_types`")
