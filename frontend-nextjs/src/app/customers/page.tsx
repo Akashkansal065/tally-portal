@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
@@ -49,10 +50,13 @@ import {
   Milestone,
   Radio,
   HeartPulse,
-  Check
+  Check,
+  MoreHorizontal,
 } from 'lucide-react'
 import { saveOfflineDirectory, getOfflineDirectory } from '@/lib/offline-storage'
 import { FiltersToggle, useCollapsibleFilters } from '@/components/CollapsibleFilters'
+import { BottomSheet } from '@/components/ui/bottom-sheet'
+import { PHONE_QUERY, useMediaQuery } from '@/lib/use-media-query'
 
 interface LocalityItem {
   name: string
@@ -162,6 +166,14 @@ export default function CustomersPage() {
   const [selectedRadius, setSelectedRadius] = useState<number | null>(null)
   const [selectedRecency, setSelectedRecency] = useState<string>('all')
   const directoryFilters = useCollapsibleFilters('customers')
+  // Phones: the filter panels move into a sheet (rendered there through a portal, so they exist in one place only)
+  const isPhone = useMediaQuery(PHONE_QUERY)
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false)
+  const [filterSheetBody, setFilterSheetBody] = useState<HTMLDivElement | null>(null)
+  const inFilterSheet = (node: React.ReactNode) =>
+    isPhone ? (filterSheetBody ? createPortal(node, filterSheetBody) : null) : node
+  // Phones: the less frequent actions for one customer open in a sheet
+  const [actionCustomer, setActionCustomer] = useState<Customer | null>(null)
   // Settings away from their defaults; the "Active" bar below names them even while the filters are minimised
   const activeDirectoryFilters = [
     selectedLocality !== 'all' && selectedLocality,
@@ -1155,19 +1167,109 @@ export default function CustomersPage() {
 
       {!accessDenied && (
         <>
+      {/* Phones: Add customer within thumb reach, above the tab bar */}
+      <button
+        type="button"
+        onClick={() => setShowAddModal(true)}
+        className="md:hidden fixed right-4 z-20 inline-flex h-14 items-center gap-2 rounded-full bg-primary px-5 text-base font-bold text-primary-foreground shadow-lg cursor-pointer"
+        style={{ bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px))' }}
+      >
+        <Plus className="h-5 w-5" aria-hidden="true" />
+        Add customer
+      </button>
+
+      <BottomSheet
+        open={isPhone && filterSheetOpen}
+        onOpenChange={setFilterSheetOpen}
+        title="Filter & sort"
+        headerAction={
+          activeDirectoryFilters.length > 0 ? (
+            <button type="button" onClick={handleResetAllFilters} className="h-11 px-2 text-sm font-semibold text-primary cursor-pointer">
+              Reset
+            </button>
+          ) : null
+        }
+        footer={
+          <button
+            type="button"
+            onClick={() => setFilterSheetOpen(false)}
+            className="h-12 w-full rounded-xl bg-primary text-base font-bold text-primary-foreground cursor-pointer"
+          >
+            {loading ? 'Updating…' : customers.length === 1 ? 'Show 1 customer' : `Show ${customers.length} customers`}
+          </button>
+        }
+      >
+        <div ref={setFilterSheetBody} className="space-y-4" />
+      </BottomSheet>
+
+      <BottomSheet
+        open={actionCustomer !== null}
+        onOpenChange={(open) => { if (!open) setActionCustomer(null) }}
+        title={actionCustomer?.name ?? ''}
+        description={[actionCustomer?.locality, actionCustomer?.city].filter(Boolean).join(' · ') || undefined}
+      >
+        {actionCustomer && (() => {
+          const c = actionCustomer
+          const row = 'flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-base font-medium text-foreground hover:bg-muted cursor-pointer'
+          const after = (action: () => void) => () => { setActionCustomer(null); action() }
+          return (
+            <ul className="space-y-0.5 pb-2">
+              {c.whatsapp_number && (
+                <li>
+                  <a href={`https://wa.me/${c.whatsapp_number.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" onClick={() => setActionCustomer(null)} className={row}>
+                    <MessageCircle className="h-5 w-5 text-emerald-600" aria-hidden="true" /> WhatsApp
+                  </a>
+                </li>
+              )}
+              <li>
+                <Link href={`/customers/${c.key}`} onClick={() => { saveScrollPos(); setActionCustomer(null) }} className={row}>
+                  <UserIcon className="h-5 w-5 text-muted-foreground" aria-hidden="true" /> Profile & photos
+                </Link>
+              </li>
+              <li>
+                <button type="button" onClick={after(() => handleOpenHistory(c))} className={row}>
+                  <History className="h-5 w-5 text-muted-foreground" aria-hidden="true" /> GPS history
+                </button>
+              </li>
+              <li>
+                <button type="button" onClick={after(() => handleOpenEdit(c))} className={row}>
+                  <Edit2 className="h-5 w-5 text-muted-foreground" aria-hidden="true" /> Edit details
+                </button>
+              </li>
+              {isAdmin && !c.ledger_id && (
+                <li>
+                  <button type="button" onClick={after(() => handleOpenLinkLedger(c))} className={row}>
+                    <Link2 className="h-5 w-5 text-muted-foreground" aria-hidden="true" /> Link to a Tally ledger
+                  </button>
+                </li>
+              )}
+              {canDelete && !c.ledger_id && (
+                <li>
+                  <button type="button" onClick={after(() => setCustomerToDelete(c))} className={cn(row, 'text-destructive')}>
+                    <Trash2 className="h-5 w-5" aria-hidden="true" /> Delete this lead
+                  </button>
+                </li>
+              )}
+            </ul>
+          )
+        })()}
+      </BottomSheet>
 
       {/* Hero Header Section */}
       <div className="bg-card border-b border-border shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 md:py-6">
+          <div className="flex flex-row items-center justify-between gap-4">
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="inline-flex p-2 rounded-xl bg-primary/10 text-primary">
+                <span className="hidden md:inline-flex p-2 rounded-xl bg-primary/10 text-primary">
                   <Users className="w-6 h-6" />
                 </span>
-                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Customer Directory</h1>
+                <h1 className="text-xl md:text-3xl font-bold tracking-tight">Customers</h1>
               </div>
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p className="md:hidden text-sm text-muted-foreground">
+                {metrics.total} shops · {metrics.total > 0 ? Math.round((metrics.tagged / metrics.total) * 100) : 0}% GPS mapped
+              </p>
+              <p className="hidden md:block mt-1 text-sm text-muted-foreground">
                 Field-sales customer map, locality routing & GPS check-in audit history.
                 <span className="ml-1 text-xs text-primary font-medium">(Read-only Tally data • Zero Accounting Modifications)</span>
               </p>
@@ -1177,8 +1279,9 @@ export default function CustomersPage() {
               <button
                 onClick={() => fetchCustomers(true)}
                 disabled={refreshing}
-                className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-background hover:bg-muted text-sm font-medium transition-colors"
+                className="flex items-center justify-center gap-2 min-h-11 min-w-11 px-3 rounded-xl border border-border bg-background hover:bg-muted text-sm font-medium transition-colors"
                 title="Refresh list"
+                aria-label="Refresh list"
               >
                 <RefreshCw className={cn('w-4 h-4', refreshing && 'animate-spin text-primary')} />
                 <span className="hidden sm:inline">Refresh</span>
@@ -1186,7 +1289,7 @@ export default function CustomersPage() {
 
               <button
                 onClick={() => setShowAddModal(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 shadow-md hover:shadow-lg transition-all"
+                className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 shadow-md hover:shadow-lg transition-all"
               >
                 <Plus className="w-4 h-4" />
                 <span>Add Customer</span>
@@ -1195,11 +1298,13 @@ export default function CustomersPage() {
           </div>
 
           {/* Quick Metrics Bar */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6">
-            <div
+          <div className="flex gap-2 overflow-x-auto scrollbar-none -mx-4 px-4 mt-3 md:mx-0 md:px-0 md:grid md:grid-cols-4 md:gap-3 md:mt-6">
+            <button
+              type="button"
               onClick={() => setLocationFilter('all')}
+              aria-pressed={locationFilter === 'all'}
               className={cn(
-                'p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-primary/50',
+                'shrink-0 min-w-[8.5rem] md:min-w-0 text-left p-3 md:p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-primary/50',
                 locationFilter === 'all' ? 'bg-primary/5 border-primary/40 shadow-sm' : 'bg-muted/40 border-border'
               )}
             >
@@ -1207,14 +1312,16 @@ export default function CustomersPage() {
                 <span>Total Directory</span>
                 <Users className="w-3.5 h-3.5 text-primary" />
               </div>
-              <div className="text-2xl font-bold mt-1">{metrics.total}</div>
-              <div className="text-[11px] text-muted-foreground mt-0.5">Shops & Debtors</div>
-            </div>
+              <div className="text-xl md:text-2xl font-bold mt-1">{metrics.total}</div>
+              <div className="hidden md:block text-xs text-muted-foreground mt-0.5">Shops & Debtors</div>
+            </button>
 
-            <div
+            <button
+              type="button"
               onClick={() => setLocationFilter('tagged')}
+              aria-pressed={locationFilter === 'tagged'}
               className={cn(
-                'p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-emerald-500/50',
+                'shrink-0 min-w-[8.5rem] md:min-w-0 text-left p-3 md:p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-emerald-500/50',
                 locationFilter === 'tagged' ? 'bg-emerald-500/10 border-emerald-500/40 shadow-sm' : 'bg-muted/40 border-border'
               )}
             >
@@ -1222,16 +1329,18 @@ export default function CustomersPage() {
                 <span>GPS Tagged</span>
                 <MapPin className="w-3.5 h-3.5 text-emerald-500" />
               </div>
-              <div className="text-2xl font-bold mt-1 text-emerald-600">{metrics.tagged}</div>
-              <div className="text-[11px] text-muted-foreground mt-0.5">
+              <div className="text-xl md:text-2xl font-bold mt-1 text-emerald-600">{metrics.tagged}</div>
+              <div className="hidden md:block text-xs text-muted-foreground mt-0.5">
                 {metrics.total > 0 ? `${Math.round((metrics.tagged / metrics.total) * 100)}% mapped` : '0%'}
               </div>
-            </div>
+            </button>
 
-            <div
+            <button
+              type="button"
               onClick={() => setLocationFilter('missing')}
+              aria-pressed={locationFilter === 'missing'}
               className={cn(
-                'p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-amber-500/50',
+                'shrink-0 min-w-[8.5rem] md:min-w-0 text-left p-3 md:p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-amber-500/50',
                 locationFilter === 'missing' ? 'bg-amber-500/10 border-amber-500/40 shadow-sm' : 'bg-muted/40 border-border'
               )}
             >
@@ -1239,14 +1348,16 @@ export default function CustomersPage() {
                 <span>Needs GPS Tag</span>
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
               </div>
-              <div className="text-2xl font-bold mt-1 text-amber-600">{metrics.missing_location}</div>
-              <div className="text-[11px] text-muted-foreground mt-0.5">Pending coordinates</div>
-            </div>
+              <div className="text-xl md:text-2xl font-bold mt-1 text-amber-600">{metrics.missing_location}</div>
+              <div className="hidden md:block text-xs text-muted-foreground mt-0.5">Pending coordinates</div>
+            </button>
 
-            <div
+            <button
+              type="button"
               onClick={() => setVerificationFilter(verificationFilter === 'mismatch' ? 'all' : 'mismatch')}
+              aria-pressed={verificationFilter === 'mismatch'}
               className={cn(
-                'p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-rose-500/50',
+                'shrink-0 min-w-[8.5rem] md:min-w-0 text-left p-3 md:p-3.5 rounded-2xl border transition-all cursor-pointer hover:border-rose-500/50',
                 verificationFilter === 'mismatch' ? 'bg-rose-500/10 border-rose-500/40 shadow-sm' : 'bg-muted/40 border-border'
               )}
             >
@@ -1254,17 +1365,18 @@ export default function CustomersPage() {
                 <span>Audit Discrepancies</span>
                 <ShieldCheck className="w-3.5 h-3.5 text-rose-500" />
               </div>
-              <div className="text-2xl font-bold mt-1 text-rose-600">{metrics.mismatch_count}</div>
-              <div className="text-[11px] text-rose-500 font-medium mt-0.5">Check-in {'>'} 20m away</div>
-            </div>
+              <div className="text-xl md:text-2xl font-bold mt-1 text-rose-600">{metrics.mismatch_count}</div>
+              <div className="hidden md:block text-xs text-rose-600 font-medium mt-0.5">Check-in {'>'} 20m away</div>
+            </button>
           </div>
         </div>
       </div>      {/* Filters, Locality & Sort Command Center */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-3 md:mt-6">
         <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden divide-y divide-border">
           
           {/* 1. TOP LOCALITY FILTER SECTION */}
-          <div id={`${directoryFilters.panelId}-locality`} hidden={directoryFilters.collapsed} className="p-3.5 sm:p-4 bg-muted/15">
+          {inFilterSheet(
+          <div id={`${directoryFilters.panelId}-locality`} hidden={!isPhone && directoryFilters.collapsed} className="p-3.5 sm:p-4 bg-muted/15 max-md:rounded-2xl max-md:border max-md:border-border">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               {/* Left: Title & Active Indicator */}
               <div className="flex items-center gap-2.5 min-w-0">
@@ -1299,7 +1411,7 @@ export default function CustomersPage() {
                   <select
                     value={selectedLocality}
                     onChange={(e) => handleSelectLocality(e.target.value)}
-                    className="w-full sm:w-auto min-w-[130px] max-w-full sm:max-w-[190px] text-xs bg-background hover:bg-muted/40 border border-border/80 rounded-xl pl-7 pr-7 py-1.5 text-foreground font-semibold appearance-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer transition-all shadow-xs truncate"
+                    className="w-full sm:w-auto min-w-[130px] max-w-full sm:max-w-[190px] text-xs bg-background hover:bg-muted/40 border border-border/80 rounded-xl pl-7 pr-7 py-1.5 max-md:h-11 text-foreground font-semibold appearance-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer transition-all shadow-xs truncate"
                   >
                     <option value="all">All Localities ({metrics.total})</option>
                     {localitiesList.map((loc) => {
@@ -1322,7 +1434,7 @@ export default function CustomersPage() {
                     <select
                       value={selectedCity}
                       onChange={(e) => setSelectedCity(e.target.value)}
-                      className="w-full sm:w-auto min-w-[110px] max-w-full sm:max-w-[160px] text-xs bg-background hover:bg-muted/40 border border-border/80 rounded-xl pl-7 pr-7 py-1.5 text-foreground font-semibold appearance-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer transition-all shadow-xs truncate"
+                      className="w-full sm:w-auto min-w-[110px] max-w-full sm:max-w-[160px] text-xs bg-background hover:bg-muted/40 border border-border/80 rounded-xl pl-7 pr-7 py-1.5 max-md:h-11 text-foreground font-semibold appearance-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer transition-all shadow-xs truncate"
                     >
                       <option value="all">All Cities</option>
                       {citiesList.map((c) => {
@@ -1361,7 +1473,7 @@ export default function CustomersPage() {
                   type="button"
                   onClick={() => handleSelectLocality('all')}
                   className={cn(
-                    'px-3 py-1 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex-shrink-0 flex items-center gap-1.5 border shadow-2xs',
+                    'px-3 py-1 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex-shrink-0 flex items-center gap-1.5 border shadow-2xs max-md:min-h-11 max-md:text-sm',
                     selectedLocality === 'all'
                       ? 'bg-primary text-primary-foreground border-primary shadow-primary/20'
                       : 'bg-background border-border/70 text-foreground hover:bg-muted hover:border-border'
@@ -1388,7 +1500,7 @@ export default function CustomersPage() {
                       type="button"
                       onClick={() => handleSelectLocality(isSelected ? 'all' : locName)}
                       className={cn(
-                        'px-2.5 py-1 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex-shrink-0 flex items-center gap-1.5 border shadow-2xs',
+                        'px-2.5 py-1 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex-shrink-0 flex items-center gap-1.5 border shadow-2xs max-md:min-h-11 max-md:px-3.5 max-md:text-sm',
                         isSelected
                           ? 'bg-primary text-primary-foreground border-primary shadow-primary/20 ring-2 ring-primary/20'
                           : 'bg-background border-border/70 text-foreground hover:bg-muted hover:border-border'
@@ -1419,7 +1531,9 @@ export default function CustomersPage() {
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
-          </div>          {/* 2. SEARCH & CONTROLS ROW */}
+          </div>
+          )}
+          {/* 2. SEARCH & CONTROLS ROW */}
           <div className="p-4 flex flex-col gap-3">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               {/* Main search input */}
@@ -1431,13 +1545,16 @@ export default function CustomersPage() {
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder="Search by shop name, contact, phone, locality..."
-                    className="w-full pl-10 pr-4 py-2 rounded-xl bg-background border border-border text-xs sm:text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all"
+                    enterKeyHint="search"
+                    aria-label="Search customers"
+                    className="w-full h-11 pl-10 pr-10 rounded-xl bg-background border border-border text-xs sm:text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all"
                   />
                   {search && (
                     <button
                       type="button"
                       onClick={handleClearSearch}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      aria-label="Clear search"
+                      className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex h-11 w-11 items-center justify-center text-muted-foreground hover:text-foreground"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -1445,9 +1562,26 @@ export default function CustomersPage() {
                 </div>
                 <button
                   type="submit"
-                  className="px-3.5 py-2 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 text-xs sm:text-sm font-semibold transition-colors flex items-center gap-1.5"
+                  className="hidden md:flex px-3.5 py-2 rounded-xl bg-primary/10 text-primary hover:bg-primary/20 text-xs sm:text-sm font-semibold transition-colors items-center gap-1.5"
                 >
                   <span>Search</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilterSheetOpen(true)}
+                  aria-haspopup="dialog"
+                  className={cn(
+                    'md:hidden shrink-0 inline-flex h-11 items-center gap-1.5 rounded-xl border px-3 text-sm font-bold cursor-pointer',
+                    activeDirectoryFilters.length > 0 ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-card text-foreground',
+                  )}
+                >
+                  <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+                  Filter
+                  {activeDirectoryFilters.length > 0 && (
+                    <span className="min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs leading-5 text-center tabular-nums">
+                      {activeDirectoryFilters.length}
+                    </span>
+                  )}
                 </button>
               </form>
 
@@ -1458,13 +1592,14 @@ export default function CustomersPage() {
                   state={directoryFilters}
                   active={activeDirectoryFilters}
                   controls={`${directoryFilters.panelId}-locality ${directoryFilters.panelId}`}
+                  className="hidden md:inline-flex"
                 />
                 <div className="flex items-center bg-muted/60 p-0.5 rounded-xl border border-border">
                   <button
                     type="button"
                     onClick={() => setViewMode('list')}
                     className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                      'flex items-center gap-1.5 px-3 min-h-10 rounded-lg text-sm font-semibold transition-all',
                       viewMode === 'list'
                         ? 'bg-background text-foreground shadow-sm'
                         : 'text-muted-foreground hover:text-foreground'
@@ -1478,7 +1613,7 @@ export default function CustomersPage() {
                     type="button"
                     onClick={() => setViewMode('grid')}
                     className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                      'flex items-center gap-1.5 px-3 min-h-10 rounded-lg text-sm font-semibold transition-all',
                       viewMode === 'grid'
                         ? 'bg-background text-foreground shadow-sm'
                         : 'text-muted-foreground hover:text-foreground'
@@ -1492,7 +1627,7 @@ export default function CustomersPage() {
                     type="button"
                     onClick={() => setViewMode('route')}
                     className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                      'flex items-center gap-1.5 px-3 min-h-10 rounded-lg text-sm font-semibold transition-all',
                       viewMode === 'route'
                         ? 'bg-primary text-primary-foreground shadow-sm'
                         : 'text-muted-foreground hover:text-foreground'
@@ -1506,7 +1641,8 @@ export default function CustomersPage() {
               </div>
             </div>
 
-            <div id={directoryFilters.panelId} hidden={directoryFilters.collapsed} className="space-y-3">
+            {inFilterSheet(
+            <div id={directoryFilters.panelId} hidden={!isPhone && directoryFilters.collapsed} className="space-y-3">
             {/* Quick Intelligence Filter Strips (Radius, Recency, Health) */}
             <div className="pt-2 border-t border-border/60 space-y-2">
               {/* Radius / Distance Filter */}
@@ -1534,7 +1670,7 @@ export default function CustomersPage() {
                         }
                       }}
                       className={cn(
-                        'px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-all text-xs border',
+                        'px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-all text-xs border max-md:min-h-11 max-md:px-3.5 max-md:text-sm',
                         isActive
                           ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
                           : 'bg-background border-border text-foreground hover:bg-muted'
@@ -1567,7 +1703,7 @@ export default function CustomersPage() {
                       type="button"
                       onClick={() => setSelectedRecency(item.val)}
                       className={cn(
-                        'px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-all text-xs border',
+                        'px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-all text-xs border max-md:min-h-11 max-md:px-3.5 max-md:text-sm',
                         isActive
                           ? 'bg-primary text-primary-foreground border-primary shadow-sm'
                           : 'bg-background border-border text-foreground hover:bg-muted'
@@ -1593,7 +1729,7 @@ export default function CustomersPage() {
                   type="button"
                   onClick={handleToggleNameSort}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm',
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm max-md:min-h-11 max-md:text-sm',
                     sortBy === 'name_asc' || sortBy === 'name_desc'
                       ? 'bg-primary text-primary-foreground border-primary'
                       : 'bg-background border-border text-foreground hover:bg-muted'
@@ -1612,7 +1748,7 @@ export default function CustomersPage() {
                   onClick={() => handleSortChange('nearest')}
                   disabled={geoLocating}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm',
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm max-md:min-h-11 max-md:text-sm',
                     sortBy === 'nearest'
                       ? 'bg-emerald-600 text-white border-emerald-600 shadow-emerald-500/20'
                       : 'bg-background border-border text-foreground hover:bg-muted'
@@ -1637,7 +1773,7 @@ export default function CustomersPage() {
                   type="button"
                   onClick={() => handleSortChange('health_desc')}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm hidden md:flex',
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm max-md:min-h-11 max-md:text-sm hidden md:flex',
                     sortBy === 'health_desc'
                       ? 'bg-violet-600 text-white border-violet-600'
                       : 'bg-background border-border text-foreground hover:bg-muted'
@@ -1653,7 +1789,7 @@ export default function CustomersPage() {
                   type="button"
                   onClick={() => handleSortChange('missing_gps')}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm',
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm max-md:min-h-11 max-md:text-sm',
                     sortBy === 'missing_gps'
                       ? 'bg-amber-600 text-white border-amber-600'
                       : 'bg-background border-border text-foreground hover:bg-muted'
@@ -1669,7 +1805,7 @@ export default function CustomersPage() {
                   type="button"
                   onClick={() => handleSortChange('last_visited')}
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm hidden sm:flex',
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all shadow-sm max-md:min-h-11 max-md:text-sm hidden sm:flex',
                     sortBy === 'last_visited'
                       ? 'bg-blue-600 text-white border-blue-600'
                       : 'bg-background border-border text-foreground hover:bg-muted'
@@ -1681,14 +1817,14 @@ export default function CustomersPage() {
                 </button>
               </div>
 
-              {/* More Sort Dropdown + Audit Filter */}
-              <div className="flex items-center gap-2 ml-auto">
+              {/* More Sort Dropdown + Audit Filter (two equal columns on phones, so neither runs off the edge) */}
+              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:ml-auto">
                 {/* Audit Status Filter */}
-                <div className="relative">
+                <div className="relative min-w-0">
                   <select
                     value={verificationFilter}
                     onChange={(e) => setVerificationFilter(e.target.value)}
-                    className="text-xs bg-background border border-border rounded-xl px-2.5 py-1.5 text-foreground appearance-none focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+                    className="w-full max-sm:h-11 text-xs bg-background border border-border rounded-xl px-2.5 py-1.5 text-foreground appearance-none focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
                   >
                     <option value="all">🛡️ Audit: All</option>
                     <option value="verified">✅ Verified (≤20m)</option>
@@ -1698,11 +1834,11 @@ export default function CustomersPage() {
                 </div>
 
                 {/* Comprehensive Sort Dropdown */}
-                <div className="relative">
+                <div className="relative min-w-0">
                   <select
                     value={sortBy}
                     onChange={(e) => handleSortChange(e.target.value)}
-                    className="text-xs bg-background border border-border rounded-xl pl-2.5 pr-7 py-1.5 text-foreground font-semibold appearance-none focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer shadow-sm"
+                    className="w-full max-sm:h-11 text-xs bg-background border border-border rounded-xl pl-2.5 pr-7 py-1.5 text-foreground font-semibold appearance-none focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer shadow-sm"
                   >
                     <option value="name_asc">🔤 Name (A → Z)</option>
                     <option value="name_desc">🔤 Name (Z → A)</option>
@@ -1717,6 +1853,7 @@ export default function CustomersPage() {
               </div>
             </div>
             </div>
+            )}
 
           </div>
 
@@ -1841,8 +1978,8 @@ export default function CustomersPage() {
         </div>
       </div>
 
-      {/* Customer Directory List / Grid Container */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+      {/* Customer Directory List / Grid Container (extra room at the bottom on phones for the Add button) */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-3 md:mt-6 max-md:pb-20">
         <div className="space-y-4">
           {loading ? (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground gap-3">
@@ -2170,7 +2307,7 @@ export default function CustomersPage() {
                             e.stopPropagation()
                             saveScrollPos()
                           }}
-                          className="font-bold text-sm text-foreground hover:text-primary transition-colors line-clamp-1 flex items-center gap-1.5"
+                          className="font-bold text-[15px] text-foreground hover:text-primary transition-colors line-clamp-1 flex items-center gap-1.5"
                         >
                           <span>{cust.name}</span>
                           <UserIcon className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
@@ -2206,13 +2343,13 @@ export default function CustomersPage() {
                     {/* Middle: Locality & Address */}
                     <div className="flex items-center gap-1.5 flex-wrap text-xs">
                       {cust.locality && (
-                        <span className="inline-flex items-center gap-1 font-semibold text-foreground bg-muted px-1.5 py-0.5 rounded text-[11px]">
+                        <span className="inline-flex items-center gap-1 font-semibold text-foreground bg-muted px-1.5 py-0.5 rounded text-xs">
                           <MapPin className="w-3 h-3 text-primary" />
                           {cust.locality}
                         </span>
                       )}
                       {cust.address && (
-                        <span className="text-muted-foreground text-[11px] truncate max-w-[240px]">
+                        <span className="text-muted-foreground text-xs truncate max-w-[240px]">
                           {cust.address}
                         </span>
                       )}
@@ -2222,27 +2359,16 @@ export default function CustomersPage() {
                     <div className="flex flex-col gap-2 pt-2 border-t border-border/50">
                       <div>{renderVerificationBadge(cust)}</div>
 
-                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                      {/* Phones: the four most used actions at 44pt; the rest are in the "more" sheet */}
+                      <div className="flex items-center gap-1.5">
                         {(cust.phone || cust.mobile) && (
                           <a
                             href={`tel:${cust.phone || cust.mobile}`}
                             onClick={(e) => e.stopPropagation()}
-                            className="p-1.5 rounded-lg bg-muted text-foreground hover:bg-muted/80"
-                            title="Call"
+                            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-muted text-primary"
+                            aria-label={`Call ${cust.name}`}
                           >
-                            <Phone className="w-3.5 h-3.5 text-primary" />
-                          </a>
-                        )}
-                        {cust.whatsapp_number && (
-                          <a
-                            href={`https://wa.me/${cust.whatsapp_number.replace(/\D/g, '')}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20"
-                            title="WhatsApp"
-                          >
-                            <MessageCircle className="w-3.5 h-3.5" />
+                            <Phone className="h-4 w-4" />
                           </a>
                         )}
                         <a
@@ -2250,10 +2376,10 @@ export default function CustomersPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-bold"
+                          className="inline-flex h-11 min-w-0 flex-1 items-center justify-center gap-1 rounded-xl bg-primary px-2 text-sm font-bold text-primary-foreground"
                         >
-                          <Navigation className="w-3 h-3" />
-                          <span>Navigate</span>
+                          <Navigation className="h-4 w-4 shrink-0" />
+                          <span className="truncate">Navigate</span>
                         </a>
                         <Link
                           href={`/check-in?${cust.ledger_id ? `ledger_id=${cust.ledger_id}` : `profile_id=${cust.profile_id}`}&name=${encodeURIComponent(cust.name)}`}
@@ -2261,72 +2387,23 @@ export default function CustomersPage() {
                             e.stopPropagation()
                             saveScrollPos()
                           }}
-                          className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 text-xs font-bold"
-                          title="1-Tap Check In"
+                          className="inline-flex h-11 min-w-0 flex-1 items-center justify-center gap-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-2 text-sm font-bold text-emerald-700 dark:text-emerald-400"
                         >
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>Check In</span>
-                        </Link>
-                        <Link
-                          href={`/customers/${cust.key}`}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            saveScrollPos()
-                          }}
-                          className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-primary hover:bg-muted/50 transition-colors"
-                          title="View 360° Profile & Photos"
-                        >
-                          <UserIcon className="w-3.5 h-3.5" />
+                          <CheckCircle2 className="h-4 w-4 shrink-0" />
+                          <span className="truncate">Check in</span>
                         </Link>
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation()
-                            handleOpenHistory(cust)
+                            setActionCustomer(cust)
                           }}
-                          className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground"
-                          title="View GPS history"
+                          aria-haspopup="dialog"
+                          aria-label={`More actions for ${cust.name}`}
+                          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-border text-foreground cursor-pointer"
                         >
-                          <History className="w-3.5 h-3.5" />
+                          <MoreHorizontal className="h-5 w-5" />
                         </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handleOpenEdit(cust)
-                          }}
-                          className="p-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground"
-                          title="Edit details"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-
-                        {/* Link to Tally Ledger (Admin only, unmapped customers only) */}
-                        {isAdmin && !cust.ledger_id && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleOpenLinkLedger(cust)
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-xs font-semibold"
-                            title="Admin Only: Link this shop to a Tally Ledger"
-                          >
-                            <Link2 className="w-3.5 h-3.5" />
-                            <span>Link</span>
-                          </button>
-                        )}
-
-                        {/* Delete Wrong Tagging (Only for unmapped leads) */}
-                        {canDelete && !cust.ledger_id && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setCustomerToDelete(cust)
-                            }}
-                            className="p-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 transition-colors"
-                            title="Delete wrongly tagged customer lead"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
                       </div>
                     </div>
                   </div>

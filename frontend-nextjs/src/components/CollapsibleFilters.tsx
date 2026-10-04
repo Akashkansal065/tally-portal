@@ -25,8 +25,12 @@ const chosen = new Map<string, boolean>()
 
 function subscribe(listener: () => void) {
   listeners.add(listener)
+  // Until someone picks, the default follows the screen size (e.g. a tablet rotating)
+  const compact = window.matchMedia(COMPACT_QUERY)
+  compact.addEventListener('change', listener)
   return () => {
     listeners.delete(listener)
+    compact.removeEventListener('change', listener)
   }
 }
 
@@ -137,6 +141,44 @@ export function ActiveFiltersSummary({
         >
           <X className="w-3 h-3" aria-hidden="true" />
           Reset
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** Removable chips for the filters in use, for screens whose filters live in a sheet (phones). */
+export function FilterChips({
+  items,
+  onClearAll,
+  className,
+}: {
+  items: { key: string; label: string; onRemove: () => void }[]
+  onClearAll: () => void
+  className?: string
+}) {
+  if (items.length === 0) return null
+  return (
+    <div className={cn('flex items-center gap-2 overflow-x-auto scrollbar-none', className)}>
+      {items.map(item => (
+        <button
+          key={item.key}
+          type="button"
+          onClick={item.onRemove}
+          aria-label={`Remove filter: ${item.label}`}
+          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 pl-3 pr-2 text-sm font-semibold text-primary cursor-pointer"
+        >
+          {item.label}
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      ))}
+      {items.length > 1 && (
+        <button
+          type="button"
+          onClick={onClearAll}
+          className="inline-flex h-9 shrink-0 items-center px-2 text-sm font-semibold text-muted-foreground hover:text-foreground cursor-pointer"
+        >
+          Clear all
         </button>
       )}
     </div>

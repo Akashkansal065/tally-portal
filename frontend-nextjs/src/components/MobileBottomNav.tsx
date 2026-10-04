@@ -1,122 +1,92 @@
 'use client'
 
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { LayoutGrid, type LucideIcon } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
-import {
-  Home,
-  Shield,
-  FileText,
-  BookOpen,
-  Layers,
-  ShoppingCart,
-  IndianRupee,
-  MapPin,
-  Wallet,
-  Clock,
-  BarChart3,
-  FileSpreadsheet,
-  Users,
-  type LucideIcon,
-} from 'lucide-react'
+import { MoreSheet } from '@/components/MoreSheet'
 import { cn } from '@/lib/utils'
+import { HOME, isActivePath, isAdminUser, tabModules } from '@/lib/navigation'
 
-interface NavTab {
-  href: string
-  label: string
-  icon: LucideIcon
-}
-
+/*
+ * Five fixed slots: Home, three tabs picked for the person's role, and More (every other screen).
+ * Fixed slots keep each tab in the same place every day; nothing scrolls off the edge.
+ */
 export function MobileBottomNav() {
   const pathname = usePathname()
   const { user, permissions, can } = useAuth()
+  const [moreOpen, setMoreOpen] = useState(false)
+
+  const tabs = useMemo(
+    () => [HOME, ...tabModules({ permissions, can, isAdmin: isAdminUser(permissions, user?.role) })],
+    [permissions, can, user?.role],
+  )
 
   if (!user) return null
 
-  const isAdmin = permissions.isAdmin || user.role === 'admin' || user.role === 'Admin'
-  const hasVouchersAccess = Boolean((permissions.showVouchers ?? permissions.showReceipts) && can('vouchers', 'read'))
-
-  const hasCustomersAccess = Boolean(permissions.showCustomers && can('customers', 'read'))
-
-  const tabs: NavTab[] = [
-    { href: '/', label: 'Home', icon: Home },
-    ...(hasCustomersAccess
-      ? [{ href: '/customers', label: 'Customers', icon: Users }]
-      : []),
-    ...(hasVouchersAccess
-      ? [{ href: '/vouchers', label: 'Vouchers', icon: FileText }]
-      : []),
-    ...(permissions.showLedger
-      ? [{ href: '/ledgers', label: 'Ledgers', icon: BookOpen }]
-      : []),
-    ...(permissions.showStocks && permissions.stockScope !== 'catalog_only'
-      ? [{ href: '/stocks', label: 'Stocks', icon: Layers }]
-      : []),
-    ...(permissions.showOrders
-      ? [{ href: '/temporders', label: 'Orders', icon: ShoppingCart }]
-      : []),
-    ...(permissions.showPayments
-      ? [{ href: '/payments', label: 'Payments', icon: IndianRupee }]
-      : []),
-    ...(permissions.showCheckIn
-      ? [{ href: '/check-in', label: 'Check-In', icon: MapPin }]
-      : []),
-    ...(permissions.showExpenses
-      ? [{ href: '/expenses', label: 'Expenses', icon: Wallet }]
-      : []),
-    ...(permissions.showAttendance
-      ? [{ href: '/attendance', label: 'Attendance', icon: Clock }]
-      : []),
-    ...(permissions.showReports
-      ? [{ href: '/reports', label: 'Reports', icon: BarChart3 }]
-      : []),
-    ...(permissions.showGst
-      ? [{ href: '/gst', label: 'GST', icon: FileSpreadsheet }]
-      : []),
-    ...(isAdmin
-      ? [{ href: '/admin', label: 'Admin', icon: Shield }]
-      : []),
-  ]
+  const onTab = tabs.some(tab => isActivePath(pathname, tab.href))
 
   return (
-    <nav
-      className="fixed bottom-0 left-0 right-0 z-30 bg-card border-t border-border shadow-lg"
-      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
-    >
-      <div className="flex items-stretch justify-start md:justify-center overflow-x-auto scrollbar-none px-1 h-16 max-w-7xl mx-auto">
-        {tabs.map(tab => {
-          const isActive = tab.href === '/' ? pathname === '/' : pathname.startsWith(tab.href)
-          const Icon = tab.icon
-          return (
-            <Link
-              key={tab.href}
-              href={tab.href}
-              className="flex flex-col items-center justify-center flex-shrink-0 w-[68px] gap-0.5 py-1 cursor-pointer group"
+    <>
+      <nav
+        aria-label="Main"
+        className="fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-card shadow-lg"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
+        <ul className="mx-auto grid h-16 max-w-xl grid-cols-5">
+          {tabs.map(tab => (
+            <li key={tab.id}>
+              <TabLink href={tab.href} label={tab.tabLabel ?? tab.label} icon={tab.icon} active={isActivePath(pathname, tab.href)} />
+            </li>
+          ))}
+          {/* Keep five slots even when a user has access to fewer modules */}
+          {Array.from({ length: Math.max(0, 4 - tabs.length) }, (_, i) => <li key={`empty-${i}`} aria-hidden="true" />)}
+          <li>
+            <button
+              type="button"
+              onClick={() => setMoreOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={moreOpen}
+              className="h-full w-full cursor-pointer"
             >
-              <div
-                className={cn(
-                  'flex items-center justify-center w-12 h-7 rounded-full transition-all duration-200',
-                  isActive
-                    ? 'bg-primary/15 text-primary'
-                    : 'text-muted-foreground group-hover:text-foreground'
-                )}
-              >
-                <Icon className="h-5 w-5 shrink-0" />
-              </div>
-              <span
-                className={cn(
-                  'text-[10px] font-medium truncate w-full text-center px-1 leading-none transition-colors',
-                  isActive
-                    ? 'text-primary font-semibold'
-                    : 'text-muted-foreground group-hover:text-foreground'
-                )}
-              >
-                {tab.label}
-              </span>
-            </Link>
-          )
-        })}
-      </div>
-    </nav>
+              <TabFace label="More" icon={LayoutGrid} active={moreOpen || !onTab} />
+            </button>
+          </li>
+        </ul>
+      </nav>
+      <MoreSheet open={moreOpen} onOpenChange={setMoreOpen} />
+    </>
+  )
+}
+
+function TabLink({ href, label, icon, active }: { href: string; label: string; icon: LucideIcon; active: boolean }) {
+  return (
+    <Link href={href} aria-current={active ? 'page' : undefined} className="block h-full">
+      <TabFace label={label} icon={icon} active={active} />
+    </Link>
+  )
+}
+
+function TabFace({ label, icon: Icon, active }: { label: string; icon: LucideIcon; active: boolean }) {
+  return (
+    <span className="flex h-full flex-col items-center justify-center gap-1 px-1">
+      <span
+        className={cn(
+          'flex h-8 w-14 items-center justify-center rounded-full transition-colors',
+          active ? 'bg-primary/15 text-primary' : 'text-muted-foreground',
+        )}
+      >
+        <Icon className="h-5 w-5" aria-hidden="true" />
+      </span>
+      <span
+        className={cn(
+          'w-full truncate text-center text-xs leading-none',
+          active ? 'font-bold text-primary' : 'font-medium text-muted-foreground',
+        )}
+      >
+        {label}
+      </span>
+    </span>
   )
 }

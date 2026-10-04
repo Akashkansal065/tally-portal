@@ -3,32 +3,21 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
-import { useTheme } from '@/components/ThemeProvider'
+import { BottomSheet } from '@/components/ui/bottom-sheet'
+import { isAdminUser } from '@/lib/navigation'
 import {
-  Home,
-  FileText,
-  BookOpen,
-  Layers,
-  BarChart3,
   Wallet,
   ShoppingCart,
   IndianRupee,
   MapPin,
   MapPinOff,
-  LogOut, MonitorSmartphone,
-  Sun,
-  Moon,
-  Menu,
   X,
-  Shield,
   Building,
   ArrowLeft,
-  FileSpreadsheet,
   Info,
   Phone,
   Mail,
   Globe,
-  Calendar,
   Hash,
   Edit3,
   Save,
@@ -36,19 +25,9 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronDown,
-  ChevronRight,
-  FolderTree,
-  type LucideIcon,
-  RefreshCw,
   AlertTriangle,
   Clock,
   CreditCard,
-  Package,
-  Warehouse,
-  Scale,
-  Tag,
-  Users,
-  History,
   Bell,
   BellRing,
   Share2,
@@ -57,7 +36,6 @@ import {
   Check,
   Trash2,
   CloudOff,
-  Landmark,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { getOfflineQueue } from '@/lib/offline-storage'
@@ -74,18 +52,15 @@ import {
   prefetchVapidKey,
 } from '@/lib/pushNotifications'
 
+// 44pt touch target for every icon button in the header
+const HEADER_ICON_BUTTON = 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white hover:bg-emerald-600/60 transition-colors cursor-pointer'
+
 export function GlobalHeader() {
-  const { user, token, logout, permissions, switchCompany, can } = useAuth()
-  const isAdmin = Boolean(
-    permissions?.isAdmin ||
-    user?.role?.toLowerCase() === 'admin' ||
-    user?.role?.toLowerCase() === 'owner' ||
-    user?.role?.toLowerCase() === 'superadmin'
-  )
-  const { dark, toggle } = useTheme()
+  const { user, token, permissions, switchCompany } = useAuth()
+  const isAdmin = isAdminUser(permissions, user?.role)
   const pathname = usePathname()
   const router = useRouter()
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [showCompanySheet, setShowCompanySheet] = useState(false)
   const [showCompanyModal, setShowCompanyModal] = useState(false)
   const [isEditingCompany, setIsEditingCompany] = useState(false)
   const [savingCompany, setSavingCompany] = useState(false)
@@ -525,88 +500,60 @@ export function GlobalHeader() {
       <header
         className={cn(
           "shrink-0 border-b border-emerald-600/30 bg-emerald-500 dark:bg-emerald-600 text-white relative z-40",
-          (drawerOpen || showNotifications || showCompanyModal) && "z-50"
+          (showNotifications || showCompanyModal) && "z-50"
         )}
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
-        <div className="flex items-center justify-between px-4 h-14">
-          {/* Left: back button, logo, and title */}
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center justify-between gap-2 pl-2 pr-1 sm:px-3 h-14">
+          {/* Left: back button, logo, and the active company (tap to switch or see its profile) */}
+          <div className="flex items-center gap-1 min-w-0">
             {!isHome && pathname !== '/login' && pathname !== '/signup' && (
               <button
                 onClick={() => router.back()}
-                className="p-1.5 rounded-full hover:bg-emerald-600/60 text-white transition-colors shrink-0 cursor-pointer"
-                aria-label="Go Back"
+                className={HEADER_ICON_BUTTON}
+                aria-label="Go back"
               >
                 <ArrowLeft className="h-5 w-5" />
               </button>
             )}
-            <img src="/logo.png" alt="Logo" className="h-8 w-8 object-contain shrink-0 rounded-md bg-white p-0.5" />
-            <Link
-              href="/"
-              className="text-base sm:text-lg font-extrabold text-white hover:opacity-90 transition-all truncate"
-            >
-              Sneh Distributors
+            <Link href="/" className="shrink-0 rounded-md" aria-label="Home">
+              <img src="/logo.png" alt="" className="h-8 w-8 object-contain rounded-md bg-white p-0.5" />
             </Link>
-
-            {user.allowedCompanies && user.allowedCompanies.length > 0 && (
-              <div className="ml-2 relative group hidden sm:block">
-                <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-emerald-600/60 text-xs font-semibold text-white/90 transition-colors border border-transparent">
-                  <Building className="w-3.5 h-3.5" />
-                  <span className="max-w-[120px] truncate">
-                    {activeCompany?.name || "Select Company"}
-                  </span>
-                </button>
-                <div className="absolute top-full left-0 mt-1 w-56 bg-card border border-border rounded-xl shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 overflow-hidden text-foreground">
-                  <div className="px-3 py-2 text-[10px] font-bold tracking-wider text-muted-foreground uppercase bg-muted/30 border-b border-border">
-                    Switch Active Company
-                  </div>
-                  {user.allowedCompanies.map(c => (
-                    <button
-                      key={c.company_id}
-                      onClick={() => switchCompany(c.company_id)}
-                      className={`w-full text-left px-4 py-2.5 text-xs font-medium hover:bg-muted transition-colors flex items-center justify-between ${c.company_id === user.company_id ? 'text-primary bg-primary/5 font-bold' : 'text-foreground'}`}
-                    >
-                      <span className="truncate">{c.name}</span>
-                      {c.company_id === user.company_id && <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>}
-                    </button>
-                  ))}
-                  <div className="border-t border-border my-1"></div>
-                  <button
-                    onClick={() => setShowCompanyModal(true)}
-                    className="w-full text-left px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors flex items-center gap-2"
-                  >
-                    <Info className="w-3.5 h-3.5" />
-                    Company Profile Details
-                  </button>
-                  <Link
-                    href="/companies/new"
-                    className="block w-full text-left px-4 py-2 text-xs font-medium text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950 transition-colors"
-                  >
-                    + Create New Company
-                  </Link>
-                </div>
-              </div>
+            {user.allowedCompanies && user.allowedCompanies.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowCompanySheet(true)}
+                aria-haspopup="dialog"
+                className="ml-1 flex min-h-11 min-w-0 items-center gap-1 rounded-lg px-1.5 text-left hover:bg-emerald-600/60 cursor-pointer"
+              >
+                <span className="truncate text-base sm:text-lg font-extrabold">{activeCompany?.name || 'Select company'}</span>
+                <ChevronDown className="h-4 w-4 shrink-0 opacity-80" aria-hidden="true" />
+              </button>
+            ) : (
+              <Link href="/" className="ml-1 truncate text-base sm:text-lg font-extrabold hover:opacity-90">
+                Sneh Distributors
+              </Link>
             )}
           </div>
 
-          {/* Right: theme + menu */}
+          {/* Right: sync status, offline queue, notifications */}
           <div className="flex items-center gap-1.5">
             {syncHealth && isAdmin && (
               <Link
                 href="/admin?tab=sync"
-                className={cn(
-                  "flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg transition-all border cursor-pointer shrink-0 shadow-sm mr-1",
-                  syncHealth.total_sync_issues > 0
-                    ? "bg-rose-600 hover:bg-rose-700 text-white border-rose-400 animate-pulse"
-                    : "bg-white/20 hover:bg-white/30 text-white border-white/20"
-                )}
+                className="group inline-flex min-h-11 shrink-0 items-center cursor-pointer"
                 title={
                   syncHealth.total_sync_issues > 0
                     ? `${syncHealth.total_sync_issues} Tally sync discrepancies detected across Create, Alter, or Delete actions. Click to view Sync Console.`
                     : "Tally Prime Live & Synced"
                 }
               >
+                <span className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg transition-all border shadow-sm",
+                  syncHealth.total_sync_issues > 0
+                    ? "bg-rose-600 group-hover:bg-rose-700 text-white border-rose-400 animate-pulse"
+                    : "bg-white/20 group-hover:bg-white/30 text-white border-white/20"
+                )}>
                 <span className={cn("w-2 h-2 rounded-full", syncHealth.total_sync_issues > 0 ? "bg-white" : "bg-emerald-300")}></span>
                 <span className="hidden sm:inline">
                   {syncHealth.total_sync_issues > 0
@@ -616,24 +563,15 @@ export function GlobalHeader() {
                 <span className="sm:hidden">
                   {syncHealth.total_sync_issues > 0 ? `${syncHealth.total_sync_issues} Issues` : "Synced"}
                 </span>
+                </span>
               </Link>
             )}
 
-            {activeCompany && (
-              <button
-                onClick={() => setShowCompanyModal(true)}
-                className="hidden md:flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-white/20 hover:bg-white/30 text-white rounded-lg border border-white/20 transition-colors cursor-pointer mr-1"
-                title="View Active Company Profile"
-              >
-                <Info className="w-3.5 h-3.5" />
-                <span>Info</span>
-              </button>
-            )}
             {/* Offline Sync Indicator */}
             {offlinePendingCount > 0 && (
               <button
                 onClick={() => router.push('/sync')}
-                className="p-2 rounded-full hover:bg-emerald-600/60 text-amber-300 transition-colors cursor-pointer relative mr-1"
+                className={cn(HEADER_ICON_BUTTON, "relative text-amber-300")}
                 aria-label="Offline Sync Center"
                 title={`${offlinePendingCount} offline item(s) pending sync. Click to open Sync Center.`}
               >
@@ -655,7 +593,7 @@ export function GlobalHeader() {
                   }
                 }}
                 className={cn(
-                  "p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer relative",
+                  HEADER_ICON_BUTTON, "relative",
                   showNotifications && "bg-emerald-600/80 z-50 ring-2 ring-white/20"
                 )}
                 aria-label="Notifications"
@@ -860,192 +798,61 @@ export function GlobalHeader() {
               )}
             </div>
 
-            <button
-              onClick={toggle}
-
-              className="p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer"
-              aria-label="Toggle theme"
-            >
-              {dark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-            </button>
-            <button
-              onClick={() => setDrawerOpen(true)}
-              className="p-2 rounded-full hover:bg-emerald-600/60 text-white transition-colors cursor-pointer"
-              aria-label="Open menu"
-            >
-              <Menu className="h-5 w-5" />
-            </button>
           </div>
         </div>
       </header>
 
-      {/* Drawer overlay */}
-      {drawerOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-50"
-          onClick={() => setDrawerOpen(false)}
-        >
-          <div
-            className="absolute right-0 top-0 bottom-0 w-72 bg-card border-l border-border flex flex-col shadow-2xl z-50"
-            style={{
-              paddingTop: 'env(safe-area-inset-top, 0px)',
-              paddingBottom: 'env(safe-area-inset-bottom, 0px)',
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <div>
-                <p className="font-bold text-sm">{user.username}</p>
-                <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
-              </div>
-              <button onClick={() => setDrawerOpen(false)} className="p-1 rounded hover:bg-muted">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {user.allowedCompanies && user.allowedCompanies.length > 0 && (
-              <div className="px-4 py-3 border-b border-border bg-muted/20">
-                <label className="block text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1.5">
-                  Active Company
-                </label>
-                <select
-                  value={user.company_id}
-                  onChange={(e) => {
-                    switchCompany(Number(e.target.value))
-                    setDrawerOpen(false)
+      <BottomSheet
+        open={showCompanySheet}
+        onOpenChange={setShowCompanySheet}
+        title="Company"
+        description={user.allowedCompanies && user.allowedCompanies.length > 1 ? 'Switch the company you are working in' : undefined}
+      >
+        <ul className="space-y-1.5" role="list">
+          {(user.allowedCompanies ?? []).map(c => {
+            const current = c.company_id === user.company_id
+            return (
+              <li key={c.company_id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCompanySheet(false)
+                    if (!current) switchCompany(c.company_id)
                   }}
-                  className="w-full bg-background border border-border rounded-xl px-3 py-2 text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
+                  aria-current={current ? 'true' : undefined}
+                  className={cn(
+                    'flex min-h-12 w-full items-center gap-3 rounded-xl border px-4 py-2.5 text-left text-sm font-semibold transition-colors cursor-pointer',
+                    current ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/70 hover:bg-muted',
+                  )}
                 >
-                  {user.allowedCompanies.map((c) => (
-                    <option key={c.company_id} value={c.company_id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <nav className="flex-1 overflow-y-auto p-3 space-y-1">
-              {isAdmin && (
-                <DrawerLink href="/admin" icon={Shield} label="Admin Panel" onClick={() => setDrawerOpen(false)} />
-              )}
-
-              {(can('ledgers', 'read') || can('ledger_groups', 'read') || can('cost_categories', 'read') || can('cost_centres', 'read') || can('cost_centre_classes', 'read') || can('currencies', 'read') || can('voucher_types', 'read')) && (
-                <CollapsibleMenu label="Accounting Masters" icon={BookOpen} defaultOpen={true}>
-                  {can('ledger_groups', 'read') && (
-                    <DrawerLink href="/ledgers/groups" icon={Layers} label="Group" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('ledgers', 'read') && (
-                    <DrawerLink href="/ledgers" icon={BookOpen} label="Ledger" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('cost_categories', 'read') && (
-                    <DrawerLink href="/masters/cost-categories" icon={Layers} label="Cost Category" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('cost_centres', 'read') && (
-                    <DrawerLink href="/masters/cost-centres" icon={FolderTree} label="Cost Centre" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('cost_centre_classes', 'read') && (
-                    <DrawerLink href="/masters/cost-centre-classes" icon={BookOpen} label="Cost Centre Class" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('currencies', 'read') && (
-                    <DrawerLink href="/masters/currencies" icon={BookOpen} label="Currencies" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('voucher_types', 'read') && (
-                    <DrawerLink href="/masters/voucher-types" icon={BookOpen} label="Voucher Types" onClick={() => setDrawerOpen(false)} />
-                  )}
-                </CollapsibleMenu>
-              )}
-
-              {(can('inventory', 'read') || can('stock_groups', 'read') || can('stock_categories', 'read') || can('stock_items', 'read') || can('units', 'read') || can('godowns', 'read') || can('price_lists', 'read') || can('bom', 'read')) && permissions.stockScope !== 'catalog_only' && (
-                <CollapsibleMenu label="Inventory Masters" icon={Package} defaultOpen={true}>
-                  {can('stock_groups', 'read') && (
-                    <DrawerLink href="/masters/stock-groups" icon={FolderTree} label="Stock Group" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('stock_categories', 'read') && (
-                    <DrawerLink href="/masters/stock-categories" icon={Tag} label="Stock Category" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('stock_items', 'read') && (
-                    <DrawerLink href="/stocks" icon={Package} label="Stock Item" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('units', 'read') && (
-                    <DrawerLink href="/masters/units" icon={Scale} label="Unit" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('godowns', 'read') && (
-                    <DrawerLink href="/masters/godowns" icon={Warehouse} label="Godown" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('price_lists', 'read') && (
-                    <DrawerLink href="/masters/price-lists" icon={Layers} label="Price Lists" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('bom', 'read') && (
-                    <DrawerLink href="/inventory/bom" icon={Layers} label="BOM & Manufacturing" onClick={() => setDrawerOpen(false)} />
-                  )}
-                </CollapsibleMenu>
-              )}
-
-              {((permissions.showVouchers ?? permissions.showReceipts) || permissions.showPayments || permissions.showOrders || permissions.showExpenses) && (
-                <CollapsibleMenu label="Transactions" icon={FileText} defaultOpen={true}>
-                  {(permissions.showVouchers ?? permissions.showReceipts) && can('vouchers', 'read') && (
-                    <DrawerLink href="/vouchers" icon={FileText} label="Vouchers" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {permissions.showOrders && can('orders', 'read') && (
-                    <DrawerLink href="/temporders" icon={ShoppingCart} label="Orders" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {permissions.showPayments && can('payments', 'read') && (
-                    <DrawerLink href="/payments" icon={IndianRupee} label="Payments" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {permissions.showPayments && can('payments', 'read') && (
-                    <DrawerLink href="/outstanding" icon={Clock} label="Debtors Aging & Reminders" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {permissions.showExpenses && can('expenses', 'read') && (
-                    <DrawerLink href="/expenses" icon={Wallet} label="Expenses" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {can('vouchers', 'read') && (
-                    <DrawerLink href="/bank-recon" icon={Landmark} label="Bank Reconciliation" onClick={() => setDrawerOpen(false)} />
-                  )}
-                </CollapsibleMenu>
-              )}
-
-              {(permissions.showCustomers || permissions.showCheckIn) && (
-                <CollapsibleMenu label="Field Operations" icon={MapPin} defaultOpen={true}>
-                  {(permissions.showCustomers && can('customers', 'read')) && (
-                    <DrawerLink href="/customers" icon={Users} label="Customer Directory" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {permissions.showCheckIn && (
-                    <>
-                      <DrawerLink href="/planner" icon={Calendar} label="Daily Beat Planner" onClick={() => setDrawerOpen(false)} />
-                      <DrawerLink href="/check-in" icon={MapPin} label="Shop Check-In" onClick={() => setDrawerOpen(false)} />
-                      <DrawerLink href="/check-in/history" icon={History} label="Visit Log & Audits" onClick={() => setDrawerOpen(false)} />
-                      <DrawerLink href="/sync" icon={CloudOff} label="Offline Sync Center" onClick={() => setDrawerOpen(false)} />
-                    </>
-                  )}
-                </CollapsibleMenu>
-              )}
-
-              {(permissions.showReports || permissions.showGst) && (
-                <CollapsibleMenu label="Reports" icon={BarChart3} defaultOpen={true}>
-                  {permissions.showReports && (
-                    <DrawerLink href="/reports" icon={BarChart3} label="Reports" onClick={() => setDrawerOpen(false)} />
-                  )}
-                  {permissions.showGst && (
-                    <DrawerLink href="/gst" icon={FileSpreadsheet} label="GST Returns" onClick={() => setDrawerOpen(false)} />
-                  )}
-                </CollapsibleMenu>
-              )}
-            </nav>
-
-            <div className="p-3 border-t border-border space-y-1">
-              <DrawerLink href="/account/devices" icon={MonitorSmartphone} label="My Devices" onClick={() => setDrawerOpen(false)} />
-              <button
-                onClick={logout}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-destructive hover:bg-destructive/10 text-sm font-medium transition-colors"
-              >
-                <LogOut className="h-4 w-4" />
-                Sign Out
-              </button>
-            </div>
-          </div>
+                  <Building className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                  {current && <Check className="h-4 w-4 shrink-0" aria-label="Current company" />}
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {activeCompany && (
+            <button
+              type="button"
+              onClick={() => { setShowCompanySheet(false); setShowCompanyModal(true) }}
+              className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-border px-3 text-sm font-semibold hover:bg-muted cursor-pointer"
+            >
+              <Info className="h-4 w-4" aria-hidden="true" />
+              Company profile
+            </button>
+          )}
+          <Link
+            href="/companies/new"
+            onClick={() => setShowCompanySheet(false)}
+            className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-border px-3 text-sm font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-muted"
+          >
+            + New company
+          </Link>
         </div>
-      )}
+      </BottomSheet>
 
       {/* Company Info / Edit Modal */}
       {showCompanyModal && activeCompany && (
@@ -1386,75 +1193,6 @@ export function GlobalHeader() {
         </div>
       )}
     </>
-  )
-}
-
-function CollapsibleMenu({
-  label,
-  icon: Icon,
-  children,
-  defaultOpen = false
-}: {
-  label: string,
-  icon: LucideIcon,
-  children: React.ReactNode,
-  defaultOpen?: boolean
-}) {
-  const [isOpen, setIsOpen] = useState(defaultOpen)
-
-  return (
-    <div className="mb-1">
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-muted hover:text-foreground"
-      >
-        <div className="flex items-center gap-3">
-          <Icon className="h-4 w-4 shrink-0" />
-          {label}
-        </div>
-        {isOpen ? (
-          <ChevronDown className="h-4 w-4" />
-        ) : (
-          <ChevronRight className="h-4 w-4" />
-        )}
-      </button>
-      {isOpen && (
-        <div className="pl-6 space-y-1 mt-1 border-l-2 border-border ml-5 py-1">
-          {children}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function DrawerLink({
-  href,
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  href: string
-  icon: LucideIcon
-  label: string
-  onClick: () => void
-}) {
-  const pathname = usePathname()
-  const isActive = href === '/' ? pathname === '/' : pathname.startsWith(href)
-
-  return (
-    <Link
-      href={href}
-      onClick={onClick}
-      className={cn(
-        'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-        isActive
-          ? 'bg-primary/10 text-primary'
-          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-      )}
-    >
-      <Icon className="h-4 w-4 shrink-0" />
-      {label}
-    </Link>
   )
 }
 

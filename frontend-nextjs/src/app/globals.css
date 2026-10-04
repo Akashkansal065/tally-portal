@@ -48,7 +48,8 @@
     --secondary: oklch(0.97 0 0);
     --secondary-foreground: oklch(0.205 0 0);
     --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
+    /* 5.5:1 on the grey muted surface (0.556 was 4.3:1, below WCAG AA for small text); field staff read in sunlight */
+    --muted-foreground: oklch(0.5 0 0);
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
@@ -232,5 +233,15 @@ button,
   input[type="date"]::-webkit-calendar-picker-indicator:hover {
     opacity: 1;
     background-color: rgba(0, 0, 0, 0.05);
+  }
+}
+
+/* Phones: form fields use 16px text, otherwise iOS Safari and the installed web app zoom the page when one is
+   tapped. Deliberately outside @layer so it wins over the text-xs / text-sm utilities on individual fields. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px;
   }
 }

@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useState, useMemo, Suspense } from 'react'
+import { useEffect, useState, useMemo, useRef, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, toTitleCase, cn } from '@/lib/utils'
 import Link from 'next/link'
-import { Search, X, Package, ArrowLeft, ArrowUpDown, ArrowUp, ArrowDown, PackageCheck } from 'lucide-react'
+import { X, Package, ArrowUpDown, ArrowUp, ArrowDown, PackageCheck, SlidersHorizontal } from 'lucide-react'
 
 type SortKey =
   | 'name'
@@ -73,7 +73,9 @@ type StockItem = {
 
 import { getProductDetails } from '@/lib/kgoc-mapping'
 import { filterAndSortBySearch } from '@/lib/search'
-import { ActiveFiltersSummary, FiltersToggle, useCollapsibleFilters } from '@/components/CollapsibleFilters'
+import { ActiveFiltersSummary, FilterChips, FiltersToggle, useCollapsibleFilters } from '@/components/CollapsibleFilters'
+import { Switch } from '@/components/ui/switch'
+import { StockFilterSheet, StockItemSheet, StockRow, type StockSheetItem } from '@/components/stocks/StockMobile'
 
 function StocksContent() {
   const { user, token, permissions, can } = useAuth()
@@ -212,23 +214,27 @@ function StocksContent() {
     router.push(`/stocks?group=${encodeURIComponent(grp)}&item=${encodeURIComponent(item.item_id)}`)
   }
 
-  const handleBackFromItem = () => {
-    setSelectedItem(null)
-    setVoucherSearch('')
-    setVoucherTypeFilter('All Vouchers')
-    setVoucherFlowFilter('All Flows')
-    if (selectedGroup) {
-      router.push(`/stocks?group=${encodeURIComponent(selectedGroup)}`)
-    } else {
-      router.push('/stocks')
-    }
+  // Phones: tapping a product opens a sheet over the list. The sheet lives in the URL (?peek=<item id>), so the
+  // phone's Back button closes it instead of leaving the group, and the list keeps its scroll position.
+  const peekParam = searchParams.get('peek')
+  const peekPushed = useRef(false)
+  const groupUrl = (extra?: Record<string, string>) => {
+    const params = new URLSearchParams(selectedGroup ? { group: selectedGroup, ...extra } : extra)
+    const query = params.toString()
+    return query ? `/stocks?${query}` : '/stocks'
   }
-
-  const handleBackFromGroup = () => {
-    setSelectedGroup(null)
-    setSelectedItem(null)
-    setSearch('')
-    router.push('/stocks')
+  const openPeek = (item: StockItem) => {
+    peekPushed.current = true
+    router.push(groupUrl({ peek: String(item.item_id) }), { scroll: false })
+  }
+  const closePeek = () => {
+    if (peekPushed.current) {
+      peekPushed.current = false
+      router.back()
+    } else {
+      // Opened from a shared link: there is no list entry to go back to
+      router.replace(groupUrl(), { scroll: false })
+    }
   }
 
   // Filters State
@@ -245,6 +251,17 @@ function StocksContent() {
     profitFilter !== 'All Profit' && profitFilter,
     sortValue !== DEFAULT_SORT && `Sorted by ${SORT_OPTIONS.find(o => o.value === sortValue)?.label ?? sortValue}`,
   ].filter((label): label is string => Boolean(label))
+  const groupFilterChips = [
+    stockStatus !== 'All Items' && { key: 'status', label: stockStatus, onRemove: () => setStockStatus('All Items') },
+    movement !== 'All Movement' && { key: 'movement', label: movement, onRemove: () => setMovement('All Movement') },
+    profitFilter !== 'All Profit' && { key: 'profit', label: profitFilter, onRemove: () => setProfitFilter('All Profit') },
+    sortValue !== DEFAULT_SORT && {
+      key: 'sort',
+      label: `Sorted by ${SORT_OPTIONS.find(o => o.value === sortValue)?.label ?? sortValue}`,
+      onRemove: () => { setSortField('closing_balance'); setSortDir('desc') },
+    },
+  ].filter((chip): chip is { key: string; label: string; onRemove: () => void } => Boolean(chip))
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false)
   const resetGroupFilters = () => {
     setStockStatus('All Items')
     setMovement('All Movement')
@@ -355,6 +372,11 @@ function StocksContent() {
     return summaryData.reduce((acc, row) => acc + row.value, 0)
   }, [summaryData])
 
+  const groupItemCount = useMemo(
+    () => (selectedGroup ? items.filter(item => item.group_name === selectedGroup).length : 0),
+    [items, selectedGroup],
+  )
+
   // Filter items in the detail view based on selected group & search keyword
   const filtered = useMemo(() => {
     if (!selectedGroup) return []
@@ -454,6 +476,28 @@ function StocksContent() {
     }
   }, [filtered, isGrossGst])
 
+  const peekItem = peekParam ? items.find(i => String(i.item_id) === peekParam) ?? null : null
+  const peekSheetItem: StockSheetItem | null = peekItem
+    ? {
+        itemId: peekItem.item_id,
+        name: peekItem.name,
+        group: toTitleCase(peekItem.group_name || ''),
+        uom: peekItem.uom || 'PCS',
+        gstRate: Number(peekItem.gst_rate_percent) || 18,
+        subtitle: getProductDetails(peekItem.name, peekItem.group_name).subtitle,
+        closingQty: Number(peekItem.closing_balance) || 0,
+        closingValue: getItemVal(peekItem, 'closing_value'),
+        rate: getItemRate(peekItem),
+        inwardQty: Number(peekItem.inward_qty) || 0,
+        inwardValue: getItemVal(peekItem, 'inward_value'),
+        outwardQty: Number(peekItem.outward_qty) || 0,
+        outwardValue: getItemVal(peekItem, 'outward_value'),
+        consValue: getItemVal(peekItem, 'cons_value'),
+        gpValue: getItemVal(peekItem, 'gp_value'),
+        gpPercent: Number(peekItem.gp_percent) || 0,
+      }
+    : null
+
   // Filtered vouchers for 3rd level
   const filteredVouchers = useMemo(() => {
     let result = itemVouchers.filter(v => {
@@ -477,44 +521,19 @@ function StocksContent() {
 
   return (
     <div className="flex flex-col h-full bg-background">
-      {/* Header — changes based on current drill-down level */}
-      {selectedItem !== null ? (
-        <div className="relative px-4 py-3 bg-[#1b4332] text-white border-b border-green-900 flex items-center justify-between">
-          <div>
-            <span className="font-black text-sm tracking-wider uppercase">Stock Item Vouchers</span>
-            <div className="text-green-300 text-[10px] mt-0.5">{selectedItem.group_name}</div>
-          </div>
-          <span className="font-extrabold text-sm tracking-wider text-green-300 absolute left-1/2 -translate-x-1/2 hidden xs:block">
-            {activeCompanyName}
-          </span>
-          <button
-            onClick={handleBackFromItem}
-            className="text-green-300 hover:text-white font-bold text-lg leading-none focus:outline-none"
-          >
-            ✕
-          </button>
-        </div>
-      ) : selectedGroup === null ? (
-        <div className="relative px-4 py-3 bg-[#e2f5ec] dark:bg-[#1b3d2f] border-b border-emerald-200 dark:border-emerald-900 flex items-center justify-between">
-          <span className="font-extrabold text-sm tracking-wider text-emerald-900 dark:text-emerald-50">Stock Summary</span>
-          <span className="font-extrabold text-sm tracking-wider text-emerald-900 dark:text-emerald-50 absolute left-1/2 -translate-x-1/2 hidden xs:block">
-            {activeCompanyName}
-          </span>
-        </div>
-      ) : (
-        <div className="relative px-4 py-3 bg-[#4a90e2] text-white border-b border-blue-400 flex items-center justify-between">
-          <span className="font-black text-sm tracking-wider uppercase">Stock Group Summary</span>
-          <span className="font-extrabold text-sm tracking-wider text-blue-100 absolute left-1/2 -translate-x-1/2 hidden xs:block">
-            {activeCompanyName}
-          </span>
-          <button
-            onClick={handleBackFromGroup}
-            className="text-blue-100 hover:text-white font-bold text-lg leading-none focus:outline-none"
-          >
-            ✕
-          </button>
-        </div>
-      )}
+      {/* Title for the current level. Going back is the header's Back button (or the Stock tab for the summary). */}
+      <div className="shrink-0 border-b border-border bg-card px-4 py-2.5">
+        <h1 className="truncate text-lg font-bold leading-tight text-foreground">
+          {selectedItem !== null ? selectedItem.name : selectedGroup !== null ? toTitleCase(selectedGroup) : 'Stock summary'}
+        </h1>
+        <p className="truncate text-sm text-muted-foreground">
+          {selectedItem !== null
+            ? `${toTitleCase(selectedItem.group_name || '')} · Stock movement`
+            : selectedGroup !== null
+              ? `Stock group · ${groupItemCount} item${groupItemCount === 1 ? '' : 's'}`
+              : `${activeCompanyName} · Closing balance ${isGrossGst ? 'incl.' : 'excl.'} GST`}
+        </p>
+      </div>
 
       {/* If an item is requested via URL and items are still loading, show smooth loader */}
       {itemParam && loading ? (
@@ -527,43 +546,19 @@ function StocksContent() {
       ) : selectedGroup === null ? (
         // SUMMARY VIEW
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="shrink-0 px-4 py-4 flex items-start justify-between">
-            <div className="space-y-1">
-              <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-wider">Inventory Statement</p>
-              <h2 className="text-xl font-black tracking-tight text-foreground">{activeCompanyName}</h2>
-              <p className="text-xs text-muted-foreground font-medium">Period: 1-Apr-2026 to 31-Mar-2027</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setIsGrossGst(!isGrossGst)}
-                className={cn(
-                  'flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer shadow-2xs select-none',
-                  isGrossGst
-                    ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/20'
-                    : 'bg-card border-border text-foreground hover:bg-muted/50'
-                )}
-                title="Toggle between Stock Valuation With GST (Gross) and Without GST (Net)"
-              >
-                <div className={cn(
-                  'w-7 h-4 rounded-full p-0.5 transition-colors flex items-center',
-                  isGrossGst ? 'bg-white/30 justify-end' : 'bg-muted-foreground/30 justify-start'
-                )}>
-                  <div className="w-3 h-3 rounded-full bg-white shadow-xs" />
-                </div>
-                <span>{isGrossGst ? 'With GST (Gross)' : 'Without GST (Net)'}</span>
-              </button>
-
-              <Link
-                href="/reports?tab=company_stock"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900 transition-colors shadow-2xs"
-              >
-                <PackageCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                <span>Stock & Profit Report</span>
-              </Link>
-              <div className="bg-[#e2f5ec] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 px-2.5 py-1 rounded text-[10px] font-extrabold uppercase self-center">
-                {isGrossGst ? 'Closing Balance (Incl. GST)' : 'Closing Balance (Excl. GST)'}
-              </div>
-            </div>
+          <div className="shrink-0 px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+            <p className="mr-auto text-sm text-muted-foreground">Period: 1-Apr-2026 to 31-Mar-2027</p>
+            <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-border bg-card px-3 text-sm font-semibold text-foreground">
+              <Switch checked={isGrossGst} onCheckedChange={setIsGrossGst} aria-label="Values include GST" />
+              With GST
+            </label>
+            <Link
+              href="/reports?tab=company_stock"
+              className="inline-flex min-h-11 items-center gap-1.5 px-3 rounded-xl text-sm font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900 transition-colors"
+            >
+              <PackageCheck className="w-4 h-4" aria-hidden="true" />
+              <span>Stock & profit report</span>
+            </Link>
           </div>
 
           <div className="flex-1 min-h-0 px-4 pb-4 flex flex-col">
@@ -637,45 +632,64 @@ function StocksContent() {
           <div className="px-4 py-3 bg-background border-b border-border flex flex-wrap items-center md:items-start gap-x-4 gap-y-3">
             {/* Search Block, with the button that minimises the filters so the list gets the screen */}
             <div className="flex items-center gap-3 basis-full md:basis-96 md:flex-none min-w-0">
-              <button
-                onClick={handleBackFromGroup}
-                className="text-sm font-extrabold text-blue-600 dark:text-blue-400 hover:text-blue-800 flex items-center gap-1.5 focus:outline-none shrink-0"
-              >
-                <ArrowLeft className="h-4 w-4 stroke-[3]" />
-                <span>Back</span>
-              </button>
               <div className="flex-1 relative">
                 <input
                   type="text"
                   placeholder="Search products..."
                   value={search}
                   onChange={e => setSearch(e.target.value)}
-                  className="w-full px-4 py-2 border border-border rounded-lg text-sm bg-muted/20 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:bg-background"
+                  aria-label="Search products"
+                  className="w-full h-11 px-4 pr-10 border border-border rounded-xl text-sm bg-muted/20 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-background"
                 />
                 {search && (
                   <button
                     onClick={() => setSearch('')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 focus:outline-none text-muted-foreground"
+                    aria-label="Clear search"
+                    className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex h-11 w-11 items-center justify-center text-muted-foreground"
                   >
                     <X className="h-4 w-4" />
                   </button>
                 )}
               </div>
-              <FiltersToggle state={groupFilters} active={activeGroupFilters} />
+              <FiltersToggle state={groupFilters} active={activeGroupFilters} className="hidden md:inline-flex" />
+              {/* Phones: filters and sort open in a sheet */}
+              <button
+                type="button"
+                onClick={() => setFilterSheetOpen(true)}
+                aria-haspopup="dialog"
+                className={cn(
+                  'md:hidden shrink-0 inline-flex h-11 items-center gap-1.5 rounded-xl border px-3 text-sm font-bold cursor-pointer',
+                  activeGroupFilters.length > 0 ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-card text-foreground',
+                )}
+              >
+                <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+                Filter
+                {activeGroupFilters.length > 0 && (
+                  <span className="min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs leading-5 text-center tabular-nums">
+                    {activeGroupFilters.length}
+                  </span>
+                )}
+              </button>
             </div>
+
+            <FilterChips
+              className="basis-full md:hidden"
+              items={groupFilterChips}
+              onClearAll={resetGroupFilters}
+            />
 
             <ActiveFiltersSummary
               state={groupFilters}
               active={activeGroupFilters}
               onReset={resetGroupFilters}
-              className="basis-full"
+              className="basis-full hidden md:flex"
             />
 
             {/* Filters Block */}
             <div
               id={groupFilters.panelId}
               hidden={groupFilters.collapsed}
-              className="flex flex-wrap items-center gap-3 md:gap-4 md:basis-0 md:flex-1 md:min-w-0 md:justify-end text-xs font-semibold text-muted-foreground"
+              className="max-md:hidden flex flex-wrap items-center gap-3 md:gap-4 md:basis-0 md:flex-1 md:min-w-0 md:justify-end text-xs font-semibold text-muted-foreground"
             >
               {/* GST Display Mode Toggle */}
               <button
@@ -756,215 +770,42 @@ function StocksContent() {
             </div>
           </div>
 
-          <div className="md:hidden px-4 py-3 bg-muted/40 border-b border-border/80">
-            <h3 className="font-extrabold text-sm uppercase tracking-wide text-foreground">Particulars</h3>
-          </div>
-
-          {/* MOBILE VIEW (CARD LAYOUT) */}
-          <div className="md:hidden flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-4 pb-24">
+          {/* PHONES: compact rows; tapping one opens the product sheet and keeps the list where it is */}
+          <ul className="md:hidden flex-1 overflow-y-auto min-h-0 divide-y divide-border bg-card" aria-label="Products">
             {filtered.length === 0 ? (
-              <div className="text-center py-12 text-muted-foreground">
-                <Package className="h-10 w-10 mx-auto mb-3 opacity-30" />
-                <p className="text-sm">No items found matching filters</p>
-              </div>
+              <li className="text-center py-12 px-4 text-muted-foreground">
+                <Package className="h-10 w-10 mx-auto mb-3 opacity-30" aria-hidden="true" />
+                <p className="text-sm">No products match these filters.</p>
+                {activeGroupFilters.length > 0 && (
+                  <button type="button" onClick={resetGroupFilters} className="mt-2 min-h-11 px-3 text-sm font-semibold text-primary cursor-pointer">
+                    Clear filters
+                  </button>
+                )}
+              </li>
             ) : (
-              filtered.map(item => {
-                const details = getProductDetails(item.name, item.group_name)
-                return (
-                  <div
-                    key={item.item_id}
-                    onClick={() => handleSelectItem(item)}
-                    style={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '12px', padding: '16px', marginBottom: '0', boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer' }}
-                  >
-                    {/* Title & Brand */}
-                    <div style={{ marginBottom: '12px' }}>
-                      <h3 style={{ fontWeight: 800, fontSize: '15px', color: '#111827', lineHeight: 1.3, marginBottom: '4px' }}>
-                        {item.name}
-                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#059669', marginLeft: '6px' }}>
-                          ({item.gst_rate_percent}% GST)
-                        </span>
-                      </h3>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ background: '#2563eb', color: '#fff', padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                          {details.brand}
-                        </span>
-                        <span style={{ fontSize: '11px', color: '#6b7280', fontWeight: 500 }}>
-                          {details.subtitle}
-                        </span>
-                        <span style={{ fontSize: '10px', color: '#374151', background: '#f3f4f6', padding: '1px 5px', borderRadius: '4px', fontWeight: 700, border: '1px solid #e5e7eb' }}>
-                          ({item.gst_rate_percent}% GST)
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Metrics Grid — 2 columns */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-
-                      {/* INWARD */}
-                      <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, color: '#059669', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Inward</div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontWeight: 800, fontSize: '13px', color: '#065f46' }}>
-                            {item.inward_qty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
-                          <div style={{ textAlign: 'right' }}>
-                            <span style={{ fontWeight: 700, fontSize: '12px', color: '#065f46' }}>
-                              {formatCurrency(getItemVal(item, 'inward_value'))}
-                            </span>
-                            {isGrossGst && item.inward_value > 0 && (
-                              <div style={{ fontSize: '9px', fontWeight: 600, color: '#059669' }}>
-                                ({item.gst_rate_percent}% GST)
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* OUTWARD */}
-                      <div style={{ background: '#fff5f5', border: '1px solid #fca5a5', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, color: '#dc2626', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Outward</div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontWeight: 800, fontSize: '13px', color: '#991b1b' }}>
-                            {item.outward_qty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
-                          <div style={{ textAlign: 'right' }}>
-                            <span style={{ fontWeight: 700, fontSize: '12px', color: '#991b1b' }}>
-                              {formatCurrency(getItemVal(item, 'outward_value'))}
-                            </span>
-                            {isGrossGst && item.outward_value > 0 && (
-                              <div style={{ fontSize: '9px', fontWeight: 600, color: '#dc2626' }}>
-                                ({item.gst_rate_percent}% GST)
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* CONS */}
-                      <div style={{ background: '#f9fafb', border: '1px solid #d1d5db', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '6px' }}>
-                          <span style={{ fontSize: '9px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Cons</span>
-                          <span style={{ fontSize: '10px', color: '#9ca3af' }}>ⓘ</span>
-                        </div>
-                        <div style={{ textAlign: 'right' }}>
-                          <span style={{ fontWeight: 800, fontSize: '13px', color: '#374151' }}>
-                            {formatCurrency(getItemVal(item, 'cons_value'))}
-                          </span>
-                          {isGrossGst && item.cons_value > 0 && (
-                            <div style={{ fontSize: '9px', fontWeight: 600, color: '#6b7280' }}>
-                              ({item.gst_rate_percent}% GST)
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* GP */}
-                      <div style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>GP</div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontWeight: 800, fontSize: '13px', color: '#1d4ed8' }}>
-                            {formatCurrency(getItemVal(item, 'gp_value'))}
-                          </span>
-                          <div style={{ textAlign: 'right' }}>
-                            <span style={{ fontWeight: 700, fontSize: '11px', color: '#1d4ed8' }}>
-                              ({item.gp_percent.toFixed(1)}%)
-                            </span>
-                            {isGrossGst && item.gp_value !== 0 && (
-                              <div style={{ fontSize: '9px', fontWeight: 600, color: '#2563eb' }}>
-                                ({item.gst_rate_percent}% GST)
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* CLOSING QTY */}
-                      <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Closing Qty</div>
-                        <div style={{ fontWeight: 800, fontSize: '13px', color: '#312e81' }}>
-                          {item.closing_balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {item.uom}
-                        </div>
-                      </div>
-
-                      {/* PRICE / QTY */}
-                      <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '8px', padding: '10px' }}>
-                        <div style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Price / Qty</div>
-                        <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontWeight: 800, fontSize: '13px', color: '#312e81' }}>
-                            {getItemRate(item) > 0 ? formatCurrency(getItemRate(item)) : '-'}
-                          </div>
-                          {item.uom && getItemRate(item) > 0 && (
-                            <div style={{ fontSize: '9px', fontWeight: 600, color: '#6366f1' }}>
-                              per {item.uom}
-                            </div>
-                          )}
-                          {isGrossGst && getItemRate(item) > 0 && (
-                            <div style={{ fontSize: '9px', fontWeight: 600, color: '#059669' }}>
-                              ({item.gst_rate_percent}% GST)
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* CLOSING VALUE (Full width) */}
-                      <div style={{ background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '8px', padding: '10px', gridColumn: 'span 2' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div style={{ fontSize: '9px', fontWeight: 700, color: '#4338ca', textTransform: 'uppercase', letterSpacing: '0.07em' }}>Total Closing Value</div>
-                          <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontWeight: 900, fontSize: '14px', color: '#312e81' }}>
-                              {formatCurrency(getItemVal(item, 'closing_value'))}
-                            </div>
-                            {isGrossGst && getItemVal(item, 'closing_value') > 0 && (
-                              <div style={{ fontSize: '10px', fontWeight: 700, color: '#4338ca' }}>
-                                ({item.gst_rate_percent}% GST)
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                    </div>
-                  </div>
-                )
-              })
+              filtered.map(item => (
+                <StockRow
+                  key={item.item_id}
+                  name={item.name}
+                  qty={Number(item.closing_balance) || 0}
+                  uom={item.uom || 'PCS'}
+                  rate={getItemRate(item)}
+                  value={getItemVal(item, 'closing_value')}
+                  gpPercent={Number(item.gp_percent) || 0}
+                  hasSales={(Number(item.outward_qty) || 0) !== 0 || (Number(item.gp_value) || 0) !== 0}
+                  onOpen={() => openPeek(item)}
+                />
+              ))
             )}
-
-            {/* Mobile Summary Footer Card (Non-sticky, end of list) */}
-            {filtered.length > 0 && (
-              <div className="bg-card border border-primary/20 rounded-2xl p-4 shadow-sm mt-6 mb-4 space-y-3 font-sans">
-                <div className="flex justify-between items-center pb-2 border-b border-border">
-                  <div>
-                    <span className="text-[10px] font-black uppercase tracking-wider text-muted-foreground block">Stock Group Total</span>
-                    <span className="text-xs font-bold text-muted-foreground">{filtered.length} Product{filtered.length === 1 ? '' : 's'}</span>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-muted-foreground block">Final Closing Value</span>
-                    <span className="text-base font-black text-foreground">{formatCurrency(groupTotals.totalClosingValue)}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-lg flex flex-col justify-between">
-                    <span className="text-[10px] font-extrabold uppercase text-emerald-700 dark:text-emerald-400">Total Gross Profit</span>
-                    <span className="text-sm font-black text-emerald-700 dark:text-emerald-300 mt-1">
-                      {formatCurrency(groupTotals.totalGpValue)} <span className="text-xs font-bold">({groupTotals.totalGpPercent.toFixed(1)}%)</span>
-                    </span>
-                  </div>
-                  <div className="bg-indigo-500/10 border border-indigo-500/20 p-2.5 rounded-lg flex flex-col justify-between">
-                    <span className="text-[10px] font-extrabold uppercase text-indigo-700 dark:text-indigo-400">Total Closing Qty</span>
-                    <span className="text-sm font-black text-indigo-700 dark:text-indigo-300 mt-1">
-                      {groupTotals.totalClosingQty.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  <div className="bg-muted/40 p-2 rounded flex justify-between items-center col-span-2 text-[11px]">
-                    <span className="text-muted-foreground font-medium">Inward: <strong>{formatCurrency(groupTotals.totalInwardValue)}</strong></span>
-                    <span className="text-muted-foreground font-medium">Outward: <strong>{formatCurrency(groupTotals.totalOutwardValue)}</strong></span>
-                    <span className="text-muted-foreground font-medium">Cons: <strong>{formatCurrency(groupTotals.totalConsValue)}</strong></span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          </ul>
+          {filtered.length > 0 && (
+            <div className="md:hidden shrink-0 flex items-center justify-between gap-3 border-t border-border bg-muted/60 px-4 py-2.5">
+              <span className="text-sm text-muted-foreground">
+                {filtered.length} item{filtered.length === 1 ? '' : 's'} · {isGrossGst ? 'incl.' : 'excl.'} GST
+              </span>
+              <span className="text-base font-bold tabular-nums text-foreground">{formatCurrency(groupTotals.totalClosingValue)}</span>
+            </div>
+          )}
 
           {/* DESKTOP VIEW (TABULAR LAYOUT) */}
           <div className="hidden md:flex flex-1 flex-col min-h-0 px-4 py-4 overflow-auto">
@@ -1389,168 +1230,155 @@ function StocksContent() {
         </div>
       )}
 
-      {/* 3RD LEVEL — Stock Item Voucher Transaction List */}
+      {/* 3RD LEVEL — every voucher that moved this product */}
       {selectedItem !== null ? (
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Item header card */}
-          <div style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '12px 16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-              <button
-                onClick={handleBackFromItem}
-                style={{ color: '#059669', fontWeight: 700, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-              >
-                <ArrowLeft style={{ width: 14, height: 14, strokeWidth: 3 }} />
-              </button>
-              <span style={{ fontWeight: 900, fontSize: '22px', color: '#059669', letterSpacing: '-0.5px' }}>
-                {selectedItem.name}
-              </span>
+          <div className="shrink-0 border-b border-border bg-card px-4 py-3 space-y-2.5">
+            <p className="text-sm text-muted-foreground">
+              Unit: <span className="font-semibold text-foreground">{selectedItem.uom || 'PCS'}</span>
+              {' · '}GST: <span className="font-semibold text-foreground">{selectedItem.gst_rate_percent}%</span>
+            </p>
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search party, voucher or invoice…"
+                aria-label="Search vouchers"
+                value={voucherSearch}
+                onChange={e => setVoucherSearch(e.target.value)}
+                className="w-full h-11 px-4 pr-10 rounded-xl border border-border bg-muted/20 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:bg-background"
+              />
+              {voucherSearch && (
+                <button
+                  type="button"
+                  onClick={() => setVoucherSearch('')}
+                  aria-label="Clear search"
+                  className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex h-11 w-11 items-center justify-center text-muted-foreground"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
             </div>
-            <div style={{ fontSize: '12px', color: '#6b7280', fontWeight: 600 }}>{selectedItem.group_name}</div>
-            <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span>PART NO / UOM &nbsp;•&nbsp; <strong style={{ color: '#374151' }}>N/A / {selectedItem.uom || 'PCS'}</strong></span>
-              <span>•</span>
-              <span>GST RATE &nbsp;•&nbsp; <strong style={{ color: '#059669' }}>({selectedItem.gst_rate_percent}% GST)</strong></span>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-border bg-card px-3 font-semibold text-foreground">
+                <Switch checked={isGrossGst} onCheckedChange={setIsGrossGst} aria-label="Amounts include GST" />
+                With GST
+              </label>
+              <select
+                value={voucherTypeFilter}
+                onChange={e => setVoucherTypeFilter(e.target.value)}
+                aria-label="Voucher type"
+                className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-semibold text-foreground"
+              >
+                <option value="All Vouchers">All voucher types</option>
+                {voucherTypes.map(vt => <option key={vt} value={vt}>{vt}</option>)}
+              </select>
+              <select
+                value={voucherFlowFilter}
+                onChange={e => setVoucherFlowFilter(e.target.value)}
+                aria-label="Direction"
+                className="h-11 rounded-xl border border-border bg-card px-3 text-sm font-semibold text-foreground"
+              >
+                <option value="All Flows">In and out</option>
+                <option value="Inward">Inward only</option>
+                <option value="Outward">Outward only</option>
+              </select>
             </div>
           </div>
 
-          {/* Search + filters */}
-          <div style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '10px 12px' }}>
-            <input
-              type="text"
-              placeholder="Search party, voucher or invoice..."
-              value={voucherSearch}
-              onChange={e => setVoucherSearch(e.target.value)}
-              style={{ width: '100%', padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: '8px', fontSize: '13px', outline: 'none', marginBottom: '8px', boxSizing: 'border-box' }}
-            />
-            <div style={{ display: 'flex', gap: '8px', fontSize: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {/* GST Toggle */}
-              <button
-                onClick={() => setIsGrossGst(!isGrossGst)}
-                className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer shadow-2xs select-none',
-                  isGrossGst
-                    ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/20'
-                    : 'bg-card border-border text-foreground hover:bg-muted/50'
-                )}
-                title="Toggle between Valuation With GST (Gross) and Without GST (Net)"
-              >
-                <div className={cn(
-                  'w-6 h-3.5 rounded-full p-0.5 transition-colors flex items-center',
-                  isGrossGst ? 'bg-white/30 justify-end' : 'bg-muted-foreground/30 justify-start'
-                )}>
-                  <div className="w-2.5 h-2.5 rounded-full bg-white shadow-xs" />
-                </div>
-                <span>{isGrossGst ? 'With GST' : 'Without GST'}</span>
-              </button>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <span style={{ color: '#6b7280', fontWeight: 600 }}>TYPE:</span>
-                <select
-                  value={voucherTypeFilter}
-                  onChange={e => setVoucherTypeFilter(e.target.value)}
-                  style={{ border: '1px solid #d1d5db', borderRadius: '6px', padding: '3px 6px', fontSize: '12px', background: '#fff' }}
-                >
-                  <option value="All Vouchers">All Vouchers</option>
-                  {voucherTypes.map(vt => <option key={vt} value={vt}>{vt}</option>)}
-                </select>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <span style={{ color: '#6b7280', fontWeight: 600 }}>FLOW:</span>
-                <select
-                  value={voucherFlowFilter}
-                  onChange={e => setVoucherFlowFilter(e.target.value)}
-                  style={{ border: '1px solid #d1d5db', borderRadius: '6px', padding: '3px 6px', fontSize: '12px', background: '#fff' }}
-                >
-                  <option value="All Flows">All Flows</option>
-                  <option value="Inward">Inward</option>
-                  <option value="Outward">Outward</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* Voucher list */}
-          <div className="flex-1 overflow-y-auto min-h-0" style={{ background: '#f9fafb' }}>
+          <div className="flex-1 overflow-y-auto min-h-0 bg-muted/20">
             {vouchersLoading ? (
-              <div style={{ display: 'flex', justifyContent: 'center', padding: '40px' }}>
-                <div style={{ width: 28, height: 28, border: '3px solid #059669', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+              <div className="flex justify-center py-10">
+                <div className="h-7 w-7 rounded-full border-[3px] border-emerald-600 border-t-transparent animate-spin" aria-label="Loading vouchers" />
               </div>
             ) : filteredVouchers.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '48px 16px', color: '#9ca3af' }}>
-                <Package style={{ width: 36, height: 36, margin: '0 auto 12px', opacity: 0.3 }} />
-                <p style={{ fontSize: '13px' }}>No transactions found</p>
+              <div className="py-12 px-4 text-center text-muted-foreground">
+                <Package className="mx-auto mb-3 h-9 w-9 opacity-30" aria-hidden="true" />
+                <p className="text-sm">No vouchers found.</p>
               </div>
             ) : (
-              filteredVouchers.map((v, idx) => {
-                const isInward = v.is_inward
-                const date = new Date(v.voucher_date)
-                const dateStr = date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
-                const vType = v.voucher_type.toUpperCase()
-                const vTypeBg = isInward ? '#059669' : '#e53e3e'
-                const effectiveGstRate = Number(v.gst_rate) > 0 ? Number(v.gst_rate) : (selectedItem.gst_rate_percent || 18)
-                const voucherDisplayAmount = isGrossGst
-                  ? Number(v.amount) * (1 + effectiveGstRate / 100)
-                  : Number(v.amount)
-
-                return (
-                  <div
-                    key={v.stock_entry_id}
-                    onClick={() => router.push(`/vouchers/${v.voucher_id}`)}
-                    className="hover:bg-muted/40 transition-colors cursor-pointer"
-                    style={{ background: '#fff', borderBottom: '1px solid #f3f4f6', padding: '12px 16px' }}
-                    title="Click to view voucher details"
-                  >
-                    {/* Row 1: date + type badge + voucher link */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                      <span style={{ fontSize: '12px', color: '#374151', fontWeight: 700, minWidth: '64px' }}>{dateStr}</span>
-                      <span style={{ background: vTypeBg, color: '#fff', fontSize: '9px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                        {vType}
-                      </span>
-                      {v.reference_number && (
-                        <span style={{ fontSize: '11px', color: '#6b7280' }}>#{v.reference_number}</span>
-                      )}
-                      <span style={{ marginLeft: 'auto', fontSize: '11px', fontWeight: 700, color: '#2563eb' }}>
-                        Vch: {v.voucher_number}
-                      </span>
-                    </div>
-                    {/* Row 2: party name */}
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#111827', marginBottom: '8px' }}>
-                      {v.party_name}
-                    </div>
-                    {/* Row 3: flow badge + qty + value */}
-                    <div style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      background: isInward ? '#f0fdf4' : '#fff5f5',
-                      border: `1px solid ${isInward ? '#bbf7d0' : '#fecaca'}`,
-                      borderRadius: '8px', padding: '8px 12px'
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <span style={{
-                          fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em',
-                          color: isInward ? '#059669' : '#dc2626',
-                          border: `1px solid ${isInward ? '#059669' : '#dc2626'}`,
-                          borderRadius: '4px', padding: '1px 5px'
-                        }}>
-                          {isInward ? 'INWARD' : 'OUTWARD'}
+              <ul className="divide-y divide-border">
+                {filteredVouchers.map(v => {
+                  const isInward = v.is_inward
+                  const dateStr = new Date(v.voucher_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })
+                  const effectiveGstRate = Number(v.gst_rate) > 0 ? Number(v.gst_rate) : (selectedItem.gst_rate_percent || 18)
+                  const voucherDisplayAmount = isGrossGst
+                    ? Number(v.amount) * (1 + effectiveGstRate / 100)
+                    : Number(v.amount)
+                  return (
+                    <li key={v.stock_entry_id}>
+                      <button
+                        type="button"
+                        onClick={() => router.push(`/vouchers/${v.voucher_id}`)}
+                        className="w-full bg-card px-4 py-3 text-left hover:bg-muted/40 cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2 text-sm">
+                          <span className="font-semibold text-foreground tabular-nums">{dateStr}</span>
+                          <span
+                            className={cn(
+                              'rounded px-1.5 py-0.5 text-xs font-bold uppercase tracking-wide text-white',
+                              isInward ? 'bg-emerald-600' : 'bg-rose-600',
+                            )}
+                          >
+                            {v.voucher_type}
+                          </span>
+                          {v.reference_number && <span className="truncate text-muted-foreground">#{v.reference_number}</span>}
+                          <span className="ml-auto shrink-0 font-semibold text-blue-700 dark:text-blue-400">Vch {v.voucher_number}</span>
                         </span>
-                        <span style={{ fontSize: '10px', color: '#9ca3af' }}>ⓘ</span>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: isInward ? '#065f46' : '#991b1b' }}>
-                          {v.quantity.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {selectedItem.uom || 'PCS'}
+                        <span className="mt-1 block truncate text-[15px] font-semibold text-foreground">{v.party_name}</span>
+                        <span
+                          className={cn(
+                            'mt-2 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm',
+                            isInward
+                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+                              : 'border-rose-500/30 bg-rose-500/10 text-rose-800 dark:text-rose-300',
+                          )}
+                        >
+                          <span className="text-xs font-bold uppercase tracking-wide">{isInward ? 'Inward' : 'Outward'}</span>
+                          <span className="font-bold tabular-nums">
+                            {Number(v.quantity).toLocaleString('en-IN', { maximumFractionDigits: 3 })} {selectedItem.uom || 'PCS'}
+                            {' · '}
+                            {formatCurrency(voucherDisplayAmount)}
+                            {isGrossGst && <span className="font-medium"> ({effectiveGstRate}% GST)</span>}
+                          </span>
                         </span>
-                        <span style={{ fontSize: '12px', color: isInward ? '#059669' : '#dc2626', fontWeight: 700, marginLeft: '10px' }}>
-                          | {formatCurrency(voucherDisplayAmount)} {isGrossGst ? `(${effectiveGstRate}% GST)` : ''}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )
-              })
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
             )}
           </div>
         </div>
       ) : null}
+
+      <StockFilterSheet
+        open={filterSheetOpen}
+        onOpenChange={setFilterSheetOpen}
+        stockStatus={stockStatus}
+        onStockStatus={setStockStatus}
+        movement={movement}
+        onMovement={setMovement}
+        profit={profitFilter}
+        onProfit={setProfitFilter}
+        sortField={sortField}
+        sortDir={sortDir}
+        onSort={(field, dir) => { setSortField(field as SortKey); setSortDir(dir) }}
+        withGst={isGrossGst}
+        onWithGst={setIsGrossGst}
+        resultCount={filtered.length}
+        hasActive={activeGroupFilters.length > 0}
+        onReset={resetGroupFilters}
+      />
+      <StockItemSheet
+        item={peekSheetItem}
+        open={peekSheetItem !== null && selectedItem === null}
+        onOpenChange={(open) => { if (!open) closePeek() }}
+        token={token}
+        withGst={isGrossGst}
+        companyName={activeCompanyName}
+        onSeeAll={() => { if (peekItem) { peekPushed.current = false; handleSelectItem(peekItem) } }}
+        onOpenVoucher={(voucherId) => { peekPushed.current = false; router.push(`/vouchers/${voucherId}`) }}
+      />
     </div>
   )
 }
