@@ -5,8 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime
+import logging
 
 from app.core.database import get_db, engine
+
+logger = logging.getLogger("app.routers.health")
 
 router = APIRouter(tags=["Health & System"])
 
@@ -41,7 +44,9 @@ async def db_health_check(db: AsyncSession = Depends(get_db)):
                 detail="Unexpected result from database ping"
             )
     except Exception as e:
+        # Unauthenticated endpoint: driver errors can include DB host and user names, so log them only
+        logger.error(f"Database health check failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Database connection error: {str(e)}"
+            detail="Database connection error"
         )

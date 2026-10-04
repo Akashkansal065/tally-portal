@@ -6,25 +6,31 @@ const serverUrl =
   process.env.NEXT_PUBLIC_APP_URL ||
   'https://tally-portal-one.vercel.app';
 
+// WebView relaxations are only for pointing the shell at a plain-HTTP LAN dev server.
+// Production (https server URL) gets none of them. Force them on with CAPACITOR_DEV=true.
+const isDevShell = serverUrl.startsWith('http://') || process.env.CAPACITOR_DEV === 'true';
+const serverHost = new URL(serverUrl).hostname;
+
 const config: CapacitorConfig = {
   appId: 'com.snehdistributors.mytally',
   appName: 'SnehDist.',
   webDir: 'public',
   server: {
     ...(serverUrl ? { url: serverUrl } : {}),
-    cleartext: true,
+    cleartext: isDevShell,
     androidScheme: 'https',
-    allowNavigation: [
-      'tally-portal-one.vercel.app',
-      '*.vercel.app',
-      'localhost',
-      '127.0.0.1',
-    ],
+    // Pages on these hosts get the native bridge (camera, GPS, tracking token), so list exact hosts only.
+    // Never '*.vercel.app': anyone can deploy there.
+    allowNavigation: [...new Set(
+      isDevShell
+        ? ['tally-portal-one.vercel.app', serverHost, 'localhost', '127.0.0.1']
+        : ['tally-portal-one.vercel.app', serverHost]
+    )],
   },
   android: {
-    allowMixedContent: true,
+    allowMixedContent: isDevShell,
     captureInput: true,
-    webContentsDebuggingEnabled: true,
+    // webContentsDebuggingEnabled is intentionally unset: Capacitor enables it for debug builds only
     backgroundColor: '#0f172a',
   },
   plugins: {

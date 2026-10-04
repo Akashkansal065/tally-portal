@@ -29,6 +29,8 @@ class TallyClient:
     def __init__(self, tally_url: str = "http://127.0.0.1:9000", timeout: int = 6):
         self.tally_url = tally_url.rstrip("/") + "/"
         self.timeout = timeout
+        # Labels of collections the last export_full_collections() call could not export
+        self.last_export_failures: List[str] = []
 
     def check_health(self) -> Tuple[bool, str]:
         """Pings Tally to check if the XML server is responding."""
@@ -210,6 +212,7 @@ class TallyClient:
         ]
         
         results = []
+        self.last_export_failures = []
         for label, obj_type, fetch_fields, supports_alter_filter in collections:
             # If incremental sync, only query collections that support ALTERID filtering
             if min_alter_id > 0 and not supports_alter_filter:
@@ -255,6 +258,7 @@ class TallyClient:
   </BODY>
 </ENVELOPE>"""
             max_retries = 2
+            exported = False
             for attempt in range(max_retries + 1):
                 try:
                     req = urllib.request.Request(
@@ -265,6 +269,7 @@ class TallyClient:
                     with urllib.request.urlopen(req, timeout=120) as resp:
                         resp_xml = resp.read().decode("utf-8", errors="replace")
                         if "<ENVELOPE>" in resp_xml:
+                            exported = True
                             # On incremental passes, check if any actual objects exist in collection to avoid sending empty payloads
                             if min_alter_id > 0 and not has_collection_records(resp_xml, obj_type):
                                 break
@@ -276,6 +281,10 @@ class TallyClient:
                         time.sleep(1)
                     else:
                         logger.warning(f"Failed to export collection '{label}' from Tally after {max_retries + 1} attempts: {e}")
+            if not exported:
+                # Either every attempt raised or Tally never returned an ENVELOPE: the caller must not
+                # treat this cycle as complete, or these records would fall behind the sync watermark.
+                self.last_export_failures.append(label)
 
         return results
 

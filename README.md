@@ -235,6 +235,8 @@ npm run build:apk
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Plain-HTTP dev servers only work in **debug** builds. Release builds block cleartext traffic and WebView debugging, and only navigate within the production host. So build releases with `CAPACITOR_SERVER_URL` unset, or set to an `https://` URL.
+
 For a signed release build, copy `android/key.properties.example` to `android/key.properties`, point it at your keystore, and run `npm run build:apk-release`. Never commit the keystore or `key.properties`.
 
 For iOS (macOS only):

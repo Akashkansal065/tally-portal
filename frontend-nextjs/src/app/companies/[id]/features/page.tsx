@@ -1,37 +1,71 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { API_BASE } from '@/lib/utils'
+import { useAuth } from '@/context/AuthContext'
 
-export default function CompanyFeaturesPage({ params }: { params: { id: string } }) {
+type YesNo = 'Yes' | 'No'
+
+const DEFAULT_FEATURES = {
+  maintain_accounts: 'Yes',
+  enable_bill_wise: 'Yes',
+  enable_cost_centres: 'No',
+  enable_interest: 'No',
+
+  maintain_inventory: 'Yes',
+  integrate_accounts_inventory: 'Yes',
+  enable_multiple_price: 'No',
+  enable_batches: 'No',
+
+  enable_gst: 'Yes',
+  enable_tds: 'No',
+  enable_tcs: 'No',
+
+  enable_browser_access: 'Yes'
+} satisfies Record<string, YesNo>
+
+type FeatureKey = keyof typeof DEFAULT_FEATURES
+
+// Defined at module scope: a component declared inside render is a new type on every render,
+// so React would remount every select (losing focus) on each change.
+function YesNoSelect({ label, value, onChange }: { label: string, value: YesNo, onChange: (value: YesNo) => void }) {
+  return (
+    <div className="flex justify-between py-1">
+      <span className="text-gray-800">{label}</span>
+      <div className="flex items-center">
+        <span className="px-2">:</span>
+        <select 
+          value={value} 
+          onChange={(e) => onChange(e.target.value as YesNo)}
+          className={`w-16 border px-1 focus:outline-none focus:border-black focus:ring-1 focus:ring-black ${value === 'Yes' ? 'bg-[#FBFEE9] border-black' : 'border-transparent bg-transparent hover:border-gray-400'}`}
+        >
+          <option>Yes</option>
+          <option>No</option>
+        </select>
+      </div>
+    </div>
+  )
+}
+
+export default function CompanyFeaturesPage() {
   const router = useRouter()
-  const companyId = params.id
+  const params = useParams()
+  const companyId = params?.id as string
+  const { token } = useAuth()
   
-  const [features, setFeatures] = useState({
-    maintain_accounts: 'Yes',
-    enable_bill_wise: 'Yes',
-    enable_cost_centres: 'No',
-    enable_interest: 'No',
-    
-    maintain_inventory: 'Yes',
-    integrate_accounts_inventory: 'Yes',
-    enable_multiple_price: 'No',
-    enable_batches: 'No',
-    
-    enable_gst: 'Yes',
-    enable_tds: 'No',
-    enable_tcs: 'No',
-    
-    enable_browser_access: 'Yes'
-  })
+  const [features, setFeatures] = useState<Record<FeatureKey, YesNo>>(DEFAULT_FEATURES)
   
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const handleChange = (name: string, value: string) => {
+  const handleChange = (name: FeatureKey, value: YesNo) => {
     setFeatures(prev => ({ ...prev, [name]: value }))
   }
+
+  const featureSelect = (label: string, name: FeatureKey) => (
+    <YesNoSelect label={label} value={features[name]} onChange={(value) => handleChange(name, value)} />
+  )
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -39,7 +73,6 @@ export default function CompanyFeaturesPage({ params }: { params: { id: string }
     setLoading(true)
     
     try {
-      const token = localStorage.getItem('token')
       const res = await fetch(`${API_BASE}/companies/${companyId}/features`, {
         method: 'PUT',
         headers: {
@@ -73,30 +106,12 @@ export default function CompanyFeaturesPage({ params }: { params: { id: string }
       
       router.push('/') // Navigate to dashboard after setup
       
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to save features')
     } finally {
       setLoading(false)
     }
   }
-
-  // Helper component for Yes/No selects
-  const YesNoSelect = ({ label, name }: { label: string, name: keyof typeof features }) => (
-    <div className="flex justify-between py-1">
-      <span className="text-gray-800">{label}</span>
-      <div className="flex items-center">
-        <span className="px-2">:</span>
-        <select 
-          value={features[name]} 
-          onChange={(e) => handleChange(name, e.target.value)}
-          className={`w-16 border px-1 focus:outline-none focus:border-black focus:ring-1 focus:ring-black ${features[name] === 'Yes' ? 'bg-[#FBFEE9] border-black' : 'border-transparent bg-transparent hover:border-gray-400'}`}
-        >
-          <option>Yes</option>
-          <option>No</option>
-        </select>
-      </div>
-    </div>
-  )
 
   return (
     <div className="min-h-screen bg-[#D0D4CD] flex items-center justify-center py-8">
@@ -120,21 +135,21 @@ export default function CompanyFeaturesPage({ params }: { params: { id: string }
             <div className="space-y-6">
               <div>
                 <div className="font-bold border-b border-gray-300 pb-1 mb-2">Accounting</div>
-                <YesNoSelect label="Maintain Accounts" name="maintain_accounts" />
+                {featureSelect("Maintain Accounts", "maintain_accounts")}
                 <div className="pl-4">
-                  <YesNoSelect label="Enable Bill-wise entry" name="enable_bill_wise" />
-                  <YesNoSelect label="Enable Cost Centres" name="enable_cost_centres" />
-                  <YesNoSelect label="Enable Interest Calculation" name="enable_interest" />
+                  {featureSelect("Enable Bill-wise entry", "enable_bill_wise")}
+                  {featureSelect("Enable Cost Centres", "enable_cost_centres")}
+                  {featureSelect("Enable Interest Calculation", "enable_interest")}
                 </div>
               </div>
 
               <div>
                 <div className="font-bold border-b border-gray-300 pb-1 mb-2">Inventory</div>
-                <YesNoSelect label="Maintain Inventory" name="maintain_inventory" />
+                {featureSelect("Maintain Inventory", "maintain_inventory")}
                 <div className="pl-4">
-                  <YesNoSelect label="Integrate Accounts with Inventory" name="integrate_accounts_inventory" />
-                  <YesNoSelect label="Enable multiple Price Levels" name="enable_multiple_price" />
-                  <YesNoSelect label="Enable Batches" name="enable_batches" />
+                  {featureSelect("Integrate Accounts with Inventory", "integrate_accounts_inventory")}
+                  {featureSelect("Enable multiple Price Levels", "enable_multiple_price")}
+                  {featureSelect("Enable Batches", "enable_batches")}
                 </div>
               </div>
             </div>
@@ -143,14 +158,14 @@ export default function CompanyFeaturesPage({ params }: { params: { id: string }
             <div className="space-y-6">
               <div>
                 <div className="font-bold border-b border-gray-300 pb-1 mb-2">Taxation</div>
-                <YesNoSelect label="Enable Goods and Services Tax (GST)" name="enable_gst" />
-                <YesNoSelect label="Enable Tax Deducted at Source (TDS)" name="enable_tds" />
-                <YesNoSelect label="Enable Tax Collected at Source (TCS)" name="enable_tcs" />
+                {featureSelect("Enable Goods and Services Tax (GST)", "enable_gst")}
+                {featureSelect("Enable Tax Deducted at Source (TDS)", "enable_tds")}
+                {featureSelect("Enable Tax Collected at Source (TCS)", "enable_tcs")}
               </div>
 
               <div>
                 <div className="font-bold border-b border-gray-300 pb-1 mb-2">Online Access</div>
-                <YesNoSelect label="Enable Browser Access for Reports" name="enable_browser_access" />
+                {featureSelect("Enable Browser Access for Reports", "enable_browser_access")}
               </div>
             </div>
           </div>

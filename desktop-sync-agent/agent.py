@@ -388,11 +388,19 @@ class DesktopSyncAgent:
                 self.force_full_sync_next = False
                 is_incremental = False
 
+            company_key = self.active_company_name
+            retry_floor = (self.config.inbound_retry_floors or {}).get(company_key)
+
             min_alter = 0
             if is_incremental:
                 alt1, alt2 = self.cloud.get_last_alter_id()
-                min_alter = max(alt1, alt2)
+                server_watermark = max(alt1, alt2)
+                # After a failed cycle, re-pull from where that cycle started: the server's watermark is
+                # the highest AlterID it holds, which can be past records that never arrived.
+                min_alter = server_watermark if retry_floor is None else min(retry_floor, server_watermark)
                 prefix = f"⚡ [INBOUND DELTA SYNC] Checking Tally changes (ALTERID > {min_alter})..."
+                if retry_floor is not None and retry_floor < server_watermark:
+                    prefix += f" [re-pulling from {retry_floor} after an earlier failed cycle]"
             elif force_all:
                 prefix = f"📥 [INBOUND FULL SYNC ALL] Pulling all baseline data from Tally (ALTERID bypassed)..."
             else:
@@ -400,19 +408,27 @@ class DesktopSyncAgent:
 
             logger.info(f"{prefix}")
             collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=min_alter)
-            
+            export_failures = list(getattr(self.tally, "last_export_failures", []) or [])
+            if export_failures:
+                logger.error(f"   ❌ Could not export from Tally: {', '.join(export_failures)}")
+
             if not collections:
-                logger.info("   ✨ 0 changes detected in Tally. Database is 100% up-to-date.")
+                self._update_inbound_retry_floor(company_key, min_alter, failed=bool(export_failures))
                 self.last_inbound_time = time.time()
                 self.last_sync_time = time.time()
                 self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
-                self.last_sync_status = "Up-to-date (0 changes)"
+                if export_failures:
+                    self.last_sync_status = f"Tally export failed ({', '.join(export_failures)})"
+                else:
+                    logger.info("   ✨ 0 changes detected in Tally. Database is 100% up-to-date.")
+                    self.last_sync_status = "Up-to-date (0 changes)"
                 return
 
             total_vouchers = 0
             total_ledgers = 0
             total_items = 0
             total_errors = 0
+            total_record_errors = 0
 
             for idx, (label, xml_data) in enumerate(collections, 1):
                 size_kb = len(xml_data.encode("utf-8")) / 1024.0
@@ -430,6 +446,12 @@ class DesktopSyncAgent:
                     total_ledgers += l_count
                     total_items += s_count
                     logger.info(f"   • ✅ '{label}' Synced in {dur:.2f}s (Vouchers: {v_count}, Ledgers: {l_count}, Items: {s_count}, Groups: {g_count})")
+                    record_errors = res.get("errors") or []
+                    if record_errors:
+                        # Individual records the server rejected. They would fail the same way on a re-pull,
+                        # so they are reported rather than retried; fix them in Tally and they re-sync on next edit.
+                        total_record_errors += len(record_errors)
+                        logger.warning(f"   ⚠️ '{label}': {len(record_errors)} record(s) rejected by the server, e.g. {record_errors[:3]}")
                 else:
                     total_errors += 1
                     err_type = res.get("error_type", "SYNC_ERROR")
@@ -456,6 +478,7 @@ class DesktopSyncAgent:
             self.total_ledgers += total_ledgers
             self.total_items += total_items
             self.total_errors += total_errors
+            self._update_inbound_retry_floor(company_key, min_alter, failed=bool(export_failures) or total_errors > 0)
             self.last_sync_time = time.time()
             self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
 
@@ -471,6 +494,23 @@ class DesktopSyncAgent:
             self.last_inbound_time = time.time()
         finally:
             self.is_syncing = False
+
+    def _update_inbound_retry_floor(self, company_key: str, cycle_min_alter: int, failed: bool):
+        """Remember (persistently) where a failed inbound cycle started, and forget it once a cycle is clean."""
+        floors = dict(self.config.inbound_retry_floors or {})
+        current = floors.get(company_key)
+        if failed:
+            new_floor = cycle_min_alter if current is None else min(current, cycle_min_alter)
+            if new_floor != current:
+                floors[company_key] = new_floor
+                self.config.inbound_retry_floors = floors
+                save_config(self.config, self.config_path)
+            logger.warning(f"   ↩️ Inbound cycle incomplete for '{company_key}': next cycle re-pulls changes with ALTERID > {new_floor}.")
+        elif current is not None:
+            floors.pop(company_key, None)
+            self.config.inbound_retry_floors = floors
+            save_config(self.config, self.config_path)
+            logger.info(f"   ✅ Inbound sync for '{company_key}' caught up; cleared retry point {current}.")
 
     def run_single_cycle(self):
         """Runs a single pass of discovery, inbound, and outbound synchronization."""

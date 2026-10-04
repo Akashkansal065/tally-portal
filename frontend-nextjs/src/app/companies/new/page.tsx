@@ -6,7 +6,7 @@ import { useAuth } from '@/context/AuthContext'
 import { API_BASE } from '@/lib/utils'
 
 export default function NewCompanyPage() {
-  const { user, login } = useAuth()
+  const { user, login, token } = useAuth()
   const router = useRouter()
   
   const [formData, setFormData] = useState({
@@ -44,9 +44,8 @@ export default function NewCompanyPage() {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       // If user is logged in, use their token (they are an existing admin creating an extra company)
-      if (user && typeof window !== 'undefined') {
-        const token = localStorage.getItem('token')
-        if (token) headers['Authorization'] = `Bearer ${token}`
+      if (user && token) {
+        headers['Authorization'] = `Bearer ${token}`
       }
 
       const res = await fetch(`${API_BASE}/companies`, {
@@ -78,8 +77,8 @@ export default function NewCompanyPage() {
       // Redirect to features F11 page
       router.push(`/companies/${newCompany.company_id}/features`)
       
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to create company')
     } finally {
       setLoading(false)
     }

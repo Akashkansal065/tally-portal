@@ -2,8 +2,8 @@ import os
 import sys
 import json
 import hashlib
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import dataclass, asdict, field
+from typing import Dict, Optional
 
 from security import store_secret, load_secret, needs_storage_upgrade
 
@@ -54,6 +54,9 @@ class AgentConfig:
     auto_discover_paths: bool = True
     autostart_enabled: bool = False
     force_full_sync: bool = False
+    # Company name -> AlterID to re-pull from after a failed inbound cycle. Without it, a later
+    # collection's higher AlterIDs advance the server watermark past records that never arrived.
+    inbound_retry_floors: Dict[str, int] = field(default_factory=dict)
 
 def is_autostart_registered() -> bool:
     """Checks if the application is currently registered to start with Windows."""

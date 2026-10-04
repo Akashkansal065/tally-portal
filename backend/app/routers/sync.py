@@ -11,6 +11,7 @@ import re
 from decimal import Decimal
 import urllib.request
 import logging
+import uuid
 
 from app.core.database import get_db
 from app.core.permissions import require_permission, get_effective_permission, is_admin_user
@@ -248,10 +249,12 @@ async def inbound_sync(
                 clear_company_cache(company_id)
             return result
         except Exception as ex:
-            logger.error(f"❌ [INBOUND SYNC CRITICAL EXCEPTION]: {str(ex)}", exc_info=True)
+            # Full exception stays in the server log; the client gets a reference to quote, not internals
+            error_ref = uuid.uuid4().hex[:12]
+            logger.error(f"❌ [INBOUND SYNC CRITICAL EXCEPTION] ref={error_ref} user_id={user.user_id} company='{company_name}': {ex}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Inbound XML import failed on server: {type(ex).__name__}: {str(ex)}"
+                detail=f"Inbound XML import failed on server (error ref {error_ref}). Check the backend logs for this reference."
             )
 
 async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSession) -> str:
@@ -758,12 +761,11 @@ async def get_outbound_queue(
             
     if outbound_payloads:
         items_summary = ", ".join([f"{p['record_type']} #{p['record_id']} ({p['action']})" for p in outbound_payloads])
-        msg = f"\n=======================================================\n📤 [OUTBOUND DISPATCH] Sending {len(outbound_payloads)} item(s) to Desktop Sync Agent:\nSummary: [{items_summary}]\n"
-        for p in outbound_payloads:
-            msg += f"\n--- PAYLOAD FOR {p['record_type']} #{p['record_id']} ({p['action']}) ---\n{p['xml_payload']}\n"
-        msg += "=======================================================\n"
-        print(msg, flush=True)
-        logger.info(msg)
+        logger.info(f"📤 [OUTBOUND DISPATCH] Sending {len(outbound_payloads)} item(s) to Desktop Sync Agent: [{items_summary}]")
+        # Payloads carry customer names, GSTINs and addresses: only at DEBUG (they're also in the sync traffic log)
+        if logger.isEnabledFor(logging.DEBUG):
+            for p in outbound_payloads:
+                logger.debug(f"--- PAYLOAD FOR {p['record_type']} #{p['record_id']} ({p['action']}) ---\n{p['xml_payload']}")
 
     return outbound_payloads
 
@@ -777,7 +779,6 @@ async def acknowledge_sync(
     Marks sync queue records as processed upon successful local Tally ingestion.
     """
     ack_msg = f"✅ [SYNC ACKNOWLEDGED] Marked {len(sync_ids)} sync task(s) as successfully ingested into Tally: {sync_ids}"
-    print(f"\n=======================================================\n{ack_msg}\n=======================================================\n", flush=True)
     logger.info(ack_msg)
     stmt = update(SyncQueue).where(
         SyncQueue.sync_id.in_(sync_ids),
@@ -1936,15 +1937,13 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
             return (False, "FAILED", "Failed to build XML envelope")
 
         req_msg = f"\n=======================================================\n📤 [OUTBOUND REALTIME TALLY XML PUSH] (voucher_id={voucher_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n"
-        print(req_msg, flush=True)
-        logger.info(req_msg)
+        logger.debug(req_msg)
 
         response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
         duration_ms = int((time.time() - start_time) * 1000)
 
         resp_msg = f"\n=======================================================\n📥 [TALLY REALTIME PUSH RESPONSE] (voucher_id={voucher_id})\nRESPONSE:\n{response}\n=======================================================\n"
-        print(resp_msg, flush=True)
-        logger.info(resp_msg)
+        logger.debug(resp_msg)
 
         # Record structured log in sync_traffic_logs with Postman-ready cURL
         await record_sync_traffic_log(
@@ -2003,11 +2002,9 @@ async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, 
             await db.commit()
 
         if is_success:
-            print(f"✅ Real-time Tally Push Success for Voucher #{voucher_id} ({action})", flush=True)
             logger.info(f"Real-time Tally Push Success for Voucher #{voucher_id} ({action})")
             return (True, "SUCCESS", None)
         else:
-            print(f"❌ Real-time Tally Push Failed/Exception for Voucher #{voucher_id} ({action})", flush=True)
             logger.error(f"Real-time Tally Push Failed for Voucher #{voucher_id} ({action}). Tally Response: {response}")
             return (False, metrics["status"], metrics["error_summary"])
 
@@ -2040,7 +2037,7 @@ async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: 
 
         json_payload = build_group_json_payload(group, parent_name, comp_name, action)
 
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY JSON PUSH (group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{json.dumps(json_payload, indent=2)}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY JSON PUSH (group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{json.dumps(json_payload, indent=2)}\n=======================================================\n")
 
         resp_str = await asyncio.to_thread(_post_json_to_tally_sync, tally_url, json_payload, 5)
 
@@ -2120,10 +2117,10 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
   </BODY>
 </ENVELOPE>"""
 
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY LEDGER PUSH (ledger_id={ledger_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY LEDGER PUSH (ledger_id={ledger_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"\n=======================================================\nTALLY LEDGER PUSH RESPONSE (ledger_id={ledger_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nTALLY LEDGER PUSH RESPONSE (ledger_id={ledger_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
         # Record structured log in sync_traffic_logs with Postman-ready cURL
         await record_sync_traffic_log(
@@ -2347,10 +2344,10 @@ async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, ac
   </BODY>
 </ENVELOPE>"""
 
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM PUSH (stock_item_id={stock_item_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM PUSH (stock_item_id={stock_item_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"\n=======================================================\nTALLY STOCKITEM PUSH RESPONSE (stock_item_id={stock_item_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nTALLY STOCKITEM PUSH RESPONSE (stock_item_id={stock_item_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
         await record_sync_traffic_log(
             db=db,
@@ -2496,10 +2493,10 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
   </BODY>
 </ENVELOPE>"""
 
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY UOM PUSH (unit_id={unit_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY UOM PUSH (unit_id={unit_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"\n=======================================================\nTALLY UOM PUSH RESPONSE (unit_id={unit_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nTALLY UOM PUSH RESPONSE (unit_id={unit_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
         await record_sync_traffic_log(
             db=db,
@@ -2607,10 +2604,10 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
   </BODY>
 </ENVELOPE>"""
 
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKGROUP PUSH (stock_group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKGROUP PUSH (stock_group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"\n=======================================================\nTALLY STOCKGROUP PUSH RESPONSE (stock_group_id={group_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nTALLY STOCKGROUP PUSH RESPONSE (stock_group_id={group_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
         await record_sync_traffic_log(
             db=db,
@@ -2717,10 +2714,10 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
   </BODY>
 </ENVELOPE>"""
 
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKCATEGORY PUSH (stock_category_id={category_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKCATEGORY PUSH (stock_category_id={category_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"\n=======================================================\nTALLY STOCKCATEGORY PUSH RESPONSE (stock_category_id={category_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nTALLY STOCKCATEGORY PUSH RESPONSE (stock_category_id={category_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
         await record_sync_traffic_log(
             db=db,
@@ -2829,10 +2826,10 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
   </BODY>
 </ENVELOPE>"""
 
-        logger.info(f"\n=======================================================\nOUTBOUND REALTIME TALLY GODOWN PUSH (godown_id={godown_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY GODOWN PUSH (godown_id={godown_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"\n=======================================================\nTALLY GODOWN PUSH RESPONSE (godown_id={godown_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+        logger.debug(f"\n=======================================================\nTALLY GODOWN PUSH RESPONSE (godown_id={godown_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
         await record_sync_traffic_log(
             db=db,

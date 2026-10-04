@@ -9,6 +9,17 @@ from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("CloudClient")
 
+def _inbound_result(res_json: Dict[str, Any], status_code: int, endpoint: str) -> Tuple[bool, Dict[str, Any]]:
+    """Only an explicit success counts: the server answers HTTP 200 {"status": "error"} for refused imports."""
+    is_success = res_json.get("status") == "success"
+    if not is_success:
+        res_json.setdefault("error_type", "IMPORT_REJECTED")
+        res_json.setdefault("error", res_json.get("message") or "Server reported an unsuccessful import")
+        res_json.setdefault("status_code", status_code)
+        res_json.setdefault("endpoint", endpoint)
+    return is_success, res_json
+
+
 class CloudClient:
     def __init__(
         self,
@@ -199,8 +210,7 @@ class CloudClient:
                     try:
                         res_json = json.loads(raw_body)
                         res_json["duration_seconds"] = dur
-                        is_success = (res_json.get("status") == "success" or res_json.get("imported_vouchers", 0) >= 0)
-                        return is_success, res_json
+                        return _inbound_result(res_json, resp.status, endpoint)
                     except json.JSONDecodeError:
                         last_diag = {
                             "error_type": "INVALID_JSON_RESPONSE",
@@ -228,9 +238,8 @@ class CloudClient:
                                 raw_retry = retry_resp.read().decode("utf-8", errors="replace")
                                 res_json = json.loads(raw_retry)
                                 res_json["duration_seconds"] = retry_dur
-                                is_success = (res_json.get("status") == "success" or res_json.get("imported_vouchers", 0) >= 0)
-                                logger.info(f"✅ Inbound push retry succeeded after token refresh!")
-                                return is_success, res_json
+                                logger.info(f"✅ Inbound push retry completed after token refresh.")
+                                return _inbound_result(res_json, retry_resp.status, endpoint)
                         except Exception as retry_ex:
                             logger.error(f"Inbound push retry failed after re-auth: {retry_ex}")
 
