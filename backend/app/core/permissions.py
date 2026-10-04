@@ -7,6 +7,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import update
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 
@@ -19,6 +20,13 @@ from app.models.portal_core import (
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login", auto_error=False)
+
+ADMIN_ROLE_NAMES = ("admin", "superadmin", "owner")
+
+def is_admin_user(user: Optional[User]) -> bool:
+    """True if the user's role is one of the administrator roles (role must be loaded)."""
+    return bool(user is not None and user.role is not None and user.role.name and user.role.name.lower() in ADMIN_ROLE_NAMES)
 
 # In-memory auth and permissions caches with 60s TTL
 AUTH_CACHE_TTL_SECONDS = 300
@@ -26,6 +34,7 @@ PERMISSIONS_CACHE_TTL_SECONDS = 300
 
 # Cache storage:
 # _auth_cache: token_hash -> {"user": User, "user_id": int, "allowed_company_ids": Set[int], "expires_at": float}
+# "user" is a detached snapshot that is only ever merged (copied) into request sessions, never mutated.
 _auth_cache: Dict[str, Dict[str, Any]] = {}
 
 # _permissions_cache: user_id -> {"role_id": int, "data": dict, "expires_at": float}
@@ -105,20 +114,7 @@ async def get_current_user(
     # 1. Check in-memory auth cache (0 DB queries on cache hit)
     cached_entry = _auth_cache.get(token_hash)
     if cached_entry and cached_entry.get("expires_at", 0) > now:
-        cached_user = cached_entry["user"]
-        # Merge user into current session identity map without querying DB
-        user = await db.merge(cached_user, load=False)
-        allowed_company_ids = cached_entry["allowed_company_ids"]
-
-        header_company_id = request.headers.get("x-company-id") or request.headers.get("X-Company-ID")
-        if header_company_id:
-            try:
-                h_cid = int(header_company_id)
-                if h_cid != user.company_id and h_cid in allowed_company_ids:
-                    user.company_id = h_cid
-            except ValueError:
-                pass
-        return user
+        return await _request_user(db, request, cached_entry["user"], cached_entry["allowed_company_ids"])
 
     # 2. Cache miss: Validate active session from DB
     session_query = await db.execute(
@@ -164,6 +160,10 @@ async def get_current_user(
         sess_exp = sess_exp.replace(tzinfo=timezone.utc)
     cache_expiry = min(now + AUTH_CACHE_TTL_SECONDS, sess_exp.timestamp())
 
+    # Detach the loaded user (and role) so the cached snapshot can't be changed by this request
+    if user.role is not None:
+        db.expunge(user.role)
+    db.expunge(user)
     _auth_cache[token_hash] = {
         "user": user,
         "user_id": user.user_id,
@@ -171,16 +171,39 @@ async def get_current_user(
         "expires_at": cache_expiry
     }
 
-    # Support dynamic company switching via X-Company-ID request header
-    header_company_id = request.headers.get("x-company-id") or request.headers.get("X-Company-ID")
+    return await _request_user(db, request, user, allowed_company_ids)
+
+
+async def get_optional_current_user(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    db: AsyncSession = Depends(get_db)
+) -> Optional[User]:
+    """Like get_current_user (including session/revocation checks) but returns None when the
+    caller is anonymous or the token is invalid, for endpoints that also allow anonymous use."""
+    if not token:
+        return None
+    try:
+        return await get_current_user(request, token, db)
+    except HTTPException:
+        return None
+
+
+async def _request_user(db: AsyncSession, request: Request, snapshot: User, allowed_company_ids: Set[int]) -> User:
+    """Copy the cached user snapshot into this request's session (no DB query) and apply X-Company-ID.
+
+    The header only re-targets this request: set_committed_value changes company_id without marking it
+    dirty, so a commit elsewhere in the request never writes it to users.company_id. Persisting the
+    default company is PUT /auth/me/active-company's job."""
+    user = await db.merge(snapshot, load=False)
+    header_company_id = request.headers.get("x-company-id")
     if header_company_id:
         try:
             h_cid = int(header_company_id)
-            if h_cid != user.company_id and h_cid in allowed_company_ids:
-                user.company_id = h_cid
         except ValueError:
-            pass
-
+            h_cid = None
+        if h_cid is not None and h_cid != user.company_id and h_cid in allowed_company_ids:
+            set_committed_value(user, "company_id", h_cid)
     return user
 
 MODULE_TOGGLE_MAPPING = {
@@ -231,6 +254,7 @@ ALL_KNOWN_MODULES = [
     "settings",
     "payroll",
     "admin",
+    "sync",
 ]
 
 SUB_MODULE_PARENT_MAP = {

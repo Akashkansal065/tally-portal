@@ -63,23 +63,19 @@ async def ensure_tally_user_exists(db: AsyncSession, company_id: int, user_name:
     if cache_key in _checked_tally_users:
         return None
         
-    # Check if user with this username already exists in DB
-    user_stmt = select(User).where(func.lower(User.username) == raw_name.lower())
+    # Reuse a user with this username only if they already belong to this company. A name in imported
+    # XML must never grant an existing portal user access to another company.
+    user_stmt = select(User).outerjoin(
+        UserCompanyAccess,
+        (UserCompanyAccess.user_id == User.user_id) & (UserCompanyAccess.company_id == company_id)
+    ).where(
+        func.lower(User.username) == raw_name.lower(),
+        (User.company_id == company_id) | (UserCompanyAccess.company_id == company_id)
+    )
     res = await db.execute(user_stmt)
     existing_user = res.scalars().first()
     
     if existing_user:
-        # Check if user has access mapped to this company
-        access_stmt = select(UserCompanyAccess).where(
-            UserCompanyAccess.user_id == existing_user.user_id,
-            UserCompanyAccess.company_id == company_id
-        )
-        access_res = await db.execute(access_stmt)
-        if not access_res.scalars().first():
-            access = UserCompanyAccess(user_id=existing_user.user_id, company_id=company_id)
-            db.add(access)
-            await db.flush()
-            logger.info(f"👥 Linked existing user '{existing_user.username}' (ID: {existing_user.user_id}) to Company #{company_id}")
         _checked_tally_users.add(cache_key)
         return existing_user
 
@@ -453,8 +449,12 @@ async def import_tally_xml(
     db: AsyncSession,
     user_id: int,
     override_company_name: Optional[str] = None,
-    force_overwrite: bool = False
+    force_overwrite: bool = False,
+    allow_company_create: bool = False
 ) -> dict:
+    """Import Tally XML into the mirror for a company the user can access.
+    allow_company_create: create the company (and grant the user access) when it doesn't exist yet.
+    Only administrator-initiated syncs should pass True."""
     if not xml_data or not xml_data.strip():
         return {"status": "error", "message": "Empty XML payload."}
         
@@ -547,8 +547,15 @@ async def import_tally_xml(
                 comp_res = await db.execute(name_stmt)
                 company_obj = comp_res.scalars().first()
             
+            if not company_obj and not allow_company_create:
+                logger.warning(f"Inbound import refused for user_id={user_id}: no accessible company named '{company_name}' (guid={tally_guid}).")
+                return {
+                    "status": "error",
+                    "message": f"Company '{company_name}' was not found among the companies you can access. "
+                               "Ask an administrator to create it or grant you access."
+                }
             if not company_obj:
-                # Auto-create company
+                # Auto-create company (administrator-initiated sync only)
                 company_obj = Company(
                     name=company_name or "Unknown Sync Company",
                     tally_guid=tally_guid,

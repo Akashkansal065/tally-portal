@@ -261,7 +261,8 @@ async def _post_gateway_receipt(db: AsyncSession, payload: dict, plink: PaymentL
     # Lock the link so concurrent deliveries for the same payment (payment.captured and
     # payment_link.paid) serialize; locking reads also see the other delivery's committed rows.
     plink = (await db.execute(
-        select(PaymentLink).where(PaymentLink.payment_link_id == plink.payment_link_id).with_for_update()
+        select(PaymentLink).where(PaymentLink.payment_link_id == plink.payment_link_id)
+        .with_for_update().execution_options(populate_existing=True)
     )).scalars().first()
     already_posted = (await db.execute(
         select(GatewayTransaction).where(
@@ -293,7 +294,7 @@ async def _post_gateway_receipt(db: AsyncSession, payload: dict, plink: PaymentL
         select(MstVoucherType).where(
             MstVoucherType.company_id == company_id,
             MstVoucherType.name == "Receipt"
-        ).with_for_update()
+        ).with_for_update().execution_options(populate_existing=True)
     )).scalars().first()
     if not vtype:
         raise _WebhookNotPostable(f"No 'Receipt' voucher type in company #{company_id}.")

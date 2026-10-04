@@ -40,7 +40,8 @@ def seed_global_data(db: Session):
             ('expenses',  'Expenses',              'Expense claim submission and approval', 1),
             ('attendance', 'Attendance',            'Daily check-in and check-out logs', 1),
             ('gst',       'GST Return Filing',     'File and view GST return periods', 1),
-            ('customers', 'Customer Directory & Profiles', 'Customer directory, shop profiles, GPS tagging, owner media & photos', 1)
+            ('customers', 'Customer Directory & Profiles', 'Customer directory, shop profiles, GPS tagging, owner media & photos', 1),
+            ('sync',      'Tally Sync Agent',      'Desktop Sync Agent: push Tally data, pull and acknowledge the outbound queue', 1)
         """))
         db.commit()
         print("Modules seeded successfully.")
@@ -52,6 +53,16 @@ def seed_global_data(db: Session):
             db.execute(text("""
                 INSERT INTO modules (code, name, description, is_system)
                 VALUES ('gst', 'GST Return Filing', 'File and view GST return periods', 1)
+            """))
+            db.commit()
+
+        # Ensure 'sync' module exists on update (Desktop Sync Agent endpoints)
+        sync_exists = db.execute(text("SELECT COUNT(*) FROM modules WHERE code = 'sync'")).scalar()
+        if sync_exists == 0:
+            print("Adding missing 'sync' module...")
+            db.execute(text("""
+                INSERT INTO modules (code, name, description, is_system)
+                VALUES ('sync', 'Tally Sync Agent', 'Desktop Sync Agent: push Tally data, pull and acknowledge the outbound queue', 1)
             """))
             db.commit()
 
@@ -120,6 +131,20 @@ def seed_global_data(db: Session):
                 """))
                 db.commit()
 
+        # Admin gets full access to 'sync'; other roles must be granted it explicitly
+        if 'Admin' in roles and 'sync' in modules:
+            admin_sync_exists = db.execute(text(f"""
+                SELECT COUNT(*) FROM permissions
+                WHERE role_id = {roles['Admin']} AND module_id = {modules['sync']}
+            """)).scalar()
+            if admin_sync_exists == 0:
+                print("Seeding Admin permission for new 'sync' module...")
+                db.execute(text(f"""
+                    INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
+                    VALUES ({roles['Admin']}, {modules['sync']}, 1, 1, 1, 1)
+                """))
+                db.commit()
+
         # Ensure permissions exist for 'customers' module
         if 'customers' in modules:
             cust_mod_id = modules['customers']
@@ -149,10 +174,10 @@ def seed_global_data(db: Session):
                     """))
                     db.commit()
 
-def seed_company_defaults(db: Session, company_id: int):
+def seed_company_defaults(db: Session, company_id: int, commit: bool = True):
     """
     Seeds company-specific defaults (account groups, voucher types)
-    for a newly created company.
+    for a newly created company. Pass commit=False to keep it inside the caller's transaction.
     """
     current_dir = os.path.dirname(__file__)
     seed_file_path = os.path.abspath(os.path.join(current_dir, 'seed_defaults.sql'))
@@ -183,7 +208,10 @@ def seed_company_defaults(db: Session, company_id: int):
             db.execute(text(stmt))
             
     db.execute(text("SET FOREIGN_KEY_CHECKS = 1;"))
-    db.commit()
+    # Restore the connection's default schema; pooled connections are reused by unrelated requests
+    db.execute(text(f"USE {settings.PORTAL_DATABASE_NAME};"))
+    if commit:
+        db.commit()
     print(f"Company {company_id} defaults seeded successfully.")
 
 if __name__ == "__main__":

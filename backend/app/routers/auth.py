@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import update
 from sqlalchemy.future import select
 from datetime import datetime, timedelta, timezone, date
 from typing import Optional, List, Dict, Any
@@ -8,15 +9,15 @@ import hashlib
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.security import verify_password, get_password_hash, create_access_token, decode_access_token
+from app.core.security import verify_password, get_password_hash, create_access_token
 from app.core.permissions import (
-    get_current_user, oauth2_scheme, get_all_user_permissions, get_user_permission_toggles,
-    invalidate_auth_cache
+    get_current_user, get_optional_current_user, is_admin_user, oauth2_scheme,
+    get_all_user_permissions, get_user_permission_toggles, invalidate_auth_cache
 )
 from app.core.seed import seed_company_defaults
 from app.core.rate_limiter import limiter
 from app.models.portal_core import Company
-from app.models.portal_core import User, Role, UserSession
+from app.models.portal_core import User, Role, UserSession, UserCompanyAccess
 from app.schemas.user import UserLogin, Token, UserResponse
 from pydantic import BaseModel
 
@@ -73,52 +74,14 @@ async def register_company(
     req: RegisterCompanyRequest,
     request: Request,
     response: Response,
+    caller: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Security check: Determine if caller is an authorized Admin or if database is empty of Admins (bootstrap mode)
-    is_admin_calling = False
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ")[1]
-        try:
-            payload = decode_access_token(token)
-            user_id_str = payload.get("sub")
-            if user_id_str:
-                user_id = int(user_id_str)
-                user_query = await db.execute(select(User).where(User.user_id == user_id, User.is_active == True))
-                user = user_query.scalars().first()
-                if user:
-                    role_query = await db.execute(select(Role).where(Role.role_id == user.role_id))
-                    role = role_query.scalars().first()
-                    if role and role.name == "Admin":
-                        is_admin_calling = True
-        except Exception:
-            pass
+    global _SYSTEM_BOOTSTRAPPED
+    # The caller counts as an admin only with a live, unrevoked session (same checks as every
+    # other endpoint), not merely a JWT that still decodes.
+    is_admin_calling = is_admin_user(caller)
 
-    if not is_admin_calling:
-        # If not called by a verified admin, registration is only allowed if no Admin users exist in the database
-        admin_role_query = await db.execute(select(Role.role_id).where(Role.name == "Admin"))
-        admin_role_id = admin_role_query.scalars().first()
-        if admin_role_id:
-            admin_users_exist = await db.execute(select(User.user_id).where(User.role_id == admin_role_id).limit(1))
-            has_admin = admin_users_exist.scalars().first() is not None
-        else:
-            has_admin = False
-
-        if has_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Registration is disabled. Only existing administrators can register new companies."
-            )
-
-    # Check if user already exists
-    user_exists_query = await db.execute(select(User).where(User.email == req.email))
-    if user_exists_query.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A user with this email already exists."
-        )
-        
     try:
         begin_date = datetime.strptime(req.books_begin_date, "%Y-%m-%d").date()
         fy_start = datetime.strptime(req.financial_year_start, "%Y-%m-%d").date() if req.financial_year_start else begin_date
@@ -127,76 +90,88 @@ async def register_company(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid date format. Use YYYY-MM-DD."
         )
-        
-    # 1. Create Company with full Tally Prime fields
-    company = Company(
-        name=req.company_name,
-        address_line1=req.address_line1,
-        address_line2=req.address_line2,
-        state=req.state,
-        country=req.country or "India",
-        pincode=req.pincode,
-        telephone=req.telephone,
-        mobile=req.mobile,
-        email=req.email,
-        website=req.website,
-        financial_year_start=fy_start,
-        books_begin_date=begin_date,
-        base_currency=req.base_currency or "INR",
-        features={"maintain_accounts": True, "maintain_inventory": True, "enable_gst": False},
-        is_active=True
-    )
-    db.add(company)
-    await db.commit()
-    await db.refresh(company)
-    
-    # 2. Seed defaults for this company (Groups, Voucher Types)
-    # We do this synchronously or we run the helper
-    # Since SQLAlchemy connection is async, we can run seed defaults synchronously on the raw connection,
-    # or write a simple async loop. In seed.py, we have seed_company_defaults which runs sync.
-    # To run it in async, we can use db.run_sync
-    def run_seeding(sync_session):
-        seed_company_defaults(sync_session, company.company_id)
-        
-    await db.run_sync(run_seeding)
-    
-    # 3. Create Admin User
-    role_query = await db.execute(select(Role).where(Role.name == "Admin"))
-    admin_role = role_query.scalars().first()
-    if not admin_role:
-        # Fallback if roles weren't seeded
-        admin_role = Role(name="Admin", description="Full access")
-        db.add(admin_role)
+
+    try:
+        # Lock the Admin role row for the whole transaction so concurrent registrations run one at a
+        # time; the locking reads below then see each other's committed admins and emails.
+        admin_role = (await db.execute(
+            select(Role).where(Role.name == "Admin").with_for_update().execution_options(populate_existing=True)
+        )).scalars().first()
+        if not admin_role:
+            # Fallback if roles weren't seeded
+            admin_role = Role(name="Admin", description="Full access")
+            db.add(admin_role)
+            await db.flush()
+
+        if not is_admin_calling:
+            # Anonymous registration is only the one-time bootstrap of the first admin
+            has_admin = (await db.execute(
+                select(User.user_id).where(User.role_id == admin_role.role_id).limit(1).with_for_update()
+            )).scalars().first() is not None
+            if has_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Registration is disabled. Only existing administrators can register new companies."
+                )
+
+        email_taken = (await db.execute(
+            select(User.user_id).where(User.email == req.email).limit(1).with_for_update()
+        )).scalars().first() is not None
+        if email_taken:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A user with this email already exists."
+            )
+
+        # 1. Company with full Tally Prime fields
+        company = Company(
+            name=req.company_name,
+            address_line1=req.address_line1,
+            address_line2=req.address_line2,
+            state=req.state,
+            country=req.country or "India",
+            pincode=req.pincode,
+            telephone=req.telephone,
+            mobile=req.mobile,
+            email=req.email,
+            website=req.website,
+            financial_year_start=fy_start,
+            books_begin_date=begin_date,
+            base_currency=req.base_currency or "INR",
+            features={"maintain_accounts": True, "maintain_inventory": True, "enable_gst": False},
+            is_active=True
+        )
+        db.add(company)
+        await db.flush()
+
+        # 2. Default groups and voucher types, inside this transaction
+        await db.run_sync(lambda sync_session: seed_company_defaults(sync_session, company.company_id, commit=False))
+
+        # 3. Admin user for the company, with access to it
+        user = User(
+            company_id=company.company_id,
+            username=req.username,
+            email=req.email,
+            password_hash=get_password_hash(req.password),
+            role_id=admin_role.role_id,
+            is_active=True,
+            ledger_scope='full',
+            stock_scope='full'
+        )
+        db.add(user)
+        await db.flush()
+        db.add(UserCompanyAccess(user_id=user.user_id, company_id=company.company_id))
+
+        # All-or-nothing: no orphan company if any step above fails
         await db.commit()
-        await db.refresh(admin_role)
-        
-    password_hash = get_password_hash(req.password)
-    user = User(
-        company_id=company.company_id,
-        username=req.username,
-        email=req.email,
-        password_hash=password_hash,
-        role_id=admin_role.role_id,
-        is_active=True,
-        ledger_scope='full',
-        stock_scope='full'
-    )
-    db.add(user)
-    await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
     await db.refresh(user)
-    
-    # 4. Grant user access to the newly registered company
-    access = UserCompanyAccess(
-        user_id=user.user_id,
-        company_id=company.company_id
-    )
-    db.add(access)
-    await db.commit()
-    
-    global _SYSTEM_BOOTSTRAPPED
     _SYSTEM_BOOTSTRAPPED = True
-    
     return user
+
 
 @router.post("/login", response_model=Token)
 @limiter.limit(settings.LOGIN_RATE_LIMIT)
@@ -412,7 +387,9 @@ async def switch_active_company(
                 detail="You do not have access to this company."
             )
         
-    user.company_id = payload.company_id
+    # Explicit UPDATE: the request's user object may carry an X-Company-ID override as its loaded value,
+    # in which case assigning the same id would not register as a change.
+    await db.execute(update(User).where(User.user_id == user.user_id).values(company_id=payload.company_id))
     await db.commit()
     invalidate_auth_cache(user_id=user.user_id)
     return {"detail": "Active company switched successfully."}

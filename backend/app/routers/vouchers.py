@@ -359,7 +359,14 @@ async def create_voucher(
         
     v_total = total_debits if (req.entries and total_debits > 0) else sum((ie.amount for ie in req.inventory_entries or []), Decimal('0.00'))
 
-    vtype_query = await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == req.voucher_type_id, MstVoucherType.company_id == user.company_id))
+    # Row lock serializes number allocation per voucher type until commit; populate_existing
+    # refreshes next_number even if this voucher type is already in the session's identity map.
+    vtype_query = await db.execute(
+        select(MstVoucherType)
+        .where(MstVoucherType.voucher_type_id == req.voucher_type_id, MstVoucherType.company_id == user.company_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     vtype = vtype_query.scalars().first()
     if not vtype:
         raise HTTPException(status_code=400, detail="Voucher type not found.")

@@ -9,7 +9,9 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
+import asyncio
 import base64
+import time
 import urllib.request
 import urllib.parse
 import json
@@ -87,7 +89,7 @@ class Attendance(Base):
     last_known_accuracy_meters = Column(Float, nullable=True)
     last_known_place_name = Column(String(256), nullable=True)
     last_known_time = Column(DateTime, nullable=True)
-    movement_trail = Column(JSON, nullable=True)
+    movement_trail = Column(JSON, nullable=True)  # legacy: no longer written; portal_attendance_locations is the trail
 
     # Approvals Workflow
     approval_status = Column(String(32), default="approved", nullable=False)
@@ -184,6 +186,27 @@ def reverse_geocode_place(lat: float, lon: float) -> Optional[str]:
             return display[:256] if display else None
     except Exception:
         return None
+
+
+# Nominatim's usage policy allows at most 1 request/second per application
+NOMINATIM_MIN_INTERVAL_SECONDS = 1.0
+_geocode_lock = asyncio.Lock()
+_last_geocode_at = 0.0
+
+async def reverse_geocode_place_async(lat: float, lon: float, skip_if_busy: bool = False) -> Optional[str]:
+    """Runs the blocking Nominatim lookup off the event loop, throttled to one request per second.
+    skip_if_busy returns None instead of queueing behind another lookup (for frequent background pings)."""
+    global _last_geocode_at
+    if skip_if_busy and _geocode_lock.locked():
+        return None
+    async with _geocode_lock:
+        wait = NOMINATIM_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_geocode_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            return await asyncio.to_thread(reverse_geocode_place, lat, lon)
+        finally:
+            _last_geocode_at = time.monotonic()
 
 def haversine_distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Computes Great-Circle distance in meters between two coordinates."""
@@ -468,6 +491,29 @@ async def get_today_attendance(
     return {"success": True, "attendance": None}
 
 
+# Breadcrumb filtering. Phone GPS is typically off by 5-50 m, so movement only counts when it exceeds
+# both a floor and the fix's own reported accuracy; otherwise a parked phone records a cloud of jitter.
+MIN_BREADCRUMB_DISTANCE_METERS = 15.0
+STATIONARY_HEARTBEAT_SECONDS = 600
+GEOCODE_REFRESH_DISTANCE_METERS = 25.0
+
+
+async def _last_breadcrumb(db: AsyncSession, attendance_id: int) -> Optional["AttendanceLocationLog"]:
+    return (await db.execute(
+        select(AttendanceLocationLog)
+        .where(AttendanceLocationLog.attendance_id == attendance_id)
+        .order_by(desc(AttendanceLocationLog.recorded_at), desc(AttendanceLocationLog.id))
+        .limit(1)
+    )).scalars().first()
+
+
+def _distance_from(lat_str: Optional[str], lon_str: Optional[str], lat: float, lon: float) -> Optional[float]:
+    try:
+        return haversine_distance_meters(float(lat_str), float(lon_str), lat, lon)
+    except (TypeError, ValueError):
+        return None
+
+
 @router.post("/ping-location")
 async def ping_location(
     req: LocationPingRequest,
@@ -476,8 +522,9 @@ async def ping_location(
 ):
     """
     Periodic background location ping from the active web app / mobile wrapper.
-    Records every movement (>= 1 meter threshold) in portal_attendance_locations
-    and updates 'last_known_location' on the user's active attendance session.
+    Always refreshes 'last_known_*' on the active attendance session. Adds a breadcrumb to
+    portal_attendance_locations when the user has moved beyond GPS noise since the previous
+    breadcrumb, or as a heartbeat every STATIONARY_HEARTBEAT_SECONDS while stationary.
     """
     stmt = (
         select(Attendance)
@@ -498,33 +545,31 @@ async def ping_location(
 
     now_ist = get_ist_now()
 
-    # Calculate distance moved from previous location
-    dist_moved = 0.0
-    has_prev = False
-    if rec.last_known_latitude and rec.last_known_longitude:
-        try:
-            prev_lat = float(rec.last_known_latitude)
-            prev_lon = float(rec.last_known_longitude)
-            dist_moved = haversine_distance_meters(prev_lat, prev_lon, req.latitude, req.longitude)
-            has_prev = True
-        except (ValueError, TypeError):
-            dist_moved = 0.0
-    elif rec.check_in_latitude and rec.check_in_longitude:
-        try:
-            prev_lat = float(rec.check_in_latitude)
-            prev_lon = float(rec.check_in_longitude)
-            dist_moved = haversine_distance_meters(prev_lat, prev_lon, req.latitude, req.longitude)
-            has_prev = True
-        except (ValueError, TypeError):
-            dist_moved = 0.0
+    # Compare against the last *recorded* breadcrumb, not the last ping: measuring ping-to-ping
+    # would never accumulate slow movement that stays under the threshold on every single ping.
+    last_crumb = await _last_breadcrumb(db, rec.id)
+    if last_crumb is not None:
+        ref_lat, ref_lon, ref_time, ref_place = last_crumb.latitude, last_crumb.longitude, last_crumb.recorded_at, last_crumb.place_name
+    else:
+        # Sessions started before breadcrumbs existed: measure from the check-in
+        ref_lat, ref_lon, ref_time, ref_place = rec.check_in_latitude, rec.check_in_longitude, rec.check_in_time, rec.check_in_place_name
 
-    # Determine if we should refresh reverse geocoding
-    # Refresh if place_name is empty OR if user moved >= 25m from previous geocode
-    place_name = rec.last_known_place_name
-    should_geocode = not place_name or (dist_moved >= 25.0)
+    dist_moved = _distance_from(ref_lat, ref_lon, req.latitude, req.longitude)
+    elapsed_sec = (now_ist - ref_time.replace(tzinfo=None)).total_seconds() if ref_time else None
+    move_threshold = max(MIN_BREADCRUMB_DISTANCE_METERS, req.accuracyMeters or 0.0)
 
-    if should_geocode:
-        geocoded = reverse_geocode_place(req.latitude, req.longitude)
+    should_log = (
+        last_crumb is None
+        or dist_moved is None
+        or dist_moved >= move_threshold
+        or elapsed_sec is None
+        or elapsed_sec >= STATIONARY_HEARTBEAT_SECONDS
+    )
+
+    # Reverse geocode only for a recorded move that is far enough to change the place name
+    place_name = rec.last_known_place_name or ref_place
+    if not place_name or (should_log and dist_moved is not None and dist_moved >= GEOCODE_REFRESH_DISTANCE_METERS):
+        geocoded = await reverse_geocode_place_async(req.latitude, req.longitude, skip_if_busy=True)
         if geocoded:
             place_name = geocoded
 
@@ -535,39 +580,17 @@ async def ping_location(
     rec.last_known_place_name = place_name
     rec.last_known_time = now_ist
 
-    # Store breadcrumb in portal_attendance_locations
-    # Save if:
-    # 1. User moved >= 1.0 meter (for testing/verification and fine-grained tracking)
-    # 2. No previous breadcrumb exists yet
-    # 3. Or >= 10 minutes have elapsed since last recorded time (stationary heartbeat)
-    time_diff_sec = (now_ist - rec.last_known_time.replace(tzinfo=None)).total_seconds() if (rec.last_known_time and has_prev) else 999999
-    should_log = (dist_moved >= 1.0) or (not has_prev) or (time_diff_sec >= 600)
-
     if should_log:
-        breadcrumb = AttendanceLocationLog(
+        db.add(AttendanceLocationLog(
             attendance_id=rec.id,
             user_id=user.user_id,
             latitude=str(req.latitude),
             longitude=str(req.longitude),
             accuracy_meters=req.accuracyMeters,
-            distance_from_prev_meters=round(dist_moved, 1),
+            distance_from_prev_meters=round(dist_moved or 0.0, 1),
             place_name=place_name,
             recorded_at=now_ist
-        )
-        db.add(breadcrumb)
-
-        # Append to movement_trail JSON on attendance session
-        point_json = {
-            "lat": round(req.latitude, 6),
-            "lng": round(req.longitude, 6),
-            "time": to_ist_iso(now_ist),
-            "acc": req.accuracyMeters,
-            "dist": round(dist_moved, 1),
-            "place": place_name
-        }
-        current_trail = list(rec.movement_trail) if rec.movement_trail else []
-        current_trail.append(point_json)
-        rec.movement_trail = current_trail
+        ))
 
     await db.commit()
     return {
@@ -575,7 +598,7 @@ async def ping_location(
         "active": True,
         "lastKnownTime": to_ist_iso(now_ist),
         "placeName": place_name,
-        "distanceMovedMeters": round(dist_moved, 1),
+        "distanceMovedMeters": round(dist_moved or 0.0, 1),
         "recorded": should_log
     }
 
@@ -590,8 +613,9 @@ async def punch_attendance(
     if not req.photoBase64:
         raise HTTPException(status_code=400, detail="Photo is required for attendance verification")
         
-    # Process photo
-    photo_url = upload_image_to_imagekit(
+    # Process photo (blocking HTTP upload, kept off the event loop)
+    photo_url = await asyncio.to_thread(
+        upload_image_to_imagekit,
         req.photoBase64,
         f"attendance_{req.type}_{user.user_id}_{int(datetime.utcnow().timestamp())}.jpg"
     )
@@ -647,12 +671,8 @@ async def punch_attendance(
         )
 
         # Best-effort reverse geocode for human-readable place name
-        place_name = None
-        try:
-            place_name = reverse_geocode_place(req.latitude, req.longitude)
-            attendance.check_in_place_name = place_name
-        except Exception:
-            pass
+        place_name = await reverse_geocode_place_async(req.latitude, req.longitude)
+        attendance.check_in_place_name = place_name
 
         # Initialize last known location with check-in coordinates
         attendance.last_known_latitude = str(req.latitude)
@@ -678,15 +698,6 @@ async def punch_attendance(
                 recorded_at=now_ist
             )
             db.add(init_log)
-
-            attendance.movement_trail = [{
-                "lat": round(req.latitude, 6),
-                "lng": round(req.longitude, 6),
-                "time": to_ist_iso(now_ist),
-                "acc": req.accuracyMeters,
-                "dist": 0.0,
-                "place": place_name
-            }]
             await db.commit()
         except Exception as e:
             print("Error logging check-in location breadcrumb:", e)
@@ -744,12 +755,8 @@ async def punch_attendance(
         latest.check_out_accuracy_meters = req.accuracyMeters
         
         # Best-effort reverse geocode for place name
-        checkout_place_name = None
-        try:
-            checkout_place_name = reverse_geocode_place(req.latitude, req.longitude)
-            latest.check_out_place_name = checkout_place_name
-        except Exception:
-            pass
+        checkout_place_name = await reverse_geocode_place_async(req.latitude, req.longitude)
+        latest.check_out_place_name = checkout_place_name
         
         # If punch-out was out of office, flag is_out_of_office and require approval if not already rejected
         if is_out:
@@ -757,16 +764,13 @@ async def punch_attendance(
             if latest.approval_status != "rejected":
                 latest.approval_status = "pending"
 
-        # Record checkout location breadcrumb
-        dist_from_last = 0.0
-        if latest.last_known_latitude and latest.last_known_longitude:
-            try:
-                dist_from_last = haversine_distance_meters(
-                    float(latest.last_known_latitude), float(latest.last_known_longitude),
-                    req.latitude, req.longitude
-                )
-            except Exception:
-                dist_from_last = 0.0
+        # Record checkout location breadcrumb, measured from the previous breadcrumb so the
+        # trail's summed distances stay consistent
+        last_crumb = await _last_breadcrumb(db, latest.id)
+        if last_crumb is not None:
+            dist_from_last = _distance_from(last_crumb.latitude, last_crumb.longitude, req.latitude, req.longitude) or 0.0
+        else:
+            dist_from_last = _distance_from(latest.check_in_latitude, latest.check_in_longitude, req.latitude, req.longitude) or 0.0
 
         checkout_log = AttendanceLocationLog(
             attendance_id=latest.id,
@@ -779,19 +783,6 @@ async def punch_attendance(
             recorded_at=now_ist
         )
         db.add(checkout_log)
-
-        # Append checkout point to movement_trail JSON
-        checkout_point = {
-            "lat": round(req.latitude, 6),
-            "lng": round(req.longitude, 6),
-            "time": to_ist_iso(now_ist),
-            "acc": req.accuracyMeters,
-            "dist": round(dist_from_last, 1),
-            "place": checkout_place_name or latest.last_known_place_name
-        }
-        current_trail = list(latest.movement_trail) if latest.movement_trail else []
-        current_trail.append(checkout_point)
-        latest.movement_trail = current_trail
 
         await db.commit()
 
@@ -1115,8 +1106,9 @@ async def get_attendance_trail(
             "mapsUrl": f"https://www.google.com/maps?q={l.latitude},{l.longitude}"
         })
 
-    # Clean JSON format for long movement lists, export and client-side processing
-    clean_trail_json = att.movement_trail or [
+    # Compact JSON form for export and client-side processing, always built from the breadcrumb
+    # table (movement_trail on the attendance row is legacy and no longer written)
+    clean_trail_json = [
         {
             "lat": p["latitude"],
             "lng": p["longitude"],

@@ -202,7 +202,7 @@ pip install -r requirements.txt
 python gui_app.py
 ```
 
-In the GUI, enter the backend URL (e.g. `http://192.168.1.20:8000`), your MyTally email and password, and the Tally host (`http://127.0.0.1:9000`). Click **Auto-Detect Company**, then **Save**. The agent syncs Tally → cloud every 60 s and cloud → Tally every 5 s.
+In the GUI, enter the backend URL (e.g. `http://192.168.1.20:8000`), the email and password of a MyTally account with the **Tally Sync Agent** (`sync`) permission, and the Tally host (`http://127.0.0.1:9000`). Admins have `sync` by default. For any other account, grant it under Admin → Roles. Click **Auto-Detect Company**, then **Save**. The agent syncs Tally → cloud every 60 s and cloud → Tally every 5 s. Only an admin account can create new companies from Tally data. Other accounts can sync only into companies they already have access to.
 
 Headless alternatives:
 

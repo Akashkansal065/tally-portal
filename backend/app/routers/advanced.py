@@ -339,6 +339,8 @@ async def approve_payroll(
             MstVoucherType.company_id == user.company_id,
             MstVoucherType.name == "Journal"
         )
+        .with_for_update()  # serialize next_number allocation until commit
+        .execution_options(populate_existing=True)
     )
     vtype = vtype_query.scalars().first()
     if not vtype:
