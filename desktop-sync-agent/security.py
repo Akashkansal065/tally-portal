@@ -1,8 +1,14 @@
 """
-SnehDistribuors Desktop Sync Agent - Security & Credential Encryption Module
-Provides machine-bound, reversible symmetric encryption for sensitive configuration
-fields (passwords, JWT tokens). Prevents plaintext storage in configuration files
-while allowing the agent to autonomously re-authenticate and refresh access tokens.
+SnehDistribuors Desktop Sync Agent - Security & Credential Storage Module
+
+Sensitive configuration fields (passwords, JWT tokens) never reach agent_config.json
+in plaintext. Storage preference:
+  1. OS credential vault via `keyring` (Windows Credential Manager / DPAPI,
+     macOS Keychain, Secret Service). The config file only holds a "keyring:<account>"
+     reference, so a copied or committed config file contains no secret at all.
+  2. Machine-bound Fernet encryption ("enc:fn:...") when no vault is available.
+  3. Otherwise the secret is NOT persisted (the user must log in again) - there is
+     no weak or plaintext fallback.
 """
 
 import os
@@ -20,10 +26,81 @@ logger = logging.getLogger("SyncSecurity")
 _APP_SALT = b"SnehDistribuors-Tally-Sync-SecureVault-Salt-v1"
 _CIPHER_PREFIX = "enc:fn:"
 _LEGACY_PREFIX = "enc:"
+_KEYRING_PREFIX = "keyring:"
+_KEYRING_SERVICE = "SnehDistribuorsSyncAgent"
 
 # Cached Fernet instance
 _fernet_instance = None
 _crypto_available = None
+
+
+def _get_keyring():
+    """Returns the keyring module if a real OS credential vault backend is available, else None."""
+    try:
+        import keyring
+        backend = keyring.get_keyring()
+        # The 'fail' and 'null' backends mean no usable vault (e.g. headless Linux without Secret Service)
+        if type(backend).__module__ in ("keyring.backends.fail", "keyring.backends.null"):
+            return None
+        return keyring
+    except Exception:
+        return None
+
+
+def is_keyring_reference(value: Optional[str]) -> bool:
+    """Returns True if the stored config value points at an OS credential vault entry."""
+    return isinstance(value, str) and value.startswith(_KEYRING_PREFIX)
+
+
+def store_secret(account: str, plain_text: Optional[str]) -> str:
+    """
+    Persists a secret and returns the value that is safe to write into agent_config.json:
+    a "keyring:<account>" reference, or Fernet ciphertext when no vault is available.
+    An empty value removes any existing vault entry.
+    """
+    kr = _get_keyring()
+    if not plain_text:
+        if kr is not None:
+            try:
+                kr.delete_password(_KEYRING_SERVICE, account)
+            except Exception:
+                pass
+        return ""
+
+    if kr is not None:
+        try:
+            kr.set_password(_KEYRING_SERVICE, account, plain_text)
+            return f"{_KEYRING_PREFIX}{account}"
+        except Exception as e:
+            logger.warning(f"⚠️ OS credential vault unavailable ({e}). Falling back to machine-bound encryption.")
+
+    return encrypt_secret(plain_text)
+
+
+def load_secret(stored: Optional[str]) -> str:
+    """Resolves a value read from agent_config.json (vault reference, ciphertext or legacy plaintext)."""
+    if not stored or not isinstance(stored, str):
+        return ""
+    if is_keyring_reference(stored):
+        kr = _get_keyring()
+        if kr is None:
+            logger.warning("⚠️ Credential is stored in the OS vault but no vault backend is available.")
+            return ""
+        try:
+            return kr.get_password(_KEYRING_SERVICE, stored[len(_KEYRING_PREFIX):]) or ""
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to read credential from OS vault: {e}")
+            return ""
+    return decrypt_secret(stored)
+
+
+def needs_storage_upgrade(stored: Optional[str]) -> bool:
+    """True if a stored value is plaintext, or is file-encrypted while an OS vault is now available."""
+    if not stored or not isinstance(stored, str) or is_keyring_reference(stored):
+        return False
+    if not is_encrypted(stored):
+        return True
+    return _get_keyring() is not None
 
 
 def _get_machine_identifier() -> bytes:
@@ -104,8 +181,8 @@ def _get_fernet():
         return _fernet_instance
     except ImportError:
         logger.warning(
-            "⚠️ 'cryptography' library not installed. Using internal machine-key cipher fallback. "
-            "Install 'cryptography' via 'pip install cryptography' for AES-128 standard."
+            "⚠️ 'cryptography' library not installed. File-based credential encryption is disabled; "
+            "install it via 'pip install cryptography'."
         )
         _crypto_available = False
         return None
@@ -116,7 +193,7 @@ def _get_fernet():
 
 
 def _fallback_cipher(data: bytes, key: bytes) -> bytes:
-    """Internal deterministic XOR-stream fallback cipher using SHA-256 keystream."""
+    """Legacy XOR-stream cipher. Decrypt-only: lets old 'enc:fb:' configs be read once and migrated."""
     out = bytearray(len(data))
     block_index = 0
     stream = b""
@@ -143,9 +220,10 @@ def is_encrypted(value: Optional[str]) -> bool:
 
 def encrypt_secret(plain_text: Optional[str]) -> str:
     """
-    Encrypts a sensitive string (password or token) using machine-bound encryption.
-    Returns string prefixed with 'enc:fn:' (or 'enc:fb:' fallback).
-    If the value is already encrypted, returns it unchanged.
+    Encrypts a sensitive string (password or token) using machine-bound Fernet encryption.
+    Returns string prefixed with 'enc:fn:'. If the value is already encrypted, returns it unchanged.
+    If Fernet is unavailable, returns "" so the secret is never written to disk in plaintext
+    or under the legacy XOR cipher (which is only kept below for decrypting old configs).
     """
     if not plain_text or not isinstance(plain_text, str):
         return ""
@@ -154,25 +232,19 @@ def encrypt_secret(plain_text: Optional[str]) -> str:
     if is_encrypted(plain_text):
         return plain_text
 
-    plain_bytes = plain_text.encode("utf-8")
     fernet = _get_fernet()
-
     if fernet is not None:
         try:
-            token = fernet.encrypt(plain_bytes).decode("utf-8")
+            token = fernet.encrypt(plain_text.encode("utf-8")).decode("utf-8")
             return f"{_CIPHER_PREFIX}{token}"
         except Exception as e:
             logger.error(f"❌ Fernet encryption failed: {e}")
 
-    # Fallback encryption if cryptography package is absent
-    try:
-        key = hashlib.sha256(_get_machine_identifier() + _APP_SALT).digest()
-        cipher_bytes = _fallback_cipher(plain_bytes, key)
-        b64 = base64.urlsafe_b64encode(cipher_bytes).decode("utf-8")
-        return f"enc:fb:{b64}"
-    except Exception as e:
-        logger.error(f"❌ Fallback encryption failed: {e}")
-        return plain_text
+    logger.error(
+        "❌ No secure credential storage available (install 'keyring' and 'cryptography'). "
+        "Credential will NOT be saved; you will need to log in again after restart."
+    )
+    return ""
 
 
 def decrypt_secret(cipher_text: Optional[str]) -> str:

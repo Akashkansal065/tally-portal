@@ -38,10 +38,12 @@ The **SnehDistribuors Desktop Sync Agent** is a modern Windows desktop applicati
    - **Empty Payload Filtering**: Unchanged collections returning empty `<DATA><COLLECTION></COLLECTION></DATA>` are automatically discarded, preventing redundant network calls to `/sync/inbound`.
    - **Sync All Option**: Users can trigger an instant full baseline sync anytime from the Dashboard, Settings, Tray Menu, or CLI (`--sync-all`).
 
-7. **Encrypted Credential Storage & Autonomous Token Refresh**:
-   - Sensitive credentials (passwords, JWT tokens) are encrypted on disk (`agent_config.json`) using AES-128-CBC + HMAC-SHA256 (`cryptography.fernet.Fernet`).
-   - Keys are derived via machine-bound hardware identifiers (Windows MachineGuid / UUID) + OS user profile + PBKDF2 (100,000 iterations).
-   - If an access token expires (HTTP 401), the agent autonomously re-authenticates in memory and safely saves the fresh token back to disk in encrypted format.
+7. **Secure Credential Storage & Autonomous Token Refresh**:
+   - Passwords and tokens are stored in the **OS credential vault** via `keyring` (Windows Credential Manager / DPAPI, macOS Keychain). `agent_config.json` only holds `keyring:<account>` references, so the file contains no secrets.
+   - If no vault is available, secrets are encrypted on disk with Fernet (AES-128-CBC + HMAC-SHA256) using a machine-bound PBKDF2 key. If `cryptography` is missing too, secrets are **not saved at all**. There is no plaintext fallback.
+   - Older configs with plaintext or file-encrypted secrets are migrated into the vault automatically the next time the agent starts.
+   - The config defaults to `agent_config.json` next to the script or `.exe` (not the current directory). It is gitignored, and the `.exe` build no longer bundles the build machine's copy. See `agent_config.example.json` for the shape.
+   - If an access token expires (HTTP 401), the agent re-authenticates in memory and saves the fresh token back to secure storage.
 
 8. **Automated Log Rotation**:
    - System logs (`agent.log` and `tally_traffic.log`) automatically rotate at 5 MB (retaining up to 3 backup archives) to prevent unbounded disk usage.

@@ -1,6 +1,7 @@
 import xml.etree.ElementTree as ET
 import logging
 import re
+import secrets
 import uuid
 import difflib
 from decimal import Decimal
@@ -103,7 +104,9 @@ async def ensure_tally_user_exists(db: AsyncSession, company_id: int, user_name:
     if email_check.scalars().first():
         generated_email = f"{safe_slug}_{company_id}_{int(datetime.now().timestamp())}@mytally.local"
 
-    password_hash = get_password_hash("password123")
+    # Auto-provisioned Tally operators exist for attribution only. Give them an unguessable,
+    # never-disclosed password; an admin must use "Reset password" to enable a real login.
+    password_hash = get_password_hash(secrets.token_urlsafe(32))
     new_user = User(
         company_id=company_id,
         username=raw_name,

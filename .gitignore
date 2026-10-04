@@ -52,4 +52,7 @@ backend/ca.pem
 /backend/storage/gstr2b
 .vercel
 /graphify-out
-desktop-sync-agent/agent_config.json
+# Desktop Sync Agent runtime files (credentials references, machine-specific settings, logs)
+agent_config.json
+desktop-sync-agent/logs/
+*.log

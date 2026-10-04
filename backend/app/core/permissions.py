@@ -4,6 +4,7 @@ import copy
 from typing import Dict, Any, Optional, Set
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import update
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +51,15 @@ def invalidate_auth_cache(token_hash: Optional[str] = None, user_id: Optional[in
         to_del = [th for th, entry in _auth_cache.items() if entry.get("user_id") == user_id]
         for th in to_del:
             _auth_cache.pop(th, None)
+
+async def revoke_all_user_sessions(user_id: int, db: AsyncSession) -> None:
+    """Stage revocation of every live session for a user (password change, deactivation).
+    The caller commits, then calls invalidate_auth_cache(user_id=...) so no request re-caches a revoked session."""
+    await db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == user_id, UserSession.revoked_at == None)
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
 
 def invalidate_permissions_cache(user_id: Optional[int] = None):
     """Invalidate cached permissions for a given user_id or all users."""

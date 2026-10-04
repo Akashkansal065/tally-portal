@@ -1,10 +1,13 @@
 import os
 import sys
 import json
+import hashlib
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-from security import encrypt_secret, decrypt_secret, is_encrypted
+from security import store_secret, load_secret, needs_storage_upgrade
+
+SECRET_FIELDS = ("password", "auth_token")
 
 def get_app_dir() -> str:
     """Returns absolute path to the directory containing the running .exe or script."""
@@ -141,11 +144,11 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
                 data = json.load(f)
                 for k, v in data.items():
                     if hasattr(cfg, k):
-                        if k in ("password", "auth_token") and isinstance(v, str) and v:
-                            if not is_encrypted(v):
-                                # Existing plaintext in JSON: mark for auto-migration
+                        if k in SECRET_FIELDS and isinstance(v, str) and v:
+                            # Plaintext or file-encrypted secrets are moved into the OS vault on save
+                            if needs_storage_upgrade(v):
                                 needs_re_encryption = True
-                            v = decrypt_secret(v)
+                            v = load_secret(v)
                         setattr(cfg, k, v)
         except Exception as e:
             print(f"⚠️ Warning reading {config_path}: {e}. Using defaults.")
@@ -168,23 +171,30 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
     if needs_re_encryption:
         try:
             save_config(cfg, config_path)
-            print("🔒 Migrated plaintext credentials to encrypted format in config.")
+            print("🔒 Migrated credentials to secure storage (OS credential vault or machine-bound encryption).")
         except Exception:
             pass
 
     return cfg
 
+def _vault_account(field: str, config_path: str) -> str:
+    """OS vault account name, unique per config file so multiple agents on one machine don't collide."""
+    path_id = hashlib.sha256(os.path.abspath(config_path).encode("utf-8")).hexdigest()[:12]
+    return f"{field}:{path_id}"
+
 def save_config(cfg: AgentConfig, config_path: str = CONFIG_FILE) -> None:
-    """Saves configuration to JSON file with machine-bound encrypted credentials."""
+    """Saves configuration to JSON. Secrets go to the OS credential vault (or machine-bound
+    encryption); the file itself only ever holds references or ciphertext."""
     try:
         data = asdict(cfg)
-        # Encrypt sensitive fields before saving to disk
-        if data.get("password"):
-            data["password"] = encrypt_secret(data["password"])
-        if data.get("auth_token"):
-            data["auth_token"] = encrypt_secret(data["auth_token"])
+        for field in SECRET_FIELDS:
+            data[field] = store_secret(_vault_account(field, config_path), data.get(field) or "")
 
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
+        try:
+            os.chmod(config_path, 0o600)  # owner-only on POSIX; no-op beyond read-only flag on Windows
+        except OSError:
+            pass
     except Exception as e:
         print(f"❌ Error writing config to {config_path}: {e}")

@@ -17,6 +17,7 @@ from app.core.permissions import (
     invalidate_auth_cache,
     invalidate_permissions_cache,
     clear_all_auth_and_permission_caches,
+    revoke_all_user_sessions,
 )
 from app.core.security import get_password_hash
 from app.models.portal_core import (
@@ -327,6 +328,7 @@ async def update_user(
         user.is_active = payload.is_active
 
     # 5. Update password if provided
+    password_changed = False
     if payload.password and payload.password.strip():
         if len(payload.password.strip()) < 6:
             raise HTTPException(
@@ -334,9 +336,17 @@ async def update_user(
                 detail="Password must be at least 6 characters long."
             )
         user.password_hash = get_password_hash(payload.password.strip())
+        password_changed = True
+
+    # A new password or deactivation must log the user out everywhere, including old tokens
+    credentials_revoked = password_changed or payload.is_active is False
+    if credentials_revoked:
+        await revoke_all_user_sessions(user.user_id, db)
 
     await db.commit()
     await db.refresh(user)
+    if credentials_revoked:
+        invalidate_auth_cache(user_id=user.user_id)
 
     # Fetch role info for response
     role_q = await db.execute(select(Role).where(Role.role_id == user.role_id))
@@ -429,6 +439,7 @@ async def reset_user_password(
 
     password_hash = get_password_hash(payload.password)
     user.password_hash = password_hash
+    await revoke_all_user_sessions(user_id, db)
     await db.commit()
     invalidate_auth_cache(user_id=user_id)
     return {"success": True, "message": f"Password reset successfully for user: {user.username}"}

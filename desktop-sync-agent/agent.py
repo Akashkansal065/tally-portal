@@ -13,6 +13,7 @@ from config import (
     save_config,
     AgentConfig,
     get_logs_dir,
+    get_default_config_path,
     install_startup as cfg_install_startup,
     uninstall_startup as cfg_uninstall_startup
 )
@@ -94,8 +95,9 @@ def print_banner():
     logger.info(banner)
 
 class DesktopSyncAgent:
-    def __init__(self, config_path: str = "agent_config.json"):
-        self.config_path = config_path
+    def __init__(self, config_path: Optional[str] = None):
+        # Default to the file next to the script/.exe (gitignored), never the current working directory
+        self.config_path = config_path or get_default_config_path()
         self.config: AgentConfig = load_config(config_path)
         self.tally = TallyClient(tally_url=self.config.tally_url)
         self.cloud = CloudClient(
@@ -536,7 +538,7 @@ def main():
     parser.add_argument("--sync-all", "--full-sync", dest="sync_all", action="store_true", help="Force full baseline sync of all records (bypass Tally Alter ID incremental filter)")
     parser.add_argument("--install-startup", action="store_true", help="Configure agent to start automatically on Windows boot")
     parser.add_argument("--uninstall-startup", action="store_true", help="Remove agent from Windows system startup")
-    parser.add_argument("--config", default="agent_config.json", help="Path to config file")
+    parser.add_argument("--config", default=None, help="Path to config file (default: agent_config.json next to the agent)")
 
     args = parser.parse_args()
 

@@ -88,7 +88,7 @@ echo.
 echo ===========================================================================
 echo  [2/3] Installing / Updating Dependencies (CustomTkinter, PyInstaller, Pillow)...
 echo ===========================================================================
-%PYTHON_EXE% -m pip install --upgrade pip pyinstaller customtkinter pystray pillow requests cryptography
+%PYTHON_EXE% -m pip install --upgrade pip pyinstaller customtkinter pystray pillow requests cryptography keyring
 
 echo.
 echo ===========================================================================
@@ -100,6 +100,8 @@ cd /d "%~dp0\.."
     --icon "assets\icon.ico" ^
     --collect-all customtkinter ^
     --copy-metadata customtkinter ^
+    --collect-submodules keyring ^
+    --copy-metadata keyring ^
     --add-data "assets;assets" ^
     --add-data "security.py;." ^
     --add-data "config.py;." ^
@@ -108,9 +110,10 @@ cd /d "%~dp0\.."
     --add-data "cloud_client.py;." ^
     gui_app.py
 
-if exist "%~dp0\..\agent_config.json" (
-    copy /y "%~dp0\..\agent_config.json" "%~dp0\..\dist\agent_config.json" >nul 2>&1
-)
+REM Never ship the build machine's agent_config.json: it identifies the developer's account and
+REM backend. The .exe creates a fresh config on first launch and stores credentials in the
+REM Windows Credential Manager.
+if exist "%~dp0\..\dist\agent_config.json" del /q "%~dp0\..\dist\agent_config.json"
 
 if exist "%~dp0\..\assets" (
     xcopy /e /i /y "%~dp0\..\assets" "%~dp0\..\dist\assets" >nul 2>&1
@@ -121,6 +124,6 @@ echo ===========================================================================
 echo  🎉 BUILD SUCCESSFUL!
 echo  Your standalone GUI executable is ready in:
 echo  📂 desktop-sync-agent\dist\SnehDistribuorsSync.exe
-echo  📄 desktop-sync-agent\dist\agent_config.json
+echo  (agent_config.json is created on first launch; credentials go to Windows Credential Manager)
 echo ===========================================================================
 pause

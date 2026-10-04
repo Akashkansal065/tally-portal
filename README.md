@@ -324,7 +324,7 @@ There's no unit-test suite yet. `backend/tests/e2e_vouchers/` holds integration 
 
 ### `desktop-sync-agent/agent_config.json`
 
-This file is written by the GUI. Passwords and tokens are encrypted with a machine-bound key. **Don't commit it.** It's listed in `.gitignore`.
+This file is written by the GUI. Passwords and tokens go into the OS credential vault (Windows Credential Manager) and the file only stores references to them. **Don't commit it.** `.gitignore` covers `agent_config.json` at any depth. See `desktop-sync-agent/agent_config.example.json` for the shape.
 
 ---
 
