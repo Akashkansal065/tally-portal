@@ -401,6 +401,8 @@ class PaymentGatewayConfig(Base):
     public_key = Column(String(255), nullable=False)
     secret_key_ref = Column(String(100), nullable=False)
     webhook_secret_ref = Column(String(100), nullable=False)
+    # Bank/cash ledger debited when a gateway payment is auto-posted as a Receipt
+    settlement_ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=True)
     is_active = Column(Boolean, default=True)
     is_test_mode = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())

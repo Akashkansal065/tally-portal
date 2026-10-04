@@ -189,7 +189,14 @@ sequenceDiagram
 
 ### 3.3 Payment collection
 
-A field user records a receipt with a photo proof (`/payments`). For online payments, an admin creates a Razorpay payment link (`/gateways/payment-links`). Razorpay then calls the webhook, which verifies the HMAC, deduplicates on the event ID, posts a Receipt voucher, and allocates it against the bill. ⚠️ The webhook does **not** enqueue a `SyncQueue` row today, so these receipts never reach Tally unless someone re-saves them (see the code review).
+A field user records a receipt with a photo proof (`/payments`). For online payments, an admin first registers a Razorpay config (`POST /gateways/config`) with a webhook secret and a **settlement ledger** (the bank/cash ledger to debit), then creates payment links (`/gateways/payment-links`). When Razorpay calls `/gateways/webhooks/razorpay`, the backend:
+
+1. resolves the payment link from the payload, and through it the company and that company's gateway config;
+2. verifies `X-Razorpay-Signature` with **that config's** secret. It rejects the call (503) if no secret is set and (400) if the signature is missing or wrong;
+3. de-duplicates on the `X-Razorpay-Event-Id` header and on the Razorpay payment ID;
+4. posts a Receipt in the link's company (Dr settlement ledger, Cr the bill's party, allocated against the bill), and inserts a `SyncQueue` row so the Desktop Agent pushes it to Tally.
+
+If the setup is incomplete (for example no settlement ledger), it records the error on the `webhook_events` row and returns 503 so Razorpay retries after the fix.
 
 ---
 
