@@ -156,7 +156,7 @@ typing_extensions==4.16.0
 tzlocal==5.4.4
 urllib3==2.7.0
 uvicorn==0.51.0
-uvloop==0.22.1; sys_platform != 'win32'
+uvloop==0.23.0; sys_platform != 'win32'
 wcwidth==0.8.2
 websockets==15.0.1
 yarl==1.24.5
