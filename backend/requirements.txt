@@ -41,7 +41,7 @@ granian==2.7.9
 graphifyy==0.4.23
 greenlet==3.5.3
 grpclib==0.4.9
-gunicorn==23.0.0; sys_platform != 'win32'
+gunicorn==26.2.0; sys_platform != 'win32'
 h11==0.16.0
 h2==4.3.0
 hf-xet==1.5.2
