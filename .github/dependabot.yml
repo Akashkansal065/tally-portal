@@ -1,5 +1,9 @@
 # Dependabot configuration
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+#
+# Minor and patch bumps are grouped into a single PR per ecosystem to keep the
+# number of branches (and Vercel preview builds) down. Major bumps still come as
+# their own PRs so they can be reviewed one at a time.
 
 version: 2
 updates:
@@ -9,12 +13,17 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "backend"
     commit-message:
       prefix: "chore(deps):"
+    groups:
+      backend-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # npm — frontend (Next.js)
   - package-ecosystem: "npm"
@@ -22,12 +31,23 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "frontend"
     commit-message:
       prefix: "chore(deps):"
+    groups:
+      frontend-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # TypeScript 7.x is the native (Go) compiler rewrite; Next.js 16 and
+      # typescript-eslint 8 don't support it yet (build skips type validation
+      # and fails under CI). Stay on 5.x until the toolchain catches up.
+      - dependency-name: "typescript"
+        versions: [">=6"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
@@ -41,5 +61,8 @@ updates:
       - "ci"
     commit-message:
       prefix: "chore(ci):"
-
-
+    groups:
+      actions-all:
+        update-types:
+          - "minor"
+          - "patch"
