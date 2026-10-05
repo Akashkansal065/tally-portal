@@ -3226,7 +3226,7 @@ export default function AttendancePage() {
                 )}
               </div>
             ) : (
-              <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              <div className="min-h-0 flex-1 overflow-y-auto space-y-4 pr-1">
                 {/* Interactive Leaflet Route Map & JSON Trail Viewer */}
                 <div className="rounded-2xl overflow-hidden border border-border/70 shadow-sm">
                   <AttendanceTrailMap 
@@ -3236,7 +3236,7 @@ export default function AttendancePage() {
                     checkInTime={trailData.checkInTime}
                     checkOutTime={trailData.checkOutTime}
                     totalDistanceMeters={trailData.totalDistanceMeters}
-                    height="380px"
+                    height="min(380px, 45dvh)"
                     rawJson={trailData.trailJson}
                   />
                 </div>

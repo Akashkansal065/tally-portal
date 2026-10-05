@@ -43,6 +43,19 @@ interface AttendanceTrailMapProps {
   rawJson?: any
 }
 
+// Keyless tile servers. Carto's basemaps now need an API key (they showed "API KEY REQUIRED" watermarks).
+// OpenStreetMap's usage policy requires the attribution to stay visible.
+const TILES = {
+  street: {
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>',
+  },
+  satellite: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Imagery &copy; Esri',
+  },
+} as const
+
 export default function AttendanceTrailMap({
   trail = [],
   isLive = false,
@@ -94,18 +107,14 @@ export default function AttendanceTrailMap({
         center: [initialLat, initialLng],
         zoom: 15,
         zoomControl: true,
-        attributionControl: false,
+        attributionControl: true,
       })
 
-      // Default tiles: CartoDB Positron / OSM
-      const tileUrl = mapType === 'satellite'
-        ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-        : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-
-      const tiles = L.tileLayer(tileUrl, {
+      const tiles = L.tileLayer(TILES[mapType].url, {
         maxZoom: 19,
-        subdomains: 'abcd',
+        attribution: TILES[mapType].attribution,
       }).addTo(map)
+      map.attributionControl.setPrefix(false)
 
       tileLayerRef.current = tiles
       layerGroupRef.current = L.layerGroup().addTo(map)
@@ -117,12 +126,13 @@ export default function AttendanceTrailMap({
 
     if (!map || !layerGroup) return
 
-    // Update tile layer if changed
-    if (tileLayerRef.current) {
-      const newUrl = mapType === 'satellite'
-        ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-        : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-      tileLayerRef.current.setUrl(newUrl)
+    // Street / satellite switch: swap the whole layer so its attribution changes with it
+    if (tileLayerRef.current && tileLayerRef.current.options.attribution !== TILES[mapType].attribution) {
+      map.removeLayer(tileLayerRef.current)
+      tileLayerRef.current = L.tileLayer(TILES[mapType].url, {
+        maxZoom: 19,
+        attribution: TILES[mapType].attribution,
+      }).addTo(map).bringToBack()
     }
 
     layerGroup.clearLayers()
@@ -386,8 +396,9 @@ export default function AttendanceTrailMap({
       </div>
 
       {/* Main View Area */}
-      {activeView === 'map' ? (
-        <div className="relative w-full overflow-hidden" style={{ height }}>
+      {/* The map stays mounted and is only hidden for the JSON view. If it unmounted, React would reuse its div
+          for the JSON view and Leaflet's markers and controls would be left drawn on top of the JSON. */}
+      <div className={cn('relative w-full overflow-hidden', activeView !== 'map' && 'hidden')} style={{ height }}>
           {/* Leaflet Map Mount Container */}
           <div ref={mapContainerRef} className="w-full h-full z-0" />
 
@@ -419,9 +430,9 @@ export default function AttendanceTrailMap({
               </span>
             </div>
           )}
-        </div>
-      ) : (
-        /* JSON Data Inspector Tab */
+      </div>
+
+      {activeView === 'json' && (
         <div className="p-3 bg-muted/20 overflow-y-auto space-y-3" style={{ height }}>
           <div className="flex items-center justify-between text-xs border-b border-border/50 pb-2">
             <div className="flex items-center gap-1.5 text-muted-foreground text-[11px]">
