@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
-from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, attendance, health, masters, payments, customers, notifications, planner, bank_recon
+from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon
 
 from app.core.logging_config import setup_logging, get_logger, RequestLoggingMiddleware
 
@@ -142,6 +142,7 @@ app.include_router(visits.router)
 app.include_router(expenses.router)
 app.include_router(orders.router)
 app.include_router(reports.router)
+app.include_router(report_insights.router)
 app.include_router(attendance.router)
 app.include_router(masters.router)
 app.include_router(customers.router)

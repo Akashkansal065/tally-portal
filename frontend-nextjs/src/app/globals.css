@@ -258,4 +258,27 @@ button,
   .sm\:text-\[11px\] {
     font-size: 0.75rem;
   }
+
+  /* Phones: report tables scroll sideways, so keep the first column (the item, party or account name) in view
+     while the numbers move. Tables opt in with the report-table class. */
+  .report-table th:first-child,
+  .report-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    max-width: 45vw;
+    /* Card background with a 1px divider on the right (shadows aren't drawn on cells of collapsed tables) */
+    background: linear-gradient(to left, var(--border) 1px, var(--card) 1px);
+  }
+  /* Covers the scroll box's left padding, where scrolled columns would otherwise show through */
+  .report-table th:first-child::before,
+  .report-table td:first-child::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 100%;
+    width: 24px;
+    background: var(--card);
+  }
 }

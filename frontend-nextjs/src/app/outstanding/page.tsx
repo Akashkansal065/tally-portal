@@ -34,6 +34,9 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
+import { CreditDaysLabel, CreditDaysSheet } from '@/components/outstanding/CreditDays'
+import { CollectionsPanel } from '@/components/outstanding/CollectionsPanel'
+import { isAdminUser } from '@/lib/navigation'
 
 interface CustomerAgingBill {
   bill_id: number
@@ -54,6 +57,7 @@ interface CustomerAgingSummary {
   phone?: string
   email?: string
   credit_period_days: number
+  credit_days_source?: 'customer' | 'tally' | 'default'
   total_outstanding: number
   current_not_due: number
   days_1_30: number
@@ -83,6 +87,7 @@ interface AgingDashboardData {
   customers: CustomerAgingSummary[]
   upi_vpa: string
   merchant_name: string
+  default_credit_days?: number
 }
 
 interface ReminderPreview {
@@ -257,8 +262,13 @@ function getCustomerBucketData(cust: CustomerAgingSummary, bucket: string) {
 }
 
 export default function DebtorsAgingPage() {
-  const { token, user } = useAuth()
+  const { token, user, permissions } = useAuth()
+  const canEditCredit = isAdminUser(permissions, user?.role)
   const [data, setData] = useState<AgingDashboardData | null>(null)
+  // Credit days being edited: a customer's, or the default (ledgerId null)
+  // Bumped after each reload so the collections panel refreshes too (e.g. after changing credit days)
+  const [collectionsKey, setCollectionsKey] = useState(0)
+  const [creditDaysTarget, setCreditDaysTarget] = useState<{ ledgerId: number | null; name: string; days: number; source?: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -307,8 +317,10 @@ export default function DebtorsAgingPage() {
         kpis: json.kpis,
         customers: json.customers,
         upi_vpa: json.upi_vpa,
-        merchant_name: json.merchant_name || 'Merchant'
+        merchant_name: json.merchant_name || 'Merchant',
+        default_credit_days: json.default_credit_days ?? 30,
       })
+      setCollectionsKey(k => k + 1)
     } catch (err: any) {
       setError(err.message || 'Error fetching aging data')
     } finally {
@@ -470,6 +482,15 @@ export default function DebtorsAgingPage() {
               <span>Bulk WhatsApp Reminders</span>
             </button>
 
+            {data && (
+              <CreditDaysLabel
+                days={data.default_credit_days ?? 30}
+                isAdmin={canEditCredit}
+                onEdit={() => setCreditDaysTarget({ ledgerId: null, name: 'Default', days: data.default_credit_days ?? 30 })}
+                prefix="Default credit"
+                className="px-2 text-xs font-semibold text-muted-foreground"
+              />
+            )}
             <button
               onClick={fetchAgingData}
               className="px-3.5 py-2 border border-border bg-card hover:bg-muted text-foreground rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
@@ -561,6 +582,9 @@ export default function DebtorsAgingPage() {
             </div>
           </div>
         </div>
+
+        {/* Who to chase first, and how long customers take to pay */}
+        <CollectionsPanel reloadKey={collectionsKey} onRemind={(ledgerId) => handleOpenReminder(ledgerId, 'auto', 'OVERDUE')} />
 
         {/* Aging Buckets Filter Bar */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -690,7 +714,13 @@ export default function DebtorsAgingPage() {
                                 {cust.phone}
                               </span>
                             )}
-                            <span>Credit: {cust.credit_period_days}d</span>
+                            <CreditDaysLabel
+                              days={cust.credit_period_days}
+                              source={cust.credit_days_source}
+                              isAdmin={canEditCredit}
+                              onEdit={() => setCreditDaysTarget({ ledgerId: cust.party_ledger_id, name: cust.party_name, days: cust.credit_period_days, source: cust.credit_days_source })}
+                              className="font-sans"
+                            />
                           </div>
                         </div>
 
@@ -936,7 +966,13 @@ export default function DebtorsAgingPage() {
                                                 {cust.phone}
                                               </span>
                                             )}
-                                            <span className="font-medium">Credit: {cust.credit_period_days} Days</span>
+                                            <CreditDaysLabel
+                                              days={cust.credit_period_days}
+                                              source={cust.credit_days_source}
+                                              isAdmin={canEditCredit}
+                                              onEdit={() => setCreditDaysTarget({ ledgerId: cust.party_ledger_id, name: cust.party_name, days: cust.credit_period_days, source: cust.credit_days_source })}
+                                              className="font-medium"
+                                            />
                                           </div>
                                         </td>
                                       )
@@ -1508,6 +1544,15 @@ export default function DebtorsAgingPage() {
             </div>
           </div>
         </div>
+      )}
+      {token && (
+        <CreditDaysSheet
+          target={creditDaysTarget}
+          defaultDays={data?.default_credit_days ?? 30}
+          token={token}
+          onClose={() => setCreditDaysTarget(null)}
+          onSaved={fetchAgingData}
+        />
       )}
     </div>
   )

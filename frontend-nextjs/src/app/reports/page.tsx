@@ -1,13 +1,13 @@
 'use client'
 
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
 import { matchesSearch } from '@/lib/search'
 import {
-  BarChart3, TrendingUp, TrendingDown, Package, Layers, BookOpen, FileText,
+  BarChart3, TrendingUp, TrendingDown, Package, Layers, BookOpen, FileText, Loader2, MapPin,
   DollarSign, PieChart as PieChartIcon, Calendar, Download, RefreshCw, Search,
   ArrowUpRight, ArrowDownRight, Layers3, Users, Building2, Info, HelpCircle, Check, X,
   CheckCircle2, Sparkles, AlertCircle, ExternalLink, Filter, ShoppingBag, Landmark, Clock,
@@ -21,9 +21,62 @@ import {
   XAxis, YAxis, Tooltip, Legend, CartesianGrid
 } from 'recharts'
 import ProjectedFinancials from '@/components/ProjectedFinancials'
+import { Watchlists, type WatchlistView } from '@/components/reports/Watchlists'
+import { CityReport } from '@/components/reports/CityReport'
+import { remember, remembered } from '@/lib/report-insights'
+import { AsOfToday } from '@/components/reports/AsOfToday'
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
 
-type TabType = 'executive' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance'
+type TabType = 'executive' | 'watchlists' | 'cities' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance'
+
+// Report data and where it comes from; TAB_DATASETS says which section needs which (summary is always loaded)
+type DatasetKey = 'summary' | 'exec' | 'topCustomers' | 'inventory' | 'salesRegister' | 'daybook' | 'trialBalance'
+  | 'pnl' | 'balanceSheet' | 'cashFlow' | 'ratios' | 'companyStock' | 'customerItem'
+
+const DATASETS: Record<DatasetKey, { path: string; usesPeriod: boolean }> = {
+  summary: { path: '/reports/dashboard-summary', usesPeriod: true },
+  exec: { path: '/reports/executive-analytics', usesPeriod: true },
+  topCustomers: { path: '/reports/top-customers', usesPeriod: true },
+  inventory: { path: '/reports/inventory-analytics', usesPeriod: false },
+  salesRegister: { path: '/reports/sales-register', usesPeriod: true },
+  daybook: { path: '/reports/daybook', usesPeriod: true },
+  trialBalance: { path: '/reports/trial-balance', usesPeriod: false },
+  pnl: { path: '/reports/profit-loss', usesPeriod: true },
+  balanceSheet: { path: '/reports/balance-sheet', usesPeriod: false },
+  cashFlow: { path: '/reports/cash-flow', usesPeriod: true },
+  ratios: { path: '/reports/ratio-analysis', usesPeriod: false },
+  companyStock: { path: '/reports/company-stock-performance', usesPeriod: true },
+  customerItem: { path: '/reports/customer-item-sales', usesPeriod: true },
+}
+
+type StockSubTab = 'overview' | 'trends' | 'dead' | 'loss' | 'negative' | 'fast' | 'turnover' | 'returns' | 'customer_purchases'
+const TABS: TabType[] = ['executive', 'watchlists', 'cities', 'financial', 'sales', 'inventory', 'company_stock', 'compliance']
+const STOCK_SUB_TABS: StockSubTab[] = ['overview', 'trends', 'dead', 'loss', 'negative', 'fast', 'turnover', 'returns', 'customer_purchases']
+
+/** ?tab= and ?sub= from a link into Reports. This page only renders in the browser (after sign-in), so reading
+ *  the URL while setting initial state is safe. */
+function linkParams(): { tab?: TabType; watchlist?: WatchlistView; stock?: StockSubTab } {
+  if (typeof window === 'undefined') return {}
+  const params = new URLSearchParams(window.location.search)
+  const tab = params.get('tab') as TabType | null
+  const sub = params.get('sub')
+  return {
+    tab: tab && TABS.includes(tab) ? tab : undefined,
+    watchlist: tab === 'watchlists' && (sub === 'customers' || sub === 'reorder' || sub === 'dead') ? sub : undefined,
+    stock: sub && STOCK_SUB_TABS.includes(sub as StockSubTab) ? (sub as StockSubTab) : undefined,
+  }
+}
+
+const TAB_DATASETS: Record<TabType, DatasetKey[]> = {
+  executive: ['exec'],
+  watchlists: [],
+  cities: [],
+  financial: ['pnl', 'balanceSheet', 'cashFlow', 'ratios'],
+  sales: ['topCustomers', 'salesRegister'],
+  inventory: ['inventory'],
+  company_stock: ['companyStock', 'customerItem'],
+  compliance: ['trialBalance', 'daybook'],
+}
 type PresetType = 'all' | 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
 type ExplanationKey = 'revenue_trend' | 'aging' | 'expense' | 'top_customers' | 'inventory' | 'trial_balance' | null
 type KpiModalKey = 'sales' | 'receipts' | 'purchases' | 'payments' | 'receivables' | 'payables' | null
@@ -128,7 +181,7 @@ const EXPLANATIONS = {
     lines: [
       { name: 'Evaluation Method', desc: 'FIFO Allocation (Oldest Bills Settled First).' },
       { name: 'Payment Settlement', desc: 'Customer receipts automatically clear the oldest outstanding invoices first.' },
-      { name: 'Age Bucket Assignment', desc: 'Remaining unpaid customer balance is assigned to their most recent sales invoices (0-30, 31-60, 61-90, 90+ Days).' }
+      { name: 'Age Bucket Assignment', desc: 'Remaining unpaid balance is assigned to the most recent invoices, then grouped by days past due: invoice date + the customer\'s credit days (30 unless set on the Outstanding screen). Not due, 1-30, 31-60, 61-90, 90+ days.' }
     ],
     example: {
       title: 'FIFO Settlement Example',
@@ -290,7 +343,13 @@ export default function ReportsPage() {
   const { user, token, permissions, can } = useAuth()
   const router = useRouter()
 
-  const [activeTab, setActiveTab] = useState<TabType>('executive')
+  // Opened from a link (e.g. Home → Watchlists): start on that section, so nothing else loads first
+  const [activeTab, setActiveTab] = useState<TabType>(() => linkParams().tab ?? 'executive')
+  const [watchlistView, setWatchlistView] = useState<WatchlistView>(() => linkParams().watchlist ?? 'customers')
+  // Days without a sale before an item in stock counts as dead; remembered per viewer
+  const [deadStockDays, setDeadStockDays] = useState<number>(() => remembered('dead_stock', { days: 90 }).days)
+  const [deadDaysDraft, setDeadDaysDraft] = useState<string>('')
+  const [reloadingDeadStock, setReloadingDeadStock] = useState(false)
   const [financialSubTab, setFinancialSubTab] = useState<'pnl' | 'bs' | 'cf' | 'ratios' | 'projected'>('pnl')
   const [activePreset, setActivePreset] = useState<PresetType>('month')
   const [loading, setLoading] = useState(false)
@@ -353,7 +412,7 @@ export default function ReportsPage() {
   // Company Stock & Profit state
   const [companyStockData, setCompanyStockData] = useState<any>(null)
   const [expandedCompany, setExpandedCompany] = useState<string | null>(null)
-  const [stockSubTab, setStockSubTab] = useState<'overview' | 'trends' | 'dead' | 'loss' | 'negative' | 'fast' | 'turnover' | 'returns' | 'customer_purchases'>('overview')
+  const [stockSubTab, setStockSubTab] = useState<StockSubTab>(() => linkParams().stock ?? 'overview')
 
   // Customer-Item Purchases state
   const [customerItemData, setCustomerItemData] = useState<any>(null)
@@ -538,61 +597,42 @@ export default function ReportsPage() {
     if (!can('reports', 'read')) { router.replace('/'); return }
   }, [user, can, router])
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search)
-      const tab = params.get('tab')
-      if (tab && ['executive', 'financial', 'sales', 'inventory', 'company_stock', 'compliance'].includes(tab)) {
-        setActiveTab(tab as TabType)
-      }
-      const sub = params.get('sub')
-      if (sub && ['overview', 'trends', 'dead', 'loss', 'negative', 'fast', 'turnover', 'returns', 'customer_purchases'].includes(sub)) {
-        setStockSubTab(sub as any)
-      }
-    }
-  }, [])
 
-  const fetchReportsData = useCallback(async () => {
+  // Each section loads only its own data, the first time it's opened for the chosen period (finding F5:
+  // the page used to fetch all 13 reports on every open and every period change). Refresh reloads the open one.
+  const loadedFor = useRef<Record<string, string>>({})
+
+  const loadSection = useCallback(async (tab: TabType, force = false) => {
     if (!token) return
+    const periodKey = `${fromDate}|${toDate}`
+    const wanted = ['summary', ...TAB_DATASETS[tab]].filter(key => force || loadedFor.current[key] !== periodKey)
+    if (wanted.length === 0) return
+    const headers = authHeaders(token)
+    const qParams = new URLSearchParams()
+    if (fromDate) qParams.append('from_date', fromDate)
+    if (toDate) qParams.append('to_date', toDate)
+    const period = qParams.toString()
+    const setters = {
+      summary: setSummary, exec: setExecData, topCustomers: setTopCustomers, inventory: setInventoryData,
+      salesRegister: setSalesRegister, daybook: setDaybook, trialBalance: setTrialBalance, pnl: setPnlData,
+      balanceSheet: setBalanceSheetData, cashFlow: setCashFlowData, ratios: setRatiosData,
+      companyStock: setCompanyStockData, customerItem: setCustomerItemData,
+    } as Record<DatasetKey, (value: unknown) => void>
     setLoading(true)
     try {
-      const headers = authHeaders(token)
-      const qParams = new URLSearchParams()
-      if (fromDate) qParams.append('from_date', fromDate)
-      if (toDate) qParams.append('to_date', toDate)
-      const qStr = qParams.toString()
-      const q = qStr ? `?${qStr}` : ''
-      
-      const results = await Promise.allSettled([
-        fetch(`${API_BASE}/reports/dashboard-summary${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/executive-analytics${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/top-customers${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/inventory-analytics`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/sales-register${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/daybook${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/trial-balance`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/profit-loss${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/balance-sheet`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/cash-flow${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/ratio-analysis`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/company-stock-performance${q}`, { headers }).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/reports/customer-item-sales${q}`, { headers }).then(r => r.ok ? r.json() : null),
-      ])
-
-      if (results[0].status === 'fulfilled' && results[0].value) setSummary(results[0].value)
-      if (results[1].status === 'fulfilled' && results[1].value) setExecData(results[1].value)
-      if (results[2].status === 'fulfilled' && results[2].value) setTopCustomers(results[2].value)
-      if (results[3].status === 'fulfilled' && results[3].value) setInventoryData(results[3].value)
-      if (results[4].status === 'fulfilled' && results[4].value) setSalesRegister(results[4].value)
-      if (results[5].status === 'fulfilled' && results[5].value) setDaybook(results[5].value)
-      if (results[6].status === 'fulfilled' && results[6].value) setTrialBalance(results[6].value)
-      if (results[7].status === 'fulfilled' && results[7].value) setPnlData(results[7].value)
-      if (results[8].status === 'fulfilled' && results[8].value) setBalanceSheetData(results[8].value)
-      if (results[9].status === 'fulfilled' && results[9].value) setCashFlowData(results[9].value)
-      if (results[10].status === 'fulfilled' && results[10].value) setRatiosData(results[10].value)
-      if (results[11].status === 'fulfilled' && results[11].value) setCompanyStockData(results[11].value)
-      if (results[12].status === 'fulfilled' && results[12].value) setCustomerItemData(results[12].value)
-
+      await Promise.allSettled(wanted.map(async key => {
+        const { path, usesPeriod } = DATASETS[key as DatasetKey]
+        let query = usesPeriod ? period : ''
+        if (key === 'companyStock') {
+          query = [query, `dead_stock_days=${remembered('dead_stock', { days: 90 }).days}`].filter(Boolean).join('&')
+        }
+        const res = await fetch(`${API_BASE}${path}${query ? `?${query}` : ''}`, { headers })
+        const data = res.ok ? await res.json() : null
+        if (data) {
+          setters[key as DatasetKey](data)
+          loadedFor.current[key] = periodKey
+        }
+      }))
       setLastUpdatedMessage(
         fromDate || toDate
           ? `Updated data for period: ${formatDate(fromDate)} to ${formatDate(toDate)}`
@@ -606,8 +646,26 @@ export default function ReportsPage() {
   }, [token, fromDate, toDate])
 
   useEffect(() => {
-    fetchReportsData()
-  }, [fetchReportsData])
+    loadSection(activeTab)
+  }, [loadSection, activeTab])
+
+  // Changing the dead-stock days reloads only the stock report, not every report on the page
+  const changeDeadStockDays = async (days: number) => {
+    if (!token || !Number.isInteger(days) || days < 1 || days > 3650) return
+    setDeadStockDays(days)
+    remember('dead_stock', { days })
+    setDeadDaysDraft('')
+    setReloadingDeadStock(true)
+    try {
+      const params = new URLSearchParams({ dead_stock_days: String(days) })
+      if (fromDate) params.append('from_date', fromDate)
+      if (toDate) params.append('to_date', toDate)
+      const res = await fetch(`${API_BASE}/reports/company-stock-performance?${params}`, { headers: authHeaders(token) })
+      if (res.ok) setCompanyStockData(await res.json())
+    } finally {
+      setReloadingDeadStock(false)
+    }
+  }
 
   // Fetch individual stock transaction vouchers when product is clicked
   useEffect(() => {
@@ -1153,7 +1211,7 @@ export default function ReportsPage() {
           </div>
 
           <button
-            onClick={fetchReportsData}
+            onClick={() => loadSection(activeTab, true)}
             disabled={loading}
             className="p-2.5 bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl transition-all shadow-sm cursor-pointer disabled:opacity-50 flex items-center gap-1.5 text-xs font-bold"
             title="Refresh reports data"
@@ -1179,6 +1237,8 @@ export default function ReportsPage() {
       <div className="flex gap-1.5 bg-muted/50 p-1 rounded-xl overflow-x-auto no-scrollbar border border-border">
         {[
           { id: 'executive', label: 'Executive Analytics', icon: TrendingUp, desc: 'Revenue Trends, Cash Flow & Debt Aging' },
+          { id: 'watchlists', label: 'Watchlists', icon: AlertTriangle, desc: 'Customers buying less, running out, dead stock' },
+          { id: 'cities', label: 'Cities', icon: MapPin, desc: 'Sales by city & room to grow' },
           { id: 'financial', label: 'Financial Statements', icon: BarChart3, desc: 'P&L, Balance Sheet, Cash Flow & Ratios' },
           { id: 'sales', label: 'Sales & Customers', icon: BookOpen, desc: 'Top Debtors & Invoicing Register' },
           { id: 'inventory', label: 'Inventory Valuation', icon: Layers, desc: 'Stock Group Capital & Item Valuation' },
@@ -1640,6 +1700,7 @@ export default function ReportsPage() {
           {/* Sub-Tab 2: Balance Sheet */}
           {financialSubTab === 'bs' && (
             <div className="space-y-6 animate-in fade-in duration-200">
+              <AsOfToday><strong>As of today.</strong> The balance sheet shows today&apos;s position; the period chosen above doesn&apos;t change it.</AsOfToday>
               {/* Balance Sheet Summary Banner */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="bg-card border border-border rounded-2xl p-4 space-y-1 shadow-sm">
@@ -1740,6 +1801,7 @@ export default function ReportsPage() {
           {/* Sub-Tab 4: Financial Ratios */}
           {financialSubTab === 'ratios' && (
             <div className="space-y-6 animate-in fade-in duration-200">
+              <AsOfToday><strong>As of today.</strong> Ratios use today&apos;s balances; the period chosen above doesn&apos;t change them.</AsOfToday>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="bg-card border border-border rounded-2xl p-5 space-y-2 shadow-sm">
                   <div className="flex justify-between items-center">
@@ -1934,7 +1996,7 @@ export default function ReportsPage() {
 
               return (
                 <div className="overflow-x-auto -mx-5 px-5">
-                  <table className="w-full text-xs">
+                  <table className="report-table w-full text-xs">
                     <thead>
                       <tr className="border-b border-border text-muted-foreground select-none">
                         {salesRegisterCols.columns.map(colId => {
@@ -1987,6 +2049,7 @@ export default function ReportsPage() {
       {/* TAB 3: INVENTORY ANALYTICS */}
       {activeTab === 'inventory' && (
         <div className="space-y-6">
+          <AsOfToday><strong>As of today.</strong> Stock values are today&apos;s closing stock; the period chosen above doesn&apos;t change them.</AsOfToday>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Stock Group Valuation Chart */}
             <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm flex flex-col justify-between">
@@ -2649,7 +2712,7 @@ export default function ReportsPage() {
                               return (
                                 <div className={cn("border border-border rounded-xl overflow-hidden shadow-2xs", itemViewMode === 'auto' ? "hidden sm:block" : itemViewMode === 'table' ? "block" : "hidden")}>
                                   <div className="overflow-x-auto">
-                                    <table className="w-full text-[11px]">
+                                    <table className="report-table w-full text-[11px]">
                                       <thead>
                                         <tr className="bg-muted/60 text-muted-foreground border-b border-border select-none">
                                           {companyItemCols.columns.map(colId => {
@@ -3193,7 +3256,7 @@ export default function ReportsPage() {
 
                                   {/* Items Table for this Customer */}
                                   <div className="overflow-x-auto">
-                                    <table className="w-full text-xs text-left">
+                                    <table className="report-table w-full text-xs text-left">
                                       <thead>
                                         <tr className="border-b border-border/40 text-[10px] uppercase font-bold text-muted-foreground tracking-wider bg-muted/15">
                                           <th className="py-2 px-3">Item Name</th>
@@ -3334,7 +3397,7 @@ export default function ReportsPage() {
 
                                   {/* Items Table for this Company */}
                                   <div className="overflow-x-auto">
-                                    <table className="w-full text-xs text-left">
+                                    <table className="report-table w-full text-xs text-left">
                                       <thead>
                                         <tr className="border-b border-border/40 text-[10px] uppercase font-bold text-muted-foreground tracking-wider bg-muted/15">
                                           <th className="py-2 px-3">Item Name</th>
@@ -3403,7 +3466,7 @@ export default function ReportsPage() {
                 {filtered.length > 0 && custItemViewMode === 'flat' && (
                   <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-2xs">
                     <div className="overflow-x-auto">
-                      <table className="w-full text-xs text-left">
+                      <table className="report-table w-full text-xs text-left">
                         <thead>
                           <tr className="border-b border-border/50 text-[10px] uppercase font-bold text-muted-foreground tracking-wider bg-muted/30">
                             <th className="py-3 px-3 cursor-pointer group" onClick={() => handleFlatSort('customer_name')}>
@@ -3641,7 +3704,7 @@ export default function ReportsPage() {
                 </div>
                 {/* Monthly detail table */}
                 <div className="overflow-x-auto border border-border rounded-xl">
-                  <table className="w-full text-[11px]">
+                  <table className="report-table w-full text-[11px]">
                     <thead>
                       <tr className="bg-muted/50 text-muted-foreground select-none">
                         {monthlyCols.columns.map(colId => {
@@ -3856,7 +3919,7 @@ export default function ReportsPage() {
                   </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-[11px]">
+                  <table className="report-table w-full text-[11px]">
                     <thead>
                       <tr className="bg-muted/50 text-muted-foreground select-none">
                         {fastCols.columns.map(colId => {
@@ -4011,8 +4074,46 @@ export default function ReportsPage() {
                         {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
                       </span>
                     </h3>
+                    <div className="mt-2 mb-1.5 flex flex-wrap items-center gap-1.5" role="group" aria-label="No sale for">
+                      <span className="text-xs font-semibold text-muted-foreground">No sale for</span>
+                      {[60, 90, 180, 365].map(days => (
+                        <button
+                          key={days}
+                          type="button"
+                          aria-pressed={deadStockDays === days}
+                          disabled={reloadingDeadStock}
+                          onClick={() => changeDeadStockDays(days)}
+                          className={cn(
+                            'min-h-9 rounded-full border px-3 text-xs font-semibold cursor-pointer disabled:opacity-60',
+                            deadStockDays === days ? 'border-primary bg-primary text-primary-foreground' : 'border-border hover:bg-muted'
+                          )}
+                        >
+                          {days} days
+                        </button>
+                      ))}
+                      <form
+                        onSubmit={e => { e.preventDefault(); changeDeadStockDays(Number(deadDaysDraft)) }}
+                        className="flex items-center gap-1"
+                      >
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          max={3650}
+                          placeholder={[60, 90, 180, 365].includes(deadStockDays) ? 'Other' : String(deadStockDays)}
+                          value={deadDaysDraft}
+                          onChange={e => setDeadDaysDraft(e.target.value)}
+                          aria-label="Other number of days"
+                          className="h-9 w-20 rounded-full border border-border bg-background px-3 text-xs tabular-nums focus:border-primary focus:outline-none"
+                        />
+                        {deadDaysDraft && (
+                          <button type="submit" className="min-h-9 rounded-full bg-primary px-3 text-xs font-semibold text-primary-foreground cursor-pointer">Apply</button>
+                        )}
+                      </form>
+                      {reloadingDeadStock && <Loader2 className="h-4 w-4 animate-spin text-primary" aria-label="Updating" />}
+                    </div>
                     <p className="text-xs text-muted-foreground">
-                      {companyStockData.dead_stock.count} items with zero sales in last {companyStockData.dead_stock.days_threshold} days •
+                      {companyStockData.dead_stock.count} items in stock with no sale in the last {companyStockData.dead_stock.days_threshold} days (or never sold) •
                       <span className="font-extrabold text-orange-600 ml-1">{formatCurrency(getStockVal(companyStockData.dead_stock, 'total_locked_value'))} capital locked</span> • Click & drag column headers to move left/right
                     </p>
                   </div>
@@ -4027,7 +4128,7 @@ export default function ReportsPage() {
                   </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-[11px]">
+                  <table className="report-table w-full text-[11px]">
                     <thead>
                       <tr className="bg-muted/50 text-muted-foreground select-none">
                         {deadCols.columns.map(colId => {
@@ -4234,7 +4335,7 @@ export default function ReportsPage() {
                   </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-[11px]">
+                  <table className="report-table w-full text-[11px]">
                     <thead>
                       <tr className="bg-muted/50 text-muted-foreground select-none">
                         {lossCols.columns.map(colId => {
@@ -4398,7 +4499,7 @@ export default function ReportsPage() {
                   <ResetColumnsButton isCustomized={turnoverCols.isCustomized} onReset={turnoverCols.resetColumns} />
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-[11px]">
+                  <table className="report-table w-full text-[11px]">
                     <thead>
                       <tr className="bg-muted/50 text-muted-foreground select-none">
                         {turnoverCols.columns.map(colId => {
@@ -4522,7 +4623,7 @@ export default function ReportsPage() {
                 </div>
                 {companyStockData.returns_analysis.entries.length > 0 ? (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-[11px]">
+                    <table className="report-table w-full text-[11px]">
                       <thead>
                         <tr className="bg-muted/50 text-muted-foreground select-none">
                           {returnsCols.columns.map(colId => {
@@ -4622,8 +4723,13 @@ export default function ReportsPage() {
       )}
 
       {/* TAB 4: AUDIT & TRIAL BALANCE */}
+      {activeTab === 'watchlists' && <Watchlists view={watchlistView} onViewChange={setWatchlistView} />}
+
+      {activeTab === 'cities' && <CityReport />}
+
       {activeTab === 'compliance' && (
         <div className="space-y-6">
+          <AsOfToday><strong>Trial balance is as of today</strong> and ignores the period chosen above. The day book below follows the period.</AsOfToday>
           {/* Trial Balance Group Summary Table */}
           <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/50 pb-3">
@@ -4706,7 +4812,7 @@ export default function ReportsPage() {
 
               return (
                 <div className="overflow-x-auto -mx-5 px-5">
-                  <table className="w-full text-xs">
+                  <table className="report-table w-full text-xs">
                     <thead>
                       <tr className="border-b border-border text-muted-foreground select-none">
                         {trialBalanceCols.columns.map(colId => {
@@ -4847,7 +4953,7 @@ export default function ReportsPage() {
 
               return (
                 <div className="overflow-x-auto -mx-5 px-5">
-                  <table className="w-full text-xs">
+                  <table className="report-table w-full text-xs">
                     <thead>
                       <tr className="border-b border-border text-muted-foreground select-none">
                         {daybookCols.columns.map(colId => {
@@ -4946,9 +5052,9 @@ export default function ReportsPage() {
             </div>
 
             {/* Data Table */}
-            <div className="p-4 overflow-y-auto max-h-96">
+            <div className="p-4 overflow-auto max-h-96">
               {kpiModalData.rows.length > 0 ? (
-                <table className="w-full text-xs">
+                <table className="report-table w-full text-xs">
                   <thead>
                     <tr className="border-b border-border text-muted-foreground text-left">
                       {kpiModalData.headers.map((h, i) => (
@@ -5225,7 +5331,7 @@ export default function ReportsPage() {
             </div>
 
             {/* Itemized Table */}
-            <div className="overflow-y-auto flex-1 p-6">
+            <div className="overflow-auto flex-1 p-6">
               {(() => {
                 const filteredItems = (execData?.receivables_aging_details || []).filter((item: any) => {
                   if (item.bucket !== agingModalBucket) return false
@@ -5254,7 +5360,7 @@ export default function ReportsPage() {
                 }
 
                 return (
-                  <table className="w-full text-xs">
+                  <table className="report-table w-full text-xs">
                     <thead>
                       <tr className="border-b border-border text-muted-foreground text-left">
                         {agingModalCols.columns.map((colId) => {

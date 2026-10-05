@@ -1,9 +1,10 @@
-"""Daily purge of old login sessions, successful sync logs and notifications, so history stays useful and tables stay small."""
+"""Daily jobs: purge old login sessions, successful sync logs and notifications so tables stay small, and save each
+company's overdue and dead-stock totals so their trend can be shown."""
 import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import and_, delete, or_
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -81,6 +82,17 @@ async def purge_old_notifications(db: AsyncSession) -> int:
             return removed
 
 
+async def save_report_snapshots(db: AsyncSession) -> int:
+    """Save today's overdue and dead-stock totals for every active company. Returns how many companies."""
+    from app.models.portal_core import Company
+    from app.routers.report_insights import record_daily_snapshots
+
+    company_ids = (await db.execute(select(Company.company_id).where(Company.is_active == True))).scalars().all()  # noqa: E712
+    for company_id in company_ids:
+        await record_daily_snapshots(db, company_id)
+    return len(company_ids)
+
+
 async def daily_cleanup_worker(interval_seconds: int = 24 * 60 * 60, initial_delay_seconds: int = 300):
     """Runs the purges shortly after startup and then once a day. One failing purge doesn't stop the others."""
     await asyncio.sleep(initial_delay_seconds)
@@ -89,12 +101,13 @@ async def daily_cleanup_worker(interval_seconds: int = 24 * 60 * 60, initial_del
             ("old session(s)", purge_old_sessions),
             ("old successful sync log(s)", purge_old_sync_logs),
             ("old notification(s)", purge_old_notifications),
+            ("report snapshot(s)", save_report_snapshots),
         ):
             try:
                 async with AsyncSessionLocal() as db:
                     removed = await purge(db)
                 if removed:
-                    logger.info(f"Daily cleanup removed {removed} {name}.")
+                    logger.info(f"Daily job: {removed} {name}.")
             except asyncio.CancelledError:
                 raise
             except Exception as e:

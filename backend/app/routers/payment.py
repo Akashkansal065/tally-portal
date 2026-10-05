@@ -152,9 +152,14 @@ import urllib.parse
 from app.core.config import settings
 from app.models.portal_core import Company
 from app.schemas.payment import (
-    CustomerAgingBill, CustomerAgingSummary, AgingKPISummary, AgingDashboardResponse,
+    CustomerAgingBill, CustomerAgingSummary, AgingKPISummary, AgingDashboardResponse, CreditDaysUpdate,
     ReminderMessageRequest, ReminderMessageResponse, BulkReminderRequest, BulkReminderResponse
 )
+from app.core.cache import clear_company_cache
+from app.models.portal_core import CustomerCreditTerm
+from app.routers.admin import require_admin
+from app.services.app_settings import get_setting
+from app.services.receivables import receivables_ageing
 
 def _build_dunning_message(
     party_name: str,
@@ -269,241 +274,108 @@ async def get_aging_dashboard(
         company_upi = company.features.get("upi_id") or company.features.get("upi_vpa")
     vpa = company_upi or settings.DEFAULT_UPI_VPA or ""
 
-    # 2. Resolve Sundry Debtors group IDs (including sub-groups)
-    #    Only DEBTORS should appear in aging — never Sundry Creditors (suppliers/vendors)
-    from app.models.tally_core import MstGroup
-    from datetime import timedelta
-    from sqlalchemy import text
-
-    all_groups_res = await db.execute(
-        select(MstGroup).where(MstGroup.company_id == user.company_id)
-    )
-    all_groups = all_groups_res.scalars().all()
-    debtor_group_ids = set()
-
-    for g in all_groups:
-        if g.name.strip().lower() == "sundry debtors":
-            debtor_group_ids.add(g.group_id)
-
-    changed = True
-    while changed:
-        changed = False
-        for g in all_groups:
-            if g.parent_group_id in debtor_group_ids and g.group_id not in debtor_group_ids:
-                debtor_group_ids.add(g.group_id)
-                changed = True
-
-    if not debtor_group_ids:
-        debtor_group_ids = {0}
-
-    # 3. Query all debtors with opening balance + voucher entries (Debits - Credits)
-    party_filter = "AND l.ledger_id = :target_party_id" if party_ledger_id else ""
-    params = {"comp_id": user.company_id}
-    if party_ledger_id:
-        params["target_party_id"] = party_ledger_id
-
-    group_ids_str = ",".join(str(gid) for gid in debtor_group_ids)
-    debtors_q = await db.execute(text(f"""
-        SELECT 
-            l.ledger_id, 
-            l.name as party_name,
-            l.mobile,
-            l.phone,
-            l.email,
-            l.credit_period_days,
-            COALESCE(l.opening_balance, 0) as opening_balance,
-            COALESCE(l.opening_balance_type, 'Dr') as opening_balance_type,
-            COALESCE(SUM(e.debit_amount), 0) as total_debit,
-            COALESCE(SUM(e.credit_amount), 0) as total_credit
-        FROM tally_sync.ledgers l
-        LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-        WHERE l.company_id = :comp_id AND l.group_id IN ({group_ids_str}) {party_filter}
-        GROUP BY l.ledger_id, l.name, l.mobile, l.phone, l.email, l.credit_period_days, l.opening_balance, l.opening_balance_type
-    """), params)
-    debtors = debtors_q.all()
-
-    today = date.today()
-    party_map: dict[int, dict] = {}
-
-    total_receivables = 0.0
-    total_overdue = 0.0
-    total_current = 0.0
-    bucket_0_30 = 0.0
-    bucket_31_60 = 0.0
-    bucket_61_90 = 0.0
-    bucket_90_plus = 0.0
-
-    for d in debtors:
-        op_bal = float(d.opening_balance or 0.0)
-        op_sign = -1.0 if (d.opening_balance_type or "Dr").strip().lower() == "cr" else 1.0
-        net_bal = (op_bal * op_sign) + float(d.total_debit) - float(d.total_credit)
-        
-        # If customer has settled or has advance credit balance, no debt to collect
-        if net_bal <= 0.01:
-            continue
-
-        net_bal = round(net_bal, 2)
-        total_receivables += net_bal
-        party_id = d.ledger_id
-        credit_period = d.credit_period_days or 0
-        rem_bal = net_bal
-
-        p_current = 0.0
-        p_1_30 = 0.0
-        p_31_60 = 0.0
-        p_61_90 = 0.0
-        p_90_plus = 0.0
-        bills_list = []
-
-        # Fetch customer's sales vouchers in descending order (FIFO backwards from most recent)
-        sales_q = await db.execute(text("""
-            SELECT v.voucher_id, v.voucher_number, v.voucher_date, v.total_amount
-            FROM tally_sync.vouchers v
-            JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-            JOIN tally_sync.voucher_entries e ON v.voucher_id = e.voucher_id
-            WHERE e.ledger_id = :ledger_id AND vt.name = 'Sales' 
-              AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-            ORDER BY v.voucher_date DESC, v.voucher_id DESC
-        """), {"ledger_id": party_id})
-        sales_invoices = sales_q.all()
-
-        for inv in sales_invoices:
-            if rem_bal <= 0.001:
-                break
-            inv_amt = float(inv.total_amount or 0.0)
-            allocated = min(rem_bal, inv_amt)
-            if allocated <= 0:
-                continue
-
-            inv_date = inv.voucher_date
-            effective_due_date = inv_date + timedelta(days=credit_period) if inv_date else None
-            days_overdue = (today - effective_due_date).days if effective_due_date else 0
-            days_overdue = max(0, days_overdue)
-
-            if days_overdue == 0:
-                p_current += allocated
-                total_current += allocated
-            elif days_overdue <= 30:
-                p_1_30 += allocated
-                bucket_0_30 += allocated
-                total_overdue += allocated
-            elif days_overdue <= 60:
-                p_31_60 += allocated
-                bucket_31_60 += allocated
-                total_overdue += allocated
-            elif days_overdue <= 90:
-                p_61_90 += allocated
-                bucket_61_90 += allocated
-                total_overdue += allocated
-            else:
-                p_90_plus += allocated
-                bucket_90_plus += allocated
-                total_overdue += allocated
-
-            bill_item = CustomerAgingBill(
-                bill_id=inv.voucher_id,
-                voucher_id=inv.voucher_id,
-                bill_reference=inv.voucher_number or f"INV-{inv.voucher_id}",
-                bill_date=inv_date.isoformat() if inv_date else "",
-                due_date=effective_due_date.isoformat() if effective_due_date else None,
-                bill_amount=inv_amt,
-                settled_amount=round(inv_amt - allocated, 2),
-                outstanding_amount=round(allocated, 2),
-                days_overdue=days_overdue,
-                status="Partially Settled" if allocated < inv_amt else "Open"
-            )
-            bills_list.append(bill_item)
-            rem_bal -= allocated
-
-        # If opening balance or historic pre-sync invoices remain unpaid
-        if rem_bal > 0.01:
-            p_90_plus += rem_bal
-            bucket_90_plus += rem_bal
-            total_overdue += rem_bal
-            bills_list.append(CustomerAgingBill(
-                bill_id=0,
-                voucher_id=None,
-                bill_reference="Opening / Historic Balance",
-                bill_date="",
-                due_date=None,
-                bill_amount=round(rem_bal, 2),
-                settled_amount=0.0,
-                outstanding_amount=round(rem_bal, 2),
-                days_overdue=91,
-                status="Open"
-            ))
-
-        party_map[party_id] = {
-            "party_ledger_id": party_id,
-            "party_name": d.party_name,
-            "phone": d.mobile or d.phone,
-            "email": d.email,
-            "credit_period_days": credit_period,
-            "total_outstanding": net_bal,
-            "current_not_due": round(p_current, 2),
-            "days_1_30": round(p_1_30, 2),
-            "days_31_60": round(p_31_60, 2),
-            "days_61_90": round(p_61_90, 2),
-            "days_90_plus": round(p_90_plus, 2),
-            "open_bills_count": len(bills_list),
-            "overdue_bills_count": sum(1 for b in bills_list if b.days_overdue > 0),
-            "bills": bills_list
-        }
+    # 2. Age every debtor's balance by due date (shared with Executive Analytics and Home)
+    ageing = await receivables_ageing(db, user.company_id, party_ledger_id=party_ledger_id)
 
     customers = []
-    overdue_debtors_count = 0
-    for p_id, p_data in party_map.items():
-        if p_data["overdue_bills_count"] > 0:
-            overdue_debtors_count += 1
-
-        if p_data["days_90_plus"] > 0 or p_data["days_61_90"] > 0:
+    for p in ageing:
+        bills = [
+            CustomerAgingBill(
+                bill_id=b.voucher_id or 0,
+                voucher_id=b.voucher_id,
+                bill_reference=b.voucher_number,
+                bill_date=b.bill_date.isoformat() if b.bill_date else "",
+                due_date=b.due_date.isoformat() if b.due_date else None,
+                bill_amount=b.bill_amount,
+                settled_amount=round(b.bill_amount - b.outstanding, 2),
+                outstanding_amount=b.outstanding,
+                days_overdue=b.days_overdue,
+                status="Partially Settled" if b.outstanding < b.bill_amount else "Open",
+            )
+            for b in p.bills
+        ]
+        k = p.buckets
+        if k["90+ Days"] > 0 or k["61-90 Days"] > 0:
             dunning = "URGENT"
-        elif p_data["days_31_60"] > 0:
+        elif k["31-60 Days"] > 0:
             dunning = "FORMAL"
-        elif p_data["days_1_30"] > 0:
+        elif k["1-30 Days"] > 0:
             dunning = "GENTLE"
         else:
             dunning = "CURRENT"
-
         customers.append(CustomerAgingSummary(
-            party_ledger_id=p_data["party_ledger_id"],
-            party_name=p_data["party_name"],
-            phone=p_data["phone"],
-            email=p_data["email"],
-            credit_period_days=p_data["credit_period_days"],
-            total_outstanding=round(p_data["total_outstanding"], 2),
-            current_not_due=round(p_data["current_not_due"], 2),
-            days_1_30=round(p_data["days_1_30"], 2),
-            days_31_60=round(p_data["days_31_60"], 2),
-            days_61_90=round(p_data["days_61_90"], 2),
-            days_90_plus=round(p_data["days_90_plus"], 2),
-            open_bills_count=p_data["open_bills_count"],
-            overdue_bills_count=p_data["overdue_bills_count"],
+            party_ledger_id=p.ledger_id,
+            party_name=p.name,
+            phone=p.phone,
+            email=p.email,
+            credit_period_days=p.credit_days,
+            credit_days_source=p.credit_days_source,
+            total_outstanding=p.balance,
+            current_not_due=k["Not due"],
+            days_1_30=k["1-30 Days"],
+            days_31_60=k["31-60 Days"],
+            days_61_90=k["61-90 Days"],
+            days_90_plus=k["90+ Days"],
+            open_bills_count=len(bills),
+            overdue_bills_count=sum(1 for b in bills if b.days_overdue > 0),
             dunning_level=dunning,
-            bills=p_data["bills"]
+            bills=bills,
         ))
 
-    customers.sort(key=lambda x: x.total_outstanding, reverse=True)
+    def total(bucket: str) -> float:
+        return round(sum(p.buckets[bucket] for p in ageing), 2)
 
     kpis = AgingKPISummary(
-        total_receivables=round(total_receivables, 2),
-        total_overdue=round(total_overdue, 2),
-        total_current=round(total_current, 2),
-        bucket_0_30=round(bucket_0_30, 2),
-        bucket_31_60=round(bucket_31_60, 2),
-        bucket_61_90=round(bucket_61_90, 2),
-        bucket_90_plus=round(bucket_90_plus, 2),
+        total_receivables=round(sum(p.balance for p in ageing), 2),
+        total_overdue=round(sum(p.overdue for p in ageing), 2),
+        total_current=total("Not due"),
+        bucket_0_30=total("1-30 Days"),
+        bucket_31_60=total("31-60 Days"),
+        bucket_61_90=total("61-90 Days"),
+        bucket_90_plus=total("90+ Days"),
         total_debtors_count=len(customers),
-        overdue_debtors_count=overdue_debtors_count
+        overdue_debtors_count=sum(1 for c in customers if c.overdue_bills_count > 0),
     )
 
     return AgingDashboardResponse(
         kpis=kpis,
         customers=customers,
         upi_vpa=vpa,
-        merchant_name=merchant_name
+        merchant_name=merchant_name,
+        default_credit_days=int(await get_setting(db, "default_credit_days")),
     )
+
+
+@router.put("/credit-days/{ledger_id}")
+async def set_customer_credit_days(
+    ledger_id: int,
+    req: CreditDaysUpdate,
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set (or with null, clear) one customer's credit days in the current company. Admin only."""
+    from app.models.tally_core import MstLedger
+    ledger = (await db.execute(select(MstLedger.ledger_id).where(
+        MstLedger.ledger_id == ledger_id, MstLedger.company_id == user.company_id))).scalar()
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    term = (await db.execute(select(CustomerCreditTerm).where(
+        CustomerCreditTerm.company_id == user.company_id, CustomerCreditTerm.ledger_id == ledger_id))).scalars().first()
+    if req.credit_days is None:
+        if term:
+            await db.delete(term)
+    else:
+        if not 0 <= req.credit_days <= 365:
+            raise HTTPException(status_code=400, detail="Credit days must be between 0 and 365")
+        if term:
+            term.credit_days = req.credit_days
+            term.updated_by_user_id = user.user_id
+        else:
+            db.add(CustomerCreditTerm(company_id=user.company_id, ledger_id=ledger_id,
+                                      credit_days=req.credit_days, updated_by_user_id=user.user_id))
+    await db.commit()
+    clear_company_cache(user.company_id)
+    return {"success": True, "ledger_id": ledger_id, "credit_days": req.credit_days}
 
 @router.post("/reminders/generate-whatsapp", response_model=ReminderMessageResponse)
 async def generate_whatsapp_reminder(

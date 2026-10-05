@@ -69,6 +69,8 @@ class CustomerAgingSummary(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     credit_period_days: int
+    # Where credit_period_days came from: 'customer' (set in MyTally), 'tally' or 'default'
+    credit_days_source: str = "default"
     total_outstanding: float
     current_not_due: float
     days_1_30: float
@@ -96,6 +98,13 @@ class AgingDashboardResponse(BaseModel):
     customers: List[CustomerAgingSummary]
     upi_vpa: str
     merchant_name: str
+    # Credit days used for customers without their own
+    default_credit_days: int = 30
+
+
+class CreditDaysUpdate(BaseModel):
+    # None clears the customer's own value so the default applies again
+    credit_days: Optional[int] = None
 
 class ReminderMessageRequest(BaseModel):
     party_ledger_id: int

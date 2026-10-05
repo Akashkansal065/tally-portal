@@ -639,121 +639,32 @@ async def get_executive_analytics(
     ]
 
     today_dt = date.today()
-    rec_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
     pay_aging = {"0-30 Days": 0.0, "31-60 Days": 0.0, "61-90 Days": 0.0, "90+ Days": 0.0}
 
-    from app.models.tally_core import MstGroup
     from datetime import timedelta
+    from app.services.receivables import BUCKETS, group_ids_under, receivables_ageing
 
-    # 1. Resolve Debtors & Creditors group hierarchies
-    all_groups_res = await db.execute(
-        select(MstGroup).where(MstGroup.company_id == user.company_id)
-    )
-    all_groups = all_groups_res.scalars().all()
-    debtor_group_ids = set()
-    creditor_group_ids = set()
-
-    for g in all_groups:
-        name_lower = g.name.strip().lower()
-        if name_lower == "sundry debtors":
-            debtor_group_ids.add(g.group_id)
-        elif name_lower == "sundry creditors":
-            creditor_group_ids.add(g.group_id)
-
-    changed = True
-    while changed:
-        changed = False
-        for g in all_groups:
-            if g.parent_group_id in debtor_group_ids and g.group_id not in debtor_group_ids:
-                debtor_group_ids.add(g.group_id)
-                changed = True
-            if g.parent_group_id in creditor_group_ids and g.group_id not in creditor_group_ids:
-                creditor_group_ids.add(g.group_id)
-                changed = True
-
-    deb_ids_str = ",".join(str(gid) for gid in (debtor_group_ids or {0}))
-    cred_ids_str = ",".join(str(gid) for gid in (creditor_group_ids or {0}))
-
-    # 2. Query all Debtors with Net Balance strictly from voucher entries (Debits - Credits)
-    debtors_res = await db.execute(text(f"""
-        SELECT 
-            l.ledger_id, 
-            l.name as party_name,
-            l.credit_period_days,
-            COALESCE(SUM(e.debit_amount), 0) as total_debit,
-            COALESCE(SUM(e.credit_amount), 0) as total_credit
-        FROM tally_sync.ledgers l
-        LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-        WHERE l.company_id = :comp_id AND l.group_id IN ({deb_ids_str})
-        GROUP BY l.ledger_id, l.name, l.credit_period_days
-    """), {"comp_id": user.company_id})
-
+    # 1-2. Receivables: the same ageing (by due date, using credit days) as the Outstanding screen
+    rec_aging = {bucket: 0.0 for bucket in BUCKETS}
     rec_details = []
-    for d in debtors_res.all():
-        net_bal = float(d.total_debit) - float(d.total_credit)
-        if net_bal <= 0.01:
-            continue
-
-        rem_bal = net_bal
-        credit_period = d.credit_period_days or 0
-
-        invoices_res = await db.execute(text("""
-            SELECT v.voucher_id, v.voucher_number, v.voucher_date, v.total_amount
-            FROM tally_sync.vouchers v
-            JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-            JOIN tally_sync.voucher_entries e ON v.voucher_id = e.voucher_id
-            WHERE e.ledger_id = :ledger_id AND vt.name = 'Sales' AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-            ORDER BY v.voucher_date DESC, v.voucher_id DESC
-        """), {"ledger_id": d.ledger_id})
-
-        for inv in invoices_res.all():
-            if rem_bal <= 0.001:
-                break
-            inv_amt = float(inv.total_amount or 0.0)
-            allocated = min(rem_bal, inv_amt)
-            if allocated <= 0:
-                continue
-
-            inv_date = inv.voucher_date
-            effective_due_date = inv_date + timedelta(days=credit_period) if inv_date else None
-            days_overdue = (today_dt - effective_due_date).days if effective_due_date else 0
-            days_overdue = max(0, days_overdue)
-
-            if days_overdue <= 30:
-                bucket = "0-30 Days"
-            elif days_overdue <= 60:
-                bucket = "31-60 Days"
-            elif days_overdue <= 90:
-                bucket = "61-90 Days"
-            else:
-                bucket = "90+ Days"
-
-            rec_aging[bucket] += allocated
+    for party in await receivables_ageing(db, user.company_id, today=today_dt):
+        for bill in party.bills:
+            rec_aging[bill.bucket] += bill.outstanding
             rec_details.append({
-                "id": inv.voucher_id,
-                "voucher_number": inv.voucher_number,
-                "party_name": d.party_name,
-                "ledger_id": d.ledger_id,
-                "date": inv_date.isoformat() if inv_date else None,
-                "days": days_overdue,
-                "bucket": bucket,
-                "amount": allocated
+                "id": bill.voucher_id or 0,
+                "voucher_number": bill.voucher_number,
+                "party_name": party.name,
+                "ledger_id": party.ledger_id,
+                "date": bill.bill_date.isoformat() if bill.bill_date else None,
+                "due_date": bill.due_date.isoformat() if bill.due_date else None,
+                "days": bill.days_overdue,
+                "bucket": bill.bucket,
+                "amount": bill.outstanding,
             })
-            rem_bal -= allocated
+    rec_aging = {bucket: round(amount, 2) for bucket, amount in rec_aging.items()}
 
-        if rem_bal > 0.01:
-            rec_aging["90+ Days"] += rem_bal
-            rec_details.append({
-                "id": 0,
-                "voucher_number": "Historic Ledger Balance",
-                "party_name": d.party_name,
-                "ledger_id": d.ledger_id,
-                "date": None,
-                "days": 91,
-                "bucket": "90+ Days",
-                "amount": rem_bal
-            })
+    creditor_group_ids = await group_ids_under(db, user.company_id, "Sundry Creditors")
+    cred_ids_str = ",".join(str(gid) for gid in (creditor_group_ids or {0}))
 
     # 3. Query all Creditors with Net Balance strictly from voucher entries (Credits - Debits)
     creditors_res = await db.execute(text(f"""
@@ -761,8 +672,8 @@ async def get_executive_analytics(
             l.ledger_id, 
             l.name as party_name,
             l.credit_period_days,
-            COALESCE(SUM(e.debit_amount), 0) as total_debit,
-            COALESCE(SUM(e.credit_amount), 0) as total_credit
+            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL THEN e.debit_amount ELSE 0 END), 0) as total_debit,
+            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL THEN e.credit_amount ELSE 0 END), 0) as total_credit
         FROM tally_sync.ledgers l
         LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
         LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
@@ -1356,7 +1267,7 @@ async def get_inactive_items(
 async def get_company_stock_performance(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
-    dead_stock_days: int = Query(90, description="Days threshold for dead/slow-moving stock"),
+    dead_stock_days: int = Query(90, ge=1, le=3650, description="Days without a sale before an item in stock counts as dead"),
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1375,7 +1286,7 @@ async def get_company_stock_performance(
     from sqlalchemy import text as sa_text
     from app.core.config import settings
 
-    cache_key = f"company_stock_perf_v4_{from_date}_{to_date}_{dead_stock_days}"
+    cache_key = f"company_stock_perf_v6_{from_date}_{to_date}_{dead_stock_days}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -1396,6 +1307,18 @@ async def get_company_stock_performance(
     # -------------------------------------------------------------------
     # 1. Company-wise Performance (with item-level drill-down data)
     # -------------------------------------------------------------------
+    # Movements are split three ways (findings F7/F14 of the reporting review):
+    #   since the period start -> the period's opening stock is Tally's closing stock (as of the last sync)
+    #                             minus everything that moved since, so it never depends on when the
+    #                             item's opening balance was recorded
+    #   in the period          -> all stock in/out, for closing stock
+    #   purchases / sales      -> only Purchase / Sales vouchers count as "purchased" / "sold"
+    #                             (transfers and consumption move stock but are neither)
+    in_period = "v.voucher_id IS NOT NULL" + (" AND v.voucher_date >= :from_date" if from_date else "") \
+        + (" AND v.voucher_date <= :to_date" if to_date else "")
+    since_start = "v.voucher_id IS NOT NULL" + (" AND v.voucher_date >= :from_date" if from_date else "")
+    is_sale = "(vt.name = 'Sales' OR vt.parent_type = 'Sales')"
+    is_purchase = "(vt.name = 'Purchase' OR vt.parent_type = 'Purchase')"
     company_sql = sa_text(f"""
         SELECT
             COALESCE(sg.name, 'Others') AS company_name,
@@ -1410,19 +1333,22 @@ async def get_company_stock_performance(
             COALESCE(si.closing_rate, 0) AS closing_rate,
             COALESCE(si.closing_value, 0) AS closing_value,
             COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
-            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.quantity ELSE 0 END), 0) AS inward_qty,
-            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.amount ELSE 0 END), 0) AS inward_value,
-            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN se.quantity ELSE 0 END), 0) AS outward_qty,
-            COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN se.amount ELSE 0 END), 0) AS outward_value,
-            COALESCE(AVG(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 1 THEN se.rate END), 0) AS avg_purchase_rate,
-            COALESCE(AVG(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN se.rate END), 0) AS avg_selling_rate
+            COALESCE(SUM(CASE WHEN {since_start} AND se.is_inward = 1 THEN se.quantity ELSE 0 END), 0) AS since_in_qty,
+            COALESCE(SUM(CASE WHEN {since_start} AND se.is_inward = 0 THEN se.quantity ELSE 0 END), 0) AS since_out_qty,
+            COALESCE(SUM(CASE WHEN {in_period} AND se.is_inward = 1 THEN se.quantity ELSE 0 END), 0) AS in_all_qty,
+            COALESCE(SUM(CASE WHEN {in_period} AND se.is_inward = 1 THEN se.amount ELSE 0 END), 0) AS in_all_value,
+            COALESCE(SUM(CASE WHEN {in_period} AND se.is_inward = 0 THEN se.quantity ELSE 0 END), 0) AS out_all_qty,
+            COALESCE(SUM(CASE WHEN {in_period} AND se.is_inward = 1 AND {is_purchase} THEN se.quantity ELSE 0 END), 0) AS inward_qty,
+            COALESCE(SUM(CASE WHEN {in_period} AND se.is_inward = 1 AND {is_purchase} THEN se.amount ELSE 0 END), 0) AS inward_value,
+            COALESCE(SUM(CASE WHEN {in_period} AND se.is_inward = 0 AND {is_sale} THEN se.quantity ELSE 0 END), 0) AS outward_qty,
+            COALESCE(SUM(CASE WHEN {in_period} AND se.is_inward = 0 AND {is_sale} THEN se.amount ELSE 0 END), 0) AS outward_value
         FROM {ts}.stock_items si
         LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
         LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
         LEFT JOIN {ts}.stock_entries se ON si.stock_item_id = se.stock_item_id
         LEFT JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
             AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
-            {date_filter}
+        LEFT JOIN {ts}.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
         WHERE si.company_id = :company_id
         GROUP BY sg.name, sg.stock_group_id, si.stock_item_id, si.name, u.symbol, si.gst_rate_percent,
                  si.opening_qty, si.opening_rate, si.closing_qty, si.closing_rate, si.closing_value
@@ -1436,8 +1362,14 @@ async def get_company_stock_performance(
 
     for r in rows:
         cname = r.company_name
-        op_qty = float(r.opening_qty)
-        op_rate = float(r.opening_rate)
+        # Opening for the period: Tally's closing stock minus what came in plus what went out since the start,
+        # valued at Tally's current unit cost
+        op_qty = float(r.closing_qty) - float(r.since_in_qty) + float(r.since_out_qty)
+        op_rate = float(r.closing_unit_cost or 0) or float(r.closing_rate or 0) or float(r.opening_rate or 0)
+        in_all_qty = float(r.in_all_qty)
+        in_all_val = float(r.in_all_value)
+        out_all_qty = float(r.out_all_qty)
+        # Purchases and sales only (not transfers or consumption)
         in_qty = float(r.inward_qty)
         in_val = float(r.inward_value)
         out_qty = float(r.outward_qty)
@@ -1449,9 +1381,9 @@ async def get_company_stock_performance(
         gst_percent = float(r.gst_rate_percent) if (r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0) else 18.0
         gst_multiplier = 1.0 + (gst_percent / 100.0)
 
-        # Weighted average cost
-        total_avail_qty = op_qty + in_qty
-        total_avail_val = (op_qty * op_rate) + in_val
+        # Weighted average cost of everything available in the period
+        total_avail_qty = op_qty + in_all_qty
+        total_avail_val = (op_qty * op_rate) + in_all_val
         avg_cost = total_avail_val / total_avail_qty if total_avail_qty > 0 else op_rate
 
         # If item has no purchases/opening in the filtered period, fall back to master closing unit cost or closing rate
@@ -1465,17 +1397,17 @@ async def get_company_stock_performance(
         profit_on_sold = out_val - cost_of_sold
         gp_pct = (profit_on_sold / out_val * 100) if out_val > 0 else 0.0
 
-        if total_avail_qty > 0 or in_qty > 0 or out_qty > 0:
-            cl_qty = total_avail_qty - out_qty
-            cl_val = max(0.0, total_avail_val - cost_of_sold) if cl_qty > 0 else 0.0
+        if total_avail_qty > 0 or in_all_qty > 0 or out_all_qty > 0:
+            cl_qty = total_avail_qty - out_all_qty
+            cl_val = max(0.0, cl_qty * avg_cost) if cl_qty > 0 else 0.0
 
-        inward_avg_rate = float(r.avg_purchase_rate or 0)
-        effective_purchase_rate = inward_avg_rate if inward_avg_rate > 0 else avg_cost
+        # Weighted rates: value ÷ quantity, so big and small bills count by size
+        effective_purchase_rate = in_val / in_qty if in_qty > 0 else avg_cost
+        avg_selling_rate = out_val / out_qty if out_qty > 0 else 0.0
 
         # Pending represents unsold purchases from this period: max(0, Purchased - Sold)
         pending_qty = max(0.0, round(in_qty - out_qty, 3))
-        pending_rate = float(r.avg_purchase_rate) if float(r.avg_purchase_rate) > 0 else avg_cost
-        pending_val = round(pending_qty * pending_rate, 2)
+        pending_val = round(pending_qty * effective_purchase_rate, 2)
 
         # Gross amounts (including GST)
         in_val_gross = in_val * gst_multiplier
@@ -1486,7 +1418,7 @@ async def get_company_stock_performance(
         cl_val_gross = cl_val * gst_multiplier
         avg_cost_gross = avg_cost * gst_multiplier
         effective_purchase_rate_gross = effective_purchase_rate * gst_multiplier
-        avg_selling_rate_gross = float(r.avg_selling_rate or 0) * gst_multiplier
+        avg_selling_rate_gross = avg_selling_rate * gst_multiplier
 
         item_data = {
             "item_id": r.stock_item_id,
@@ -1508,7 +1440,7 @@ async def get_company_stock_performance(
             "sold_qty": round(out_qty, 3),
             "sold_value": round(out_val, 2),
             "sold_value_gross": round(out_val_gross, 2),
-            "avg_selling_rate": round(float(r.avg_selling_rate or 0), 2),
+            "avg_selling_rate": round(avg_selling_rate, 2),
             "avg_selling_rate_gross": round(avg_selling_rate_gross, 2),
             "pending_qty": pending_qty,
             "pending_value": pending_val,
@@ -1655,19 +1587,21 @@ async def get_company_stock_performance(
                si.closing_qty, si.closing_value,
                COALESCE(si.closing_rate, 0) AS closing_rate,
                COALESCE(si.closing_value / NULLIF(si.closing_qty, 0), 0) AS closing_unit_cost,
-               COALESCE(SUM(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 AND v.voucher_date >= DATE_SUB(CURDATE(), INTERVAL :dead_days DAY) THEN se.quantity ELSE 0 END), 0) AS sold_in_period,
-               MAX(CASE WHEN v.voucher_id IS NOT NULL AND se.is_inward = 0 THEN v.voucher_date ELSE NULL END) AS last_sold_date
+               COALESCE(SUM(CASE WHEN vt.voucher_type_id IS NOT NULL AND se.is_inward = 0 AND v.voucher_date >= DATE_SUB(CURDATE(), INTERVAL :dead_days DAY) THEN se.quantity ELSE 0 END), 0) AS sold_in_period,
+               MAX(CASE WHEN vt.voucher_type_id IS NOT NULL AND se.is_inward = 0 THEN v.voucher_date ELSE NULL END) AS last_sold_date
         FROM {ts}.stock_items si
         LEFT JOIN {ts}.stock_groups sg ON si.stock_group_id = sg.stock_group_id
         LEFT JOIN {ts}.units_of_measure u ON si.unit_id = u.unit_id
         LEFT JOIN {ts}.stock_entries se ON si.stock_item_id = se.stock_item_id
         LEFT JOIN {ts}.vouchers v ON se.voucher_id = v.voucher_id AND v.company_id = :company_id
             AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE
+        -- Only sales count as "sold"; transfers and consumption also move stock out but aren't sales
+        LEFT JOIN {ts}.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+            AND (vt.name = 'Sales' OR vt.parent_type = 'Sales')
         WHERE si.company_id = :company_id AND si.closing_qty > 0
         GROUP BY si.stock_item_id, si.name, sg.name, u.symbol, si.gst_rate_percent, si.closing_qty, si.closing_value, si.closing_rate
         HAVING sold_in_period = 0
         ORDER BY si.closing_value DESC
-        LIMIT 50
     """)
     dead_res = await db.execute(dead_sql, params)
     dead_stock = []

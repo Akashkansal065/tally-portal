@@ -23,6 +23,7 @@ import {
 import { cn } from '@/lib/utils'
 import { BottomSheet } from '@/components/ui/bottom-sheet'
 import { MoreSheet, moduleTileClass } from '@/components/MoreSheet'
+import { NeedsAttention, TargetTracker } from '@/components/reports/TargetTracker'
 import { isAdminUser, quickModules } from '@/lib/navigation'
 import {
   ResponsiveContainer,
@@ -40,8 +41,10 @@ import {
   CartesianGrid,
 } from 'recharts'
 
+// Buckets are days past each bill's due date (invoice date + the customer's credit days)
 const AGING_COLORS: Record<string, string> = {
-  '0-30 Days': '#10b981',
+  'Not due': '#94a3b8',
+  '1-30 Days': '#10b981',
   '31-60 Days': '#f59e0b',
   '61-90 Days': '#f97316',
   '90+ Days': '#f43f5e',
@@ -327,6 +330,14 @@ export default function DashboardPage() {
         </p>
       </div>
 
+      {/* Monthly target and what needs attention: the first things to check each day */}
+      {permissions.showReports && (
+        <div className="space-y-3">
+          <TargetTracker />
+          <NeedsAttention />
+        </div>
+      )}
+
       {/* Tally Prime style header. Phones skip the company (it's in the top bar) and today's date. */}
       <section
         aria-label="Company and period"
@@ -534,7 +545,7 @@ export default function DashboardPage() {
                       Receivables Aging Breakdown
                     </h3>
                     <p className="text-xs text-muted-foreground">
-                      Overdue customer debt by age bracket
+                      Days past due, using each customer&apos;s credit days
                     </p>
                   </div>
                   <Link

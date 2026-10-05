@@ -9,15 +9,6 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Landmark, Layers, BarChart3, Laptop, User, Users, Shield, Ban, CheckCircle2, MapPin, Receipt, Wallet, KeyRound, Eye, EyeOff, Clock, FileSpreadsheet, Store, ShoppingCart, FileText, IndianRupee } from "lucide-react";
 
-const ALL_REPORT_CATEGORIES = [
-  "Accounting Reports",
-  "Inventory Reports",
-  "Purchase Reports",
-  "Outstandings",
-  "Tax & Compliance",
-  "Top Reports",
-];
-
 type UserItem = {
   id: number;
   username: string;
@@ -703,16 +694,8 @@ export function AdminUserPermissionsModal({
                   disabled={isPending}
                 />
               </div>
-              {user.showReports && (
-                <div className="pl-6">
-                  <GroupCheckboxes
-                    groups={ALL_REPORT_CATEGORIES}
-                    selected={user.allowedReportCategories}
-                    onChange={(group: string, checked: boolean) => onAllowedGroupsChange(user.id, "allowedReportCategories", group, checked)}
-                    disabled={isPending}
-                  />
-                </div>
-              )}
+              {/* Reports access is all or nothing: someone who can open Reports sees every report */}
+              <p className="pl-6 text-xs text-muted-foreground">Gives access to every report.</p>
             </div>
           )}
 

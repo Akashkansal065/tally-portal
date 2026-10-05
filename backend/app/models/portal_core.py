@@ -1178,6 +1178,64 @@ class Notification(Base):
     user = relationship("User", foreign_keys=[user_id])
 
 
+class AppSetting(Base):
+    """Business-wide settings that apply across every company, e.g. the monthly sales target. One row per key;
+    the value is JSON text. Defaults live in app/services/app_settings.py."""
+    __tablename__ = "app_settings"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class CustomerCreditTerm(Base):
+    """Credit days agreed with one customer (a Tally debtor ledger). Tally doesn't hold these for this business,
+    so they're kept here; customers without a row use the default credit days setting."""
+    __tablename__ = "customer_credit_terms"
+    __table_args__ = (
+        UniqueConstraint("company_id", "ledger_id", name="uq_customer_credit_terms_ledger"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    ledger_id = Column(Integer, nullable=False)
+    credit_days = Column(Integer, nullable=False)
+    updated_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class PincodeCity(Base):
+    """City for a pincode, used for customers whose MyTally profile has no city. Proposed names come from
+    app/services/cities.py; a row here is an admin's correction (or confirmation) and wins."""
+    __tablename__ = "pincode_cities"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    pincode = Column(String(6), primary_key=True)
+    city = Column(String(100), nullable=False)
+    updated_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ReportSnapshot(Base):
+    """One saved figure set per company, day and kind (e.g. receivables, dead_stock), so trends can be drawn for
+    numbers Tally only knows as of today. Written at most once a day per kind."""
+    __tablename__ = "report_snapshots"
+    __table_args__ = (
+        UniqueConstraint("company_id", "kind", "day", name="uq_report_snapshots_company_kind_day"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String(30), nullable=False)
+    day = Column(Date, nullable=False)
+    data = Column(JSON, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class NotificationPreference(Base):
     """How one user wants one category of notifications delivered: all (in-app and push), in_app, or off."""
     __tablename__ = "notification_preferences"
