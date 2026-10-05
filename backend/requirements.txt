@@ -88,7 +88,7 @@ polars==1.43.2
 polars-runtime-32==1.43.2
 prompt_toolkit==3.0.53
 propcache==0.5.2
-protobuf==7.34.1
+protobuf==7.36.2
 psycopg2-binary==2.9.12
 py-vapid==1.9.4
 pycparser==3.0
