@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.models.portal_core import User, CustomerProfile
 from app.core.permissions import get_current_user, require_permission
 from app.core.datetime_utils import get_ist_now, get_ist_date, to_ist_iso
+from app.services.notifications import location_alert_link, visit_log_link
 
 router = APIRouter(prefix="/visits", tags=["visits"])
 
@@ -91,6 +92,7 @@ async def check_in(
             title=f"🚨 Check-In Blocked: Zero GPS ({user.username})",
             message=f"{user.username} attempted to submit a shop check-in with 0,0 coordinates for '{shop_title}'. The request was rejected.",
             reference_type="visit",
+            link=location_alert_link("visit", user.user_id),
             auto_commit=True,
         )
         raise HTTPException(
@@ -304,25 +306,38 @@ async def check_in(
     from app.routers.notifications import notify_admins
     shop_title = visit.custom_shop_name or (profile.custom_name if profile else None) or (f"Ledger #{visit.ledger_id}" if visit.ledger_id else "a customer")
     
+    visit_day = (visit.created_at or get_ist_now()).date().isoformat()
     if verification_status == "MISMATCH_FAR":
+        # Mismatches stay separate so they aren't buried in the day's count
         dist_str = f" ({round(dist_meters)}m away)" if dist_meters is not None else ""
-        admin_title = "⚠️ Check-In Discrepancy"
-        admin_msg = f"{user.username} checked in at {shop_title} with location discrepancy{dist_str} (> 20m away)"
+        await notify_admins(
+            db=db,
+            company_id=user.company_id,
+            type="check_in",
+            title="⚠️ Check-In Discrepancy",
+            message=f"{user.username} checked in at {shop_title} with location discrepancy{dist_str} (> 20m away)",
+            reference_id=str(visit.id),
+            reference_type="visit",
+            link=visit_log_link(visit_day, user.user_id, visit.id),
+            exclude_user_id=user.user_id,
+            auto_commit=True,
+        )
     else:
-        admin_title = "New Check-In"
-        admin_msg = f"{user.username} checked in at {shop_title}"
-
-    await notify_admins(
-        db=db,
-        company_id=user.company_id,
-        type="check_in",
-        title=admin_title,
-        message=admin_msg,
-        reference_id=str(visit.id),
-        reference_type="visit",
-        exclude_user_id=user.user_id,
-        auto_commit=True,
-    )
+        await notify_admins(
+            db=db,
+            company_id=user.company_id,
+            type="check_in",
+            title="New Check-In",
+            message=f"{user.username} checked in at {shop_title}",
+            reference_id=str(visit.id),
+            reference_type="visit",
+            link=visit_log_link(visit_day, user.user_id, visit.id),
+            group_key=f"check_in:{visit_day}",
+            group_title=lambda n: f"{n} shop check-ins today",
+            group_link=visit_log_link(visit_day),
+            exclude_user_id=user.user_id,
+            auto_commit=True,
+        )
 
     return {
         "success": True,

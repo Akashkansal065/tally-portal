@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate } from '@/lib/utils'
@@ -25,6 +25,7 @@ import {
   UserCheck
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { LinkParams, LINKED_RECORD, idParam, useScrollToLinked } from '@/components/LinkParams'
 
 type Expense = {
   id: number
@@ -94,7 +95,24 @@ export default function ExpensesPage() {
   const [salespersons, setSalespersons] = useState<{ user_id: number; username: string; role_name?: string }[]>([])
   const [selectedSalesperson, setSelectedSalesperson] = useState<string>('all')
 
+  // Links from notifications: ?status=pending&expense=12 shows that status and highlights the claim
+  const [linkedExpenseId, setLinkedExpenseId] = useState<number | null>(null)
+  const applyLink = (params: URLSearchParams) => {
+    const status = params.get('status')
+    if (status && ['pending', 'approved', 'rejected', 'all'].includes(status)) setStatusFilter(status)
+    const id = idParam(params.get('expense'))
+    if (id && permissions.isAdmin) {
+      setScope('all')
+      setSelectedSalesperson('all')
+    }
+    setLinkedExpenseId(id)
+  }
+  useScrollToLinked(linkedExpenseId ? `expense-${linkedExpenseId}` : null, expenses.length)
+
+  // Filters can change while a request is in flight (e.g. arriving from a link); only the latest may land
+  const latestFetch = useRef(0)
   const fetchExpenses = async () => {
+    const fetchId = ++latestFetch.current
     setLoading(true)
     try {
       const params = new URLSearchParams()
@@ -109,14 +127,16 @@ export default function ExpensesPage() {
       }
       const qs = params.toString() ? `?${params.toString()}` : ''
       const res = await fetch(`${API_BASE}/expenses${qs}`, { headers: authHeaders(token) })
+      if (fetchId !== latestFetch.current) return
       if (res.ok) {
         const data = await res.json()
+        if (fetchId !== latestFetch.current) return
         setExpenses(Array.isArray(data) ? data : (data?.data ?? []))
       }
     } catch (e) {
       console.error(e)
     } finally {
-      setLoading(false)
+      if (fetchId === latestFetch.current) setLoading(false)
     }
   }
 
@@ -328,6 +348,7 @@ export default function ExpensesPage() {
 
   return (
     <div className="flex flex-col h-full bg-background font-sans">
+      <LinkParams onChange={applyLink} />
       {/* Main Container */}
       <div className="flex-1 overflow-y-auto px-4 py-5 max-w-xl mx-auto w-full space-y-4">
         {/* Title and CTA */}
@@ -636,7 +657,11 @@ export default function ExpensesPage() {
               </div>
             ) : (
               expenses.map(e => (
-                <div key={e.id} className="bg-card border border-border rounded-2xl p-4 shadow-sm hover:border-emerald-500/30 transition-all flex flex-col gap-2.5">
+                <div
+                  key={e.id}
+                  data-link-target={`expense-${e.id}`}
+                  className={cn("bg-card border border-border rounded-2xl p-4 shadow-sm hover:border-emerald-500/30 transition-all flex flex-col gap-2.5", e.id === linkedExpenseId && LINKED_RECORD)}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h3 className="font-extrabold text-sm text-foreground">{e.category}</h3>

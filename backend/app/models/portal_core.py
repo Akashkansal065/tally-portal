@@ -1163,12 +1163,34 @@ class Notification(Base):
     message = Column(Text, nullable=False)
     reference_id = Column(String(100), nullable=True)
     reference_type = Column(String(50), nullable=True)
+    # Where tapping the notification goes (app path with query), built once when it's created
+    link = Column(String(500), nullable=True)
+    # Preference bucket (approvals, attendance, orders, ...); see app/services/notifications.py
+    category = Column(String(30), nullable=True, index=True)
+    # Similar unread notifications (e.g. today's clock-ins) update one row instead of adding many
+    group_key = Column(String(120), nullable=True)
+    group_count = Column(Integer, default=1, nullable=False)
     is_read = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime, server_default=func.now(), index=True)
 
     # Relationships
     company = relationship("Company", foreign_keys=[company_id])
     user = relationship("User", foreign_keys=[user_id])
+
+
+class NotificationPreference(Base):
+    """How one user wants one category of notifications delivered: all (in-app and push), in_app, or off."""
+    __tablename__ = "notification_preferences"
+    __table_args__ = (
+        UniqueConstraint("user_id", "category", name="uq_notification_pref_user_category"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    category = Column(String(30), nullable=False)
+    delivery = Column(String(10), nullable=False, default="all")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class PushSubscription(Base):
@@ -1182,12 +1204,28 @@ class PushSubscription(Base):
     p256dh = Column(String(255), nullable=False)
     auth = Column(String(255), nullable=False)
     user_agent = Column(String(255), nullable=True)
+    # X-Device-Id of the browser that subscribed; its subscription is removed when that device signs out
+    device_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now(), index=True)
 
     # Relationships
     company = relationship("Company", foreign_keys=[company_id])
     user = relationship("User", foreign_keys=[user_id])
 
+
+class DevicePushToken(Base):
+    """Firebase Cloud Messaging token of an installed Android (or iOS) app, for lock-screen notifications.
+    One row per token: when another person signs in on the same phone the token moves to them."""
+    __tablename__ = "device_push_tokens"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    token = Column(String(512), nullable=False, unique=True)
+    platform = Column(String(20), nullable=False, default="android")
+    device_id = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class BeatPlan(Base):

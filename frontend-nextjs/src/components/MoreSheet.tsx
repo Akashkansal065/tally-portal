@@ -19,6 +19,16 @@ import {
 
 const GROUP_ORDER: NavGroup[] = ['field', 'accounts', 'inventory', 'reports', 'masters', 'admin']
 
+/** Icon-over-label tile used by the More sheet and Home's quick access, so both read the same way. */
+export function moduleTileClass(active = false) {
+  return cn(
+    'flex h-full min-h-[76px] w-full flex-col items-center justify-center gap-1.5 rounded-2xl border px-1 py-2.5 text-center transition-colors cursor-pointer',
+    active
+      ? 'border-primary/40 bg-primary/10 text-primary'
+      : 'border-border/70 bg-background text-foreground hover:bg-muted',
+  )
+}
+
 /** Every screen the person can open, grouped and searchable, plus account settings. Replaces the side drawer. */
 export function MoreSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { user, permissions, can, logout } = useAuth()
@@ -120,12 +130,7 @@ export function MoreSheet({ open, onOpenChange }: { open: boolean; onOpenChange:
                         href={m.href}
                         onClick={close}
                         aria-current={active ? 'page' : undefined}
-                        className={cn(
-                          'flex h-full min-h-[76px] flex-col items-center justify-center gap-1.5 rounded-2xl border px-1 py-2.5 text-center transition-colors',
-                          active
-                            ? 'border-primary/40 bg-primary/10 text-primary'
-                            : 'border-border/70 bg-background text-foreground hover:bg-muted',
-                        )}
+                        className={moduleTileClass(active)}
                       >
                         <Icon className="h-5 w-5 shrink-0" aria-hidden="true" />
                         <span className="text-xs font-semibold leading-tight">{m.label}</span>

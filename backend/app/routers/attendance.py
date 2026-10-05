@@ -25,6 +25,7 @@ from openpyxl.utils import get_column_letter
 
 from app.core.database import get_db, Base
 from app.core.permissions import require_permission
+from app.services.notifications import TEAM_ATTENDANCE_LINK, attendance_approval_link, my_attendance_link
 from app.models.portal_core import User, Role, Company
 from app.core.config import settings
 from app.core.datetime_utils import IST, get_ist_now, get_ist_date, to_ist_iso
@@ -728,26 +729,37 @@ async def punch_attendance(
         except Exception as e:
             print("Error logging check-in location breadcrumb:", e)
 
-        # Notify admins of punch in
+        # Notify admins of punch in: an approval request, or one grouped "N staff clocked in today" entry
         from app.routers.notifications import notify_admins
         if is_out:
-            notif_title = "Attendance Approval Required: Clock-In"
-            notif_msg = f"{user.username} clocked in OUTSIDE office geofence ({loc_tag}) at {formatted_ist}. Admin approval required."
+            await notify_admins(
+                db=db,
+                company_id=user.company_id,
+                type="attendance_approval",
+                title="Attendance Approval Required: Clock-In",
+                message=f"{user.username} clocked in OUTSIDE office geofence ({loc_tag}) at {formatted_ist}. Admin approval required.",
+                reference_id=str(attendance.id),
+                reference_type="attendance",
+                link=attendance_approval_link(attendance.id),
+                group_key=f"approval:attendance:{attendance.id}",
+                exclude_user_id=user.user_id,
+                auto_commit=True,
+            )
         else:
-            notif_title = "Attendance: Clock-In"
-            notif_msg = f"{user.username} clocked in at {formatted_ist} ({loc_tag})"
-
-        await notify_admins(
-            db=db,
-            company_id=user.company_id,
-            type="attendance",
-            title=notif_title,
-            message=notif_msg,
-            reference_id=str(attendance.id),
-            reference_type="attendance",
-            exclude_user_id=user.user_id,
-            auto_commit=True,
-        )
+            await notify_admins(
+                db=db,
+                company_id=user.company_id,
+                type="attendance_activity",
+                title="Attendance: Clock-In",
+                message=f"{user.username} clocked in at {formatted_ist} ({loc_tag})",
+                reference_id=str(attendance.id),
+                reference_type="attendance",
+                link=TEAM_ATTENDANCE_LINK,
+                group_key=f"clock_in:{now_ist.date().isoformat()}",
+                group_title=lambda n: f"{n} staff clocked in today",
+                exclude_user_id=user.user_id,
+                auto_commit=True,
+            )
 
         resp_msg = "Clocked in successfully. Pending admin approval (Outside office geofence)." if is_out else "Clocked in successfully"
         return {
@@ -813,26 +825,37 @@ async def punch_attendance(
         await db.commit()
         forget_ping_state(user.user_id)
 
-        # Notify admins of punch out
+        # Notify admins of punch out. A pending approval updates the clock-in's approval request (same group).
         from app.routers.notifications import notify_admins
         if latest.approval_status == "pending":
-            notif_title = "Attendance Approval Required: Clock-Out"
-            notif_msg = f"{user.username} clocked out OUTSIDE office geofence ({loc_tag}) at {formatted_ist}. Admin approval required."
+            await notify_admins(
+                db=db,
+                company_id=user.company_id,
+                type="attendance_approval",
+                title="Attendance Approval Required: Clock-Out",
+                message=f"{user.username} clocked out OUTSIDE office geofence ({loc_tag}) at {formatted_ist}. Admin approval required.",
+                reference_id=str(latest.id),
+                reference_type="attendance",
+                link=attendance_approval_link(latest.id),
+                group_key=f"approval:attendance:{latest.id}",
+                exclude_user_id=user.user_id,
+                auto_commit=True,
+            )
         else:
-            notif_title = "Attendance: Clock-Out"
-            notif_msg = f"{user.username} clocked out at {formatted_ist} ({loc_tag})"
-
-        await notify_admins(
-            db=db,
-            company_id=user.company_id,
-            type="attendance",
-            title=notif_title,
-            message=notif_msg,
-            reference_id=str(latest.id),
-            reference_type="attendance",
-            exclude_user_id=user.user_id,
-            auto_commit=True,
-        )
+            await notify_admins(
+                db=db,
+                company_id=user.company_id,
+                type="attendance_activity",
+                title="Attendance: Clock-Out",
+                message=f"{user.username} clocked out at {formatted_ist} ({loc_tag})",
+                reference_id=str(latest.id),
+                reference_type="attendance",
+                link=TEAM_ATTENDANCE_LINK,
+                group_key=f"clock_out:{now_ist.date().isoformat()}",
+                group_title=lambda n: f"{n} staff clocked out today",
+                exclude_user_id=user.user_id,
+                auto_commit=True,
+            )
 
         resp_msg = "Clocked out successfully. Pending admin approval (Outside office geofence)." if latest.approval_status == "pending" else "Clocked out successfully"
         return {
@@ -1318,6 +1341,7 @@ async def approve_attendance(
         message=f"Your out-of-office attendance for {date_str} has been approved by Admin ({user.username}).",
         reference_id=str(rec.id),
         reference_type="attendance",
+        link=my_attendance_link(rec.id),
         auto_commit=True,
     )
 
@@ -1375,6 +1399,7 @@ async def reject_attendance(
         message=f"Your out-of-office attendance for {date_str} was rejected by Admin ({user.username}).{reason_text}",
         reference_id=str(rec.id),
         reference_type="attendance",
+        link=my_attendance_link(rec.id),
         auto_commit=True,
     )
 
@@ -1433,6 +1458,7 @@ async def bulk_approve_attendance(
             message=f"Your out-of-office attendance for {date_str} has been approved by Admin ({user.username}).",
             reference_id=str(rec.id),
             reference_type="attendance",
+            link=my_attendance_link(rec.id),
             auto_commit=False,
         )
 

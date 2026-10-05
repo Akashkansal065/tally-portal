@@ -173,6 +173,7 @@ async def create_expense(
 
     # Notify admins of submitted expense
     from app.routers.notifications import notify_admins
+    from app.services.notifications import expense_link
     await notify_admins(
         db=db,
         company_id=user.company_id,
@@ -181,6 +182,7 @@ async def create_expense(
         message=f"{user.username} submitted an expense of ₹{float(expense.amount):,.2f} ({expense.category})",
         reference_id=str(expense.id),
         reference_type="expense",
+        link=expense_link(expense.id),  # "all": it may be decided by the time someone taps
         exclude_user_id=user.user_id,
         auto_commit=True,
     )
@@ -309,6 +311,7 @@ async def approve_expense(
 
     # Notify expense creator (salesperson)
     from app.routers.notifications import notify_user
+    from app.services.notifications import expense_link
     reason_text = f" Reason: {reason.strip()}" if reason and reason.strip() else ""
     await notify_user(
         db=db,
@@ -319,6 +322,7 @@ async def approve_expense(
         message=f"Your expense #{expense.id} for ₹{float(expense.amount):,.2f} has been {expense.status} by {current_user.username}.{reason_text}",
         reference_id=str(expense.id),
         reference_type="expense",
+        link=expense_link(expense.id, expense.status),
         auto_commit=True,
     )
 

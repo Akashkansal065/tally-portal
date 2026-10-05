@@ -10,6 +10,7 @@ from app.core.datetime_utils import get_ist_now
 from app.routers.attendance import Attendance, forget_ping_state
 from app.models.portal_core import User
 from app.routers.notifications import notify_user, notify_admins
+from app.services.notifications import TEAM_ATTENDANCE_LINK, my_attendance_link
 
 logger = logging.getLogger("attendance_worker")
 
@@ -113,17 +114,21 @@ async def check_and_process_attendance():
                             message=f"Your shift from {formatted_date_str} was automatically closed at 11:58 PM (IST) at day-end.",
                             reference_id=str(rec.id),
                             reference_type="attendance",
+                            link=my_attendance_link(rec.id),
                             auto_commit=True,
                         )
                         # Admin notification
                         await notify_admins(
                             db=db,
                             company_id=company_id,
-                            type="attendance",
+                            type="attendance_activity",
                             title=f"Auto Punch-Out: {username}",
                             message=f"{username}'s shift from {formatted_date_str} was automatically closed at 11:58 PM (IST) at day-end.",
                             reference_id=str(rec.id),
                             reference_type="attendance",
+                            link=TEAM_ATTENDANCE_LINK,
+                            group_key=f"auto_punch_out:{now_ist.date().isoformat()}",
+                            group_title=lambda n: f"{n} shifts closed automatically",
                             exclude_user_id=user_id,
                             auto_commit=True,
                         )
@@ -154,17 +159,21 @@ async def check_and_process_attendance():
                             message="You have been automatically punched out at 11:58 PM (IST) as the calendar day has ended.",
                             reference_id=str(rec.id),
                             reference_type="attendance",
+                            link=my_attendance_link(rec.id),
                             auto_commit=True,
                         )
                         # Admin notification
                         await notify_admins(
                             db=db,
                             company_id=company_id,
-                            type="attendance",
+                            type="attendance_activity",
                             title=f"Auto Punch-Out: {username}",
                             message=f"{username} was automatically punched out at 11:58 PM (IST) at day-end.",
                             reference_id=str(rec.id),
                             reference_type="attendance",
+                            link=TEAM_ATTENDANCE_LINK,
+                            group_key=f"auto_punch_out:{now_ist.date().isoformat()}",
+                            group_title=lambda n: f"{n} shifts closed automatically",
                             exclude_user_id=user_id,
                             auto_commit=True,
                         )
@@ -206,17 +215,21 @@ async def check_and_process_attendance():
                             message=f"You have been automatically punched out as your 9-hour shift ended at {formatted_time_str} (IST).",
                             reference_id=str(rec.id),
                             reference_type="attendance",
+                            link=my_attendance_link(rec.id),
                             auto_commit=True,
                         )
                         # Admin notification
                         await notify_admins(
                             db=db,
                             company_id=company_id,
-                            type="attendance",
+                            type="attendance_activity",
                             title=f"Auto Punch-Out: {username}",
                             message=f"{username} was automatically punched out after reaching the 9-hour shift limit at {formatted_time_str} (IST).",
                             reference_id=str(rec.id),
                             reference_type="attendance",
+                            link=TEAM_ATTENDANCE_LINK,
+                            group_key=f"auto_punch_out:{now_ist.date().isoformat()}",
+                            group_title=lambda n: f"{n} shifts closed automatically",
                             exclude_user_id=user_id,
                             auto_commit=True,
                         )
@@ -240,6 +253,7 @@ async def check_and_process_attendance():
                             message="Your 9-hour shift will end in 5 minutes and you will be automatically clocked out. Please punch out now with your photo and location.",
                             reference_id=str(rec.id),
                             reference_type="attendance",
+                            link=my_attendance_link(rec.id),
                             auto_commit=True,
                         )
                         logger.info(f"Dispatched 5-minute pre-punchout warning to user #{user_id} ({username})")
@@ -261,6 +275,7 @@ async def check_and_process_attendance():
                                 message="The workday is ending. You will be automatically clocked out at 11:58 PM (IST). Please punch out now if you have completed your shift.",
                                 reference_id=str(rec.id),
                                 reference_type="attendance",
+                                link=my_attendance_link(rec.id),
                                 auto_commit=True,
                             )
                             logger.info(f"Dispatched pre-midnight warning to user #{user_id} ({username})")

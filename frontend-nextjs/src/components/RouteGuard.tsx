@@ -4,6 +4,7 @@ import { useAuth } from '@/context/AuthContext'
 import { useRouter, usePathname } from 'next/navigation'
 import { useEffect } from 'react'
 import { Loader2 } from 'lucide-react'
+import { afterLoginPath } from '@/lib/utils'
 
 export function RouteGuard({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth()
@@ -17,9 +18,11 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
     const isPublicPath = publicPaths.includes(pathname)
 
     if (!user && !isPublicPath) {
-      router.replace('/login')
+      // Come back here after signing in (e.g. a notification opened while signed out)
+      const here = `${pathname}${window.location.search}`
+      router.replace(here === '/' ? '/login' : `/login?next=${encodeURIComponent(here)}`)
     } else if (user && isPublicPath) {
-      router.replace('/')
+      router.replace(afterLoginPath())
     }
   }, [user, isLoading, pathname, router])
 

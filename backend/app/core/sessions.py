@@ -22,10 +22,10 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Optional, Sequence, Set
+from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -33,7 +33,7 @@ from app.core.datetime_utils import IST
 from app.core.permissions import ADMIN_ROLE_NAMES, invalidate_auth_cache
 from app.core.rate_limiter import get_client_ip
 from app.core.security import create_access_token
-from app.models.portal_core import AuditLog, BlockedDevice, Role, User, UserSession
+from app.models.portal_core import AuditLog, BlockedDevice, DevicePushToken, PushSubscription, Role, User, UserSession
 
 logger = logging.getLogger("app.core.sessions")
 
@@ -216,7 +216,9 @@ async def revoke_sessions(
     if exclude:
         conditions.append(UserSession.session_id.not_in(exclude))
 
-    rows = (await db.execute(select(UserSession.session_id, UserSession.token_hash).where(*conditions))).all()
+    rows = (await db.execute(
+        select(UserSession.session_id, UserSession.token_hash, UserSession.user_id, UserSession.device_id).where(*conditions)
+    )).all()
     if not rows:
         return []
     await db.execute(
@@ -225,7 +227,20 @@ async def revoke_sessions(
         .values(revoked_at=utcnow(), revoke_reason=reason, revoked_by_user_id=by_user_id)
         .execution_options(synchronize_session=False)
     )
+    await forget_push_devices(db, {(r[2], r[3]) for r in rows if r[3]})
     return [r[1] for r in rows]
+
+
+async def forget_push_devices(db: AsyncSession, user_devices: Set[Tuple[int, str]]) -> None:
+    """A signed-out device must stop showing that person's notifications: drop its browser push subscription
+    and app push token (they're registered again when someone signs in on it)."""
+    for user_id, device_id in user_devices:
+        for model in (PushSubscription, DevicePushToken):
+            await db.execute(
+                delete(model)
+                .where(model.user_id == user_id, model.device_id == device_id)
+                .execution_options(synchronize_session=False)
+            )
 
 
 def forget_tokens(token_hashes: Iterable[str]) -> None:
@@ -335,6 +350,7 @@ async def create_user_session(db: AsyncSession, user: User, request: Request) ->
     if info.device_id and tracked_before and not seen_before and not is_admin:
         try:
             from app.routers.notifications import notify_admins
+            from app.services.notifications import user_devices_link
             where = f" from {info.ip_address}" if info.ip_address else ""
             await notify_admins(
                 db=db,
@@ -344,6 +360,7 @@ async def create_user_session(db: AsyncSession, user: User, request: Request) ->
                 message=f"{user.username} signed in on a new device: {info.device_name} ({info.client_type}){where}.",
                 reference_id=str(user.user_id),
                 reference_type="user_devices",
+                link=user_devices_link(user.user_id),
                 exclude_user_id=user.user_id,
             )
         except Exception as e:  # an alert must never block a login

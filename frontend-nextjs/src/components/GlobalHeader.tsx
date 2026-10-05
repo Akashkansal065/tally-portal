@@ -6,11 +6,7 @@ import { useAuth } from '@/context/AuthContext'
 import { BottomSheet } from '@/components/ui/bottom-sheet'
 import { isAdminUser } from '@/lib/navigation'
 import {
-  Wallet,
-  ShoppingCart,
-  IndianRupee,
   MapPin,
-  MapPinOff,
   X,
   Building,
   ArrowLeft,
@@ -25,32 +21,29 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronDown,
-  AlertTriangle,
-  Clock,
   CreditCard,
   Bell,
-  BellRing,
-  Share2,
-  Send,
   CheckCheck,
   Check,
-  Trash2,
   CloudOff,
 } from 'lucide-react'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { getOfflineQueue } from '@/lib/offline-storage'
 import { useState, useEffect, useRef } from 'react'
-import { toast } from 'sonner'
+import { NotificationList } from '@/components/notifications/NotificationList'
+import { PushAlertsBanner } from '@/components/notifications/PushAlertsBanner'
+import { useOpenNotification } from '@/hooks/useOpenNotification'
 import {
-  isPushNotificationSupported,
-  isIOS,
-  isStandalone,
-  getNotificationPermission,
-  isCurrentDeviceSubscribed,
-  subscribeToPushNotifications,
-  sendTestPushNotification,
-  prefetchVapidKey,
-} from '@/lib/pushNotifications'
+  NOTIFICATIONS_CHANGED,
+  deleteNotification as deleteNotificationRequest,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type AppNotification,
+} from '@/lib/notifications'
+
+// Newest notifications shown in the bell; the Notifications page has the rest
+const BELL_LIMIT = 20
 
 // 44pt touch target for every icon button in the header
 const HEADER_ICON_BUTTON = 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white hover:bg-emerald-600/60 transition-colors cursor-pointer'
@@ -107,9 +100,9 @@ export function GlobalHeader() {
   // Notification States
   const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0)
   const [showNotifications, setShowNotifications] = useState<boolean>(false)
-  const [notifications, setNotifications] = useState<any[]>([])
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [loadingNotifications, setLoadingNotifications] = useState<boolean>(false)
-  const [clearingNotifications, setClearingNotifications] = useState<boolean>(false)
+  const openNotification = useOpenNotification()
 
   // Offline Queue States
   const [offlinePendingCount, setOfflinePendingCount] = useState<number>(0)
@@ -128,79 +121,6 @@ export function GlobalHeader() {
     window.addEventListener('mytally:offline-queue-changed', updateOfflineCount)
     return () => window.removeEventListener('mytally:offline-queue-changed', updateOfflineCount)
   }, [])
-
-  // Mobile Web Push Alert States
-  const [isPushSubscribed, setIsPushSubscribed] = useState<boolean>(false)
-  const [pushPermission, setPushPermission] = useState<NotificationPermission>('default')
-  const [isEnablingPush, setIsEnablingPush] = useState<boolean>(false)
-  const [isSendingTestPush, setIsSendingTestPush] = useState<boolean>(false)
-  const [isPushSupported, setIsPushSupported] = useState<boolean>(false)
-  const [isIosBrowser, setIsIosBrowser] = useState<boolean>(false)
-  const [pushError, setPushError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const supported = isPushNotificationSupported()
-    setIsPushSupported(supported)
-    setIsIosBrowser(isIOS() && !isStandalone())
-    if (supported) {
-      setPushPermission(getNotificationPermission())
-      isCurrentDeviceSubscribed().then(setIsPushSubscribed)
-    }
-    if (token) {
-      prefetchVapidKey(token).catch(() => null)
-    }
-  }, [token])
-
-  const handleEnablePush = async () => {
-    if (!token) return
-    setIsEnablingPush(true)
-    setPushError(null)
-    const safetyTimer = setTimeout(() => {
-      setIsEnablingPush(false)
-      setPushError('Alert setup timed out. Please check phone notification settings.')
-      toast.error('Alert setup timed out. Please check iOS/Safari settings and try again.')
-    }, 15000)
-
-    try {
-      const result = await subscribeToPushNotifications(token)
-      clearTimeout(safetyTimer)
-      if (result.success) {
-        setIsPushSubscribed(true)
-        setPushPermission('granted')
-        setPushError(null)
-        toast.success(result.message || 'Mobile alerts enabled! You will now receive notifications anytime.')
-      } else {
-        setPushPermission(getNotificationPermission())
-        setPushError(result.message)
-        toast.error(result.message)
-      }
-    } catch (e: any) {
-      clearTimeout(safetyTimer)
-      const msg = e?.message || 'Failed to enable notifications'
-      setPushError(msg)
-      toast.error(msg)
-    } finally {
-      clearTimeout(safetyTimer)
-      setIsEnablingPush(false)
-    }
-  }
-
-  const handleSendTestPush = async () => {
-    if (!token) return
-    setIsSendingTestPush(true)
-    try {
-      const result = await sendTestPushNotification(token)
-      if (result.success) {
-        toast.success(result.message || 'Test alert sent! Check your device lock screen.')
-      } else {
-        toast.error(result.message)
-      }
-    } catch {
-      toast.error('Failed to send test alert')
-    } finally {
-      setIsSendingTestPush(false)
-    }
-  }
 
   const lastUnreadFetchTime = useRef<number>(0)
   const fetchUnreadCount = async (force: boolean = false) => {
@@ -225,13 +145,7 @@ export function GlobalHeader() {
     if (!token) return
     setLoadingNotifications(true)
     try {
-      const res = await fetch(`${API_BASE}/notifications?limit=50`, {
-        headers: authHeaders(token),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setNotifications(data)
-      }
+      setNotifications(await listNotifications(token, 'all', BELL_LIMIT))
     } catch (e) {
       console.error('Failed to fetch notifications:', e)
     } finally {
@@ -239,132 +153,55 @@ export function GlobalHeader() {
     }
   }
 
-  const markAllAsRead = async (e?: React.MouseEvent) => {
-    if (e) e.stopPropagation()
+  const markAllAsRead = async () => {
     if (!token) return
     try {
-      const res = await fetch(`${API_BASE}/notifications/read-all`, {
-        method: 'PATCH',
-        headers: authHeaders(token),
-      })
-      if (res.ok) {
-        setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })))
-        setUnreadNotifCount(0)
-      }
+      await markAllNotificationsRead(token)
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })))
+      setUnreadNotifCount(0)
     } catch (e) {
       console.error('Failed to mark all as read:', e)
     }
   }
 
-  const markAsRead = async (notifId: number, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation()
+  const markAsRead = async (notif: AppNotification) => {
     if (!token) return
-    try {
-      const res = await fetch(`${API_BASE}/notifications/${notifId}/read`, {
-        method: 'PATCH',
-        headers: authHeaders(token),
-      })
-      if (res.ok) {
-        setNotifications((prev) =>
-          prev.map((n) => (n.id === notifId ? { ...n, is_read: true } : n))
-        )
-        setUnreadNotifCount((prev) => Math.max(0, prev - 1))
-      }
-    } catch (e) {
-      console.error('Failed to mark notification as read:', e)
-    }
+    setNotifications(prev => prev.map(n => (n.id === notif.id ? { ...n, is_read: true } : n)))
+    setUnreadNotifCount(prev => Math.max(0, prev - 1))
+    markNotificationRead(token, notif.id).catch(e => console.error('Failed to mark notification as read:', e))
   }
 
-  const clearAllNotifications = async (e?: React.MouseEvent) => {
-    if (e) e.stopPropagation()
+  const dismissNotification = async (notif: AppNotification) => {
     if (!token) return
-    if (!confirm('Are you sure you want to clear all notifications?')) return
-    setClearingNotifications(true)
-    try {
-      const res = await fetch(`${API_BASE}/notifications/clear-all`, {
-        method: 'DELETE',
-        headers: authHeaders(token),
-      })
-      if (res.ok) {
-        setNotifications([])
-        setUnreadNotifCount(0)
-      }
-    } catch (e) {
-      console.error('Failed to clear all notifications:', e)
-    } finally {
-      setClearingNotifications(false)
-    }
+    setNotifications(prev => prev.filter(n => n.id !== notif.id))
+    if (!notif.is_read) setUnreadNotifCount(prev => Math.max(0, prev - 1))
+    deleteNotificationRequest(token, notif.id).catch(e => console.error('Failed to delete notification:', e))
   }
 
-  const deleteNotification = async (notifId: number, isRead: boolean, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation()
-    if (!token) return
-    try {
-      const res = await fetch(`${API_BASE}/notifications/${notifId}`, {
-        method: 'DELETE',
-        headers: authHeaders(token),
-      })
-      if (res.ok) {
-        setNotifications((prev) => prev.filter((n) => n.id !== notifId))
-        if (!isRead) {
-          setUnreadNotifCount((prev) => Math.max(0, prev - 1))
-        }
-      }
-    } catch (e) {
-      console.error('Failed to delete notification:', e)
-    }
-  }
-
-  const handleNotificationClick = async (notif: any) => {
+  const handleDecided = (notif: AppNotification, decision: 'approved' | 'rejected') => {
+    setNotifications(prev => prev.map(n => (n.id === notif.id ? { ...n, decision, is_read: true } : n)))
     if (!notif.is_read) {
-      try {
-        await fetch(`${API_BASE}/notifications/${notif.id}/read`, {
-          method: 'PATCH',
-          headers: authHeaders(token),
-        })
-        setNotifications((prev) =>
-          prev.map((n) => (n.id === notif.id ? { ...n, is_read: true } : n))
-        )
-        setUnreadNotifCount((prev) => Math.max(0, prev - 1))
-      } catch (e) {
-        console.error('Failed to mark notification as read:', e)
-      }
-    }
-    setShowNotifications(false)
-
-    // Contextual redirection to destination screen
-    if (notif.type === 'location_denied') {
-      if (notif.reference_type === 'attendance') {
-        router.push('/attendance')
-      } else if (notif.reference_type === 'payment') {
-        router.push('/payments')
-      } else {
-        router.push('/check-in/history')
-      }
-    } else if (notif.type === 'check_in' || notif.reference_type === 'visit') {
-      router.push('/check-in/history')
-    } else if (notif.type?.startsWith('order') || notif.reference_type === 'order') {
-      router.push('/temporders')
-    } else if (notif.type?.startsWith('expense') || notif.reference_type === 'expense') {
-      router.push('/expenses')
-    } else if (notif.type === 'attendance' || notif.reference_type === 'attendance') {
-      router.push('/attendance')
-    } else if (notif.type?.startsWith('payment') || notif.reference_type === 'payment') {
-      router.push('/payments')
-    } else if (
-      notif.type === 'customer' ||
-      notif.reference_type === 'customer' ||
-      notif.reference_type === 'customer_profile'
-    ) {
-      if (notif.reference_id) {
-        router.push(`/customers/${notif.reference_id}`)
-      } else {
-        router.push('/customers')
-      }
-    } else {
-      router.push('/')
+      setUnreadNotifCount(prev => Math.max(0, prev - 1))
+      if (token) markNotificationRead(token, notif.id).catch(() => {})
     }
   }
+
+  // Close first and navigate at once; marking it read happens in the background
+  const handleNotificationClick = (notif: AppNotification) => {
+    setShowNotifications(false)
+    if (!notif.is_read) {
+      setNotifications(prev => prev.map(n => (n.id === notif.id ? { ...n, is_read: true } : n)))
+      setUnreadNotifCount(prev => Math.max(0, prev - 1))
+    }
+    openNotification(notif)
+  }
+
+  // Other screens (the Notifications page, approvals) changed something: refresh the badge
+  useEffect(() => {
+    const refresh = () => fetchUnreadCount(true)
+    window.addEventListener(NOTIFICATIONS_CHANGED, refresh)
+    return () => window.removeEventListener(NOTIFICATIONS_CHANGED, refresh)
+  }, [token])
 
   useEffect(() => {
     if (!token) return
@@ -576,7 +413,7 @@ export function GlobalHeader() {
                 title={`${offlinePendingCount} offline item(s) pending sync. Click to open Sync Center.`}
               >
                 <CloudOff className="h-5 w-5 text-amber-300 animate-pulse" />
-                <span className="absolute top-1 right-1 flex items-center justify-center min-w-[17px] h-[17px] px-1 bg-amber-400 text-black font-black text-[10px] rounded-full border-2 border-emerald-600 shadow-sm">
+                <span className="absolute top-1 right-1 flex items-center justify-center min-w-[17px] h-[17px] px-1 bg-amber-400 text-black font-black text-[10px] leading-none rounded-full border-2 border-emerald-600 shadow-sm">
                   {offlinePendingCount > 9 ? '9+' : offlinePendingCount}
                 </span>
               </button>
@@ -601,7 +438,7 @@ export function GlobalHeader() {
               >
                 <Bell className="h-5 w-5" />
                 {unreadNotifCount > 0 && (
-                  <span className="absolute top-1 right-1 flex items-center justify-center min-w-[17px] h-[17px] px-1 bg-rose-500 text-white font-black text-[10px] rounded-full border-2 border-emerald-500 dark:border-emerald-600 shadow-sm animate-pulse">
+                  <span className="absolute top-1 right-1 flex items-center justify-center min-w-[17px] h-[17px] px-1 bg-rose-500 text-white font-black text-[10px] leading-none rounded-full border-2 border-emerald-500 dark:border-emerald-600 shadow-sm animate-pulse">
                     {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
                   </span>
                 )}
@@ -615,184 +452,60 @@ export function GlobalHeader() {
                     onClick={() => setShowNotifications(false)}
                   />
                   <div className="fixed sm:absolute inset-x-3 sm:inset-x-auto sm:right-0 top-[calc(3.5rem+env(safe-area-inset-top,0px)+8px)] sm:top-full sm:mt-3 w-auto sm:w-[400px] max-w-[calc(100vw-24px)] bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden text-foreground animate-in fade-in slide-in-from-top-2 duration-150">
-                    <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-muted/40">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="font-extrabold text-sm text-foreground">Notifications</span>
-                        {unreadNotifCount > 0 ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-primary/10 text-primary shrink-0">
+                    <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="text-base font-extrabold text-foreground">Notifications</span>
+                        {unreadNotifCount > 0 && (
+                          <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-bold text-primary">
                             {unreadNotifCount} new
                           </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-muted text-muted-foreground shrink-0">
-                            {notifications.length}
-                          </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-2.5 shrink-0">
-                        {unreadNotifCount > 0 && (
-                          <button
-                            onClick={markAllAsRead}
-                            className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 hover:underline cursor-pointer"
-                            title="Mark all notifications as read"
-                          >
-                            <CheckCheck className="w-3.5 h-3.5" />
-                            <span>Read all</span>
-                          </button>
-                        )}
-                        {notifications.length > 0 && (
-                          <button
-                            onClick={clearAllNotifications}
-                            disabled={clearingNotifications}
-                            className="flex items-center gap-1 text-[11px] font-semibold text-rose-500 hover:text-rose-600 dark:text-rose-400 hover:underline cursor-pointer disabled:opacity-50"
-                            title="Clear all notifications"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span>Clear all</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Mobile Device Alerts Banner */}
-                    {isIosBrowser ? (
-                      <div className="px-3.5 py-2.5 bg-amber-500/10 dark:bg-amber-500/15 border-b border-amber-500/20 text-xs text-foreground flex items-start gap-2.5">
-                        <Share2 className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-semibold text-amber-800 dark:text-amber-200">iPhone Background Alerts</div>
-                          <div className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
-                            To get alerts when locked: tap Safari's <span className="font-semibold text-foreground">Share</span> button and choose <span className="font-semibold text-foreground">"Add to Home Screen"</span>.
-                          </div>
-                        </div>
-                      </div>
-                    ) : isPushSupported && !isPushSubscribed && pushPermission !== 'denied' ? (
-                      <div className="px-3.5 py-2.5 bg-emerald-500/10 dark:bg-emerald-500/15 border-b border-emerald-500/20 text-xs text-foreground">
-                        <div className="flex items-center justify-between gap-2.5">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <BellRing className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                            <div className="min-w-0">
-                              <div className="font-semibold text-emerald-800 dark:text-emerald-200 text-xs">Enable Device Alerts</div>
-                              <div className="text-[11px] text-muted-foreground truncate">Get sound & lock-screen notifications</div>
-                            </div>
-                          </div>
-                          <button
-                            onClick={handleEnablePush}
-                            disabled={isEnablingPush}
-                            className="px-2.5 py-1 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors cursor-pointer shrink-0 disabled:opacity-50 flex items-center gap-1 shadow-sm"
-                          >
-                            {isEnablingPush && <Loader2 className="w-3 h-3 animate-spin" />}
-                            <span>{isEnablingPush ? "Enabling..." : "Enable"}</span>
-                          </button>
-                        </div>
-                        {pushError && (
-                          <div className="mt-2 text-[11px] font-medium text-rose-600 dark:text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-md px-2.5 py-1.5 leading-snug">
-                            ⚠️ {pushError}
-                          </div>
-                        )}
-                      </div>
-                    ) : isPushSubscribed ? (
-                      <div className="px-3.5 py-2 bg-muted/40 border-b border-border text-[11px] text-muted-foreground flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 animate-pulse"></span>
-                          <span className="font-medium text-foreground truncate">Device Alerts Active</span>
-                        </div>
+                      {unreadNotifCount > 0 && (
                         <button
-                          onClick={handleSendTestPush}
-                          disabled={isSendingTestPush}
-                          className="text-[11px] font-semibold text-primary hover:underline cursor-pointer disabled:opacity-50 flex items-center gap-1 shrink-0"
-                          title="Send a test notification to check device alerts"
+                          type="button"
+                          onClick={markAllAsRead}
+                          className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-lg px-2 text-sm font-semibold text-emerald-700 hover:underline dark:text-emerald-400 cursor-pointer"
                         >
-                          {isSendingTestPush ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                          <span>Test Alert</span>
+                          <CheckCheck className="h-4 w-4" />
+                          Read all
                         </button>
-                      </div>
-                    ) : pushPermission === 'denied' ? (
-                      <div className="px-3.5 py-2 bg-rose-500/10 border-b border-rose-500/20 text-[11px] text-rose-700 dark:text-rose-300 flex items-center gap-2">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                        <span className="truncate">Device notifications blocked in browser settings.</span>
-                      </div>
-                    ) : null}
-
-                    <div className="max-h-[min(420px,calc(100dvh-12rem))] sm:max-h-[420px] overflow-y-auto overscroll-contain divide-y divide-border/40">
-                      {loadingNotifications ? (
-                        <div className="p-8 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                          <Loader2 className="w-5 h-5 animate-spin text-primary" />
-                          <span className="text-xs">Loading notifications...</span>
-                        </div>
-                      ) : notifications.length === 0 ? (
-                        <div className="p-8 text-center flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                          <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
-                            <Bell className="w-5 h-5 text-muted-foreground/60" />
-                          </div>
-                          <span className="text-xs font-semibold text-foreground">No notifications yet</span>
-                          <span className="text-[11px] text-muted-foreground">You're all caught up!</span>
-                        </div>
-                      ) : (
-                        notifications.map((notif) => (
-                          <div
-                            key={notif.id}
-                            onClick={() => handleNotificationClick(notif)}
-                            className={cn(
-                              "group p-3 sm:p-3.5 flex items-start gap-3 hover:bg-muted/60 transition-colors cursor-pointer text-left relative",
-                              !notif.is_read ? "bg-primary/5 font-medium" : "opacity-85 hover:opacity-100"
-                            )}
-                          >
-                            <div className={cn(
-                              "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5 transition-transform group-hover:scale-105",
-                              getNotifIconBg(notif.type, notif.title)
-                            )}>
-                              {getNotifIcon(notif.type, notif.title)}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between gap-1.5">
-                                <h4 className={cn("text-xs truncate", !notif.is_read ? "font-bold text-foreground" : "font-medium text-foreground/80")}>
-                                  {notif.title}
-                                </h4>
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                  <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                                    {formatTimeAgo(notif.created_at)}
-                                  </span>
-                                  {!notif.is_read && (
-                                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 shadow-sm animate-pulse" />
-                                  )}
-                                </div>
-                              </div>
-                              <p className="text-[11px] text-muted-foreground line-clamp-2 mt-0.5 leading-snug break-words">
-                                {notif.message}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-0.5 shrink-0 self-start pt-0.5 opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                              {!notif.is_read && (
-                                <button
-                                  onClick={(e) => markAsRead(notif.id, e)}
-                                  className="p-1 rounded-md text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/15 transition-colors cursor-pointer"
-                                  title="Mark as read"
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                              <button
-                                onClick={(e) => deleteNotification(notif.id, notif.is_read, e)}
-                                className="p-1 rounded-md text-muted-foreground hover:text-rose-600 hover:bg-rose-500/15 transition-colors cursor-pointer"
-                                title="Dismiss notification"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        ))
                       )}
                     </div>
 
-                    {notifications.length > 0 && (
-                      <div className="px-4 py-2 bg-muted/25 border-t border-border/60 flex items-center justify-between text-[11px] text-muted-foreground shrink-0 select-none">
-                        <span className="font-medium">
-                          {unreadNotifCount > 0 ? `${unreadNotifCount} unread notification${unreadNotifCount > 1 ? 's' : ''}` : "All caught up"}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground/70">
-                          {notifications.length} total
-                        </span>
-                      </div>
-                    )}
+                    <PushAlertsBanner className="border-b border-border" />
+
+                    <div className="max-h-[min(440px,calc(100dvh-14rem))] overflow-y-auto overscroll-contain">
+                      {loadingNotifications && notifications.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center gap-2 p-8 text-muted-foreground">
+                          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                          <span className="text-sm">Loading notifications…</span>
+                        </div>
+                      ) : notifications.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center gap-1.5 p-8 text-center">
+                          <Bell className="h-6 w-6 text-muted-foreground/60" aria-hidden="true" />
+                          <span className="text-sm font-semibold text-foreground">No notifications yet</span>
+                          <span className="text-xs text-muted-foreground">You&apos;re all caught up.</span>
+                        </div>
+                      ) : (
+                        <NotificationList
+                          compact
+                          items={notifications}
+                          onOpen={handleNotificationClick}
+                          onMarkRead={markAsRead}
+                          onDelete={dismissNotification}
+                          onDecided={handleDecided}
+                        />
+                      )}
+                    </div>
+
+                    <Link
+                      href="/notifications"
+                      onClick={() => setShowNotifications(false)}
+                      className="flex min-h-11 items-center justify-center gap-1 border-t border-border bg-muted/25 text-sm font-semibold text-primary hover:bg-muted/50"
+                    >
+                      See all notifications and settings
+                    </Link>
                   </div>
                 </>
               )}
@@ -1196,72 +909,4 @@ export function GlobalHeader() {
   )
 }
 
-function formatTimeAgo(dateStr?: string) {
-  if (!dateStr) return ''
-  try {
-    const now = new Date().getTime()
-    const d = new Date(dateStr.endsWith('Z') || dateStr.includes('+') ? dateStr : dateStr + 'Z').getTime()
-    const diffSec = Math.max(0, Math.floor((now - d) / 1000))
-    if (diffSec < 60) return 'just now'
-    const diffMin = Math.floor(diffSec / 60)
-    if (diffMin < 60) return `${diffMin}m ago`
-    const diffHours = Math.floor(diffMin / 60)
-    if (diffHours < 24) return `${diffHours}h ago`
-    const diffDays = Math.floor(diffHours / 24)
-    if (diffDays < 7) return `${diffDays}d ago`
-    return new Date(dateStr).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
-  } catch (e) {
-    return ''
-  }
-}
-
-function getNotifIcon(type: string, title?: string) {
-  if (title?.toLowerCase().includes('discrepancy')) {
-    return <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
-  }
-  switch (type) {
-    case 'location_denied':
-      return <MapPinOff className="w-4 h-4 text-rose-600 dark:text-rose-400" />
-    case 'check_in':
-      return <MapPin className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-    case 'order_created':
-    case 'order_status':
-      return <ShoppingCart className="w-4 h-4 text-sky-600 dark:text-sky-400" />
-    case 'expense_created':
-    case 'expense_status':
-      return <Wallet className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-    case 'attendance':
-      return <Clock className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-    case 'payment_created':
-    case 'payment_status':
-      return <IndianRupee className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-    default:
-      return <Bell className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-  }
-}
-
-function getNotifIconBg(type: string, title?: string) {
-  if (title?.toLowerCase().includes('discrepancy')) {
-    return 'bg-rose-500/15'
-  }
-  switch (type) {
-    case 'location_denied':
-      return 'bg-rose-500/15'
-    case 'check_in':
-      return 'bg-emerald-500/15'
-    case 'order_created':
-    case 'order_status':
-      return 'bg-sky-500/15'
-    case 'expense_created':
-    case 'expense_status':
-      return 'bg-amber-500/15'
-    case 'attendance':
-      return 'bg-purple-500/15'
-    case 'payment_created':
-    case 'payment_status':
-      return 'bg-emerald-500/15'
-    default:
-      return 'bg-muted'
-  }
-}
 

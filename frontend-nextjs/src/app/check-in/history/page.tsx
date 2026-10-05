@@ -7,6 +7,7 @@ import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate, formatToIST } from '@/lib/utils'
 import { MapPin, History, ArrowLeft, RefreshCw, Calendar, CalendarCheck, Search, User as UserIcon, X, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { LinkParams, LINKED_RECORD, idParam, useScrollToLinked } from '@/components/LinkParams'
 
 type VisitLog = {
   id: number
@@ -60,6 +61,17 @@ export default function CheckInHistoryPage() {
   })
   const [visitSalesperson, setVisitSalesperson] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+
+  // Links from notifications: ?date=2026-10-05&user=7&visit=31 shows that day (and person) and highlights the visit
+  const [linkedVisitId, setLinkedVisitId] = useState<number | null>(null)
+  const applyLink = (params: URLSearchParams) => {
+    const date = params.get('date')
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) setVisitDate(date)
+    const userId = idParam(params.get('user'))
+    if (isAdmin && (userId || params.has('date'))) setVisitSalesperson(userId ? String(userId) : '')
+    if (params.toString()) setSearchQuery('')
+    setLinkedVisitId(idParam(params.get('visit')))
+  }
   
   // Photo modal state matching screenshot
   const [previewPhoto, setPreviewPhoto] = useState<VisitLog | null>(null)
@@ -131,9 +143,11 @@ export default function CheckInHistoryPage() {
       return matchesSearch && matchesDate && matchesUser
     })
   }, [visits, searchQuery, visitDate, visitSalesperson])
+  useScrollToLinked(linkedVisitId ? `visit-${linkedVisitId}` : null, filteredVisits.length)
 
   return (
     <div className="flex flex-col h-full bg-background font-sans">
+      <LinkParams onChange={applyLink} />
       <div className="flex-1 overflow-y-auto px-4 py-5 max-w-6xl mx-auto w-full space-y-4 pb-28">
         {/* Header */}
         <div className="flex items-center justify-between gap-3">
@@ -278,7 +292,11 @@ export default function CheckInHistoryPage() {
                       const initial = (v.salesperson || user?.username || 'U').charAt(0).toLowerCase()
                       const timeStr = formatToIST(v.createdAt)
                       return (
-                        <tr key={v.id} className="hover:bg-muted/30 transition-colors">
+                        <tr
+                          key={v.id}
+                          data-link-target={`visit-${v.id}`}
+                          className={cn("hover:bg-muted/30 transition-colors", v.id === linkedVisitId && "bg-primary/10")}
+                        >
                           {/* Time */}
                           <td className="py-3.5 px-4 font-bold text-foreground whitespace-nowrap">
                             {timeStr}
@@ -370,7 +388,11 @@ export default function CheckInHistoryPage() {
                 const isReg = Boolean(v.is_registered || v.ledger_id || v.customer_key)
                 const custTarget = v.customer_key || (v.ledger_id ? `tally_${v.ledger_id}` : null)
                 return (
-                  <div key={v.id} className="bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3">
+                  <div
+                    key={v.id}
+                    data-link-target={`visit-${v.id}`}
+                    className={cn("bg-card border border-border rounded-2xl p-4 shadow-sm space-y-3", v.id === linkedVisitId && LINKED_RECORD)}
+                  >
                     <div className="flex items-start justify-between gap-3 border-b border-border/50 pb-2">
                       <div className="min-w-0">
                         {canAccessCustomer && isReg && custTarget ? (

@@ -1,4 +1,5 @@
 import { API_BASE, authHeaders } from '@/lib/utils'
+import { getDeviceHeaders } from '@/lib/device'
 
 /**
  * Convert a URL-safe Base64 string to a Uint8Array for PushManager subscription.
@@ -244,6 +245,7 @@ export async function subscribeToPushNotifications(
       method: 'POST',
       headers: {
         ...authHeaders(token),
+        ...(await getDeviceHeaders()),
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -273,6 +275,31 @@ export async function subscribeToPushNotifications(
       message: err instanceof Error ? err.message : 'An error occurred while enabling push notifications.'
     }
   }
+}
+
+/**
+ * Save this browser's existing push subscription for the signed-in person. Signing out removes it on the
+ * server (so the next person on this device doesn't get the previous person's alerts); this puts it back
+ * after signing in again, without asking for permission a second time.
+ */
+export async function syncExistingSubscription(token: string): Promise<void> {
+  if (!isPushNotificationSupported() || getNotificationPermission() !== 'granted') return
+  const reg = await Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+  ])
+  const sub = reg ? await reg.pushManager.getSubscription() : null
+  const json = sub?.toJSON()
+  if (!json?.endpoint || !json.keys?.p256dh || !json.keys?.auth) return
+  await fetch(`${API_BASE}/notifications/subscribe`, {
+    method: 'POST',
+    headers: { ...authHeaders(token), ...(await getDeviceHeaders()) },
+    body: JSON.stringify({
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+      user_agent: navigator.userAgent.slice(0, 255),
+    }),
+  })
 }
 
 /**

@@ -46,23 +46,46 @@ self.addEventListener('push', (event) => {
   }
 });
 
-// Notification click event listener
+// Notification click: open the app at the notification. An already-open app window is brought forward and
+// sent there (in-app navigation if the page answers, otherwise a normal page load); only with no window open
+// is a new one started. Matching on the exact URL used to open duplicate windows that never navigated.
+function askPageToNavigate(client, url) {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => resolve(false), 1000);
+    channel.port1.onmessage = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    client.postMessage({ type: 'mytally:navigate', url }, [channel.port2]);
+  });
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const rawUrl = event.notification.data?.url || '/admin';
-  const urlToOpen = new URL(rawUrl, self.location.origin).href;
+  const target = new URL(event.notification.data?.url || '/notifications', self.location.origin).href;
 
-  event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      for (let i = 0; i < windowClients.length; i++) {
-        const client = windowClients[i];
-        if (client.url === urlToOpen && 'focus' in client) {
-          return client.focus();
-        }
+  event.waitUntil((async () => {
+    const windows = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const client = windows.find((c) => new URL(c.url).origin === self.location.origin);
+    if (!client) {
+      if (clients.openWindow) await clients.openWindow(target);
+      return;
+    }
+    try {
+      await client.focus();
+    } catch (e) {
+      // Some browsers only allow focus in certain states; navigation still works
+    }
+    if (await askPageToNavigate(client, target)) return;
+    if ('navigate' in client) {
+      try {
+        await client.navigate(target);
+        return;
+      } catch (e) {
+        // Uncontrolled windows can't be navigated by the worker
       }
-      if (clients.openWindow) {
-        return clients.openWindow(urlToOpen);
-      }
-    })
-  );
+    }
+    if (clients.openWindow) await clients.openWindow(target);
+  })());
 });

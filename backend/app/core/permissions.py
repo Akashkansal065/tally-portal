@@ -30,6 +30,17 @@ def is_admin_user(user: Optional[User]) -> bool:
     """True if the user's role is one of the administrator roles (role must be loaded)."""
     return bool(user is not None and user.role is not None and user.role.name and user.role.name.lower() in ADMIN_ROLE_NAMES)
 
+
+async def accessible_company_ids(db: AsyncSession, user_id: int, home_company_id: int, role_name: Optional[str]) -> Set[int]:
+    """Companies a user may open: admins get every active company, others their home company plus granted ones."""
+    allowed: Set[int] = {home_company_id}
+    if role_name and role_name.lower() in ADMIN_ROLE_NAMES:
+        rows = await db.execute(select(Company.company_id).where(Company.is_active == True))
+    else:
+        rows = await db.execute(select(UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == user_id))
+    allowed.update(rows.scalars().all())
+    return allowed
+
 logger = logging.getLogger("app.core.permissions")
 
 # How often a session's last_active_at is written while it's in use
@@ -179,18 +190,7 @@ async def get_current_user(
         last_active_epoch = now
 
     # Query allowed companies for the user to avoid DB hits on header company switching
-    allowed_company_ids: Set[int] = {user.company_id}
-    r_name = user.role.name if user.role else ""
-    is_admin = bool(r_name and r_name.lower() in ("admin", "superadmin", "owner"))
-    if is_admin:
-        comp_res = await db.execute(select(Company.company_id).where(Company.is_active == True))
-        for cid in comp_res.scalars().all():
-            allowed_company_ids.add(cid)
-    else:
-        acc_stmt = select(UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == user.user_id)
-        acc_res = await db.execute(acc_stmt)
-        for cid in acc_res.scalars().all():
-            allowed_company_ids.add(cid)
+    allowed_company_ids = await accessible_company_ids(db, user.user_id, user.company_id, user.role.name if user.role else "")
 
     # Determine session expiry timestamp
     sess_exp = db_session.expires_at

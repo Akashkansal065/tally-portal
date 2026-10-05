@@ -12,6 +12,8 @@ import { MobileInstallPrompt } from '@/components/MobileInstallPrompt'
 import { SessionRestorer } from '@/components/SessionRestorer'
 import { AttendanceLocationTracker } from '@/components/AttendanceLocationTracker'
 import { NativeAppBridge } from '@/components/NativeAppBridge'
+import { NotificationNavigator } from '@/components/notifications/NotificationNavigator'
+import { PushRegistration } from '@/components/notifications/PushRegistration'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
@@ -81,15 +83,14 @@ export default function RootLayout({
               <SessionRestorer />
               <AttendanceLocationTracker />
               <NativeAppBridge />
+              <NotificationNavigator />
+              <PushRegistration />
               <Toaster richColors position="top-center" closeButton />
               {/* Top Header */}
               <GlobalHeader />
 
-              {/* Scrollable main content, padded for bottom nav and iOS home indicator */}
-              <main
-                className="flex-1 overflow-y-auto overflow-x-hidden"
-                style={{ paddingBottom: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))' }}
-              >
+              {/* Scrollable main content, padded for the bottom nav (slimmer from md) and iOS home indicator */}
+              <main className="flex-1 overflow-y-auto overflow-x-hidden pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] md:pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))]">
                 <RouteGuard>{children}</RouteGuard>
               </main>
 

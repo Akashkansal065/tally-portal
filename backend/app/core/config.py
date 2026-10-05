@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     VAPID_PRIVATE_KEY: Optional[str] = None
     VAPID_CLAIM_EMAIL: str = "mailto:admin@snehdistributors.com"
 
+    # Firebase service account (JSON text, or a path to the JSON file) for Android app push. Unset = off.
+    FCM_SERVICE_ACCOUNT_JSON: Optional[str] = None
+
     # Rate Limiting Settings
     RATE_LIMIT_ENABLED: bool = True
     LOGIN_RATE_LIMIT: str = "5/minute"
@@ -52,6 +55,9 @@ class Settings(BaseSettings):
 
     # Successful sync traffic logs older than this are deleted daily; failed ones stay until an admin clears them
     SYNC_LOG_PURGE_SUCCESS_AFTER_DAYS: int = 30
+
+    # Read notifications older than this are deleted daily; unread ones are kept twice as long
+    NOTIFICATION_RETENTION_DAYS: int = 90
 
     # Pagination Settings
     DEFAULT_PAGE_SIZE: int = 50

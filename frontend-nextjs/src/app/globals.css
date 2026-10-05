@@ -244,4 +244,18 @@ button,
   textarea {
     font-size: 16px;
   }
+
+  /* Phones: nothing smaller than 12px (text-xs). Over 1,400 labels across the app use 7-11px, which is hard to
+     read at arm's length or in sunlight. Desktop keeps the denser sizes. Elements in fixed-size boxes need room
+     for 12px text (see the attendance muster cells). */
+  .text-\[7px\],
+  .text-\[8px\],
+  .text-\[9px\],
+  .text-\[10px\],
+  .text-\[11px\],
+  .sm\:text-\[8px\],
+  .sm\:text-\[10px\],
+  .sm\:text-\[11px\] {
+    font-size: 0.75rem;
+  }
 }

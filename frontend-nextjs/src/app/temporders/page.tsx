@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
@@ -19,6 +19,7 @@ import {
   ChevronLeft 
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { LinkParams, idParam } from '@/components/LinkParams'
 
 type OrderItem = {
   stock_item_id?: number | null
@@ -67,6 +68,22 @@ export default function TempOrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>('pending')
   const [salespersonFilter, setSalespersonFilter] = useState<string>('all')
 
+  // Links from notifications: ?status=done&order=123 shows that status and opens the order
+  const linkedOrderId = useRef<number | null>(null)
+  const openLinkedOrder = (list: Order[]) => {
+    const found = linkedOrderId.current ? list.find(o => o.id === linkedOrderId.current) : null
+    if (found) {
+      setExpandedOrder(found)
+      linkedOrderId.current = null
+    }
+  }
+  const applyLink = (params: URLSearchParams) => {
+    const status = params.get('status')
+    if (status && ['pending', 'done', 'cancelled', 'all'].includes(status)) setStatusFilter(status)
+    linkedOrderId.current = idParam(params.get('order'))
+    if (orders.length) openLinkedOrder(orders)
+  }
+
   const fetchData = async () => {
     setLoading(true)
     try {
@@ -87,7 +104,9 @@ export default function TempOrdersPage() {
           raw.forEach((item: Order) => {
             if (item && item.id != null) uniqueMap.set(item.id, item)
           })
-          setOrders(Array.from(uniqueMap.values()))
+          const list = Array.from(uniqueMap.values())
+          setOrders(list)
+          openLinkedOrder(list)
         } else {
           setOrders([])
         }
@@ -105,7 +124,9 @@ export default function TempOrdersPage() {
           raw.forEach((item: Order) => {
             if (item && item.id != null) uniqueMap.set(item.id, item)
           })
-          setOrders(Array.from(uniqueMap.values()))
+          const list = Array.from(uniqueMap.values())
+          setOrders(list)
+          openLinkedOrder(list)
         } else {
           setOrders([])
         }
@@ -205,6 +226,7 @@ export default function TempOrdersPage() {
 
   return (
     <div className="flex flex-col h-full bg-background font-sans">
+      <LinkParams onChange={applyLink} />
       {/* Main Container */}
       <div className="flex-1 overflow-y-auto px-4 py-5 max-w-xl mx-auto w-full space-y-4">
         {/* Title and CTA */}

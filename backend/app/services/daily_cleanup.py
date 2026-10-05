@@ -1,15 +1,15 @@
-"""Daily purge of old login sessions and old successful sync logs, so history stays useful and tables stay small."""
+"""Daily purge of old login sessions, successful sync logs and notifications, so history stays useful and tables stay small."""
 import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import delete, or_
+from sqlalchemy import and_, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.sessions import utcnow
-from app.models.portal_core import SyncTrafficLog, UserSession
+from app.models.portal_core import Notification, SyncTrafficLog, UserSession
 
 logger = logging.getLogger("daily_cleanup")
 
@@ -55,11 +55,41 @@ async def purge_old_sync_logs(db: AsyncSession) -> int:
             return removed
 
 
+def notification_purge_batch(now):
+    """One batch: read notifications past NOTIFICATION_RETENTION_DAYS, and unread ones past twice that."""
+    days = settings.NOTIFICATION_RETENTION_DAYS
+    return (
+        delete(Notification)
+        .where(or_(
+            and_(Notification.is_read == True, Notification.created_at < now - timedelta(days=days)),
+            Notification.created_at < now - timedelta(days=days * 2),
+        ))
+        .with_dialect_options(mysql_limit=SYNC_LOG_DELETE_BATCH)
+    )
+
+
+async def purge_old_notifications(db: AsyncSession) -> int:
+    """Delete old notifications in batches (see notification_purge_batch)."""
+    now = utcnow()
+    removed = 0
+    while True:
+        result = await db.execute(notification_purge_batch(now))
+        await db.commit()
+        batch = result.rowcount or 0
+        removed += batch
+        if batch < SYNC_LOG_DELETE_BATCH:
+            return removed
+
+
 async def daily_cleanup_worker(interval_seconds: int = 24 * 60 * 60, initial_delay_seconds: int = 300):
-    """Runs the purges shortly after startup and then once a day. One failing purge doesn't stop the other."""
+    """Runs the purges shortly after startup and then once a day. One failing purge doesn't stop the others."""
     await asyncio.sleep(initial_delay_seconds)
     while True:
-        for name, purge in (("old session(s)", purge_old_sessions), ("old successful sync log(s)", purge_old_sync_logs)):
+        for name, purge in (
+            ("old session(s)", purge_old_sessions),
+            ("old successful sync log(s)", purge_old_sync_logs),
+            ("old notification(s)", purge_old_notifications),
+        ):
             try:
                 async with AsyncSessionLocal() as db:
                     removed = await purge(db)

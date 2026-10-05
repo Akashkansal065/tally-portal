@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate, formatToIST } from '@/lib/utils'
@@ -40,6 +40,7 @@ import {
   MonitorSmartphone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { LinkParams, idParam } from '@/components/LinkParams'
 import { AdminUserPermissionsModal } from '@/components/admin/AdminUserPermissionsModal'
 import { RolesManagement } from '@/components/admin/RolesManagement'
 import { DeviceSessionsModal } from '@/components/admin/DeviceSessionsModal'
@@ -153,16 +154,23 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false)
   const [alertsEnabled, setAlertsEnabled] = useState(true)
 
-  // Listen to ?tab= query parameter for direct notification links
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const p = new URLSearchParams(window.location.search)
-      const tabParam = p.get('tab')
-      if (tabParam && ['users', 'roles', 'sync', 'logs', 'einvoice', 'cache'].includes(tabParam)) {
-        setTab(tabParam as any)
-      }
+  // Links from notifications: ?tab=users&devices=7 opens that person's devices (new-device sign-in alerts)
+  const linkedDevicesUserId = useRef<number | null>(null)
+  const openLinkedDevices = (list: UserItem[]) => {
+    const found = linkedDevicesUserId.current ? list.find(u => u.user_id === linkedDevicesUserId.current) : null
+    if (found) {
+      setDevicesUser(found)
+      linkedDevicesUserId.current = null
     }
-  }, [])
+  }
+  const applyLink = (params: URLSearchParams) => {
+    const tabParam = params.get('tab')
+    if (tabParam === 'users' || tabParam === 'roles' || tabParam === 'sync' || tabParam === 'logs' || tabParam === 'einvoice' || tabParam === 'cache') {
+      setTab(tabParam)
+    }
+    linkedDevicesUserId.current = idParam(params.get('devices'))
+    if (users.length) openLinkedDevices(users)
+  }
 
   // Cache Management states
   const [cacheStats, setCacheStats] = useState<{
@@ -616,7 +624,9 @@ export default function AdminPage() {
         const lgData = await lgRes.json()
         const vtData = await vtRes.json()
         
-        setUsers(Array.isArray(uData) ? uData : [])
+        const userList: UserItem[] = Array.isArray(uData) ? uData : []
+        setUsers(userList)
+        openLinkedDevices(userList)
         setRoles(Array.isArray(rData) ? rData : [])
         setAdminCompanies(Array.isArray(cData) ? cData : [])
         setAdminModules(Array.isArray(mData) ? mData : [])
@@ -1093,6 +1103,7 @@ const handleSavePermissions = async () => {
 
   return (
     <div className="flex flex-col h-full bg-background min-h-screen">
+      <LinkParams onChange={applyLink} />
       <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12 max-w-7xl mx-auto w-full space-y-6">
         {/* Modern Desktop Header & Actions */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-card/60 backdrop-blur-md p-5 rounded-2xl border border-border/80 shadow-xs">

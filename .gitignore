@@ -56,3 +56,9 @@ backend/ca.pem
 agent_config.json
 desktop-sync-agent/logs/
 *.log
+
+# Firebase: app config and the backend's service-account key (a secret) stay out of git
+google-services.json
+GoogleService-Info.plist
+*firebase-adminsdk*.json
+*service-account*.json

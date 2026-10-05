@@ -61,8 +61,8 @@ key.properties
 .externalNativeBuild
 .cxx/
 
-# Google Services (e.g. APIs or Firebase)
-# google-services.json
+# Google Services (e.g. APIs or Firebase): per-environment, supplied at build time, not committed
+google-services.json
 
 # Freeline
 freeline.py

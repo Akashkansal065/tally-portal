@@ -56,6 +56,7 @@ import {
   Route,
   Footprints,
 } from 'lucide-react'
+import { LinkParams, LINKED_RECORD, idParam, useScrollToLinked } from '@/components/LinkParams'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { 
@@ -268,20 +269,28 @@ export default function AttendancePage() {
     }
   }, [token, permissions, router])
 
-  // Check URL query parameters (e.g. from notifications: /attendance?tab=admin&sub=approvals)
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search)
-      const tabParam = params.get('tab')
-      const subParam = params.get('sub')
-      if (tabParam === 'admin') {
-        setActiveTab('admin')
-        if (subParam === 'approvals' || subParam === 'today' || subParam === 'muster' || subParam === 'history' || subParam === 'offices') {
-          setAdminSubTab(subParam as any)
-        }
+  // Links from notifications: ?tab=admin&sub=approvals&id=55 (team) or ?tab=history&id=55 (own records)
+  const [linkedId, setLinkedId] = useState<number | null>(null)
+  const applyLink = (params: URLSearchParams) => {
+    const tab = params.get('tab')
+    const sub = params.get('sub')
+    const id = idParam(params.get('id'))
+    if (tab === 'admin') {
+      setActiveTab('admin')
+      if (sub === 'approvals' || sub === 'today' || sub === 'muster' || sub === 'history' || sub === 'offices') {
+        setAdminSubTab(sub)
       }
+      // The request may already be decided by another admin; show it either way
+      if (sub === 'approvals' && id) setApprovalsFilter('all')
+    } else if (tab === 'history' || tab === 'punch') {
+      setActiveTab('punch')
     }
-  }, [])
+    setLinkedId(id)
+  }
+  useScrollToLinked(
+    linkedId ? `attendance-${linkedId}` : null,
+    `${activeTab}-${adminSubTab}-${approvalsList.length}-${history.length}`,
+  )
 
   // Fetch initial personal details and offices
   useEffect(() => {
@@ -964,7 +973,8 @@ export default function AttendancePage() {
     }
   }
 
-  const renderLocationBadge = (tag: string | null | undefined, distance?: number | null, placeName?: string | null, accuracy?: number | null) => {
+  // wrap: show long place names on up to two lines (phone cards) instead of cutting them to one
+  const renderLocationBadge = (tag: string | null | undefined, distance?: number | null, placeName?: string | null, accuracy?: number | null, wrap = false) => {
     if (!tag) return null
     const isInside = tag.startsWith('In Office:')
     const isOutside = tag.startsWith('Outside Radius:')
@@ -975,17 +985,81 @@ export default function AttendancePage() {
     return (
       <span 
         className={cn(
-          "inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md border",
+          "inline-flex max-w-full gap-1 text-[10px] font-bold px-2 py-0.5 rounded-md border",
+          wrap ? "items-start" : "items-center",
           isInside ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25" :
           isOutside ? "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/25" :
           "bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-500/25"
         )}
         title={titleParts.join('\n')}
       >
-        <Compass className="h-2.5 w-2.5 shrink-0" />
-        <span className="truncate max-w-[180px]">{placeName ? `${placeName}` : tag}</span>
+        <Compass className={cn("h-2.5 w-2.5 shrink-0", wrap && "mt-[3px]")} />
+        <span className={cn("min-w-0", wrap ? "line-clamp-2 break-words" : "truncate max-w-[180px]")}>{placeName ? `${placeName}` : tag}</span>
         {accuracy != null && <span className="text-[8px] opacity-60 shrink-0">±{accuracy}m</span>}
       </span>
+    )
+  }
+
+  /**
+   * One punch (in or out) on a phone card, full width: time and selfie on the first line, then the place
+   * (up to two lines) and the GPS link underneath. Side-by-side columns were too narrow for place names.
+   */
+  const renderPunchRow = (p: {
+    label: string
+    time: string | null | undefined
+    tone: 'in' | 'out'
+    tag?: string | null
+    distance?: number | null
+    placeName?: string | null
+    accuracy?: number | null
+    lat?: string | null
+    lng?: string | null
+    photoUrl?: string | null
+    /** Next to the time, e.g. the auto punch-out badge */
+    extra?: React.ReactNode
+    /** Shown instead of the GPS link when there are no coordinates */
+    empty?: React.ReactNode
+  }) => {
+    const toneText = p.tone === 'in' ? 'text-sky-700 dark:text-sky-400' : 'text-emerald-700 dark:text-emerald-400'
+    return (
+      <div className="flex flex-col gap-1.5 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="w-9 shrink-0 text-xs font-black uppercase tracking-wider text-muted-foreground">{p.label}</span>
+            <span className="text-sm font-bold text-foreground">{formatTimeStr(p.time ?? null)}</span>
+            {p.extra}
+          </div>
+          {p.photoUrl && (
+            <button
+              type="button"
+              onClick={() => setPreviewPhotoUrl(p.photoUrl ?? null)}
+              className={cn(
+                "inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-colors cursor-pointer",
+                p.tone === 'in' ? "bg-sky-500/10 hover:bg-sky-500/20" : "bg-emerald-500/10 hover:bg-emerald-500/20",
+                toneText,
+              )}
+            >
+              <Camera className="h-3.5 w-3.5" /> Selfie
+            </button>
+          )}
+        </div>
+        {p.tag && <div className="pl-11">{renderLocationBadge(p.tag, p.distance, p.placeName, p.accuracy, true)}</div>}
+        {p.lat && p.lng ? (
+          <a
+            href={`https://www.google.com/maps?q=${encodeURIComponent(`${p.lat},${p.lng}`)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn("ml-11 inline-flex w-fit min-h-8 items-center gap-1 text-xs font-semibold hover:underline", toneText)}
+            title="Open GPS location in Google Maps"
+          >
+            <MapPin className="h-3.5 w-3.5 shrink-0" />
+            <span>{p.lat.substring(0, 7)}, {p.lng.substring(0, 7)}</span>
+            <ExternalLink className="h-3 w-3 opacity-60" />
+          </a>
+        ) : p.empty ? (
+          <div className="pl-11">{p.empty}</div>
+        ) : null}
+      </div>
     )
   }
 
@@ -1004,6 +1078,7 @@ export default function AttendancePage() {
 
   return (
     <div className="min-h-screen bg-background pb-12">
+      <LinkParams onChange={applyLink} />
       {/* Header */}
       <div className="border-b border-border bg-card/50 backdrop-blur-md sticky top-0 z-10">
         <div className={cn("mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between transition-all", activeTab === 'admin' && adminSubTab === 'muster' ? "max-w-7xl" : "max-w-4xl")}>
@@ -1464,7 +1539,11 @@ export default function AttendancePage() {
                     <p className="text-[11px] text-muted-foreground text-center py-6">No previous logs found</p>
                   ) : (
                     history.map(item => (
-                      <div key={item.id} className="p-3 border border-border rounded-xl bg-muted/20 flex flex-col gap-1 text-xs">
+                      <div
+                        key={item.id}
+                        data-link-target={`attendance-${item.id}`}
+                        className={cn("p-3 border border-border rounded-xl bg-muted/20 flex flex-col gap-1 text-xs", item.id === linkedId && LINKED_RECORD)}
+                      >
                         <div className="flex justify-between items-center font-bold text-[11px] text-foreground">
                           <span>{formatDate(item.checkInTime.split('T')[0])}</span>
                           <div className="flex items-center gap-1.5 flex-wrap justify-end">
@@ -1750,106 +1829,52 @@ export default function AttendancePage() {
                           </div>
                         </div>
 
-                        {/* Punch In / Out Grid */}
-                        <div className="grid grid-cols-2 gap-2 bg-muted/30 border border-border/50 rounded-xl p-3 text-xs">
-                          {/* Punch In */}
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">Punch In</span>
-                            <span className="font-bold text-foreground text-xs block">
-                              {item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}
-                            </span>
-                            {item.attendance?.checkInLocationTag && (
-                              <div className="pt-0.5">
-                                {renderLocationBadge(item.attendance.checkInLocationTag, item.attendance.checkInDistanceMeters, item.attendance.checkInPlaceName, item.attendance.checkInAccuracyMeters)}
-                              </div>
-                            )}
-                            {item.attendance?.checkInLatitude && item.attendance?.checkInLongitude ? (
-                              <div className="pt-0.5">
-                                <a
-                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkInLatitude},${item.attendance.checkInLongitude}`)}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:underline"
-                                  title="Open GPS location in Google Maps"
-                                >
-                                  <MapPin className="h-3 w-3 text-sky-500 shrink-0" />
-                                  <span>{item.attendance.checkInLatitude.substring(0, 7)}, {item.attendance.checkInLongitude.substring(0, 7)}</span>
-                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
-                                </a>
-                              </div>
-                            ) : item.attendance ? (
-                              <span className="text-[10px] text-muted-foreground/60 italic block">GPS Unavailable</span>
-                            ) : (
-                              <span className="text-[10px] text-muted-foreground/40 italic block">Not Checked In</span>
-                            )}
-
-                            {item.attendance?.checkInPhotoUrl && (
-                              <div className="pt-1">
-                                <button
-                                  type="button"
-                                  onClick={() => setPreviewPhotoUrl(item.attendance?.checkInPhotoUrl || null)}
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 bg-sky-500/10 px-2 py-0.5 rounded-md hover:bg-sky-500/20 transition-colors cursor-pointer"
-                                >
-                                  <Camera className="h-2.5 w-2.5" /> View Selfie
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Punch Out */}
-                          <div className="space-y-1 border-l border-border/60 pl-3">
-                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">Punch Out</span>
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-bold text-foreground text-xs block">
-                                {item.attendance?.checkOutTime ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}
+                        {/* Punch in / out, one full-width row each */}
+                        <div className="divide-y divide-border/50 rounded-xl border border-border/50 bg-muted/30">
+                          {renderPunchRow({
+                            label: 'In',
+                            tone: 'in',
+                            time: item.attendance?.checkInTime,
+                            tag: item.attendance?.checkInLocationTag,
+                            distance: item.attendance?.checkInDistanceMeters,
+                            placeName: item.attendance?.checkInPlaceName,
+                            accuracy: item.attendance?.checkInAccuracyMeters,
+                            lat: item.attendance?.checkInLatitude,
+                            lng: item.attendance?.checkInLongitude,
+                            photoUrl: item.attendance?.checkInPhotoUrl,
+                            empty: (
+                              <span className="text-xs italic text-muted-foreground">
+                                {item.attendance ? 'GPS unavailable' : 'Not checked in'}
                               </span>
-                              {item.attendance?.isAutoPunchOut && (
-                                <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.2 px-1 rounded-full" title={item.attendance.checkOutComments || "Auto Punched Out by System"}>
-                                  ⚡ Auto
-                                </span>
-                              )}
-                            </div>
-                            {item.attendance?.checkOutLocationTag && (
-                              <div className="pt-0.5">
-                                {renderLocationBadge(item.attendance.checkOutLocationTag, item.attendance.checkOutDistanceMeters, item.attendance.checkOutPlaceName, item.attendance.checkOutAccuracyMeters)}
-                              </div>
-                            )}
-                            {item.attendance?.checkOutLatitude && item.attendance?.checkOutLongitude ? (
-                              <div className="pt-0.5">
-                                <a
-                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkOutLatitude},${item.attendance.checkOutLongitude}`)}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
-                                  title="Open GPS location in Google Maps"
-                                >
-                                  <MapPin className="h-3 w-3 text-emerald-500 shrink-0" />
-                                  <span>{item.attendance.checkOutLatitude.substring(0, 7)}, {item.attendance.checkOutLongitude.substring(0, 7)}</span>
-                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
-                                </a>
-                              </div>
-                            ) : item.attendance?.isAutoPunchOut ? (
-                              <span className="text-[10px] text-amber-600/90 font-medium italic block pt-0.5">Auto System Out</span>
+                            ),
+                          })}
+                          {renderPunchRow({
+                            label: 'Out',
+                            tone: 'out',
+                            time: item.attendance?.checkOutTime,
+                            tag: item.attendance?.checkOutLocationTag,
+                            distance: item.attendance?.checkOutDistanceMeters,
+                            placeName: item.attendance?.checkOutPlaceName,
+                            accuracy: item.attendance?.checkOutAccuracyMeters,
+                            lat: item.attendance?.checkOutLatitude,
+                            lng: item.attendance?.checkOutLongitude,
+                            photoUrl: item.attendance?.checkOutPhotoUrl,
+                            extra: item.attendance?.isAutoPunchOut ? (
+                              <span
+                                className="rounded-full border border-amber-500/20 bg-amber-500/10 px-1.5 text-xs font-bold text-amber-700 dark:text-amber-400"
+                                title={item.attendance.checkOutComments || 'Auto punched out by the system'}
+                              >
+                                ⚡ Auto
+                              </span>
+                            ) : undefined,
+                            empty: item.attendance?.isAutoPunchOut ? (
+                              <span className="text-xs font-medium italic text-amber-700 dark:text-amber-400">Closed by the system</span>
                             ) : item.attendance && !item.attendance.checkOutTime ? (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
-                                In Progress
+                              <span className="inline-flex items-center rounded bg-sky-500/10 px-1.5 py-0.5 text-xs font-semibold text-sky-700 dark:text-sky-400">
+                                Still working
                               </span>
-                            ) : (
-                              <span className="text-[10px] text-muted-foreground/40 block">--</span>
-                            )}
-
-                            {item.attendance?.checkOutPhotoUrl && (
-                              <div className="pt-1">
-                                <button
-                                  type="button"
-                                  onClick={() => setPreviewPhotoUrl(item.attendance?.checkOutPhotoUrl || null)}
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-md hover:bg-emerald-500/20 transition-colors cursor-pointer"
-                                >
-                                  <Camera className="h-2.5 w-2.5" /> View Selfie
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                            ) : undefined,
+                          })}
                         </div>
 
                         {/* Working Duration & Remarks */}
@@ -1863,20 +1888,20 @@ export default function AttendancePage() {
                         )}
 
                         {item.attendance && (
-                          <div className="flex items-center justify-between pt-2 border-t border-border/40 gap-2 flex-wrap">
+                          <div className="flex items-center justify-between pt-2 border-t border-border/40 gap-2">
                             {item.attendance.lastKnownTime ? (
-                              <div className="flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                              <div className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 font-medium">
                                 <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                                <span className="truncate max-w-[150px]">{item.attendance.lastKnownPlaceName || "Live GPS Active"}</span>
-                                <span className="opacity-70 font-mono text-[9px]">({formatTimeStr(item.attendance.lastKnownTime)})</span>
+                                <span className="min-w-0 truncate" title={item.attendance.lastKnownPlaceName || undefined}>{item.attendance.lastKnownPlaceName || "Live GPS Active"}</span>
+                                <span className="shrink-0 opacity-70 font-mono">({formatTimeStr(item.attendance.lastKnownTime)})</span>
                               </div>
                             ) : (
-                              <span className="text-[10px] text-muted-foreground/60">GPS Logged</span>
+                              <span className="text-xs text-muted-foreground">GPS logged</span>
                             )}
                             <button
                               type="button"
                               onClick={() => handleOpenTrailModal(item.attendance!.id, `${item.username}'s Route`)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                              className="inline-flex min-h-10 shrink-0 items-center gap-1.5 px-3 bg-sky-500/10 hover:bg-sky-500/20 text-sky-700 dark:text-sky-400 border border-sky-500/20 rounded-lg text-xs font-bold transition-colors cursor-pointer"
                             >
                               <Route className="h-3 w-3" />
                               <span>View Route</span>
@@ -2145,19 +2170,19 @@ export default function AttendancePage() {
                   <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto no-scrollbar py-0.5">
                     <span className="text-[10px] sm:text-[11px] font-bold text-muted-foreground uppercase tracking-wider shrink-0">Legend:</span>
                     <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-semibold shrink-0">
-                      <span className="w-4 h-4 sm:w-5 sm:h-5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">P</span>
+                      <span className="min-w-5 h-5 px-0.5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">P</span>
                       <span>Present</span>
                     </span>
                     <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-semibold shrink-0">
-                      <span className="w-4 h-4 sm:w-5 sm:h-5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">HD</span>
+                      <span className="min-w-5 h-5 px-0.5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">HD</span>
                       <span>Half Day</span>
                     </span>
                     <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-semibold shrink-0">
-                      <span className="w-4 h-4 sm:w-5 sm:h-5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30">A</span>
+                      <span className="min-w-5 h-5 px-0.5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30">A</span>
                       <span>Absent</span>
                     </span>
                     <span className="inline-flex items-center gap-1 text-[10px] sm:text-[11px] font-semibold shrink-0">
-                      <span className="w-4 h-4 sm:w-5 sm:h-5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-muted/60 text-muted-foreground border border-border">WO</span>
+                      <span className="min-w-5 h-5 px-0.5 rounded flex items-center justify-center font-bold text-[9px] sm:text-[10px] bg-muted/60 text-muted-foreground border border-border">WO</span>
                       <span>Sunday Off</span>
                     </span>
                   </div>
@@ -2368,7 +2393,7 @@ export default function AttendancePage() {
                                     title={`${emp.username} - Day ${d.day} (${d.weekday}): ${code} ${dayAtt.hours > 0 ? `(${dayAtt.hours}h)` : ''}`}
                                   >
                                     <span className={cn(
-                                      "inline-block w-5 h-5 sm:w-6 sm:h-6 leading-5 sm:leading-6 rounded sm:rounded-md font-bold text-[9px] sm:text-[10px] shadow-2xs",
+                                      "inline-block min-w-6 h-6 px-0.5 leading-6 rounded sm:rounded-md font-bold text-[9px] sm:text-[10px] shadow-2xs",
                                       isP && "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30",
                                       isHD && "bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 hover:bg-amber-500/30",
                                       isA && "bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30 hover:bg-rose-500/25",
@@ -2423,98 +2448,45 @@ export default function AttendancePage() {
                           </span>
                         </div>
 
-                        {/* In Time / Out Time Grid */}
-                        <div className="grid grid-cols-2 gap-2 bg-muted/30 border border-border/50 rounded-xl p-3 text-xs">
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">In Time</span>
-                            <span className="font-bold text-foreground text-xs block">{formatTimeStr(item.checkInTime)}</span>
-                            {item.checkInLocationTag && (
-                              <div className="pt-0.5">
-                                {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters, item.checkInPlaceName, item.checkInAccuracyMeters)}
-                              </div>
-                            )}
-                            {item.checkInLatitude && item.checkInLongitude ? (
-                              <div className="pt-0.5">
-                                <a
-                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkInLatitude},${item.checkInLongitude}`)}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:underline"
-                                  title="Open GPS location in Google Maps"
-                                >
-                                  <MapPin className="h-3 w-3 text-sky-500 shrink-0" />
-                                  <span>{item.checkInLatitude.substring(0, 7)}, {item.checkInLongitude.substring(0, 7)}</span>
-                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
-                                </a>
-                              </div>
-                            ) : (
-                              <span className="text-[10px] text-muted-foreground/40 block">--</span>
-                            )}
-
-                            {item.checkInPhotoUrl && (
-                              <div className="pt-1">
-                                <button
-                                  type="button"
-                                  onClick={() => setPreviewPhotoUrl(item.checkInPhotoUrl)}
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-600 bg-sky-500/10 px-2 py-0.5 rounded-md hover:bg-sky-500/20 transition-colors cursor-pointer"
-                                >
-                                  <Camera className="h-2.5 w-2.5" /> View Selfie
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="space-y-1 border-l border-border/60 pl-3">
-                            <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider block">Out Time</span>
-                            <span className="font-bold text-foreground text-xs block">{formatTimeStr(item.checkOutTime)}</span>
-                            {item.checkOutLocationTag && (
-                              <div className="pt-0.5">
-                                {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters, item.checkOutPlaceName, item.checkOutAccuracyMeters)}
-                              </div>
-                            )}
-                            {item.checkOutLatitude && item.checkOutLongitude ? (
-                              <div className="pt-0.5">
-                                <a
-                                  href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkOutLatitude},${item.checkOutLongitude}`)}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
-                                  title="Open GPS location in Google Maps"
-                                >
-                                  <MapPin className="h-3 w-3 text-emerald-500 shrink-0" />
-                                  <span>{item.checkOutLatitude.substring(0, 7)}, {item.checkOutLongitude.substring(0, 7)}</span>
-                                  <ExternalLink className="h-2.5 w-2.5 opacity-60" />
-                                </a>
-                              </div>
-                            ) : (
-                              <span className="text-[10px] text-muted-foreground/40 block">--</span>
-                            )}
-
-                            {item.checkOutPhotoUrl && (
-                              <div className="pt-1">
-                                <button
-                                  type="button"
-                                  onClick={() => setPreviewPhotoUrl(item.checkOutPhotoUrl)}
-                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 bg-emerald-500/10 px-2 py-0.5 rounded-md hover:bg-emerald-500/20 transition-colors cursor-pointer"
-                                >
-                                  <Camera className="h-2.5 w-2.5" /> View Selfie
-                                </button>
-                              </div>
-                            )}
-                          </div>
+                        {/* In / out, one full-width row each */}
+                        <div className="divide-y divide-border/50 rounded-xl border border-border/50 bg-muted/30">
+                          {renderPunchRow({
+                            label: 'In',
+                            tone: 'in',
+                            time: item.checkInTime,
+                            tag: item.checkInLocationTag,
+                            distance: item.checkInDistanceMeters,
+                            placeName: item.checkInPlaceName,
+                            accuracy: item.checkInAccuracyMeters,
+                            lat: item.checkInLatitude,
+                            lng: item.checkInLongitude,
+                            photoUrl: item.checkInPhotoUrl,
+                          })}
+                          {renderPunchRow({
+                            label: 'Out',
+                            tone: 'out',
+                            time: item.checkOutTime,
+                            tag: item.checkOutLocationTag,
+                            distance: item.checkOutDistanceMeters,
+                            placeName: item.checkOutPlaceName,
+                            accuracy: item.checkOutAccuracyMeters,
+                            lat: item.checkOutLatitude,
+                            lng: item.checkOutLongitude,
+                            photoUrl: item.checkOutPhotoUrl,
+                            empty: !item.checkOutTime ? (
+                              <span className="text-xs italic text-muted-foreground">Not clocked out</span>
+                            ) : undefined,
+                          })}
                         </div>
 
-                        <div className="flex items-center justify-between pt-2 border-t border-border/40 gap-2">
-                          <span className="text-[10px] text-muted-foreground">Historical Trail</span>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenTrailModal(item.id, `${item.username}'s Route (${formatDate(item.checkInTime.split('T')[0])})`)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                          >
-                            <Route className="h-3 w-3" />
-                            <span>View Route</span>
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenTrailModal(item.id, `${item.username}'s Route (${formatDate(item.checkInTime.split('T')[0])})`)}
+                          className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-sky-500/20 bg-sky-500/10 text-sm font-bold text-sky-700 transition-colors hover:bg-sky-500/20 dark:text-sky-400 cursor-pointer"
+                        >
+                          <Route className="h-4 w-4" />
+                          View route for the day
+                        </button>
 
                         {item.checkInComments && (
                           <p className="text-[10px] italic text-muted-foreground/80 bg-muted/20 p-2 rounded-lg border border-border/40">
@@ -2947,10 +2919,12 @@ export default function AttendancePage() {
                         return (
                           <div
                             key={item.id}
+                            data-link-target={`attendance-${item.id}`}
                             className={cn(
                               "bg-card border rounded-2xl p-4 shadow-sm space-y-3 transition-all",
                               isPending ? "border-amber-500/30 bg-amber-500/[0.02]" : "border-border",
-                              isSelected && "ring-2 ring-sky-500/40 border-sky-500"
+                              isSelected && "ring-2 ring-sky-500/40 border-sky-500",
+                              item.id === linkedId && LINKED_RECORD
                             )}
                           >
                             {/* Top Row: User details & Approval Status */}

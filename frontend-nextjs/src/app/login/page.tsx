@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE } from '@/lib/utils'
+import { API_BASE, afterLoginPath } from '@/lib/utils'
 import { getDeviceHeaders } from '@/lib/device'
 import { Eye, EyeOff, LogIn } from 'lucide-react'
 
@@ -34,7 +34,7 @@ export default function LoginPage() {
   const [registerUsername, setRegisterUsername] = useState('')
 
   useEffect(() => {
-    if (!isLoading && user) router.replace('/')
+    if (!isLoading && user) router.replace(afterLoginPath())
   }, [user, isLoading, router])
 
   useEffect(() => {
@@ -118,7 +118,7 @@ export default function LoginPage() {
         }
         const { access_token } = await loginRes.json()
         await login(access_token, email)
-        router.replace('/')
+        router.replace(afterLoginPath())
       } else {
         // Normal Sign In
         const res = await fetch(`${API_BASE}/auth/login`, {
@@ -133,7 +133,7 @@ export default function LoginPage() {
         }
         const { access_token } = await res.json()
         await login(access_token, email)
-        router.replace('/')
+        router.replace(afterLoginPath())
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Action failed. Please check input.')

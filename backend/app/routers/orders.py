@@ -178,6 +178,7 @@ async def create_order(
 
     # Notify admins of new temp order
     from app.routers.notifications import notify_admins
+    from app.services.notifications import order_link
     cust_name = req.custom_customer_name or (ledger.name if req.ledger_id and 'ledger' in locals() and ledger else "Customer")
     await notify_admins(
         db=db,
@@ -187,6 +188,7 @@ async def create_order(
         message=f"{user.username} placed order #{order.id} for {cust_name}",
         reference_id=str(order.id),
         reference_type="order",
+        link=order_link(order.id, "pending"),
         exclude_user_id=user.user_id,
         auto_commit=True,
     )
@@ -531,6 +533,7 @@ async def update_order_status(
 
     # Notify order creator (salesperson)
     from app.routers.notifications import notify_user
+    from app.services.notifications import order_link
     status_label = "approved" if req.status == "done" else ("rejected" if req.status == "cancelled" else req.status)
     reason_text = f" Reason: {req.reason.strip()}" if req.reason and req.reason.strip() else ""
     await notify_user(
@@ -542,6 +545,7 @@ async def update_order_status(
         message=f"Your order #{order.id} has been {status_label} by {user.username}.{reason_text}",
         reference_id=str(order.id),
         reference_type="order",
+        link=order_link(order.id, order.status),
         auto_commit=True,
     )
 

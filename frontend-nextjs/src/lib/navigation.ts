@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  Bell,
   BookOpen,
   Calendar,
   Clock,
@@ -137,6 +138,8 @@ export const NAV_MODULES: NavModule[] = [
     visible: ({ can }) => can('voucher_types', 'read') },
 
   // Admin & tools
+  { id: 'notifications', href: '/notifications', label: 'Notifications', icon: Bell, group: 'admin', keywords: 'alerts approvals settings push',
+    visible: () => true },
   { id: 'admin', href: '/admin', label: 'Admin', icon: Shield, group: 'admin', keywords: 'users roles permissions devices sync',
     visible: ({ isAdmin }) => isAdmin },
   { id: 'sync', href: '/sync', label: 'Offline sync', icon: CloudOff, group: 'admin', keywords: 'pending queue offline',
@@ -144,32 +147,62 @@ export const NAV_MODULES: NavModule[] = [
 ]
 
 /*
- * The three tabs between Home and More, picked from what the person works on most. Each list is a
- * preference order: modules the user can't open are skipped and the next one is used, and the
- * remaining slots fall back to the general order so nobody gets fewer than they could have.
+ * The tabs between Home and More, picked from what the person works on most. Phones show the first
+ * three; wider screens show more of the same list. Each list is a preference order: modules the user
+ * can't open are skipped and the next one is used, and the remaining slots fall back to the general
+ * order so nobody gets fewer than they could have.
  */
 const TAB_PREFERENCES = {
-  admin: ['customers', 'stocks', 'reports', 'vouchers', 'ledgers'],
-  field: ['customers', 'orders', 'payments', 'check-in', 'attendance'],
-  accounts: ['vouchers', 'ledgers', 'stocks', 'reports', 'payments'],
+  admin: ['customers', 'stocks', 'reports', 'vouchers', 'ledgers', 'outstanding', 'orders', 'gst'],
+  field: ['customers', 'orders', 'payments', 'check-in', 'attendance', 'planner', 'expenses', 'outstanding'],
+  accounts: ['vouchers', 'ledgers', 'stocks', 'reports', 'payments', 'outstanding', 'gst', 'bank-recon'],
 }
+
+/** Tabs (after Home) on phones; wider screens show up to MAX_TABS. */
+export const PHONE_TAB_COUNT = 3
+export const MAX_TABS = 7
 const FALLBACK_ORDER = ['customers', 'vouchers', 'ledgers', 'stocks', 'orders', 'payments', 'reports', 'attendance', 'gst', 'expenses']
+
+/*
+ * Home's "Quick access" row: the next screens each role reaches for after its tabs. Modules already
+ * in the tab bar are skipped, and any slots left over take the person's other screens in menu order.
+ */
+const QUICK_PREFERENCES = {
+  admin: ['vouchers', 'ledgers', 'outstanding', 'orders', 'payments', 'gst', 'bank-recon', 'admin'],
+  field: ['check-in', 'planner', 'attendance', 'expenses', 'visit-log', 'stocks', 'sync'],
+  accounts: ['outstanding', 'payments', 'gst', 'bank-recon', 'customers', 'expenses', 'orders'],
+}
+
+type Persona = keyof typeof TAB_PREFERENCES
+
+function personaOf(ctx: NavContext): Persona {
+  const p = ctx.permissions
+  if (ctx.isAdmin) return 'admin'
+  return p.showCheckIn || (p.showOrders && p.showCustomers) ? 'field' : 'accounts'
+}
+
+function pick(available: NavModule[], order: string[], limit: number, skip: NavModule[] = []): NavModule[] {
+  const byId = new Map(available.map(m => [m.id, m]))
+  const picked: NavModule[] = []
+  for (const candidate of [...order.map(id => byId.get(id)), ...available]) {
+    if (candidate && !skip.includes(candidate) && !picked.includes(candidate)) picked.push(candidate)
+    if (picked.length === limit) break
+  }
+  return picked
+}
 
 export function visibleModules(ctx: NavContext): NavModule[] {
   return NAV_MODULES.filter(m => m.visible(ctx))
 }
 
-export function tabModules(ctx: NavContext): NavModule[] {
-  const available = new Map(visibleModules(ctx).map(m => [m.id, m]))
-  const p = ctx.permissions
-  const persona = ctx.isAdmin ? 'admin' : (p.showCheckIn || (p.showOrders && p.showCustomers)) ? 'field' : 'accounts'
-  const picked: NavModule[] = []
-  for (const id of [...TAB_PREFERENCES[persona], ...FALLBACK_ORDER]) {
-    const candidate = available.get(id)
-    if (candidate && !picked.includes(candidate)) picked.push(candidate)
-    if (picked.length === 3) break
-  }
-  return picked
+export function tabModules(ctx: NavContext, count = PHONE_TAB_COUNT): NavModule[] {
+  const available = visibleModules(ctx)
+  const preferred = [...TAB_PREFERENCES[personaOf(ctx)], ...FALLBACK_ORDER]
+  return pick(available.filter(m => preferred.includes(m.id)), preferred, count)
+}
+
+export function quickModules(ctx: NavContext, limit: number): NavModule[] {
+  return pick(visibleModules(ctx), QUICK_PREFERENCES[personaOf(ctx)], limit, tabModules(ctx))
 }
 
 /** True when the current path is this module or one of its sub-pages. */

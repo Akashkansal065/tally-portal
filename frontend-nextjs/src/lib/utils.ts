@@ -122,3 +122,10 @@ export const toTitleCase = (str: string) => {
     (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
   );
 }
+
+/** Where to go after signing in: the page the person was sent away from (?next=), or Home. Same-site paths only. */
+export function afterLoginPath(): string {
+  if (typeof window === 'undefined') return '/'
+  const next = new URLSearchParams(window.location.search).get('next')
+  return next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/login') ? next : '/'
+}

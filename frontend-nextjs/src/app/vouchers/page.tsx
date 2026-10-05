@@ -522,7 +522,7 @@ export default function VouchersPage() {
       <div className="bg-card border-b border-border p-4 sticky top-0 z-10 shadow-sm space-y-3.5">
         <div className="flex flex-col gap-3.5 max-w-lg mx-auto">
           {/* Row A: Navbar / Search triggers */}
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center justify-between gap-2 sm:gap-3">
             {searchExpanded ? (
               <div className="flex items-center gap-2 w-full animate-in slide-in-from-top-1 duration-200">
                 <div className="relative flex-1">
@@ -546,13 +546,13 @@ export default function VouchersPage() {
               <>
                 {/* Segment switcher */}
                 <div className="inline-flex rounded-lg p-1 bg-muted/60 border text-xs font-semibold shrink-0">
-                  <button className="px-4 py-1.5 rounded-md bg-emerald-500 text-white shadow-sm flex items-center gap-1.5 transition-all">
+                  <button className="px-3 sm:px-4 py-1.5 rounded-md bg-emerald-500 text-white shadow-sm flex items-center gap-1.5 transition-all">
                     Vouchers
                   </button>
                   {permissions.showLedger && (
                     <button
                       onClick={() => router.push("/ledgers")}
-                      className="px-4 py-1.5 rounded-md text-muted-foreground hover:text-foreground transition-all flex items-center gap-1.5 cursor-pointer"
+                      className="px-3 sm:px-4 py-1.5 rounded-md text-muted-foreground hover:text-foreground transition-all flex items-center gap-1.5 cursor-pointer"
                     >
                       Ledgers
                     </button>
@@ -604,10 +604,11 @@ export default function VouchersPage() {
                   >
                     <FileDown className="h-4.5 w-4.5" />
                   </button>
+                  {/* Phones get Create from the bar above the tabs and Bank Recon from More, so the header fits */}
                   {canCreateVoucher && (
                     <button
                       onClick={() => { setEditingVoucher(null); setCreateModalOpen(true); }}
-                      className="h-8 px-2 sm:px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-lg shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
+                      className="max-md:hidden h-8 px-2 sm:px-3 flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-lg shadow-sm shrink-0 cursor-pointer transition-all active:scale-95"
                       title="Create Voucher"
                     >
                       <Plus className="h-4 w-4 stroke-[2.5]" />
@@ -616,7 +617,7 @@ export default function VouchersPage() {
                   )}
                   <button
                     onClick={() => router.push('/bank-recon')}
-                    className="h-8 px-2 sm:px-3 flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-bold rounded-lg shadow-2xs shrink-0 cursor-pointer transition-all active:scale-95"
+                    className="max-md:hidden h-8 px-2 sm:px-3 flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-bold rounded-lg shadow-2xs shrink-0 cursor-pointer transition-all active:scale-95"
                     title="Open Bank Reconciliation"
                   >
                     <Landmark className="h-4 w-4" />
