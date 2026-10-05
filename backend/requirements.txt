@@ -38,7 +38,7 @@ filelock==3.32.2
 frozenlist==1.8.0
 fsspec==2026.7.0
 granian==2.7.9
-graphifyy==0.4.23
+graphifyy==0.9.73
 greenlet==3.5.3
 grpclib==0.4.9
 gunicorn==23.0.0; sys_platform != 'win32'
