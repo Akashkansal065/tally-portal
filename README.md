@@ -1,5 +1,10 @@
 # MyTally — Tally Prime Cloud Portal
 
+[![CI](https://github.com/Akashkansal065/tally-portal/actions/workflows/ci.yml/badge.svg)](https://github.com/Akashkansal065/tally-portal/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Akashkansal065/tally-portal/badge)](https://scorecard.dev/viewer/?uri=github.com/Akashkansal065/tally-portal)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Good first issues](https://img.shields.io/github/issues/Akashkansal065/tally-portal/good%20first%20issue?label=good%20first%20issues)](https://github.com/Akashkansal065/tally-portal/labels/good%20first%20issue)
+
 MyTally (repo: `tally-portal`, mobile app: **SnehDist.**) puts a business's **Tally Prime** books in front of people who aren't sitting at the Tally desktop. It mirrors Tally's ledgers, inventory and vouchers into a cloud database, gives field staff and managers a web and mobile app on top of that data, and writes the changes they make back into Tally.
 
 > **New here?** Read this file top to bottom, then [`architecture.md`](architecture.md) for how the parts fit together. Deep-dive references live in [`docs/`](docs/).
@@ -17,6 +22,7 @@ MyTally (repo: `tally-portal`, mobile app: **SnehDist.**) puts a business's **Ta
 7. [Environment variables](#environment-variables)
 8. [Troubleshooting](#troubleshooting)
 9. [Further documentation](#further-documentation)
+10. [Contributing](#contributing)
 
 ---
 
@@ -294,7 +300,7 @@ npx cap open ios
 
 ### Tests and CI
 
-Automated suites: `backend/tests/` (run `pytest` from `backend/`) and `desktop-sync-agent/tests/` (run `pytest tests` from `desktop-sync-agent/`). `backend/tests/e2e_vouchers/` holds older integration scripts that need a live backend and Tally. GitHub Actions currently runs only OpenSSF Scorecard (`.github/workflows/scorecard.yml`). Before opening a PR, run at least `npm run lint`, `npx tsc --noEmit` and a manual smoke test of the screens you touched.
+Automated suites: `backend/tests/` (run `pytest` from `backend/`) and `desktop-sync-agent/tests/` (run `pytest tests` from `desktop-sync-agent/`). `backend/tests/e2e_vouchers/` holds older integration scripts that need a live backend and Tally. GitHub Actions runs both suites, a frontend type-check, and ESLint on the lines each pull request changes (`.github/workflows/ci.yml`), plus OpenSSF Scorecard weekly. See [`CONTRIBUTING.md`](CONTRIBUTING.md#run-the-checks) for running the same checks locally.
 
 ---
 
@@ -363,7 +369,12 @@ This file is written by the GUI. Passwords and tokens go into the OS credential 
 | [`docs/TALLY_CRASH_PREVENTION_GUIDE.md`](docs/TALLY_CRASH_PREVENTION_GUIDE.md) | Safe XML request patterns for Tally |
 | [`docs/TallyPrime_API_Reference.md`](docs/TallyPrime_API_Reference.md) | Tally XML/JSON API reference |
 | [`desktop-sync-agent/README.md`](desktop-sync-agent/README.md) | Agent features and packaging |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Setting up, running checks, opening a pull request |
 | [`SECURITY.md`](SECURITY.md) | Reporting vulnerabilities |
+
+## Contributing
+
+Contributions are welcome, and most of them don't need Tally Prime or MySQL: the backend tests run on SQLite. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), then pick an issue labelled [good first issue](https://github.com/Akashkansal065/tally-portal/labels/good%20first%20issue). Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
