@@ -118,3 +118,47 @@ export function parseGSTIN(gstin: string): { stateName?: string; panNumber?: str
   }
   return {}
 }
+
+export const WEEKLY_OFF_DAYS: string[] = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+]
+
+export const PROPOSED_PINCODE_CITIES: Record<string, { city: string; state?: string }> = {
+  '250001': { city: 'Meerut', state: 'Uttar Pradesh' },
+  '250002': { city: 'Meerut', state: 'Uttar Pradesh' },
+  '250003': { city: 'Meerut', state: 'Uttar Pradesh' },
+  '250004': { city: 'Meerut', state: 'Uttar Pradesh' },
+  '250103': { city: 'Meerut', state: 'Uttar Pradesh' },
+  '250104': { city: 'Meerut', state: 'Uttar Pradesh' },
+  '250110': { city: 'Modipuram', state: 'Uttar Pradesh' },
+  '250502': { city: 'Meerut', state: 'Uttar Pradesh' },
+  '250401': { city: 'Mawana', state: 'Uttar Pradesh' },
+  '250404': { city: 'Hastinapur', state: 'Uttar Pradesh' },
+  '250342': { city: 'Sardhana', state: 'Uttar Pradesh' },
+  '250611': { city: 'Baraut', state: 'Uttar Pradesh' },
+  '250601': { city: 'Baghpat', state: 'Uttar Pradesh' },
+  '245101': { city: 'Hapur', state: 'Uttar Pradesh' },
+  '247776': { city: 'Shamli', state: 'Uttar Pradesh' },
+  '247554': { city: 'Deoband', state: 'Uttar Pradesh' },
+  '247001': { city: 'Saharanpur', state: 'Uttar Pradesh' },
+  '251001': { city: 'Muzaffarnagar', state: 'Uttar Pradesh' },
+  '251002': { city: 'Muzaffarnagar', state: 'Uttar Pradesh' },
+  '251314': { city: 'Muzaffarnagar', state: 'Uttar Pradesh' },
+  '201204': { city: 'Modinagar', state: 'Uttar Pradesh' },
+  '201206': { city: 'Muradnagar', state: 'Uttar Pradesh' },
+  '201001': { city: 'Ghaziabad', state: 'Uttar Pradesh' },
+  '201002': { city: 'Ghaziabad', state: 'Uttar Pradesh' },
+  '201301': { city: 'Noida', state: 'Uttar Pradesh' },
+  '248001': { city: 'Dehradun', state: 'Uttarakhand' },
+  '248198': { city: 'Vikasnagar', state: 'Uttarakhand' },
+  '249201': { city: 'Rishikesh', state: 'Uttarakhand' },
+  '249401': { city: 'Haridwar', state: 'Uttarakhand' },
+  '110001': { city: 'New Delhi', state: 'Delhi' },
+  '110006': { city: 'Delhi', state: 'Delhi' },
+}

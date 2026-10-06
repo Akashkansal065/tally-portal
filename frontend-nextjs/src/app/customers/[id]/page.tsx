@@ -9,6 +9,7 @@ import { API_BASE, authHeaders, cn } from '@/lib/utils'
 import Cropper from 'react-easy-crop'
 import { getCroppedImg } from '@/lib/cropImage'
 import LedgerDetailsClient from '@/app/ledgers/[id]/ledger-details-client'
+import { INDIAN_STATES, parseGSTIN, WEEKLY_OFF_DAYS, PROPOSED_PINCODE_CITIES } from '@/lib/location-data'
 import {
   Users,
   MapPin,
@@ -148,12 +149,18 @@ interface CustomerDetail {
   phone: string
   mobile: string
   whatsapp_number: string
+  alternate_phone?: string
   email: string
   address: string
+  landmark?: string
   locality: string
   city: string
   state: string
   pincode: string
+  weekly_off?: string
+  gstin?: string
+  pan_number?: string
+  payment_terms?: string
   route_name: string
   shop_type: string
   tags: string[]
@@ -421,13 +428,20 @@ function CustomerProfileContent() {
     contact_person: '',
     phone: '',
     whatsapp_number: '',
+    alternate_phone: '',
+    email: '',
     address: '',
+    landmark: '',
     locality: '',
     city: '',
     state: '',
     pincode: '',
     route_name: '',
     shop_type: 'Retailer',
+    weekly_off: '',
+    gstin: '',
+    pan_number: '',
+    payment_terms: '',
     tags: '',
     priority: 'medium',
     visit_frequency: 'weekly',
@@ -497,13 +511,20 @@ function CustomerProfileContent() {
           contact_person: data.contact_person || '',
           phone: data.phone || '',
           whatsapp_number: data.whatsapp_number || data.mobile || '',
+          alternate_phone: data.alternate_phone || '',
+          email: data.email || '',
           address: data.address || '',
+          landmark: data.landmark || '',
           locality: data.locality || '',
           city: data.city || '',
           state: data.state || '',
           pincode: data.pincode || '',
           route_name: data.route_name || '',
           shop_type: data.shop_type || 'Retailer',
+          weekly_off: data.weekly_off || '',
+          gstin: data.gstin || '',
+          pan_number: data.pan_number || '',
+          payment_terms: data.payment_terms || '',
           tags: data.tags ? data.tags.join(', ') : '',
           priority: data.priority || 'medium',
           visit_frequency: data.visit_frequency || 'weekly',
@@ -2408,11 +2429,21 @@ function CustomerProfileContent() {
                   </div>
                 </div>
 
-                {/* Email */}
-                {customer.email && (
-                  <div>
-                    <span className="text-muted-foreground block text-[11px]">Email Address</span>
-                    <span className="font-medium text-foreground">{customer.email}</span>
+                {/* Alternate Phone & Email */}
+                {(customer.alternate_phone || customer.email) && (
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    {customer.alternate_phone && (
+                      <div>
+                        <span className="text-muted-foreground block text-[11px]">Alternate Phone</span>
+                        <span className="font-mono text-foreground font-medium">{customer.alternate_phone}</span>
+                      </div>
+                    )}
+                    {customer.email && (
+                      <div className={customer.alternate_phone ? '' : 'col-span-2'}>
+                        <span className="text-muted-foreground block text-[11px]">Email Address</span>
+                        <span className="font-medium text-foreground truncate block">{customer.email}</span>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2432,13 +2463,41 @@ function CustomerProfileContent() {
                   <p className="font-medium text-foreground mt-0.5 leading-relaxed">
                     {customer.address || 'Address not registered'}
                   </p>
+                  {customer.landmark && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      🚩 Landmark: <span className="text-foreground font-medium">{customer.landmark}</span>
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground mt-1.5">
                     {customer.locality && <span className="bg-muted px-2 py-0.5 rounded-md">📍 {customer.locality}</span>}
                     {customer.city && <span className="bg-muted px-2 py-0.5 rounded-md">🏙️ {customer.city}</span>}
-                    {customer.state && <span className="bg-muted px-2 py-0.5 rounded-md">{customer.state}</span>}
-                    {customer.pincode && <span className="bg-muted px-2 py-0.5 rounded-md">📮 {customer.pincode}</span>}
+                    {customer.state && <span className="bg-muted px-2 py-0.5 rounded-md">🗺️ {customer.state}</span>}
+                    {customer.pincode && <span className="bg-muted px-2 py-0.5 rounded-md font-mono font-medium">📮 {customer.pincode}</span>}
+                    {customer.weekly_off && (
+                      <span className="bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-md font-medium">
+                        🏪 Closed: {customer.weekly_off}
+                      </span>
+                    )}
                   </div>
                 </div>
+
+                {/* Tax Details (GSTIN & PAN) */}
+                {(customer.gstin || customer.pan_number) && (
+                  <div className="pt-2 border-t border-border flex flex-wrap gap-3 text-[11px]">
+                    {customer.gstin && (
+                      <div>
+                        <span className="text-muted-foreground block text-[10px]">GSTIN</span>
+                        <span className="font-mono font-semibold text-foreground">{customer.gstin}</span>
+                      </div>
+                    )}
+                    {customer.pan_number && (
+                      <div>
+                        <span className="text-muted-foreground block text-[10px]">PAN</span>
+                        <span className="font-mono font-semibold text-foreground">{customer.pan_number}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Frequency & Notes */}
                 {(customer.visit_frequency || customer.notes) && (
@@ -3317,6 +3376,7 @@ function CustomerProfileContent() {
                     type="text"
                     value={editForm.phone}
                     onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                    placeholder="Primary contact number"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
@@ -3326,6 +3386,30 @@ function CustomerProfileContent() {
                     type="text"
                     value={editForm.whatsapp_number}
                     onChange={(e) => setEditForm({ ...editForm, whatsapp_number: e.target.value })}
+                    placeholder="WhatsApp updates number"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Alternate Phone / Landline</label>
+                  <input
+                    type="text"
+                    value={editForm.alternate_phone}
+                    onChange={(e) => setEditForm({ ...editForm, alternate_phone: e.target.value })}
+                    placeholder="Secondary contact (optional)"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    value={editForm.email}
+                    onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                    placeholder="e.g. shop@example.com"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
@@ -3337,8 +3421,46 @@ function CustomerProfileContent() {
                   type="text"
                   value={editForm.address}
                   onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                  placeholder="Shop / Premise / Street address"
                   className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Landmark</label>
+                  <input
+                    type="text"
+                    value={editForm.landmark}
+                    onChange={(e) => setEditForm({ ...editForm, landmark: e.target.value })}
+                    placeholder="e.g. Opp. Vishal Mega Mart"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">PIN Code</label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={editForm.pincode}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 6)
+                      setEditForm((prev) => {
+                        const updated = { ...prev, pincode: val }
+                        if (val.length === 6) {
+                          const suggested = PROPOSED_PINCODE_CITIES[val]
+                          if (suggested) {
+                            if (!prev.city) updated.city = suggested.city
+                            if (!prev.state && suggested.state) updated.state = suggested.state
+                          }
+                        }
+                        return updated
+                      })
+                    }}
+                    placeholder="6-digit PIN code (e.g. 250002)"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono tracking-wider"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -3349,6 +3471,7 @@ function CustomerProfileContent() {
                     list="localities-list"
                     value={editForm.locality}
                     onChange={(e) => setEditForm({ ...editForm, locality: e.target.value })}
+                    placeholder="Market / Locality"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                   {filterOptions && (
@@ -3366,6 +3489,7 @@ function CustomerProfileContent() {
                     list="cities-list"
                     value={editForm.city}
                     onChange={(e) => setEditForm({ ...editForm, city: e.target.value })}
+                    placeholder="City / Town"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                   {filterOptions && (
@@ -3380,12 +3504,29 @@ function CustomerProfileContent() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
+                  <label className="font-semibold block mb-1">State</label>
+                  <input
+                    type="text"
+                    list="indian-states-list-detail"
+                    value={editForm.state}
+                    onChange={(e) => setEditForm({ ...editForm, state: e.target.value })}
+                    placeholder="e.g. Uttar Pradesh"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <datalist id="indian-states-list-detail">
+                    {INDIAN_STATES.map((st) => (
+                      <option key={st} value={st} />
+                    ))}
+                  </datalist>
+                </div>
+                <div>
                   <label className="font-semibold block mb-1">Sales Route / Beat</label>
                   <input
                     type="text"
                     list="routes-list"
                     value={editForm.route_name}
                     onChange={(e) => setEditForm({ ...editForm, route_name: e.target.value })}
+                    placeholder="Beat / Route"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                   {filterOptions && (
@@ -3396,6 +3537,9 @@ function CustomerProfileContent() {
                     </datalist>
                   )}
                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-semibold block mb-1">Visit Schedule</label>
                   <select
@@ -3407,6 +3551,53 @@ function CustomerProfileContent() {
                     <option value="biweekly">Bi-weekly</option>
                     <option value="monthly">Monthly</option>
                   </select>
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">Weekly Off / Market Holiday</label>
+                  <select
+                    value={editForm.weekly_off}
+                    onChange={(e) => setEditForm({ ...editForm, weekly_off: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="">None / Open all days</option>
+                    {WEEKLY_OFF_DAYS.map((day) => (
+                      <option key={day} value={day}>{day}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">GSTIN (GST Number)</label>
+                  <input
+                    type="text"
+                    maxLength={15}
+                    value={editForm.gstin}
+                    onChange={(e) => {
+                      const val = e.target.value.toUpperCase()
+                      setEditForm((prev) => {
+                        const updated = { ...prev, gstin: val }
+                        const parsed = parseGSTIN(val)
+                        if (parsed.stateName && !prev.state) updated.state = parsed.stateName
+                        if (parsed.panNumber && !prev.pan_number) updated.pan_number = parsed.panNumber
+                        return updated
+                      })
+                    }}
+                    placeholder="15-digit GSTIN"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">PAN Number</label>
+                  <input
+                    type="text"
+                    maxLength={10}
+                    value={editForm.pan_number}
+                    onChange={(e) => setEditForm({ ...editForm, pan_number: e.target.value.toUpperCase() })}
+                    placeholder="10-digit PAN"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono uppercase"
+                  />
                 </div>
               </div>
 

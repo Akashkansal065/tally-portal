@@ -38,14 +38,20 @@ class CustomerCreateRequest(BaseModel):
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     whatsapp_number: Optional[str] = None
+    alternate_phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
     locality: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    landmark: Optional[str] = None
     route_name: Optional[str] = None
     shop_type: Optional[str] = "Retailer"
+    weekly_off: Optional[str] = None
+    gstin: Optional[str] = None
+    pan_number: Optional[str] = None
+    payment_terms: Optional[str] = None
     tags: Optional[str] = None
     priority: Optional[str] = "medium"
     visit_frequency: Optional[str] = "weekly"
@@ -58,14 +64,20 @@ class CustomerProfileUpdateRequest(BaseModel):
     contact_person: Optional[str] = None
     phone: Optional[str] = None
     whatsapp_number: Optional[str] = None
+    alternate_phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
     locality: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    landmark: Optional[str] = None
     route_name: Optional[str] = None
     shop_type: Optional[str] = None
+    weekly_off: Optional[str] = None
+    gstin: Optional[str] = None
+    pan_number: Optional[str] = None
+    payment_terms: Optional[str] = None
     tags: Optional[str] = None
     priority: Optional[str] = None
     visit_frequency: Optional[str] = None
@@ -373,10 +385,17 @@ async def _build_customer_list(db: AsyncSession, company_id: int) -> List[Dict[s
             "city": c_city or "",
             "state": l.state or (p.state if p else ""),
             "pincode": l.pincode or (p.pincode if p else ""),
+            "landmark": (p.landmark if p else "") or "",
+            "gstin": (p.gstin if p and p.gstin else l.gstin) or "",
+            "pan_number": (p.pan_number if p and p.pan_number else l.pan_number) or "",
+            "alternate_phone": (p.alternate_phone if p else "") or "",
+            "weekly_off": (p.weekly_off if p else "") or "",
+            "payment_terms": (p.payment_terms if p else "") or "",
             "route_name": r_name or "",
             "shop_type": (p.shop_type if p else "Retailer") or "Retailer",
             "tags": [t.strip() for t in p.tags.split(",") if t.strip()] if (p and p.tags) else [],
             "priority": (p.priority if p else "medium") or "medium",
+            "visit_frequency": (p.visit_frequency if p else "weekly") or "weekly",
             "latitude": lat,
             "longitude": lon,
             "has_location": lat is not None and lon is not None,
@@ -448,10 +467,17 @@ async def _build_customer_list(db: AsyncSession, company_id: int) -> List[Dict[s
             "city": c_city or "",
             "state": p.state or "",
             "pincode": p.pincode or "",
+            "landmark": p.landmark or "",
+            "gstin": p.gstin or "",
+            "pan_number": p.pan_number or "",
+            "alternate_phone": p.alternate_phone or "",
+            "weekly_off": p.weekly_off or "",
+            "payment_terms": p.payment_terms or "",
             "route_name": p.route_name or "",
             "shop_type": p.shop_type or "Retailer",
             "tags": [t.strip() for t in p.tags.split(",") if t.strip()] if p.tags else [],
             "priority": p.priority or "medium",
+            "visit_frequency": p.visit_frequency or "weekly",
             "latitude": p.latitude,
             "longitude": p.longitude,
             "has_location": p.latitude is not None and p.longitude is not None,
@@ -851,6 +877,12 @@ async def create_field_customer(
         city=req.city.strip() if req.city else None,
         state=req.state.strip() if req.state else None,
         pincode=req.pincode.strip() if req.pincode else None,
+        landmark=req.landmark.strip() if req.landmark else None,
+        alternate_phone=req.alternate_phone.strip() if req.alternate_phone else None,
+        weekly_off=req.weekly_off.strip() if req.weekly_off else None,
+        gstin=req.gstin.strip().upper() if req.gstin else None,
+        pan_number=req.pan_number.strip().upper() if req.pan_number else None,
+        payment_terms=req.payment_terms.strip() if req.payment_terms else None,
         route_name=req.route_name.strip() if req.route_name else None,
         shop_type=req.shop_type or "Retailer",
         tags=req.tags.strip() if req.tags else None,
@@ -980,6 +1012,18 @@ async def update_customer_profile(
         profile.state = req.state
     if req.pincode is not None:
         profile.pincode = req.pincode
+    if req.landmark is not None:
+        profile.landmark = req.landmark
+    if req.alternate_phone is not None:
+        profile.alternate_phone = req.alternate_phone
+    if req.weekly_off is not None:
+        profile.weekly_off = req.weekly_off
+    if req.gstin is not None:
+        profile.gstin = req.gstin.strip().upper() if req.gstin else None
+    if req.pan_number is not None:
+        profile.pan_number = req.pan_number.strip().upper() if req.pan_number else None
+    if req.payment_terms is not None:
+        profile.payment_terms = req.payment_terms
     if req.route_name is not None:
         profile.route_name = req.route_name
     if req.shop_type is not None:
@@ -1747,6 +1791,12 @@ async def get_customer_profile_detail(
         "city": c_city,
         "state": (ledger.state if ledger else (profile.state if profile else "")) or "",
         "pincode": (ledger.pincode if ledger else (profile.pincode if profile else "")) or "",
+        "landmark": (profile.landmark if profile else "") or "",
+        "gstin": (profile.gstin if profile and profile.gstin else (ledger.gstin if ledger else "")) or "",
+        "pan_number": (profile.pan_number if profile and profile.pan_number else (ledger.pan_number if ledger else "")) or "",
+        "alternate_phone": (profile.alternate_phone if profile else "") or "",
+        "weekly_off": (profile.weekly_off if profile else "") or "",
+        "payment_terms": (profile.payment_terms if profile else "") or "",
         "route_name": (profile.route_name if profile else "") or "",
         "shop_type": (profile.shop_type if profile else "Retailer") or "Retailer",
         "tags": [t.strip() for t in profile.tags.split(",") if t.strip()] if (profile and profile.tags) else [],

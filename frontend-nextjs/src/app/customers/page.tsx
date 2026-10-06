@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, cn } from '@/lib/utils'
+import { INDIAN_STATES, parseGSTIN, WEEKLY_OFF_DAYS, PROPOSED_PINCODE_CITIES } from '@/lib/location-data'
 import {
   Users,
   MapPin,
@@ -83,16 +84,23 @@ interface Customer {
   phone: string
   mobile: string
   whatsapp_number: string
+  alternate_phone?: string
   email: string
   address: string
+  landmark?: string
   locality: string
   city: string
   state: string
   pincode: string
+  weekly_off?: string
+  gstin?: string
+  pan_number?: string
+  payment_terms?: string
   route_name: string
   shop_type: string
   tags: string[]
   priority: string
+  visit_frequency?: string
   latitude: number | null
   longitude: number | null
   has_location: boolean
@@ -331,15 +339,23 @@ export default function CustomersPage() {
     contact_person: '',
     phone: '',
     whatsapp_number: '',
+    alternate_phone: '',
+    email: '',
     address: '',
+    landmark: '',
     locality: '',
     city: '',
     state: '',
     pincode: '',
     route_name: '',
     shop_type: 'Retailer',
+    weekly_off: '',
+    gstin: '',
+    pan_number: '',
+    payment_terms: '',
     tags: '',
     priority: 'medium',
+    visit_frequency: 'weekly',
     notes: '',
     latitude: '',
     longitude: '',
@@ -348,15 +364,23 @@ export default function CustomersPage() {
     contact_person: '',
     phone: '',
     whatsapp_number: '',
+    alternate_phone: '',
+    email: '',
     address: '',
+    landmark: '',
     locality: '',
     city: '',
     state: '',
     pincode: '',
     route_name: '',
     shop_type: 'Retailer',
+    weekly_off: '',
+    gstin: '',
+    pan_number: '',
+    payment_terms: '',
     tags: '',
     priority: 'medium',
+    visit_frequency: 'weekly',
     notes: '',
   })
   const [tagForm, setTagForm] = useState({
@@ -620,15 +644,23 @@ export default function CustomersPage() {
       contact_person: cust.contact_person || '',
       phone: cust.phone || '',
       whatsapp_number: cust.whatsapp_number || cust.mobile || '',
+      alternate_phone: cust.alternate_phone || '',
+      email: cust.email || '',
       address: cust.address || '',
+      landmark: cust.landmark || '',
       locality: cust.locality || '',
       city: cust.city || '',
       state: cust.state || '',
       pincode: cust.pincode || '',
       route_name: cust.route_name || '',
       shop_type: cust.shop_type || 'Retailer',
+      weekly_off: cust.weekly_off || '',
+      gstin: cust.gstin || '',
+      pan_number: cust.pan_number || '',
+      payment_terms: cust.payment_terms || '',
       tags: cust.tags ? cust.tags.join(', ') : '',
       priority: cust.priority || 'medium',
+      visit_frequency: cust.visit_frequency || 'weekly',
       notes: cust.notes || '',
     })
     setShowEditModal(true)
@@ -764,15 +796,23 @@ export default function CustomersPage() {
           contact_person: '',
           phone: '',
           whatsapp_number: '',
+          alternate_phone: '',
+          email: '',
           address: '',
+          landmark: '',
           locality: '',
           city: '',
           state: '',
           pincode: '',
           route_name: '',
           shop_type: 'Retailer',
+          weekly_off: '',
+          gstin: '',
+          pan_number: '',
+          payment_terms: '',
           tags: '',
           priority: 'medium',
+          visit_frequency: 'weekly',
           notes: '',
           latitude: '',
           longitude: '',
@@ -3133,6 +3173,29 @@ export default function CustomersPage() {
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Alternate Phone / Landline</label>
+                  <input
+                    type="text"
+                    value={addForm.alternate_phone}
+                    onChange={(e) => setAddForm({ ...addForm, alternate_phone: e.target.value })}
+                    placeholder="Optional backup phone"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    value={addForm.email}
+                    onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
+                    placeholder="e.g. orders@customer.com"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="font-semibold block mb-1">Street Address</label>
                 <input
@@ -3142,6 +3205,43 @@ export default function CustomersPage() {
                   placeholder="Shop No., Market building, Road"
                   className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Landmark</label>
+                  <input
+                    type="text"
+                    value={addForm.landmark}
+                    onChange={(e) => setAddForm({ ...addForm, landmark: e.target.value })}
+                    placeholder="e.g. Opp. Vishal Mega Mart"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">PIN Code</label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={addForm.pincode}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 6)
+                      setAddForm((prev) => {
+                        const updated = { ...prev, pincode: val }
+                        if (val.length === 6) {
+                          const suggested = PROPOSED_PINCODE_CITIES[val]
+                          if (suggested) {
+                            if (!prev.city) updated.city = suggested.city
+                            if (!prev.state && suggested.state) updated.state = suggested.state
+                          }
+                        }
+                        return updated
+                      })
+                    }}
+                    placeholder="6-digit PIN code (e.g. 250002)"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono tracking-wider"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -3163,13 +3263,29 @@ export default function CustomersPage() {
                     list="global-cities-list"
                     value={addForm.city}
                     onChange={(e) => setAddForm({ ...addForm, city: e.target.value })}
-                    placeholder="e.g. Delhi, Gurgaon"
+                    placeholder="e.g. Meerut, Delhi"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">State</label>
+                  <input
+                    type="text"
+                    list="indian-states-list-add"
+                    value={addForm.state}
+                    onChange={(e) => setAddForm({ ...addForm, state: e.target.value })}
+                    placeholder="e.g. Uttar Pradesh"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <datalist id="indian-states-list-add">
+                    {INDIAN_STATES.map((st) => (
+                      <option key={st} value={st} />
+                    ))}
+                  </datalist>
+                </div>
                 <div>
                   <label className="font-semibold block mb-1">Route / Sales Beat</label>
                   <input
@@ -3181,6 +3297,9 @@ export default function CustomersPage() {
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-semibold block mb-1">Priority</label>
                   <select
@@ -3192,6 +3311,53 @@ export default function CustomersPage() {
                     <option value="medium">Medium</option>
                     <option value="low">Low</option>
                   </select>
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">Weekly Off / Market Holiday</label>
+                  <select
+                    value={addForm.weekly_off}
+                    onChange={(e) => setAddForm({ ...addForm, weekly_off: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="">None / Open all days</option>
+                    {WEEKLY_OFF_DAYS.map((day) => (
+                      <option key={day} value={day}>{day}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">GSTIN (GST Number)</label>
+                  <input
+                    type="text"
+                    maxLength={15}
+                    value={addForm.gstin}
+                    onChange={(e) => {
+                      const val = e.target.value.toUpperCase()
+                      setAddForm((prev) => {
+                        const updated = { ...prev, gstin: val }
+                        const parsed = parseGSTIN(val)
+                        if (parsed.stateName && !prev.state) updated.state = parsed.stateName
+                        if (parsed.panNumber && !prev.pan_number) updated.pan_number = parsed.panNumber
+                        return updated
+                      })
+                    }}
+                    placeholder="15-digit GSTIN"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">PAN Number</label>
+                  <input
+                    type="text"
+                    maxLength={10}
+                    value={addForm.pan_number}
+                    onChange={(e) => setAddForm({ ...addForm, pan_number: e.target.value.toUpperCase() })}
+                    placeholder="10-digit PAN"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono uppercase"
+                  />
                 </div>
               </div>
 
@@ -3346,6 +3512,7 @@ export default function CustomersPage() {
                     type="text"
                     value={editForm.phone}
                     onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                    placeholder="Primary contact"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
@@ -3355,6 +3522,30 @@ export default function CustomersPage() {
                     type="text"
                     value={editForm.whatsapp_number}
                     onChange={(e) => setEditForm({ ...editForm, whatsapp_number: e.target.value })}
+                    placeholder="WhatsApp number"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Alternate Phone / Landline</label>
+                  <input
+                    type="text"
+                    value={editForm.alternate_phone}
+                    onChange={(e) => setEditForm({ ...editForm, alternate_phone: e.target.value })}
+                    placeholder="Secondary contact (optional)"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">Email Address</label>
+                  <input
+                    type="email"
+                    value={editForm.email}
+                    onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                    placeholder="e.g. shop@example.com"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
@@ -3366,8 +3557,46 @@ export default function CustomersPage() {
                   type="text"
                   value={editForm.address}
                   onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                  placeholder="Shop / Premise / Street address"
                   className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Landmark</label>
+                  <input
+                    type="text"
+                    value={editForm.landmark}
+                    onChange={(e) => setEditForm({ ...editForm, landmark: e.target.value })}
+                    placeholder="e.g. Opp. Vishal Mega Mart"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">PIN Code</label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={editForm.pincode}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 6)
+                      setEditForm((prev) => {
+                        const updated = { ...prev, pincode: val }
+                        if (val.length === 6) {
+                          const suggested = PROPOSED_PINCODE_CITIES[val]
+                          if (suggested) {
+                            if (!prev.city) updated.city = suggested.city
+                            if (!prev.state && suggested.state) updated.state = suggested.state
+                          }
+                        }
+                        return updated
+                      })
+                    }}
+                    placeholder="6-digit PIN code (e.g. 250002)"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono tracking-wider"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -3378,6 +3607,7 @@ export default function CustomersPage() {
                     list="global-localities-list"
                     value={editForm.locality}
                     onChange={(e) => setEditForm({ ...editForm, locality: e.target.value })}
+                    placeholder="Market / Area"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
@@ -3388,6 +3618,7 @@ export default function CustomersPage() {
                     list="global-cities-list"
                     value={editForm.city}
                     onChange={(e) => setEditForm({ ...editForm, city: e.target.value })}
+                    placeholder="City / Town"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
@@ -3395,12 +3626,104 @@ export default function CustomersPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
+                  <label className="font-semibold block mb-1">State</label>
+                  <input
+                    type="text"
+                    list="indian-states-list-edit"
+                    value={editForm.state}
+                    onChange={(e) => setEditForm({ ...editForm, state: e.target.value })}
+                    placeholder="e.g. Uttar Pradesh"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <datalist id="indian-states-list-edit">
+                    {INDIAN_STATES.map((st) => (
+                      <option key={st} value={st} />
+                    ))}
+                  </datalist>
+                </div>
+                <div>
                   <label className="font-semibold block mb-1">Route / Sales Beat</label>
                   <input
                     type="text"
                     list="global-routes-list"
                     value={editForm.route_name}
                     onChange={(e) => setEditForm({ ...editForm, route_name: e.target.value })}
+                    placeholder="Beat / Route"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Visit Schedule</label>
+                  <select
+                    value={editForm.visit_frequency}
+                    onChange={(e) => setEditForm({ ...editForm, visit_frequency: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="weekly">Weekly</option>
+                    <option value="biweekly">Bi-weekly</option>
+                    <option value="monthly">Monthly</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">Weekly Off / Market Holiday</label>
+                  <select
+                    value={editForm.weekly_off}
+                    onChange={(e) => setEditForm({ ...editForm, weekly_off: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="">None / Open all days</option>
+                    {WEEKLY_OFF_DAYS.map((day) => (
+                      <option key={day} value={day}>{day}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">GSTIN (GST Number)</label>
+                  <input
+                    type="text"
+                    maxLength={15}
+                    value={editForm.gstin}
+                    onChange={(e) => {
+                      const val = e.target.value.toUpperCase()
+                      setEditForm((prev) => {
+                        const updated = { ...prev, gstin: val }
+                        const parsed = parseGSTIN(val)
+                        if (parsed.stateName && !prev.state) updated.state = parsed.stateName
+                        if (parsed.panNumber && !prev.pan_number) updated.pan_number = parsed.panNumber
+                        return updated
+                      })
+                    }}
+                    placeholder="15-digit GSTIN"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold block mb-1">PAN Number</label>
+                  <input
+                    type="text"
+                    maxLength={10}
+                    value={editForm.pan_number}
+                    onChange={(e) => setEditForm({ ...editForm, pan_number: e.target.value.toUpperCase() })}
+                    placeholder="10-digit PAN"
+                    className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary font-mono uppercase"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold block mb-1">Tags (Comma-separated)</label>
+                  <input
+                    type="text"
+                    value={editForm.tags}
+                    onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
+                    placeholder="VIP, Key Account, Fast Payer"
                     className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
@@ -3421,9 +3744,10 @@ export default function CustomersPage() {
               <div>
                 <label className="font-semibold block mb-1">Internal Sales Notes</label>
                 <textarea
-                  rows={3}
+                  rows={2}
                   value={editForm.notes}
                   onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  placeholder="Best time to visit, owner preferences, etc."
                   className="w-full px-3 py-2 rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary"
                 />
               </div>

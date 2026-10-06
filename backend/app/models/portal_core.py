@@ -1023,6 +1023,7 @@ class CustomerProfile(Base):
     contact_person = Column(String(150), nullable=True)
     phone = Column(String(50), nullable=True)
     whatsapp_number = Column(String(50), nullable=True)
+    alternate_phone = Column(String(50), nullable=True)
     email = Column(String(150), nullable=True)
     
     # Established Master Coordinates
@@ -1036,9 +1037,14 @@ class CustomerProfile(Base):
     city = Column(String(100), nullable=True, index=True)
     state = Column(String(100), nullable=True)
     pincode = Column(String(20), nullable=True)
+    landmark = Column(String(200), nullable=True)
     address = Column(Text, nullable=True)
     route_name = Column(String(100), nullable=True, index=True)
     shop_type = Column(String(50), nullable=True)
+    weekly_off = Column(String(50), nullable=True)
+    gstin = Column(String(15), nullable=True)
+    pan_number = Column(String(30), nullable=True)
+    payment_terms = Column(String(100), nullable=True)
     tags = Column(String(500), nullable=True)
     priority = Column(String(20), default="medium")
     visit_frequency = Column(String(20), default="weekly")
