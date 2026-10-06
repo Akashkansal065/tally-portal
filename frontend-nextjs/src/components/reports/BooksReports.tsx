@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { Loader2, Share2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders, cn } from '@/lib/utils'
+import { API_BASE, authHeaders, cn, formatDate } from '@/lib/utils'
 import { shareFile } from '@/lib/capacitor-pdf'
 
 const money = (n: number) => n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -21,7 +21,11 @@ const VIEWS: { id: View; label: string }[] = [
 
 async function load<T>(token: string, path: string): Promise<T> {
   const res = await fetch(`${API_BASE}/reports/${path}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Could not load the report')
+  if (!res.ok) {
+    // FastAPI validation errors carry a list of {msg} objects, other errors a plain string
+    const detail = (await res.json().catch(() => ({}))).detail
+    throw new Error(typeof detail === 'string' ? detail : Array.isArray(detail) && detail[0]?.msg ? detail[0].msg : 'Could not load the report')
+  }
   return res.json()
 }
 
@@ -40,7 +44,9 @@ export function BooksReports({ from, to }: { from: string; to: string }) {
   const [data, setData] = useState<{ key: string; body: any } | null>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const [error, setError] = useState<string | null>(null)
   const path = view === 'cash' ? 'cash-bank-book' : view === 'centres' ? 'cost-centres' : view === 'godown' ? 'stock-by-godown' : 'stock-by-batch'
-  const key = `${path}?from=${from}&to=${to}`
+  // Empty dates ("All time") are left out: the API then covers the company's whole history, and rejects `from=`
+  const query = new URLSearchParams(Object.entries({ from, to }).filter(([, v]) => v)).toString()
+  const key = query ? `${path}?${query}` : path
 
   useEffect(() => {
     if (!token) return
@@ -51,18 +57,22 @@ export function BooksReports({ from, to }: { from: string; to: string }) {
   }, [token, key])
 
   const body = data?.key === key ? data.body : null
+  // The period the API actually used, so the caption is right even when no dates were picked
+  const periodFrom = body?.from || from
+  const periodTo = body?.to || to
+  const period = periodFrom && periodTo ? `${formatDate(periodFrom)} to ${formatDate(periodTo)}` : 'all time'
   const card = 'rounded-2xl border border-border bg-card'
 
   const share = () => {
     if (!body) return
     if (view === 'cash') {
-      shareCsv(`Cash and bank book ${from} to ${to}`, ['Ledger', 'Kind', 'Opening', 'Money in', 'Money out', 'Closing'],
+      shareCsv(`Cash and bank book ${periodFrom} to ${periodTo}`, ['Ledger', 'Kind', 'Opening', 'Money in', 'Money out', 'Closing'],
         body.ledgers.map((r: any) => [r.name, r.kind, r.opening, r.money_in, r.money_out, r.closing])) // eslint-disable-line @typescript-eslint/no-explicit-any
     } else if (view === 'centres') {
-      shareCsv(`Cost centres ${from} to ${to}`, ['Cost centre', 'Debit', 'Credit', 'Net', 'Vouchers'],
+      shareCsv(`Cost centres ${periodFrom} to ${periodTo}`, ['Cost centre', 'Debit', 'Credit', 'Net', 'Vouchers'],
         body.rows.map((r: any) => [r.name, r.debit, r.credit, r.net, r.vouchers])) // eslint-disable-line @typescript-eslint/no-explicit-any
     } else if (view === 'godown') {
-      shareCsv(`Stock by godown ${from} to ${to}`, ['Godown', 'Item', 'Unit', 'In', 'Out', 'Net'],
+      shareCsv(`Stock by godown ${periodFrom} to ${periodTo}`, ['Godown', 'Item', 'Unit', 'In', 'Out', 'Net'],
         body.godowns.flatMap((g: any) => g.items.map((i: any) => [g.godown, i.item, i.unit, i.qty_in, i.qty_out, i.net]))) // eslint-disable-line @typescript-eslint/no-explicit-any
     } else {
       shareCsv('Stock by batch', ['Item', 'Batch', 'Available', 'Unit', 'Expires'],
@@ -75,7 +85,7 @@ export function BooksReports({ from, to }: { from: string; to: string }) {
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h2 id="books-title" className="text-lg font-extrabold">Books & stock</h2>
-          <p className="text-sm text-muted-foreground">{view === 'batch' ? 'Batches with stock left, soonest expiry first.' : `For ${from} to ${to}. Cancelled and optional vouchers are left out.`}</p>
+          <p className="text-sm text-muted-foreground">{view === 'batch' ? 'Batches with stock left, soonest expiry first.' : `For ${period}. Cancelled and optional vouchers are left out.`}</p>
         </div>
         <button type="button" onClick={share} disabled={!body}
           className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-border px-3 text-sm font-semibold hover:bg-muted disabled:opacity-50 cursor-pointer">

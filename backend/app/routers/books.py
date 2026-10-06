@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.datetime_utils import get_ist_date
 from app.core.permissions import require_permission
-from app.models.portal_core import User
+from app.models.portal_core import Company, User
 from app.models.tally_core import (
     Batch, MstCostCentre, MstGodown, MstLedger, MstStockItem, MstUom, TrnAccounting, TrnCostCentreAllocation,
     TrnInventory, TrnVoucher,
@@ -23,10 +23,20 @@ router = APIRouter(prefix="/reports", tags=["Reports: books"])
 CASH_BANK_GROUPS = ("Cash-in-Hand", "Bank Accounts", "Bank OD A/c")
 
 
-def _period(from_date: Optional[date], to_date: Optional[date]):
-    today = get_ist_date()
-    end = to_date or today
-    start = from_date or date(end.year if end.month >= 4 else end.year - 1, 4, 1)
+async def _period(db: AsyncSession, cid: int, from_date: Optional[date], to_date: Optional[date]):
+    """The report period. A missing date means all time: from the company's first day (books begin, or an earlier
+    voucher) up to today (or a later, post-dated voucher)."""
+    start, end = from_date, to_date
+    if start is None or end is None:
+        first, last = (await db.execute(select(func.min(TrnVoucher.voucher_date), func.max(TrnVoucher.voucher_date))
+                                        .where(TrnVoucher.company_id == cid))).one()
+        today = get_ist_date()
+        if end is None:
+            end = max(today, last) if last else today
+        if start is None:
+            begin = (await db.execute(select(Company.books_begin_date).where(Company.company_id == cid))).scalar()
+            start = min([d for d in (begin, first) if d] or [today])
+            start = min(start, end)  # an explicit end before the books begin still gives a valid (empty) period
     if start > end:
         raise HTTPException(status_code=422, detail="The start date is after the end date.")
     return start, end
@@ -45,7 +55,7 @@ async def cash_bank_book(
 ):
     """Every cash and bank ledger: opening, money in, money out and closing for the period (Dr positive)."""
     cid = user.company_id
-    start, end = _period(from_date, to_date)
+    start, end = await _period(db, cid, from_date, to_date)
     groups = set()
     kinds = {}
     for name in CASH_BANK_GROUPS:
@@ -90,7 +100,7 @@ async def cost_centres(
 ):
     """Totals per cost centre from Tally's cost-centre allocations (debits and credits of the allocated entries)."""
     cid = user.company_id
-    start, end = _period(from_date, to_date)
+    start, end = await _period(db, cid, from_date, to_date)
     is_debit = TrnAccounting.debit_amount > 0
     rows = (await db.execute(
         select(MstCostCentre.cost_centre_id, MstCostCentre.name,
@@ -119,7 +129,7 @@ async def stock_by_godown(
 ):
     """Quantities in and out of each godown in the period, per item (lines without a godown count as Main Location)."""
     cid = user.company_id
-    start, end = _period(from_date, to_date)
+    start, end = await _period(db, cid, from_date, to_date)
     qty = func.abs(TrnInventory.quantity)
     rows = (await db.execute(
         select(TrnInventory.godown_id, MstGodown.name.label("godown"), MstStockItem.stock_item_id, MstStockItem.name.label("item"),

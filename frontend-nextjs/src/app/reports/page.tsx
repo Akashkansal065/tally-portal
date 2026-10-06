@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useEffect, useState, useCallback, useMemo, useRef, useDeferredValue } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
@@ -28,6 +28,7 @@ import { shareFile } from '@/lib/capacitor-pdf'
 import { remember, remembered } from '@/lib/report-insights'
 import { AsOfToday } from '@/components/reports/AsOfToday'
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
+import { useMediaQuery, PHONE_QUERY } from '@/lib/use-media-query'
 
 type TabType = 'executive' | 'watchlists' | 'cities' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance' | 'books'
 
@@ -42,7 +43,7 @@ const DATASETS: Record<DatasetKey, { path: string; usesPeriod: boolean }> = {
   inventory: { path: '/reports/inventory-analytics', usesPeriod: false },
   salesRegister: { path: '/reports/sales-register', usesPeriod: true },
   daybook: { path: '/reports/daybook', usesPeriod: true },
-  trialBalance: { path: '/reports/trial-balance', usesPeriod: false },
+  trialBalance: { path: '/reports/trial-balance', usesPeriod: true },
   pnl: { path: '/reports/profit-loss', usesPeriod: true },
   balanceSheet: { path: '/reports/balance-sheet', usesPeriod: false },
   cashFlow: { path: '/reports/cash-flow', usesPeriod: true },
@@ -80,6 +81,8 @@ const TAB_DATASETS: Record<TabType, DatasetKey[]> = {
   books: [],
 }
 type PresetType = 'all' | 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
+const PRESETS: PresetType[] = ['all', 'month', 'quarter', 'current_fy', 'prev_fy', 'year', 'custom']
+const isIsoDate = (v: string | null): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v)
 type ExplanationKey = 'revenue_trend' | 'aging' | 'expense' | 'top_customers' | 'inventory' | 'trial_balance' | null
 type KpiModalKey = 'sales' | 'receipts' | 'purchases' | 'payments' | 'receivables' | 'payables' | null
 
@@ -365,7 +368,12 @@ function ReportsPage() {
   const [deadDaysDraft, setDeadDaysDraft] = useState<string>('')
   const [reloadingDeadStock, setReloadingDeadStock] = useState(false)
   const [financialSubTab, setFinancialSubTab] = useState<'pnl' | 'bs' | 'cf' | 'ratios' | 'projected'>('pnl')
-  const [activePreset, setActivePreset] = useState<PresetType>('month')
+  // The period and the day book filters are kept in the address too (see the effect further down), so coming
+  // Back from a voucher or ledger reopens this page as it was instead of on the defaults
+  const [activePreset, setActivePreset] = useState<PresetType>(() => {
+    const preset = searchParams.get('preset') as PresetType | null
+    return preset && PRESETS.includes(preset) ? preset : 'month'
+  })
   const [loading, setLoading] = useState(false)
   const [lastUpdatedMessage, setLastUpdatedMessage] = useState<string>('')
   const [searchQuery, setSearchQuery] = useState('')
@@ -402,13 +410,25 @@ function ReportsPage() {
   const [agingModalBucket, setAgingModalBucket] = useState<string | null>(null)
   const [agingSearchQuery, setAgingSearchQuery] = useState('')
 
-  // Date Range State (Default: 1st of Current Month → Today)
+  // Date Range State (Default: 1st of Current Month → Today, unless the address has a period)
   const [fromDate, setFromDate] = useState(() => {
+    if (searchParams.get('preset') === 'all') return ''
+    const from = searchParams.get('from')
+    if (isIsoDate(from)) return from
     const d = new Date()
     d.setDate(1)
     return d.toISOString().slice(0, 10)
   })
-  const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [toDate, setToDate] = useState(() => {
+    if (searchParams.get('preset') === 'all') return ''
+    const to = searchParams.get('to')
+    return isIsoDate(to) ? to : new Date().toISOString().slice(0, 10)
+  })
+
+  // Day book filters (applied to the vouchers already loaded for the period)
+  const [daybookSearch, setDaybookSearch] = useState(() => searchParams.get('dq') ?? '')
+  const [daybookType, setDaybookType] = useState(() => searchParams.get('dtype') ?? 'all')
+  const [daybookDay, setDaybookDay] = useState(() => (isIsoDate(searchParams.get('dday')) ? searchParams.get('dday')! : ''))
 
   // Data States
   const [summary, setSummary] = useState<any>(null)
@@ -529,9 +549,31 @@ function ReportsPage() {
     defaultColumns: ['date', 'voucher_number', 'type', 'party_name', 'amount'],
   })
 
+  const daybookTypes = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const row of daybook) counts.set(row.type, (counts.get(row.type) || 0) + 1)
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [daybook])
+  // Typing updates the box straight away; the list catches up when React has time
+  const deferredDaybookSearch = useDeferredValue(daybookSearch)
+  const filteredDaybook = useMemo(() => {
+    const q = deferredDaybookSearch.trim().toLowerCase()
+    return daybook.filter(row =>
+      (daybookType === 'all' || row.type === daybookType) &&
+      (!daybookDay || row.date === daybookDay) &&
+      (!q || (row.party_name || '').toLowerCase().includes(q) || (row.voucher_number || '').toLowerCase().includes(q)))
+  }, [daybook, deferredDaybookSearch, daybookType, daybookDay])
+  const daybookFiltered = daybookSearch.trim() !== '' || daybookType !== 'all' || daybookDay !== ''
+  // A period can hold thousands of vouchers: render 100 at a time, starting over whenever the filters change
+  const daybookView = `${fromDate}|${toDate}|${deferredDaybookSearch}|${daybookType}|${daybookDay}`
+  const [daybookShown, setDaybookShown] = useState({ view: '', count: 100 })
+  const daybookLimit = daybookShown.view === daybookView ? daybookShown.count : 100
+  const visibleDaybook = filteredDaybook.slice(0, daybookLimit)
+  const isPhone = useMediaQuery(PHONE_QUERY)
+
   const trialBalanceCols = useReorderableColumns({
     tableKey: 'trial_balance',
-    defaultColumns: ['name', 'debit', 'credit', 'balance'],
+    defaultColumns: ['name', 'opening', 'debit', 'credit', 'balance'],
   })
 
   const agingModalCols = useReorderableColumns({
@@ -673,6 +715,62 @@ function ReportsPage() {
   useEffect(() => {
     loadSection(activeTab)
   }, [loadSection, activeTab])
+
+  // Mirror the open section, period and day book filters into the address (replacing the entry, not adding one).
+  // Waits for a pause in typing: every address change re-renders this whole page and makes Chrome refetch the icons.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams(window.location.search)
+      const put = (key: string, value: string) => (value ? params.set(key, value) : params.delete(key))
+      put('tab', activeTab === 'executive' ? '' : activeTab)
+      put('sub', activeTab === 'watchlists' ? watchlistView : activeTab === 'company_stock' && stockSubTab !== 'overview' ? stockSubTab : '')
+      put('preset', activePreset === 'month' ? '' : activePreset)
+      put('from', activePreset === 'all' ? '' : fromDate)
+      put('to', activePreset === 'all' ? '' : toDate)
+      const onDaybook = activeTab === 'compliance'
+      put('dq', onDaybook ? daybookSearch.trim() : '')
+      put('dtype', onDaybook && daybookType !== 'all' ? daybookType : '')
+      put('dday', onDaybook ? daybookDay : '')
+      const next = params.toString()
+      if (next !== window.location.search.replace(/^\?/, '')) {
+        window.history.replaceState(window.history.state, '', `${window.location.pathname}${next ? `?${next}` : ''}`)
+      }
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [activeTab, watchlistView, stockSubTab, activePreset, fromDate, toDate, daybookSearch, daybookType, daybookDay])
+
+  // The page scrolls inside the layout's <main>, which outlives this page, so the browser can't restore the
+  // position on Back. Remember it per address and put it back once the section has loaded again.
+  const scrollToRestore = useRef<number | null>(null)
+  useEffect(() => {
+    const main = document.querySelector('main')
+    if (!main) return
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('reports_scroll') || 'null')
+      if (saved && saved.url === window.location.pathname + window.location.search) scrollToRestore.current = saved.y
+    } catch { /* storage unavailable: start at the top */ }
+    let frame = 0
+    const remember = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        if (!window.location.pathname.startsWith('/reports')) return
+        try {
+          sessionStorage.setItem('reports_scroll', JSON.stringify({ url: window.location.pathname + window.location.search, y: main.scrollTop }))
+        } catch { /* storage unavailable */ }
+      })
+    }
+    main.addEventListener('scroll', remember, { passive: true })
+    return () => { cancelAnimationFrame(frame); main.removeEventListener('scroll', remember) }
+  }, [])
+  const sawLoad = useRef(false)
+  useEffect(() => {
+    if (loading) { sawLoad.current = true; return }
+    // Wait for the first load to finish: before it the page is too short to scroll that far
+    if (!sawLoad.current || scrollToRestore.current === null) return
+    const y = scrollToRestore.current
+    scrollToRestore.current = null
+    requestAnimationFrame(() => document.querySelector('main')?.scrollTo({ top: y }))
+  }, [loading])
 
   // Changing the dead-stock days reloads only the stock report, not every report on the page
   const changeDeadStockDays = async (days: number) => {
@@ -1410,7 +1508,7 @@ function ReportsPage() {
               <div>
                 <div className="flex items-center justify-between border-b border-border/50 pb-3">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <BarChart3 className="h-4 w-4 text-amber-500" /> Outstanding Debt Aging Breakdown
                     </h3>
                     <p className="text-xs text-muted-foreground">Categorizes pending customer debt (settling oldest bills first) into 0-30, 31-60, 61-90, and 90+ day buckets</p>
@@ -1502,7 +1600,7 @@ function ReportsPage() {
               <div>
                 <div className="flex items-center justify-between border-b border-border/50 pb-3">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <PieChartIcon className="h-4 w-4 text-rose-500" /> Operating Expense Distribution
                     </h3>
                     <p className="text-xs text-muted-foreground">Categorized breakdown of administrative overhead, taxes & bank charges</p>
@@ -1897,7 +1995,7 @@ function ReportsPage() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/50 pb-3">
               <div className="flex items-center gap-2">
                 <div>
-                  <h3 className="font-extrabold text-base flex items-center gap-2">
+                  <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                     <Users className="h-4 w-4 text-blue-500" /> Top 10 Customers by Revenue
                   </h3>
                   <p className="text-xs text-muted-foreground">Ranks your highest volume customer ledgers to measure client concentration</p>
@@ -2085,7 +2183,7 @@ function ReportsPage() {
               <div>
                 <div className="flex items-center justify-between border-b border-border/50 pb-3">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <Layers3 className="h-4 w-4 text-amber-500" /> Capital Locked by Stock Group
                     </h3>
                     <p className="text-xs text-muted-foreground">Inventory valuation distributed across main stock categories</p>
@@ -2128,7 +2226,7 @@ function ReportsPage() {
               <div>
                 <div className="flex items-center justify-between border-b border-border/50 pb-3">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <Package className="h-4 w-4 text-indigo-500" /> Highest Valuation Stock Items ({isGrossGst ? 'With GST' : 'Without GST'})
                     </h3>
                     <p className="text-xs text-muted-foreground">Ranks individual items by closing inventory valuation (Qty × Rate)</p>
@@ -2272,10 +2370,10 @@ function ReportsPage() {
               <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-border/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <Building2 className="h-4 w-4 text-indigo-500" /> Company / Brand Performance
                       <span className={cn(
-                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        "text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap",
                         isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
                       )}>
                         {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
@@ -2283,8 +2381,8 @@ function ReportsPage() {
                     </h3>
                     <p className="text-xs text-muted-foreground">{companyStockData.grand_totals.total_companies} companies • Click to expand item details</p>
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="flex items-center gap-1 bg-muted/60 p-1 rounded-xl text-[11px] font-bold border border-border">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-1 overflow-x-auto scrollbar-none bg-muted/60 p-1 rounded-xl text-[11px] font-bold border border-border">
                       <span className="text-muted-foreground px-1.5 hidden md:inline">Sort:</span>
                       {([
                         { id: 'sold_value', label: 'Sold' },
@@ -2301,7 +2399,7 @@ function ReportsPage() {
                             key={s.id}
                             onClick={() => handleCompanySort(s.id)}
                             className={cn(
-                              'px-2 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1',
+                              'shrink-0 whitespace-nowrap px-2 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1',
                               isActive ? 'bg-primary text-primary-foreground shadow-xs' : 'hover:bg-background text-muted-foreground hover:text-foreground'
                             )}
                           >
@@ -2317,7 +2415,7 @@ function ReportsPage() {
                       'Pending Value': getStockVal(c, 'pending_value'), 'COGS': getStockVal(c, 'cost_of_sold'),
                       'Profit': getStockVal(c, 'profit_on_sold'), 'GP%': c.gp_percent,
                       'Tax Mode': isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'
-                    })))} className="p-2 bg-muted hover:bg-background border border-border text-xs rounded-xl transition-colors cursor-pointer" title="Export CSV">
+                    })))} className="shrink-0 p-2 bg-muted hover:bg-background border border-border text-xs rounded-xl transition-colors cursor-pointer" title="Export CSV">
                       <Download className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -3695,10 +3793,10 @@ function ReportsPage() {
               <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
                 <div className="flex items-center justify-between border-b border-border/50 pb-3 flex-wrap gap-2">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <Activity className="h-4 w-4 text-blue-500" /> Monthly Stock Movement Trend
                       <span className={cn(
-                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        "text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap",
                         isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
                       )}>
                         {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
@@ -3923,10 +4021,10 @@ function ReportsPage() {
               <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <Zap className="h-4 w-4 text-yellow-500" /> Top 25 Fast-Moving Items
                       <span className={cn(
-                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        "text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap",
                         isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
                       )}>
                         {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
@@ -4094,10 +4192,10 @@ function ReportsPage() {
               <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <Skull className="h-4 w-4 text-orange-500" /> Dead / Slow-Moving Stock
                       <span className={cn(
-                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        "text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap",
                         isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
                       )}>
                         {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
@@ -4336,10 +4434,10 @@ function ReportsPage() {
               <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <TrendingDown className="h-4 w-4 text-rose-500" /> Loss-Making Items
                       <span className={cn(
-                        "text-[10px] font-black px-2 py-0.5 rounded-full",
+                        "text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap",
                         isGrossGst ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300" : "bg-muted text-muted-foreground"
                       )}>
                         {isGrossGst ? 'Gross (With GST)' : 'Net (Without GST)'}
@@ -4520,7 +4618,7 @@ function ReportsPage() {
               <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <RotateCcw className="h-4 w-4 text-purple-500" /> Stock Turnover Ratio by Company
                     </h3>
                     <p className="text-xs text-muted-foreground">How quickly each company&apos;s stock converts to revenue • Higher = Faster • Click & drag columns to reorder</p>
@@ -4640,7 +4738,7 @@ function ReportsPage() {
               <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between gap-3 flex-wrap">
                   <div>
-                    <h3 className="font-extrabold text-base flex items-center gap-2">
+                    <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                       <RotateCcw className="h-4 w-4 text-teal-500" /> Returns Analysis (Credit / Debit Notes)
                     </h3>
                     <p className="text-xs text-muted-foreground">
@@ -4709,7 +4807,7 @@ function ReportsPage() {
           {stockSubTab === 'negative' && companyStockData?.negative_stock && (
             <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 border-b border-border/50">
-                <h3 className="font-extrabold text-base flex items-center gap-2">
+                <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                   <AlertTriangle className="h-4 w-4 text-rose-500" /> Negative Stock Alerts
                 </h3>
                 <p className="text-xs text-muted-foreground">{companyStockData.negative_stock.count} items with negative closing quantity (data integrity issue)</p>
@@ -4759,16 +4857,15 @@ function ReportsPage() {
 
       {activeTab === 'compliance' && (
         <div className="space-y-6">
-          <AsOfToday><strong>Trial balance is as of today</strong> and ignores the period chosen above. The day book below follows the period.</AsOfToday>
           {/* Trial Balance Group Summary Table */}
           <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/50 pb-3">
               <div className="flex items-center gap-2">
                 <div>
-                  <h3 className="font-extrabold text-base flex items-center gap-2">
+                  <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                     <Building2 className="h-4 w-4 text-emerald-500" /> Account Group Trial Balance
                   </h3>
-                  <p className="text-xs text-muted-foreground">Summarizes closing Debit (Dr) and Credit (Cr) balances across all primary account groups</p>
+                  <p className="text-xs text-muted-foreground">Opening balance, period debits and credits, and closing balance of each account group for the period chosen above</p>
                 </div>
                 <button
                   onClick={() => setExplanationKey('trial_balance')}
@@ -4813,6 +4910,13 @@ function ReportsPage() {
                     </>
                   ),
                 },
+                opening: {
+                  label: 'Opening Balance',
+                  align: 'right',
+                  cellClassName: 'py-2.5 px-2 text-right font-medium text-muted-foreground',
+                  renderHeader: () => <span>Opening Balance</span>,
+                  renderCell: (row) => `${formatCurrency(Math.abs(row.opening || 0))} ${(row.opening || 0) >= 0 ? 'Dr' : 'Cr'}`,
+                },
                 debit: {
                   label: 'Total Debit (Dr)',
                   align: 'right',
@@ -4840,8 +4944,36 @@ function ReportsPage() {
                 },
               }
 
+              const drCr = (n: number) => `${formatCurrency(Math.abs(n || 0))} ${(n || 0) >= 0 ? 'Dr' : 'Cr'}`
               return (
-                <div className="overflow-x-auto -mx-5 px-5">
+                <>
+                {/* Phones: one card per group, nothing cut off at the screen edge */}
+                <ul className="sm:hidden divide-y divide-border/60 -mx-1">
+                  {trialBalance.map((row, idx) => (
+                    <li key={idx} className="px-1 py-3 space-y-1.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedGroupInfo(row.name)}
+                          className="flex min-w-0 items-center gap-1.5 text-left text-sm font-bold cursor-pointer"
+                          title={`About ${row.name}`}
+                        >
+                          <span className="truncate">{row.name}</span>
+                          <Info className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        </button>
+                        <span className={cn('shrink-0 text-sm font-extrabold tabular-nums', row.balance >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400')}>
+                          {drCr(row.balance)}
+                        </span>
+                      </div>
+                      <dl className="grid grid-cols-3 gap-2 text-xs">
+                        <div><dt className="text-muted-foreground">Opening</dt><dd className="font-semibold tabular-nums">{drCr(row.opening)}</dd></div>
+                        <div><dt className="text-muted-foreground">Debit</dt><dd className="font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">{formatCurrency(row.debit || 0)}</dd></div>
+                        <div><dt className="text-muted-foreground">Credit</dt><dd className="font-semibold tabular-nums text-blue-700 dark:text-blue-400">{formatCurrency(row.credit || 0)}</dd></div>
+                      </dl>
+                    </li>
+                  ))}
+                </ul>
+                <div className="hidden sm:block overflow-x-auto -mx-5 px-5">
                   <table className="report-table w-full text-xs">
                     <thead>
                       <tr className="border-b border-border text-muted-foreground select-none">
@@ -4885,6 +5017,7 @@ function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
+                </>
               )
             })()}
           </div>
@@ -4893,18 +5026,70 @@ function ReportsPage() {
           <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/50 pb-3">
               <div>
-                <h3 className="font-extrabold text-base flex items-center gap-2">
+                <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                   <FileText className="h-4 w-4 text-blue-500" /> Day Book Transaction Register
                 </h3>
-                <p className="text-xs text-muted-foreground">Chronological audit stream of all transaction vouchers (Sales, Purchases, Receipts, Payments) • Click & drag columns to reorder</p>
+                <p className="text-xs text-muted-foreground">Chronological audit stream of all transaction vouchers (Sales, Purchases, Receipts, Payments) for the period chosen above<span className="hidden sm:inline"> • Click & drag columns to reorder</span></p>
               </div>
               <div className="flex items-center gap-2">
                 <ResetColumnsButton isCustomized={daybookCols.isCustomized} onReset={daybookCols.resetColumns} />
-                <button onClick={() => exportToCsv('Daybook', daybook)} className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-center">
+                <button onClick={() => exportToCsv('Daybook', filteredDaybook)} className="px-3 py-1.5 bg-muted hover:bg-background border border-border text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-center">
                   <Download className="h-3.5 w-3.5" /> Export Daybook CSV
                 </button>
               </div>
             </div>
+
+            {/* Filters: party or voucher number, voucher type, and one day within the period */}
+            <div className="grid gap-2 sm:flex sm:flex-wrap sm:items-center">
+              <div className="relative sm:w-72">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="search"
+                  value={daybookSearch}
+                  onChange={e => setDaybookSearch(e.target.value)}
+                  placeholder="Party name or voucher no."
+                  aria-label="Search the day book by party name or voucher number"
+                  className="w-full min-h-10 rounded-xl border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:flex">
+                <select
+                  value={daybookType}
+                  onChange={e => setDaybookType(e.target.value)}
+                  aria-label="Voucher type"
+                  className="min-h-10 w-full min-w-0 rounded-xl border border-border bg-background px-3 text-sm font-semibold sm:w-auto cursor-pointer"
+                >
+                  <option value="all">All types ({daybook.length})</option>
+                  {daybookTypes.map(([type, count]) => <option key={type} value={type}>{type} ({count})</option>)}
+                  {daybookType !== 'all' && !daybookTypes.some(([type]) => type === daybookType) && <option value={daybookType}>{daybookType} (0)</option>}
+                </select>
+                <input
+                  type="date"
+                  value={daybookDay}
+                  min={fromDate || undefined}
+                  max={toDate || undefined}
+                  onChange={e => setDaybookDay(e.target.value)}
+                  aria-label="Only vouchers on this day"
+                  title="Only vouchers on this day"
+                  className="min-h-10 w-full min-w-0 rounded-xl border border-border bg-background px-3 text-sm sm:w-auto cursor-pointer"
+                />
+              </div>
+              {daybookFiltered && (
+                <button
+                  type="button"
+                  onClick={() => { setDaybookSearch(''); setDaybookType('all'); setDaybookDay('') }}
+                  className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-border px-3 text-sm font-semibold hover:bg-muted cursor-pointer"
+                >
+                  <X className="h-4 w-4" /> Clear filters
+                </button>
+              )}
+            </div>
+            {daybookFiltered && (
+              <p className="text-xs text-muted-foreground">
+                {filteredDaybook.length} of {daybook.length} vouchers
+                {daybookType !== 'all' && <> · total {formatCurrency(filteredDaybook.reduce((sum, row) => sum + (Number(row.amount) || 0), 0))}</>}
+              </p>
+            )}
 
             {(() => {
               const daybookColumnDefs: Record<string, {
@@ -4982,6 +5167,39 @@ function ReportsPage() {
               }
 
               return (
+                <>
+                {/* Phones: party and amount first, then date, voucher number and type */}
+                {isPhone ? (
+                <ul className="divide-y divide-border/60 -mx-1">
+                  {filteredDaybook.length === 0 && (
+                    <li className="py-6 text-center text-sm text-muted-foreground">{daybookFiltered ? 'No vouchers match these filters.' : 'No vouchers in this period.'}</li>
+                  )}
+                  {visibleDaybook.map((row, idx) => {
+                    const typeStyle = getVoucherTypeBadge(row.type)
+                    return (
+                      <li key={idx} className="px-1 py-3 space-y-1.5">
+                        <div className="flex items-start justify-between gap-3">
+                          <Link
+                            href={`/ledgers?search=${encodeURIComponent(row.party_name)}`}
+                            className="min-w-0 text-sm font-bold leading-snug text-foreground hover:text-primary hover:underline"
+                          >
+                            {toTitleCase(row.party_name)}
+                          </Link>
+                          <span className={cn('shrink-0 text-sm font-extrabold tabular-nums', typeStyle.amount)}>{formatCurrency(row.amount)}</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                          <span>{formatDate(row.date)}</span>
+                          <span aria-hidden="true">·</span>
+                          <Link href={`/vouchers/${row.id}`} className="font-mono font-bold text-primary hover:underline">
+                            {row.voucher_number || `#${row.id}`}
+                          </Link>
+                          <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-extrabold border', typeStyle.badge)}>{row.type}</span>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+                ) : (
                 <div className="overflow-x-auto -mx-5 px-5">
                   <table className="report-table w-full text-xs">
                     <thead>
@@ -5010,7 +5228,7 @@ function ReportsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border/50">
-                      {daybook.map((row, idx) => (
+                      {visibleDaybook.map((row, idx) => (
                         <tr key={idx} className="hover:bg-muted/30 transition-colors">
                           {daybookCols.columns.map(colId => {
                             const col = daybookColumnDefs[colId]
@@ -5026,6 +5244,17 @@ function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
+                )}
+                {filteredDaybook.length > daybookLimit && (
+                  <button
+                    type="button"
+                    onClick={() => setDaybookShown({ view: daybookView, count: daybookLimit + 100 })}
+                    className="mt-3 w-full min-h-10 rounded-xl border border-border text-sm font-semibold hover:bg-muted cursor-pointer"
+                  >
+                    Show {Math.min(100, filteredDaybook.length - daybookLimit)} more · {filteredDaybook.length - daybookLimit} left
+                  </button>
+                )}
+                </>
               )
             })()}
 
@@ -5298,7 +5527,7 @@ function ReportsPage() {
                   <BarChart3 className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-base flex items-center gap-2">
+                  <h3 className="font-extrabold text-base flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span>Outstanding Debtors Breakdown</span>
                     <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20">
                       {agingModalBucket}

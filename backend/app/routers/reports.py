@@ -218,52 +218,64 @@ async def get_outstanding_payables(
 
 @router.get("/trial-balance")
 async def get_trial_balance(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return group-level ledger trial balance with Dr/Cr balances."""
-    cache_key = "trial_balance"
+    """Group-level trial balance for the period, like Tally's: the opening balance at the start of the period,
+    the period's debits and credits, and the closing balance at its end (Dr positive). No dates means all time.
+    Cancelled and optional vouchers are left out."""
+    try:
+        from_date = date.fromisoformat(from_date).isoformat() if from_date else None
+        to_date = date.fromisoformat(to_date).isoformat() if to_date else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Dates must look like 2026-04-01.")
+    cache_key = f"trial_balance_{from_date}_{to_date}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
 
     from sqlalchemy import text
-    
+
+    # Ledger opening balances are stored unsigned with a Dr/Cr type; vouchers before the period roll into the opening
     query = await db.execute(text("""
         SELECT g.name as group_name,
-               SUM(COALESCE(l.opening_balance, 0)) as opening_sum,
+               SUM(CASE WHEN l.opening_balance_type = 'Cr' THEN -COALESCE(l.opening_balance, 0)
+                        ELSE COALESCE(l.opening_balance, 0) END) as opening_sum,
+               SUM(COALESCE(sub.before_net, 0)) as before_net,
                SUM(COALESCE(sub.total_debit, 0)) as total_debit,
                SUM(COALESCE(sub.total_credit, 0)) as total_credit
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
         LEFT JOIN (
             SELECT e.ledger_id,
-                   SUM(e.debit_amount) as total_debit,
-                   SUM(e.credit_amount) as total_credit
+                   SUM(CASE WHEN :from_date IS NOT NULL AND v.voucher_date < :from_date
+                            THEN e.debit_amount - e.credit_amount ELSE 0 END) as before_net,
+                   SUM(CASE WHEN :from_date IS NULL OR v.voucher_date >= :from_date THEN e.debit_amount ELSE 0 END) as total_debit,
+                   SUM(CASE WHEN :from_date IS NULL OR v.voucher_date >= :from_date THEN e.credit_amount ELSE 0 END) as total_credit
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
             WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
+              AND (:to_date IS NULL OR v.voucher_date <= :to_date)
             GROUP BY e.ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE l.company_id = :comp_id
         GROUP BY g.name
         ORDER BY g.name
-    """), {"comp_id": user.company_id})
+    """), {"comp_id": user.company_id, "from_date": from_date, "to_date": to_date})
 
-    rows = query.all()
     results = []
-
-    for r in rows:
-        opening = float(r.opening_sum or 0.0)
+    for r in query.all():
+        opening = float(r.opening_sum or 0.0) + float(r.before_net or 0.0)
         dr = float(r.total_debit or 0.0)
         cr = float(r.total_credit or 0.0)
-        net = (dr - cr) + opening
-
         results.append({
             "name": r.group_name,
-            "balance": net,
+            "opening": round(opening, 2),
             "debit": dr,
-            "credit": cr
+            "credit": cr,
+            "balance": round(opening + dr - cr, 2),
         })
 
     set_cached_response(user.company_id, cache_key, results)

@@ -70,3 +70,10 @@ def test_books(harness, monkeypatch):
     batches = client.get("/reports/stock-by-batch", headers=headers).json()["batches"]
     assert [(b["batch"], b["available"], b["days_to_expiry"]) for b in batches] == [("B-1", 6.0, 30)]
     assert client.get("/reports/cash-bank-book?from=2026-10-07&to=2026-10-01", headers=headers).status_code == 422
+
+    # No dates means all time: from the company's first day (here a voucher older than the books begin) to today
+    all_time = client.get("/reports/cash-bank-book", headers=headers).json()
+    assert (all_time["from"], all_time["to"]) == ("2026-03-01", "2026-10-06")
+    by_name = {r["name"]: r for r in all_time["ledgers"]}
+    assert by_name["Cash"] == {**by_name["Cash"], "opening": 1000.0, "money_in": 500.0, "money_out": 50.0, "closing": 1450.0}
+    assert client.get("/reports/cost-centres", headers=headers).json()["from"] == "2026-03-01"

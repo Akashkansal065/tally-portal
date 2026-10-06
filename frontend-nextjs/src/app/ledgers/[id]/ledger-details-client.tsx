@@ -603,8 +603,8 @@ export default function LedgerDetailsClient({
             )}
           </div>
 
-          {/* Action Buttons: WhatsApp, PDF, CSV */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Action Buttons: WhatsApp, PDF, CSV. Two columns on phones so they never run off screen */}
+          <div className="grid grid-cols-2 gap-2 [&>:last-child:nth-child(odd)]:col-span-2 sm:flex sm:items-center sm:shrink-0">
             {/* WhatsApp Share Button */}
             <button
               type="button"
@@ -831,7 +831,7 @@ export default function LedgerDetailsClient({
         </div>
 
         {/* Date Inputs */}
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1.5 sm:flex sm:w-auto">
           <input
             type="date"
             value={startDate}
@@ -839,7 +839,7 @@ export default function LedgerDetailsClient({
               setStartDate(e.target.value)
               setCurrentPage(1)
             }}
-            className="px-2.5 py-1 border border-border rounded-xl bg-background text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+            className="w-full min-w-0 sm:w-auto px-2.5 py-1 border border-border rounded-xl bg-background text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
           />
           <span className="text-muted-foreground text-[10px] uppercase font-bold">to</span>
           <input
@@ -849,7 +849,7 @@ export default function LedgerDetailsClient({
               setEndDate(e.target.value)
               setCurrentPage(1)
             }}
-            className="px-2.5 py-1 border border-border rounded-xl bg-background text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+            className="w-full min-w-0 sm:w-auto px-2.5 py-1 border border-border rounded-xl bg-background text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
           />
         </div>
 
