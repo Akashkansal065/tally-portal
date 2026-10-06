@@ -40,6 +40,8 @@ export interface NavContext {
   permissions: UserPermissions
   can: Can
   isAdmin: boolean
+  /** Check-ins, orders and payments saved on this device and not uploaded yet */
+  offlinePending?: number
 }
 
 export type NavGroup = 'field' | 'accounts' | 'inventory' | 'reports' | 'masters' | 'admin'
@@ -100,7 +102,7 @@ export const NAV_MODULES: NavModule[] = [
   { id: 'ledgers', href: '/ledgers', label: 'Ledgers', icon: BookOpen, group: 'accounts', keywords: 'accounts statement',
     visible: ({ permissions: p, can }) => Boolean(p.showLedger || can('ledgers', 'read')) },
   { id: 'outstanding', href: '/outstanding', label: 'Outstanding', icon: Receipt, group: 'accounts', keywords: 'debtors aging reminders dues',
-    visible: ({ permissions: p, can }) => Boolean(p.showPayments && can('payments', 'read')) },
+    visible: ({ can }) => can('outstanding', 'read') },
   { id: 'bank-recon', href: '/bank-recon', label: 'Bank reconciliation', icon: Landmark, group: 'accounts', keywords: 'bank recon brs',
     visible: ({ can }) => can('vouchers', 'read') },
 
@@ -146,7 +148,7 @@ export const NAV_MODULES: NavModule[] = [
   { id: 'admin', href: '/admin', label: 'Admin', icon: Shield, group: 'admin', keywords: 'users roles permissions devices sync',
     visible: ({ isAdmin }) => isAdmin },
   { id: 'sync', href: '/sync', label: 'Offline sync', icon: CloudOff, group: 'admin', keywords: 'pending queue offline',
-    visible: ({ permissions: p }) => p.showCheckIn },
+    visible: ({ offlinePending }) => (offlinePending ?? 0) > 0 },
 ]
 
 /*

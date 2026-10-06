@@ -274,6 +274,7 @@ ALL_KNOWN_MODULES = [
     "ledger_supplier",
     "vouchers",
     "payments",
+    "outstanding",
     "expenses",
     "attendance",
     "inventory",

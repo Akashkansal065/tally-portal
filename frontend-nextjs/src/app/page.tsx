@@ -25,6 +25,7 @@ import { BottomSheet } from '@/components/ui/bottom-sheet'
 import { MoreSheet, moduleTileClass } from '@/components/MoreSheet'
 import { NeedsAttention, TargetTracker } from '@/components/reports/TargetTracker'
 import { isAdminUser, quickModules } from '@/lib/navigation'
+import { useOfflinePending } from '@/hooks/useOfflinePending'
 import {
   ResponsiveContainer,
   AreaChart,
@@ -163,9 +164,10 @@ export default function DashboardPage() {
   const [periodModalOpen, setPeriodModalOpen] = useState(false)
   const [fetchingSummary, setFetchingSummary] = useState(false)
 
+  const offlinePending = useOfflinePending()
   const quickAccess = useMemo(
-    () => quickModules({ permissions, can, isAdmin: isAdminUser(permissions, user?.role) }, 7),
-    [permissions, can, user?.role],
+    () => quickModules({ permissions, can, isAdmin: isAdminUser(permissions, user?.role), offlinePending }, 7),
+    [permissions, can, user?.role, offlinePending],
   )
 
   // Analytics charts states (gated by permissions.showReports)
@@ -548,13 +550,15 @@ export default function DashboardPage() {
                       Days past due, using each customer&apos;s credit days
                     </p>
                   </div>
-                  <Link
-                    href="/outstanding"
-                    className="-my-3 inline-flex min-h-11 shrink-0 items-center gap-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-400 hover:underline"
-                  >
-                    <span>Aging Hub</span>
-                    <ArrowUpRight className="w-3 h-3" />
-                  </Link>
+                  {can('outstanding', 'read') && (
+                    <Link
+                      href="/outstanding"
+                      className="-my-3 inline-flex min-h-11 shrink-0 items-center gap-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-400 hover:underline"
+                    >
+                      <span>Aging Hub</span>
+                      <ArrowUpRight className="w-3 h-3" />
+                    </Link>
+                  )}
                 </div>
 
                 <div className="h-60 w-full pt-2">

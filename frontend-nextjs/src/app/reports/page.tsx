@@ -352,6 +352,7 @@ export default function ReportsPageWithLinks() {
 
 function ReportsPage() {
   const { user, token, permissions, can } = useAuth()
+  const canOpenOutstanding = can('outstanding', 'read')
   const router = useRouter()
   const searchParams = useSearchParams()
   const query = searchParams.toString()
@@ -1415,15 +1416,17 @@ function ReportsPage() {
                     <p className="text-xs text-muted-foreground">Categorizes pending customer debt (settling oldest bills first) into 0-30, 31-60, 61-90, and 90+ day buckets</p>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <Link
-                      href="/outstanding"
-                      className="px-2.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 text-xs font-bold transition-all flex items-center gap-1 shadow-2xs cursor-pointer active:scale-95"
-                      title="Open Debtors Aging & WhatsApp Reminders Hub"
-                    >
-                      <Clock className="h-3.5 w-3.5" />
-                      <span>Send Reminders</span>
-                      <ArrowUpRight className="h-3 w-3" />
-                    </Link>
+                    {canOpenOutstanding && (
+                      <Link
+                        href="/outstanding"
+                        className="px-2.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 text-xs font-bold transition-all flex items-center gap-1 shadow-2xs cursor-pointer active:scale-95"
+                        title="Open Debtors Aging & WhatsApp Reminders Hub"
+                      >
+                        <Clock className="h-3.5 w-3.5" />
+                        <span>Send Reminders</span>
+                        <ArrowUpRight className="h-3 w-3" />
+                      </Link>
+                    )}
                     <button
                       onClick={() => setExplanationKey('aging')}
                       className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 transition-colors cursor-pointer"
@@ -1481,14 +1484,16 @@ function ReportsPage() {
                   <HelpCircle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
                   <span>How aging helps recover 60+ and 90+ day debts</span>
                 </button>
-                <Link
-                  href="/outstanding"
-                  className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs shrink-0 active:scale-95"
-                >
-                  <Clock className="w-3.5 h-3.5" />
-                  <span>Reminders Hub</span>
-                  <ArrowUpRight className="w-3.5 h-3.5" />
-                </Link>
+                {canOpenOutstanding && (
+                  <Link
+                    href="/outstanding"
+                    className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all shadow-xs shrink-0 active:scale-95"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Reminders Hub</span>
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                  </Link>
+                )}
               </div>
             </div>
 
@@ -5342,14 +5347,16 @@ function ReportsPage() {
                     >
                       <Download className="h-3.5 w-3.5" /> CSV Export
                     </button>
-                    <Link
-                      href={`/outstanding?bucket=${encodeURIComponent(agingModalBucket.replace(' Days', '').replace('+', ''))}`}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
-                    >
-                      <Clock className="h-3.5 w-3.5" />
-                      <span>Send Reminders</span>
-                      <ArrowUpRight className="h-3.5 w-3.5" />
-                    </Link>
+                    {canOpenOutstanding && (
+                      <Link
+                        href={`/outstanding?bucket=${encodeURIComponent(agingModalBucket.replace(' Days', '').replace('+', ''))}`}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer active:scale-95"
+                      >
+                        <Clock className="h-3.5 w-3.5" />
+                        <span>Send Reminders</span>
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                      </Link>
+                    )}
                   </div>
                 )
               })()}

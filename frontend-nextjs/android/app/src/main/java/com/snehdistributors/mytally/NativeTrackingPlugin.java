@@ -31,6 +31,12 @@ public class NativeTrackingPlugin extends Plugin {
             return;
         }
 
+        if (!NativeTrackingService.hasLocationPermission(getContext())) {
+            // Starting the service now would crash the app on Android 14+
+            call.reject("Location permission is not granted", "LOCATION_PERMISSION");
+            return;
+        }
+
         try {
             Context context = getContext();
             SharedPreferences prefs = context.getSharedPreferences(NativeTrackingService.PREFS_NAME, Context.MODE_PRIVATE);

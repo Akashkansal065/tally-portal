@@ -18,6 +18,21 @@ import {
 const PING_INTERVAL_MS = 2 * 60 * 1000 // Ping every 2 minutes while the tab is open during an active shift
 const MIN_THROTTLE_MS = 30 * 1000  // At least 30 seconds between web pings (tab switches also ping)
 
+/** Whether today's shift is punched in and not out. Asks the server; offline, trusts what this device last saw. */
+async function shiftIsOpen(token: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/attendance/today`, { headers: authHeaders(token) })
+    if (!res.ok) return localStorage.getItem('mytally_shift_active') === '1'
+    const data = await res.json()
+    const open = Boolean(data?.attendance && !data.attendance.checkOutTime)
+    if (open) localStorage.setItem('mytally_shift_active', '1')
+    else localStorage.removeItem('mytally_shift_active')
+    return open
+  } catch {
+    return localStorage.getItem('mytally_shift_active') === '1'
+  }
+}
+
 export function AttendanceLocationTracker() {
   const { token, user } = useAuth()
   const isAuthenticated = Boolean(token && user)
@@ -127,20 +142,30 @@ export function AttendanceLocationTracker() {
 
     // 🟢 NATIVE PLATFORM: Start background geolocation service
     if (isNativePlatform()) {
-      // 1. Request battery optimization exemption (so Android never kills process in deep sleep)
-      requestNativeBatteryExemption().catch(() => {})
+      // Track only during an open shift. Without this every signed-in user was tracked from app launch, and a
+      // shift left marked open on the phone kept restarting the service.
+      shiftIsOpen(token).then((open) => {
+        if (!open) {
+          stopHeadlessNativeTracking().catch(() => {})
+          return
+        }
 
-      // 2. Track with the pure native Java service, which survives app force-close/swiping. The Capacitor
-      //    watcher is only a fallback (iOS, or the service failed to start): running both doubled every ping.
-      startHeadlessNativeTracking(token)
-        .catch(() => false)
-        .then((nativeStarted) => {
-          if (nativeStarted) return
-          return startNativeBackgroundTracking(token).catch((err) => {
-            console.warn('[AttendanceLocationTracker] Native tracking init failed, falling back to web ping:', err)
-            sendPing()
+        // 1. Request battery optimization exemption (so Android never kills process in deep sleep)
+        requestNativeBatteryExemption().catch(() => {})
+
+        // 2. Track with the pure native Java service, which survives app force-close/swiping. The Capacitor
+        //    watcher is only a fallback (iOS, no location permission yet, or the service failed to start): running
+        //    both doubled every ping. The watcher asks for location permission; the next launch uses the service.
+        return startHeadlessNativeTracking(token)
+          .catch(() => false)
+          .then((nativeStarted) => {
+            if (nativeStarted) return
+            return startNativeBackgroundTracking(token).catch((err) => {
+              console.warn('[AttendanceLocationTracker] Native tracking init failed, falling back to web ping:', err)
+              sendPing()
+            })
           })
-        })
+      })
 
       return () => {
         // Do not stop service on unmount while shift is active

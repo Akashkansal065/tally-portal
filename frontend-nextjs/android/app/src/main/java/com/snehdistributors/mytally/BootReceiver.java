@@ -30,7 +30,9 @@ public class BootReceiver extends BroadcastReceiver {
             SharedPreferences prefs = context.getSharedPreferences(NativeTrackingService.PREFS_NAME, Context.MODE_PRIVATE);
             boolean isShiftActive = prefs.getBoolean("is_shift_active", false);
 
-            if (isShiftActive) {
+            if (isShiftActive && !NativeTrackingService.canStartInBackground(context)) {
+                Log.w(TAG, "Active shift, but location isn't allowed all the time. Tracking resumes when the app is opened.");
+            } else if (isShiftActive) {
                 Log.i(TAG, "Active shift found after reboot/update. Resuming NativeTrackingService.");
                 Intent serviceIntent = new Intent(context, NativeTrackingService.class);
                 try {

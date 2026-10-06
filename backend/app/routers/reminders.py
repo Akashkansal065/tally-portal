@@ -101,7 +101,7 @@ async def own_company(db: AsyncSession, user: User) -> Company:
 # ── routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/channels")
-async def channels(user: User = Depends(require_permission("payments", "read")), db: AsyncSession = Depends(get_db)):
+async def channels(user: User = Depends(require_permission("outstanding", "read")), db: AsyncSession = Depends(get_db)):
     readiness = await svc.channel_readiness(db, user.company_id)
     now = get_ist_now()
     return {
@@ -115,7 +115,7 @@ async def channels(user: User = Depends(require_permission("payments", "read")),
 
 
 @router.get("/summary")
-async def summary(user: User = Depends(require_permission("payments", "read")), db: AsyncSession = Depends(get_db)):
+async def summary(user: User = Depends(require_permission("outstanding", "read")), db: AsyncSession = Depends(get_db)):
     now = get_ist_now()
     cid = user.company_id
     active = (await db.execute(select(func.count(ReminderSchedule.id)).where(
@@ -133,7 +133,7 @@ async def summary(user: User = Depends(require_permission("payments", "read")), 
 
 
 @router.get("/preview/{ledger_id}")
-async def preview(ledger_id: int, user: User = Depends(require_permission("payments", "read")), db: AsyncSession = Depends(get_db)):
+async def preview(ledger_id: int, user: User = Depends(require_permission("outstanding", "read")), db: AsyncSession = Depends(get_db)):
     ledger = await own_ledger(db, user, ledger_id)
     company = await own_company(db, user)
     party = await svc.party_for(db, user.company_id, ledger_id)
@@ -153,7 +153,7 @@ async def preview(ledger_id: int, user: User = Depends(require_permission("payme
 
 
 @router.post("/send-now")
-async def send_now(req: SendNow, user: User = Depends(require_permission("payments", "create")), db: AsyncSession = Depends(get_db)):
+async def send_now(req: SendNow, user: User = Depends(require_permission("outstanding", "create")), db: AsyncSession = Depends(get_db)):
     await own_ledger(db, user, req.ledger_id)
     if not req.channels or any(c not in svc.CHANNELS for c in req.channels):
         raise HTTPException(status_code=422, detail="Choose email and/or WhatsApp.")
@@ -171,7 +171,7 @@ async def send_now(req: SendNow, user: User = Depends(require_permission("paymen
 async def list_schedules(
     ledger_id: Optional[int] = None,
     include_stopped: bool = False,
-    user: User = Depends(require_permission("payments", "read")),
+    user: User = Depends(require_permission("outstanding", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(ReminderSchedule).where(ReminderSchedule.company_id == user.company_id)
@@ -185,7 +185,7 @@ async def list_schedules(
 
 
 @router.post("/schedules")
-async def create_schedules(req: ScheduleIn, user: User = Depends(require_permission("payments", "create")), db: AsyncSession = Depends(get_db)):
+async def create_schedules(req: ScheduleIn, user: User = Depends(require_permission("outstanding", "create")), db: AsyncSession = Depends(get_db)):
     try:
         svc.validate_schedule(req.frequency, req.send_time, req.channels, req.weekday, req.month_day)
     except ValueError as e:
@@ -216,7 +216,7 @@ async def create_schedules(req: ScheduleIn, user: User = Depends(require_permiss
 
 
 @router.put("/schedules/{schedule_id}")
-async def change_schedule(schedule_id: int, req: ScheduleChange, user: User = Depends(require_permission("payments", "update")),
+async def change_schedule(schedule_id: int, req: ScheduleChange, user: User = Depends(require_permission("outstanding", "update")),
                           db: AsyncSession = Depends(get_db)):
     schedule = (await db.execute(select(ReminderSchedule).where(
         ReminderSchedule.id == schedule_id, ReminderSchedule.company_id == user.company_id))).scalars().first()
@@ -242,7 +242,7 @@ async def change_schedule(schedule_id: int, req: ScheduleChange, user: User = De
 
 
 @router.delete("/schedules/{schedule_id}")
-async def stop_schedule(schedule_id: int, user: User = Depends(require_permission("payments", "update")), db: AsyncSession = Depends(get_db)):
+async def stop_schedule(schedule_id: int, user: User = Depends(require_permission("outstanding", "update")), db: AsyncSession = Depends(get_db)):
     schedule = (await db.execute(select(ReminderSchedule).where(
         ReminderSchedule.id == schedule_id, ReminderSchedule.company_id == user.company_id))).scalars().first()
     if not schedule:
@@ -256,7 +256,7 @@ async def stop_schedule(schedule_id: int, user: User = Depends(require_permissio
 async def reminder_log(
     ledger_id: Optional[int] = None,
     limit: int = Query(50, ge=1, le=500),
-    user: User = Depends(require_permission("payments", "read")),
+    user: User = Depends(require_permission("outstanding", "read")),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(ReminderLog).where(ReminderLog.company_id == user.company_id)
@@ -268,7 +268,7 @@ async def reminder_log(
 
 
 @router.put("/contact/{ledger_id}")
-async def save_contact(ledger_id: int, req: ContactIn, user: User = Depends(require_permission("payments", "create")),
+async def save_contact(ledger_id: int, req: ContactIn, user: User = Depends(require_permission("outstanding", "create")),
                        db: AsyncSession = Depends(get_db)):
     await own_ledger(db, user, ledger_id)
     try:

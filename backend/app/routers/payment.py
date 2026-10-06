@@ -258,7 +258,7 @@ def _build_dunning_message(
 @router.get("/aging/dashboard", response_model=AgingDashboardResponse)
 async def get_aging_dashboard(
     party_ledger_id: Optional[int] = None,
-    user: User = Depends(require_permission("payments", "read")),
+    user: User = Depends(require_permission("outstanding", "read")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -380,7 +380,7 @@ async def set_customer_credit_days(
 @router.post("/reminders/generate-whatsapp", response_model=ReminderMessageResponse)
 async def generate_whatsapp_reminder(
     req: ReminderMessageRequest,
-    user: User = Depends(require_permission("payments", "create")),
+    user: User = Depends(require_permission("outstanding", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -473,7 +473,7 @@ async def generate_whatsapp_reminder(
 @router.post("/reminders/bulk", response_model=BulkReminderResponse)
 async def send_bulk_reminders(
     req: BulkReminderRequest,
-    user: User = Depends(require_permission("payments", "create")),
+    user: User = Depends(require_permission("outstanding", "create")),
     db: AsyncSession = Depends(get_db)
 ):
     """

@@ -83,7 +83,8 @@ const MODULE_GROUPS = [
       'ledger_customer',
       'ledger_supplier',
       'vouchers',
-      'payments'
+      'payments',
+      'outstanding'
     ]
   },
   {

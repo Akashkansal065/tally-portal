@@ -29,7 +29,7 @@ import {
 } from 'lucide-react'
 import { forgetBranding } from '@/lib/branding'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
-import { getOfflineQueue } from '@/lib/offline-storage'
+import { useOfflinePending } from '@/hooks/useOfflinePending'
 import { useState, useEffect, useRef } from 'react'
 import { NotificationList } from '@/components/notifications/NotificationList'
 import { PushAlertsBanner } from '@/components/notifications/PushAlertsBanner'
@@ -105,23 +105,7 @@ export function GlobalHeader() {
   const [loadingNotifications, setLoadingNotifications] = useState<boolean>(false)
   const openNotification = useOpenNotification()
 
-  // Offline Queue States
-  const [offlinePendingCount, setOfflinePendingCount] = useState<number>(0)
-
-  useEffect(() => {
-    const updateOfflineCount = async () => {
-      try {
-        const q = await getOfflineQueue()
-        const pending = q.filter((i) => i.status === 'pending' || i.status === 'failed')
-        setOfflinePendingCount(pending.length)
-      } catch {
-        // silent
-      }
-    }
-    updateOfflineCount()
-    window.addEventListener('mytally:offline-queue-changed', updateOfflineCount)
-    return () => window.removeEventListener('mytally:offline-queue-changed', updateOfflineCount)
-  }, [])
+  const offlinePendingCount = useOfflinePending()
 
   const lastUnreadFetchTime = useRef<number>(0)
   const fetchUnreadCount = async (force: boolean = false) => {

@@ -31,6 +31,7 @@ def seed_global_data(db: Session):
             ('inventory', 'Inventory',             'Stock items, godowns, stock movement', 1),
             ('orders',    'Orders',                'Sales and Purchase orders', 1),
             ('payments',  'Payments & Bills',      'Bill-wise allocation, outstanding, gateway payments', 1),
+            ('outstanding', 'Outstanding & Reminders', 'Customer dues, aging and payment reminders', 1),
             ('reports',   'Reports',               'Trial Balance, P&L, Balance Sheet, GST reports', 1),
             ('users',     'User Management',       'Create/manage users', 1),
             ('roles',     'Roles & Permissions',   'Manage roles and permission matrix', 1),
@@ -63,6 +64,17 @@ def seed_global_data(db: Session):
             db.execute(text("""
                 INSERT INTO modules (code, name, description, is_system)
                 VALUES ('sync', 'Tally Sync Agent', 'Desktop Sync Agent: push Tally data, pull and acknowledge the outbound queue', 1)
+            """))
+            db.commit()
+
+        # Ensure 'outstanding' module exists on update. It used to ride on 'payments', which field staff
+        # need for collecting, so it is its own module now and only admins start with it.
+        outstanding_exists = db.execute(text("SELECT COUNT(*) FROM modules WHERE code = 'outstanding'")).scalar()
+        if outstanding_exists == 0:
+            print("Adding missing 'outstanding' module...")
+            db.execute(text("""
+                INSERT INTO modules (code, name, description, is_system)
+                VALUES ('outstanding', 'Outstanding & Reminders', 'Customer dues, aging and payment reminders', 1)
             """))
             db.commit()
 
@@ -142,6 +154,19 @@ def seed_global_data(db: Session):
                 db.execute(text(f"""
                     INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
                     VALUES ({roles['Admin']}, {modules['sync']}, 1, 1, 1, 1)
+                """))
+                db.commit()
+
+        # Admin gets full access to 'outstanding'; other roles must be granted it explicitly
+        if 'Admin' in roles and 'outstanding' in modules:
+            admin_outstanding_exists = db.execute(text(f"""
+                SELECT COUNT(*) FROM permissions
+                WHERE role_id = {roles['Admin']} AND module_id = {modules['outstanding']}
+            """)).scalar()
+            if admin_outstanding_exists == 0:
+                db.execute(text(f"""
+                    INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete)
+                    VALUES ({roles['Admin']}, {modules['outstanding']}, 1, 1, 1, 1)
                 """))
                 db.commit()
 

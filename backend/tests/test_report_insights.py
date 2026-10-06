@@ -68,8 +68,8 @@ def world(harness, monkeypatch):
     sales_role = harness.role("Sales")
     owner = harness.user(alpha, admin_role, "owner")
     staff = harness.user(alpha, sales_role, "staff")
-    # Staff can read reports and payments
-    for code in ("reports", "payments"):
+    # Staff can read reports, payments and outstanding
+    for code in ("reports", "payments", "outstanding"):
         module = harness.add(P.Module(code=code, name=code.title()))
         harness.add(P.Permission(role_id=sales_role.role_id, module_id=module.module_id, can_read=True))
     client = harness.app(auth.router, payment.router, report_insights.router)

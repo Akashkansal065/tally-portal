@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, Fragment } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate } from '@/lib/utils'
 import {
@@ -264,7 +265,9 @@ function getCustomerBucketData(cust: CustomerAgingSummary, bucket: string) {
 }
 
 export default function DebtorsAgingPage() {
-  const { token, user, permissions } = useAuth()
+  const { token, user, permissions, can } = useAuth()
+  const router = useRouter()
+  const allowed = can('outstanding', 'read')
   const canEditCredit = isAdminUser(permissions, user?.role)
   const [data, setData] = useState<AgingDashboardData | null>(null)
   // Credit days being edited: a customer's, or the default (ledgerId null)
@@ -334,6 +337,11 @@ export default function DebtorsAgingPage() {
   }
 
   useEffect(() => {
+    if (user && !allowed) router.replace('/')
+  }, [user, allowed, router])
+
+  useEffect(() => {
+    if (!allowed) return
     fetchAgingData()
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search)
@@ -346,7 +354,7 @@ export default function DebtorsAgingPage() {
         else if (bParam.toLowerCase() === 'overdue') setSelectedBucket('OVERDUE')
       }
     }
-  }, [token])
+  }, [token, allowed])
 
   const toggleExpand = (partyId: number) => {
     setExpandedPartyIds((prev) => {

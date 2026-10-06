@@ -8,6 +8,7 @@ import { useAuth } from '@/context/AuthContext'
 import { useTheme } from '@/components/ThemeProvider'
 import { BottomSheet } from '@/components/ui/bottom-sheet'
 import { cn } from '@/lib/utils'
+import { useOfflinePending } from '@/hooks/useOfflinePending'
 import {
   NAV_GROUP_LABELS,
   isActivePath,
@@ -35,10 +36,11 @@ export function MoreSheet({ open, onOpenChange }: { open: boolean; onOpenChange:
   const { dark, toggle } = useTheme()
   const pathname = usePathname()
   const [query, setQuery] = useState('')
+  const offlinePending = useOfflinePending()
 
   const modules = useMemo(
-    () => visibleModules({ permissions, can, isAdmin: isAdminUser(permissions, user?.role) }),
-    [permissions, can, user?.role],
+    () => visibleModules({ permissions, can, isAdmin: isAdminUser(permissions, user?.role), offlinePending }),
+    [permissions, can, user?.role, offlinePending],
   )
 
   const q = query.trim().toLowerCase()

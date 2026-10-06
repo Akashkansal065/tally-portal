@@ -9,6 +9,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.location.Location;
 import android.os.Build;
@@ -19,6 +20,7 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 import androidx.core.app.NotificationCompat;
 
 import com.google.android.gms.location.FusedLocationProviderClient;
@@ -67,6 +69,19 @@ public class NativeTrackingService extends Service {
     private static final long BURST_DEBOUNCE_MS = 30 * 1000;  // at least 30s between pings, even while driving
     private static final long HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 min periodic heartbeat
 
+    /** Android 14+ refuses a location foreground service (and crashes the app) without location permission. */
+    public static boolean hasLocationPermission(Context context) {
+        return ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                || ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Starting while the app isn't on screen (after a reboot, or swiped away) also needs "Allow all the time". */
+    public static boolean canStartInBackground(Context context) {
+        if (!hasLocationPermission(context)) return false;
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                || ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -97,12 +112,26 @@ public class NativeTrackingService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (!hasLocationPermission(this)) {
+            // Location was denied or revoked. Stop quietly; the app starts tracking again once it's allowed.
+            Log.w(TAG, "Location permission not granted, not starting tracking.");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         // Build and display foreground notification
         Notification notification = buildForegroundNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+        } catch (Exception e) {
+            // e.g. restarted in the background with only "While using the app" location access
+            Log.w(TAG, "Could not start foreground tracking: " + e.getMessage());
+            stopSelf();
+            return START_NOT_STICKY;
         }
 
         // Start location updates
@@ -326,7 +355,7 @@ public class NativeTrackingService extends Service {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         boolean isActive = prefs.getBoolean("is_shift_active", false);
 
-        if (isActive) {
+        if (isActive && canStartInBackground(this)) {
             Intent restartIntent = new Intent(getApplicationContext(), NativeTrackingService.class);
             restartIntent.setPackage(getPackageName());
 
