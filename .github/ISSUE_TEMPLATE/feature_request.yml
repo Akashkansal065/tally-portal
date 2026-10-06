@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new feature or an improvement to an existing one.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation, and who runs into it (accountant, field salesperson, owner, admin…).
+      placeholder: "Our collection agents can't see a party's overdue bills while they're at the shop, so they phone the office."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: How you imagine it working. Mock-ups and sketches are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: Anything you do today instead, or other approaches you've considered.
+  - type: dropdown
+    id: tally
+    attributes:
+      label: Does this need data written back to Tally?
+      options:
+        - "No, it's portal-only"
+        - "Yes, it creates or changes Tally records"
+        - "Not sure"
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself.

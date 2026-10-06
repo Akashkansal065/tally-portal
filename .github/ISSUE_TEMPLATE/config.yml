@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Akashkansal065/tally-portal/security/policy
+    about: Please report security issues privately, not in a public issue.
+  - name: Contributing guide
+    url: https://github.com/Akashkansal065/tally-portal/blob/master/CONTRIBUTING.md
+    about: How to set up the project, run the checks and open a pull request.

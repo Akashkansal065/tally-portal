@@ -1,0 +1,62 @@
+name: Bug report
+description: Something isn't working as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Don't paste secrets or real business data**: no passwords, tokens, `.env` contents, or customer, ledger or voucher details from a real company. Replace them with made-up values.
+
+        **Security vulnerabilities** go to the maintainer privately, as described in [SECURITY.md](https://github.com/Akashkansal065/tally-portal/security/policy), not to a public issue.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Where does the problem show up?
+      options:
+        - Web app (browser)
+        - Mobile app (Android/iOS)
+        - Backend API
+        - Desktop Sync Agent
+        - Tally sync (data missing, wrong or duplicated)
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect to see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Log in as a user with the Sales role
+        2. Open Vouchers → New Sales voucher
+        3. Add an item with a discount
+        4. Click Save
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, errors or screenshots
+      description: Browser console errors, backend logs, Sync Agent logs (`desktop-sync-agent/logs/`), or screenshots. Remove any secrets first.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The commit you're running (`git rev-parse --short HEAD`), or the app version from the mobile app's settings.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, browser or device, and Tally Prime version if the bug involves sync.
+      placeholder: "Windows 11, Chrome 140, Tally Prime 6.1"
