@@ -172,7 +172,13 @@ class EinvoiceMetadata(Base):
     eway_bill_no = Column(String(20), nullable=True)
     eway_bill_date = Column(DateTime, nullable=True)
     raw_response = Column(TEXT, nullable=True)
-    environment = Column(String(20), default='mock')
+    environment = Column(String(20), default='mock')  # mock (demo), manual (typed in), live (from the GSP)
+    signed_qr = Column(TEXT, nullable=True)  # the e-invoice QR content (signed JWT) from the IRP
+    irn_status = Column(String(12), nullable=True)  # active, cancelled
+    irn_cancelled_at = Column(DateTime, nullable=True)
+    ewb_valid_till = Column(DateTime, nullable=True)
+    ewb_status = Column(String(12), nullable=True)  # active, cancelled
+    ewb_cancelled_at = Column(DateTime, nullable=True)
 
 
 
@@ -424,6 +430,9 @@ class Company(Base):
     einvoice_password = Column(String(255), nullable=True)
     einvoice_gsp_client_id = Column(String(100), nullable=True)
     einvoice_gsp_client_secret = Column(String(255), nullable=True)
+    # e-Way bill portal API user (ewaybillgst.gov.in → Registration → For API, through the GSP)
+    eway_username = Column(String(100), nullable=True)
+    eway_password = Column(String(255), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
@@ -1234,6 +1243,93 @@ class ReportSnapshot(Base):
     day = Column(Date, nullable=False)
     data = Column(JSON, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class CompanyIntegration(Base):
+    """On/off switch for a feature that needs another provider's API keys or a paid subscription (e-invoice,
+    WhatsApp API, ...), per company. No row means off. The list of switches lives in app/services/integrations.py."""
+    __tablename__ = "company_integrations"
+    __table_args__ = (
+        UniqueConstraint("company_id", "key", name="uq_company_integrations_company_key"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String(40), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=False)
+    updated_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class CompanyBranding(Base):
+    """What a company's invoices and statements look like beyond its profile: logo and signature images (PNG/JPEG
+    data URLs, resized in the browser), bank details, declaration text and whether to print a UPI QR code. One row
+    per company; no row means the defaults in app/routers/branding.py."""
+    __tablename__ = "company_branding"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), primary_key=True)
+    logo = Column(Text(length=1_000_000), nullable=True)  # MEDIUMTEXT on MySQL
+    signature = Column(Text(length=1_000_000), nullable=True)
+    bank_account_name = Column(String(150), nullable=True)
+    bank_name = Column(String(150), nullable=True)
+    bank_account_no = Column(String(40), nullable=True)
+    bank_ifsc = Column(String(20), nullable=True)
+    bank_branch = Column(String(150), nullable=True)
+    declaration = Column(Text, nullable=True)
+    show_upi_qr = Column(Boolean, nullable=False, default=True)
+    updated_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ReminderSchedule(Base):
+    """Automatic payment reminders for one customer (a Tally debtor ledger): which channels, how often and at
+    what time (IST). One active schedule per customer; the worker in app/services/reminders.py sends them and
+    stops the schedule once the customer has paid."""
+    __tablename__ = "reminder_schedules"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    ledger_id = Column(Integer, nullable=False, index=True)
+    channels = Column(JSON, nullable=False)  # ["email", "whatsapp"]
+    frequency = Column(String(10), nullable=False)  # once, daily, weekly, monthly
+    send_time = Column(String(5), nullable=False)  # "10:00", IST
+    weekday = Column(Integer, nullable=True)  # weekly: 0 = Monday
+    month_day = Column(Integer, nullable=True)  # monthly: 1-28
+    only_when_overdue = Column(Boolean, nullable=False, default=True)
+    next_run_at = Column(DateTime, nullable=True, index=True)  # IST
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    stop_reason = Column(String(20), nullable=True)  # paid, stopped, no_contact
+    last_run_at = Column(DateTime, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ReminderLog(Base):
+    """One attempt to send a payment reminder on one channel, with what it said and what happened."""
+    __tablename__ = "reminder_log"
+    __table_args__ = (
+        Index("ix_reminder_log_company_created", "company_id", "created_at"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False)
+    ledger_id = Column(Integer, nullable=False, index=True)
+    schedule_id = Column(Integer, nullable=True)
+    channel = Column(String(10), nullable=False)  # email, whatsapp
+    recipient = Column(String(150), nullable=True)
+    outstanding = Column(Numeric(15, 2), nullable=True)
+    overdue = Column(Numeric(15, 2), nullable=True)
+    status = Column(String(12), nullable=False)  # sent, delivered, read, failed, skipped, dry_run
+    detail = Column(String(500), nullable=True)  # why it was skipped or failed
+    provider_message_id = Column(String(128), nullable=True, index=True)
+    sent_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False)  # IST
+    updated_at = Column(DateTime, nullable=True)
 
 
 class NotificationPreference(Base):

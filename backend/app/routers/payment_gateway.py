@@ -19,6 +19,7 @@ from app.models.portal_core import User, SyncQueue
 from app.models.tally_core import TrnBill, BillAllocation, MstLedger
 from app.models.tally_core import TrnVoucher, TrnAccounting, MstVoucherType
 from app.models.portal_core import PaymentGatewayConfig, PaymentLink, GatewayTransaction, WebhookEvent
+from app.services.integrations import not_available_yet, require_integration
 from app.schemas.payment_gateway import (
     PaymentGatewayConfigCreate, PaymentGatewayConfigResponse,
     PaymentLinkCreate, PaymentLinkResponse
@@ -53,7 +54,8 @@ async def recalculate_bill_settlement(db: AsyncSession, bill_id: int):
 async def create_gateway_config(
     req: PaymentGatewayConfigCreate,
     user: User = Depends(require_permission("settings", "update")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _on: User = Depends(require_integration("payment_gateway")),
 ):
     ledger_query = await db.execute(
         select(MstLedger.ledger_id).where(
@@ -82,7 +84,8 @@ async def create_gateway_config(
 @router.get("/config", response_model=List[PaymentGatewayConfigResponse])
 async def get_gateway_configs(
     user: User = Depends(require_permission("settings", "read")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _on: User = Depends(require_integration("payment_gateway")),
 ):
     stmt = select(PaymentGatewayConfig).where(PaymentGatewayConfig.company_id == user.company_id)
     res = await db.execute(stmt)
@@ -92,43 +95,11 @@ async def get_gateway_configs(
 async def create_payment_link(
     req: PaymentLinkCreate,
     user: User = Depends(require_permission("payments", "create")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _on: User = Depends(require_integration("payment_gateway")),
 ):
-    bill_query = await db.execute(
-        select(TrnBill).where(TrnBill.bill_id == req.bill_id, TrnBill.company_id == user.company_id)
-    )
-    bill = bill_query.scalars().first()
-    if not bill:
-        raise HTTPException(status_code=400, detail="Bill not found.")
-        
-    conf_query = await db.execute(
-        select(PaymentGatewayConfig).where(
-            PaymentGatewayConfig.company_id == user.company_id,
-            PaymentGatewayConfig.is_active == True
-        )
-    )
-    config = conf_query.scalars().first()
-    if not config:
-        raise HTTPException(status_code=400, detail="No active payment gateway configured.")
-        
-    link_id = f"plink_{int(datetime.now(timezone.utc).timestamp())}"
-    url = f"https://checkout.stripe.com/pay/{link_id}" if config.gateway == "Stripe" else f"https://rzp.io/i/{link_id}"
-    
-    plink = PaymentLink(
-        company_id=user.company_id,
-        bill_id=req.bill_id,
-        gateway_config_id=config.gateway_config_id,
-        gateway_link_id=link_id,
-        link_url=url,
-        amount=req.amount,
-        currency=req.currency,
-        status="Created",
-        created_by=user.user_id
-    )
-    db.add(plink)
-    await db.commit()
-    await db.refresh(plink)
-    return plink
+    # Links used to be made-up rzp.io / checkout.stripe.com addresses that the gateway never created
+    raise not_available_yet("payment_gateway", "Share the UPI link or QR code instead.")
 
 def _razorpay_signature_valid(secret: str, body: bytes, signature: str) -> bool:
     expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()

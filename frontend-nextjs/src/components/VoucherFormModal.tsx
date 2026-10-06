@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, Loader2, AlertCircle, FolderPlus, PackagePlus, Box, Zap, Landmark, CreditCard, QrCode, Percent, ShieldCheck, Info, Settings2, Network, Split } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
+import { ItemExtras } from '@/components/vouchers/ItemExtras'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherConfigurationModal, { VoucherConfiguration } from './VoucherConfigurationModal'
@@ -1007,7 +1008,10 @@ export default function VoucherFormModal({
           rate: rate,
           amount: parseFloat(e.amount || (gross - discAmt).toFixed(2)),
           discount_percent: disc,
-          discount_amount: discAmt
+          discount_amount: discAmt,
+          // Tally gets these as the batch allocation (left out: Main Location / Primary Batch)
+          godown_id: e.godown_id ? parseInt(e.godown_id) : undefined,
+          batch_id: e.batch_id ? parseInt(e.batch_id) : undefined,
         }
       })
       payload.inventory_entries = invPayload
@@ -1803,6 +1807,14 @@ export default function VoucherFormModal({
                       <span className="text-sm font-black text-slate-900 dark:text-white">₹{parseFloat(e.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                   </div>
+                  <ItemExtras
+                    token={token}
+                    item={stockItems.find(si => String(si.stock_item_id) === e.stock_item_id)}
+                    entry={e}
+                    godowns={godowns}
+                    units={uomsList}
+                    onChange={patch => setInventoryEntries(inventoryEntries.map(x => x.id === e.id ? { ...x, ...patch } : x))}
+                  />
                 </div>
               ))}
               <button onClick={addInventoryEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Item</button>

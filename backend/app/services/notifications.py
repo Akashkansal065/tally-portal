@@ -45,11 +45,15 @@ CATEGORY_BY_TYPE = {
     "check_in": "visits",
     "location_denied": "alerts",
     "security": "security",
+    "reminder_failed": "collections",
+    "voucher_approval": "approvals",
+    "voucher_decision": "approvals",
+    "backup_failed": "system",
 }
 
 CATEGORIES: Tuple[dict, ...] = (
     {"id": "approvals", "label": "Approvals", "can_turn_off": False,
-     "description": "Attendance outside the office and expense claims waiting for a decision"},
+     "description": "Vouchers, attendance outside the office and expense claims waiting for a decision"},
     {"id": "attendance", "label": "Attendance", "can_turn_off": True,
      "description": "Clock-ins, clock-outs, automatic punch-outs and shift reminders"},
     {"id": "orders", "label": "Orders", "can_turn_off": True,
@@ -62,6 +66,10 @@ CATEGORIES: Tuple[dict, ...] = (
      "description": "Someone denied location access or sent an invalid location"},
     {"id": "security", "label": "Security", "can_turn_off": False,
      "description": "Sign-ins on new devices"},
+    {"id": "collections", "label": "Collections", "can_turn_off": True,
+     "description": "Automatic payment reminders that couldn't be sent or delivered"},
+    {"id": "system", "label": "System", "can_turn_off": True,
+     "description": "Scheduled backups that couldn't run"},
 )
 CATEGORY_IDS = {c["id"] for c in CATEGORIES}
 DELIVERY_CHOICES = ("all", "in_app", "off")

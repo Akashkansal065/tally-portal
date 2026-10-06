@@ -15,14 +15,21 @@ import {
   X,
   Phone,
   Filter,
-  ChevronDown
+  ChevronDown,
+  Share2,
+  Mail
 } from 'lucide-react'
 import {
   exportLedgerToCsv,
   exportLedgerToPdf,
   generateWhatsAppStatementMessage,
-  openWhatsAppWithStatement
+  openWhatsAppWithStatement,
+  statementFileName
 } from '@/lib/ledger-export'
+import { getBranding, type Branding } from '@/lib/branding'
+import { sharePdf } from '@/lib/capacitor-pdf'
+import { useIntegrations } from '@/lib/integrations'
+import { EmailPdfSheet, type EmailPdfRequest } from '@/components/EmailPdfSheet'
 
 type Transaction = {
   id: number
@@ -48,8 +55,18 @@ export default function LedgerDetailsClient({
   customerPhone,
   customerName
 }: Props) {
-  const { user } = useAuth()
+  const { user, token } = useAuth()
   const { startDate: globalStart, endDate: globalEnd } = usePeriod()
+  const { isConnected } = useIntegrations()
+  // Company details and logo for the statement PDF (Admin → Invoice design + Company profile)
+  const [branding, setBranding] = useState<Branding | null>(null)
+  const [emailRequest, setEmailRequest] = useState<EmailPdfRequest | null>(null)
+  useEffect(() => {
+    if (!token) return
+    let current = true
+    getBranding(token, user?.company_id).then(b => { if (current) setBranding(b) }).catch(() => {})
+    return () => { current = false }
+  }, [token, user?.company_id])
 
   const [searchQuery, setSearchQuery] = useState('')
   const [startDate, setStartDate] = useState(globalStart || '2025-04-01')
@@ -87,10 +104,14 @@ export default function LedgerDetailsClient({
 
   // Company details for export
   const company = useMemo(() => {
+    if (branding) {
+      const c = branding.company
+      return { name: c.name, address: c.address_lines.join(', '), state: c.state, gstin: c.gstin, phone: c.phone, email: c.email }
+    }
     if (user?.company) return user.company
     if (user?.company_name) return { name: user.company_name }
-    return { name: 'Sneh Distributors' }
-  }, [user])
+    return { name: '' }
+  }, [user, branding])
 
   // Count transactions for quick filters
   const voucherCounts = useMemo(() => {
@@ -316,13 +337,51 @@ export default function LedgerDetailsClient({
         endDate,
         filterType: targetFilter,
         company,
-        customerName: customerName || ledgerInfo?.name
+        customerName: customerName || ledgerInfo?.name,
+        logo: branding?.logo
       })
       toast.success(`Downloaded statement as PDF (${txns.length} vouchers)`)
     } catch (err: any) {
       console.error('PDF export failed', err)
       toast.error('Failed to generate PDF statement')
     }
+  }
+
+  // The statement for the current filter as a PDF, for sharing or emailing
+  const statementPdf = () => exportLedgerToPdf({
+    ledgerInfo,
+    transactions: processedTransactions,
+    periodSummary,
+    startDate,
+    endDate,
+    filterType: filterVoucherType,
+    company,
+    customerName: customerName || ledgerInfo?.name,
+    logo: branding?.logo
+  }, 'doc')
+  const statementName = () => statementFileName(customerName || ledgerInfo?.name || 'Customer', filterVoucherType, startDate, endDate)
+
+  const handleSharePdf = async () => {
+    try {
+      const result = await sharePdf(statementPdf(), statementName(), `Statement of account: ${customerName || ledgerInfo?.name || ''}`)
+      if (result === 'downloaded') toast.message('Sharing isn\u2019t available here, so the PDF was downloaded instead.')
+    } catch (err) {
+      console.error('PDF share failed', err)
+      toast.error('Failed to share the statement')
+    }
+  }
+
+  const handleEmailPdf = () => {
+    const name = customerName || ledgerInfo?.name || ''
+    setEmailRequest({
+      ledgerId: ledgerInfo.ledger_id,
+      to: ledgerInfo.email || '',
+      subject: `Statement of account${company.name ? ` from ${company.name}` : ''}`,
+      message: `Dear ${name || 'Sir/Madam'},\n\nPlease find attached your statement of account from ${startDate} to ${endDate}.\n\nThank you,\n${company.name || ''}`,
+      reference: `Statement ${startDate} to ${endDate}`,
+      filename: statementName(),
+      makePdf: async () => statementPdf(),
+    })
   }
 
   // CSV Export Action
@@ -384,6 +443,7 @@ export default function LedgerDetailsClient({
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
+      {token && <EmailPdfSheet request={emailRequest} token={token} onClose={() => setEmailRequest(null)} />}
       {/* Period Balance Breakdown Strip */}
       <div className="bg-card border border-border rounded-2xl p-3.5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-sans shadow-sm">
         <div className="space-y-0.5">
@@ -630,6 +690,27 @@ export default function LedgerDetailsClient({
                 </div>
               )}
             </div>
+
+            <button
+              type="button"
+              onClick={handleSharePdf}
+              className="inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold hover:bg-muted cursor-pointer"
+              title="Share the statement PDF to WhatsApp, email apps or Drive"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Share</span>
+            </button>
+            {isConnected('email') && (
+              <button
+                type="button"
+                onClick={handleEmailPdf}
+                className="inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-xs font-bold hover:bg-muted cursor-pointer"
+                title="Email the statement PDF to the customer"
+              >
+                <Mail className="w-3.5 h-3.5" />
+                <span>Email</span>
+              </button>
+            )}
 
             {/* CSV Download Button & Options */}
             <div className="relative flex-1 sm:flex-none">

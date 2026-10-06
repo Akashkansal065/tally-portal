@@ -27,6 +27,7 @@ import {
   Check,
   CloudOff,
 } from 'lucide-react'
+import { forgetBranding } from '@/lib/branding'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { getOfflineQueue } from '@/lib/offline-storage'
 import { useState, useEffect, useRef } from 'react'
@@ -321,6 +322,7 @@ export function GlobalHeader() {
         throw new Error(data.detail || 'Failed to update company details')
       }
       setEditSuccess('Company details updated & queued for Tally sync!')
+      forgetBranding()
       setIsEditingCompany(false)
       setTimeout(() => {
         window.location.reload()

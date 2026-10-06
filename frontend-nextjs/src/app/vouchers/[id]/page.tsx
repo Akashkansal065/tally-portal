@@ -4,14 +4,21 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
+import { useIntegrations } from '@/lib/integrations'
 import { API_BASE, authHeaders, toTitleCase, formatDate } from '@/lib/utils'
-import { ArrowLeft, Loader2, Download, ShieldCheck, FileSpreadsheet, AlertCircle, Edit3, Trash2, QrCode, ExternalLink, Copy, CheckCircle2, Zap, X, XCircle, Landmark } from 'lucide-react'
+import { ArrowLeft, Loader2, Download, Share2, Mail, AlertCircle, Edit3, Trash2, QrCode, ExternalLink, Copy, CheckCircle2, Zap, X, XCircle, Landmark } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherDetailsClient from './voucher-details-client'
 import VoucherFormModal from '@/components/VoucherFormModal'
-import { generateVoucherPdf } from '@/lib/pdf-generator'
+import { generateVoucherPdf, invoiceFileName } from '@/lib/pdf-generator'
+import { getBranding } from '@/lib/branding'
+import { sharePdf } from '@/lib/capacitor-pdf'
+import { EmailPdfSheet, type EmailPdfRequest } from '@/components/EmailPdfSheet'
+import { GstDocsPanel } from '@/components/vouchers/GstDocsPanel'
+import { ApprovalBanner } from '@/components/vouchers/ApprovalBanner'
+import { getVoucherEdocs } from '@/lib/edocs'
 
 type VoucherEntry = {
   ledger_name: string
@@ -48,17 +55,15 @@ type VoucherDetail = {
   inventory_entries?: any[]
   is_inventory_voucher: boolean
   party_ledger: any
+  party_gstin?: string | null
+  party_details?: {
+    name: string; address: string | null; state: string | null; pincode: string | null
+    gstin: string | null; mobile: string | null; email: string | null
+  } | null
   sync_status?: string
   tally_error_message?: string | null
   can_rollback?: boolean
   sync_id?: number | null
-  einvoice_metadata?: {
-    irn: string
-    ack_no: string
-    ack_date: string
-    eway_bill_no: string | null
-    eway_bill_date: string | null
-  } | null
   bank_reconciliation?: {
     transaction_id: number
     statement_id: number
@@ -88,14 +93,13 @@ export default function VoucherDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState(false)
-  const [generatingEinvoice, setGeneratingEinvoice] = useState(false)
 
   // Rollback & Retry Sync States
   const [isRollingBack, setIsRollingBack] = useState(false)
   const [isRetrying, setIsRetrying] = useState(false)
   const [isRollbackModalOpen, setIsRollbackModalOpen] = useState(false)
 
-  // Tally Prime 7.0 Paylink & UPI States
+  // UPI payment QR (free: a upi://pay link with the bill amount)
   const [paylink, setPaylink] = useState<any>(null)
   const [generatingPaylink, setGeneratingPaylink] = useState(false)
   const [showPaylinkCard, setShowPaylinkCard] = useState(true)
@@ -108,6 +112,13 @@ export default function VoucherDetailPage() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [ledgers, setLedgers] = useState<any[]>([])
   const [voucherTypes, setVoucherTypes] = useState<any[]>([])
+
+  // e-Invoice and e-way bill need a GST Suvidha Provider: hidden unless a switch is on (Admin → Integrations)
+  const { canUse, isConnected } = useIntegrations()
+  const [emailRequest, setEmailRequest] = useState<EmailPdfRequest | null>(null)
+  const [sharing, setSharing] = useState(false)
+  // The GST e-documents panel shows when either switch is on (it loads its own data)
+  const gstDocsOn = canUse('einvoice') || canUse('eway_bill')
 
   const fetchPaylink = useCallback(async () => {
     if (!id || !token) return
@@ -290,7 +301,7 @@ export default function VoucherDetailPage() {
         if (openModal) {
           setIsQrModalOpen(true)
         }
-        toast.success('Dynamic UPI Paylink generated successfully!')
+        toast.success('UPI payment QR ready')
       } else {
         const err = await res.json()
         toast.error(err.detail || 'Failed to generate paylink')
@@ -302,52 +313,93 @@ export default function VoucherDetailPage() {
     }
   }
 
+  // The invoice PDF with the company's branding (Admin → Invoice design) and the buyer's details from Tally
+  const buildPdf = async (shouldDownload: boolean) => {
+    if (!voucher || !id || !token) throw new Error('Voucher not loaded')
+    const branding = await getBranding(token, user?.company_id).catch(() => null)
+    if (branding && !branding.company.gstin && voucher.voucher_type.toLowerCase().includes('sales')) {
+      toast.warning('The company GSTIN isn’t set, so the invoice prints without it. Add it in Company profile.')
+    }
+    const party = voucher.party_details
+    // A live, active IRN / e-way bill is printed on the invoice; demo numbers never are
+    const edocs = gstDocsOn ? await getVoucherEdocs(token, voucher.voucher_id).catch(() => null) : null
+    const record = edocs?.record && !edocs.record.demo ? edocs.record : null
+    return generateVoucherPdf({
+      voucherGuid: id,
+      header: {
+        voucherType: voucher.voucher_type,
+        voucherNumber: voucher.voucher_number,
+        date: voucher.date,
+        referenceNumber: voucher.reference_number,
+        partyName: voucher.party_name
+      },
+      accounts: voucher.entries || voucher.accounts || [],
+      inventory: voucher.inventory || [],
+      partyLedger: voucher.party_ledger || (party ? {
+        mailingName: party.name,
+        mailingAddress: [party.address, party.pincode].filter(Boolean).join(' - '),
+        gstn: party.gstin,
+        mailingState: party.state,
+        mobile: party.mobile,
+      } : null),
+      branding,
+      edocs: record ? {
+        irn: record.irn_status === 'active' ? record.irn : null,
+        ackNo: record.irn_status === 'active' ? record.ack_no : null,
+        ackDate: record.irn_status === 'active' ? record.ack_date : null,
+        signedQr: record.irn_status === 'active' ? record.signed_qr : null,
+        ewbNo: record.ewb_status === 'active' ? record.eway_bill_no : null,
+      } : null,
+      shouldDownload,
+    })
+  }
+
   const handleDownloadPdf = async () => {
-    if (!voucher || !id) return
     setDownloading(true)
     try {
-      await generateVoucherPdf({
-        voucherGuid: id,
-        header: {
-          voucherType: voucher.voucher_type,
-          voucherNumber: voucher.voucher_number,
-          date: voucher.date,
-          referenceNumber: voucher.reference_number,
-          partyName: voucher.party_name
-        },
-        accounts: voucher.entries || voucher.accounts || [],
-        inventory: voucher.inventory || [],
-        partyLedger: voucher.party_ledger,
-        shouldDownload: true
-      })
+      await buildPdf(true)
     } catch (err) {
       console.error('Failed to generate PDF:', err)
+      toast.error('Could not make the PDF')
     } finally {
       setDownloading(false)
     }
   }
 
-  const handleGenerateEinvoice = async () => {
-    if (!voucher || !id || !token) return
-    setGeneratingEinvoice(true)
+  const handleSharePdf = async () => {
+    if (!voucher) return
+    setSharing(true)
     try {
-      const res = await fetch(`${API_BASE}/gst/einvoice/${voucher.voucher_id}/generate`, {
-        method: 'POST',
-        headers: authHeaders(token)
-      })
-      if (res.ok) {
-        alert('E-Invoice (IRN & Acknowledgement) generated successfully!')
-        // Refresh details
-        fetchVoucher()
-      } else {
-        const err = await res.json()
-        alert(err.detail || 'Failed to generate e-invoice.')
-      }
-    } catch (e: any) {
-      alert(e.message || 'Error occurred during generation.')
+      const doc = await buildPdf(false)
+      const result = await sharePdf(doc, invoiceFileName(voucher.voucher_number), `${voucher.voucher_type} ${voucher.voucher_number}`)
+      if (result === 'downloaded') toast.message('Sharing isn’t available here, so the PDF was downloaded instead.')
+    } catch (err) {
+      console.error('Failed to share PDF:', err)
+      toast.error('Could not share the PDF')
     } finally {
-      setGeneratingEinvoice(false)
+      setSharing(false)
     }
+  }
+
+  const handleEmailPdf = () => {
+    if (!voucher || !voucher.party_ledger_id) {
+      toast.error('This voucher has no party to email.')
+      return
+    }
+    getBranding(token as string, user?.company_id).catch(() => null).then(branding => {
+      const companyName = branding?.company.name || ''
+      // "Invoice S-101" for sales; other vouchers keep their type ("Credit Note CN-4")
+      const docName = voucher.voucher_type.toLowerCase().includes('sales') ? 'Invoice' : voucher.voucher_type
+      setEmailRequest({
+        ledgerId: voucher.party_ledger_id as number,
+        to: voucher.party_details?.email || '',
+        subject: `${docName} ${voucher.voucher_number}${companyName ? ` from ${companyName}` : ''}`,
+        message: `Dear ${voucher.party_name || 'Sir/Madam'},\n\nPlease find attached ${docName.toLowerCase()} ${voucher.voucher_number}.\n\nThank you,\n${companyName}`,
+        reference: `${docName} ${voucher.voucher_number}`,
+        filename: invoiceFileName(voucher.voucher_number),
+        makePdf: () => buildPdf(false),
+      })
+    })
   }
 
   if (loading) {
@@ -380,7 +432,7 @@ export default function VoucherDetailPage() {
     : 'N/A'
 
   const isSalesVoucher = voucher.voucher_type.toLowerCase().includes('sales')
-  const partyGstin = voucher.party_ledger?.gstn
+  const partyGstin = voucher.party_ledger?.gstn || voucher.party_gstin
 
   const finalTotal = (() => {
     if (!voucher) return 0
@@ -441,7 +493,8 @@ export default function VoucherDetailPage() {
           <ArrowLeft className="h-4 w-4" /> Back
         </button>
 
-        <div className="flex items-center gap-2">
+        {/* Wraps on phones so every action stays visible */}
+        <div className="flex flex-wrap items-center gap-2">
           {/* UPI Paylink Button (for Sales / Invoice Vouchers) */}
           <button
             type="button"
@@ -456,7 +509,7 @@ export default function VoucherDetailPage() {
             className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm rounded-xl h-10 px-4 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
           >
             {generatingPaylink ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-            {paylink ? (paylink.status === 'COMPLETED' ? '✅ Paid via UPI' : '⚡ View Paylink & QR') : '⚡ Generate Paylink'}
+            {paylink ? (paylink.status === 'COMPLETED' ? '✅ Paid via UPI' : 'Show UPI QR') : 'UPI payment QR'}
           </button>
 
           {/* Alter / Edit Voucher Button */}
@@ -496,8 +549,35 @@ export default function VoucherDetailPage() {
             )}
             Download PDF
           </button>
+
+          <button
+            type="button"
+            onClick={handleSharePdf}
+            disabled={sharing}
+            className="bg-card hover:bg-muted text-foreground font-bold text-xs rounded-xl h-10 px-4 border border-border cursor-pointer flex items-center justify-center gap-1.5 transition-colors disabled:opacity-60"
+            title="Share the PDF to WhatsApp, email apps or Drive"
+          >
+            {sharing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
+            Share
+          </button>
+
+          {isConnected('email') && voucher.party_ledger_id && (
+            <button
+              type="button"
+              onClick={handleEmailPdf}
+              className="bg-card hover:bg-muted text-foreground font-bold text-xs rounded-xl h-10 px-4 border border-border cursor-pointer flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Mail className="h-4 w-4" />
+              Email
+            </button>
+          )}
         </div>
       </div>
+
+      {token && <EmailPdfSheet request={emailRequest} token={token} onClose={() => setEmailRequest(null)} />}
+
+      {/* Maker-checker: waiting for approval / sent back */}
+      {token && voucher && <ApprovalBanner token={token} voucherId={voucher.voucher_id} onChanged={fetchVoucher} />}
 
       {/* Voucher Cancellation Banner */}
       {(voucher?.is_cancelled || voucher?.status === 'cancelled') && (
@@ -583,7 +663,7 @@ export default function VoucherDetailPage() {
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-black uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
-                  Tally 7.0 Connected Paylink
+                  UPI payment QR
                 </span>
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
                   paylink?.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-600' : 'bg-amber-500/20 text-amber-600'
@@ -612,14 +692,15 @@ export default function VoucherDetailPage() {
             <button
               type="button"
               onClick={() => {
-                if (paylink?.payment_url) {
-                  navigator.clipboard.writeText(paylink.payment_url)
-                  toast.success('Payment link copied to clipboard!')
+                const vpa = paylink?.upi_uri ? new URLSearchParams(paylink.upi_uri.split('?')[1]).get('pa') : ''
+                if (vpa) {
+                  navigator.clipboard.writeText(vpa)
+                  toast.success('UPI ID copied')
                 }
               }}
               className="px-3 py-2 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold rounded-xl border border-border flex items-center gap-1.5 cursor-pointer"
             >
-              <Copy className="w-3.5 h-3.5" /> Copy Link
+              <Copy className="w-3.5 h-3.5" /> Copy UPI ID
             </button>
           </div>
         </div>
@@ -643,7 +724,7 @@ export default function VoucherDetailPage() {
                 </div>
                 <div>
                   <h3 className="font-extrabold text-base text-foreground leading-snug">Instant UPI Payment QR</h3>
-                  <span className="text-[11px] text-muted-foreground font-mono">Invoice #{voucher?.voucher_number} • Tally Prime 7.0 e-Banking</span>
+                  <span className="text-[11px] text-muted-foreground font-mono">Invoice #{voucher?.voucher_number}</span>
                 </div>
               </div>
               <button
@@ -708,21 +789,6 @@ export default function VoucherDetailPage() {
               </div>
             </div>
 
-            {/* Actions */}
-            <div className="pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  if (paylink.payment_url) {
-                    navigator.clipboard.writeText(paylink.payment_url)
-                    toast.success('Payment link copied to clipboard!')
-                  }
-                }}
-                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Copy className="w-3.5 h-3.5" /> Copy Payment Link
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -799,84 +865,9 @@ export default function VoucherDetailPage() {
           isInventoryVoucher={voucher.is_inventory_voucher}
         />
 
-        {/* E-Invoicing Section */}
-        {isSalesVoucher && (
-          <div className="mt-6 border border-border rounded-xl p-4 bg-muted/20 font-sans no-print">
-            {voucher.einvoice_metadata ? (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="h-5 w-5 text-emerald-600" />
-                  <h3 className="text-sm font-extrabold text-emerald-600">GST E-Invoice Registered (IRN generated)</h3>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-mono">
-                  <div className="bg-background border border-border p-2.5 rounded-lg col-span-1 sm:col-span-2">
-                    <span className="text-[10px] text-muted-foreground block font-sans font-semibold mb-0.5">Invoice Reference Number (IRN)</span>
-                    <span className="break-all font-semibold select-all">{voucher.einvoice_metadata.irn}</span>
-                  </div>
-                  <div className="bg-background border border-border p-2.5 rounded-lg">
-                    <span className="text-[10px] text-muted-foreground block font-sans font-semibold mb-0.5">Acknowledgement No.</span>
-                    <span className="font-semibold">{voucher.einvoice_metadata.ack_no}</span>
-                  </div>
-                  <div className="bg-background border border-border p-2.5 rounded-lg">
-                    <span className="text-[10px] text-muted-foreground block font-sans font-semibold mb-0.5">Acknowledgement Date</span>
-                    <span className="font-semibold">
-                      {new Date(voucher.einvoice_metadata.ack_date).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                  {voucher.einvoice_metadata.eway_bill_no && (
-                    <div className="bg-background border border-border p-2.5 rounded-lg col-span-1 sm:col-span-2 flex justify-between items-center">
-                      <div>
-                        <span className="text-[10px] text-muted-foreground block font-sans font-semibold mb-0.5">E-Way Bill Number</span>
-                        <span className="font-semibold">{voucher.einvoice_metadata.eway_bill_no}</span>
-                      </div>
-                      {voucher.einvoice_metadata.eway_bill_date && (
-                        <div className="text-right">
-                          <span className="text-[10px] text-muted-foreground block font-sans font-semibold mb-0.5">E-Way Bill Date</span>
-                          <span className="font-semibold">
-                            {new Date(voucher.einvoice_metadata.eway_bill_date).toLocaleDateString('en-IN')}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : partyGstin ? (
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-1.5">
-                    <FileSpreadsheet className="h-4.5 w-4.5 text-blue-600" />
-                    <h3 className="text-sm font-extrabold text-foreground">GST E-Invoicing Available</h3>
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-relaxed max-w-lg">
-                    This is a B2B sales invoice with a registered recipient GSTIN. Click the button to upload to the Invoice Registration Portal (IRP) and generate an IRN and QR Code.
-                  </p>
-                </div>
-                <button
-                  onClick={handleGenerateEinvoice}
-                  disabled={generatingEinvoice}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-extrabold text-xs shadow-md rounded-xl h-11 px-5 flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
-                >
-                  {generatingEinvoice ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <ShieldCheck className="h-4 w-4" />
-                  )}
-                  Generate E-Invoice
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-3">
-                <AlertCircle className="h-5 w-5 text-muted-foreground shrink-0" />
-                <div>
-                  <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">E-Invoicing Not Required</h3>
-                  <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-                    E-invoicing is only applicable for B2B transactions. Recipient party is unregistered (no GSTIN).
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
+        {/* e-Invoice and e-way bill (Phase 4) */}
+        {isSalesVoucher && gstDocsOn && token && (
+          <GstDocsPanel voucherId={voucher.voucher_id} token={token} />
         )}
 
         {/* Bank Reconciliation Section */}

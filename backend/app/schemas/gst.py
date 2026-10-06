@@ -52,6 +52,8 @@ class GstProviderSubmitResponse(BaseModel):
     status: str
     correlation_id: Optional[str] = None
     acknowledgement_number: Optional[str] = None
+    # Made by the demo provider, not the GST portal
+    demo: bool = False
 
 class Gstr1LineItemResponse(BaseModel):
     line_item_id: int
@@ -223,23 +225,33 @@ class GstEinvoiceListResponse(BaseModel):
     irn: Optional[str] = None
     ack_no: Optional[str] = None
     eway_bill_no: Optional[str] = None
+    # Made up by MyTally (no GSP connected), not a registered IRN
+    demo: bool = False
 
     class Config:
         from_attributes = True
 
 class EinvoiceSettingsResponse(BaseModel):
-    einvoice_env: str
+    """e-Invoice and e-way bill set-up for the current company. Passwords are never returned."""
+    mode: str  # demo (made-up numbers) or live (through the GSP)
+    einvoice_env: str  # legacy name for mode: mock / live
+    gsp_provider: str
+    gsp_account_ready: bool  # the GSP account keys are set on the server
+    company_gstin: Optional[str] = None
     einvoice_username: Optional[str] = None
-    einvoice_gsp_client_id: Optional[str] = None
-    has_password: bool
-    has_gsp_client_secret: bool
+    has_einvoice_password: bool
+    eway_username: Optional[str] = None
+    has_eway_password: bool
+
 
 class EinvoiceSettingsUpdate(BaseModel):
-    einvoice_env: str
+    mode: Optional[str] = None  # demo or live
+    einvoice_env: Optional[str] = None  # legacy: mock means demo, anything else live
     einvoice_username: Optional[str] = None
     einvoice_password: Optional[str] = None
-    einvoice_gsp_client_id: Optional[str] = None
-    einvoice_gsp_client_secret: Optional[str] = None
+    eway_username: Optional[str] = None
+    eway_password: Optional[str] = None
+
 
 class Gstr2bOtpRequest(BaseModel):
     period_id: int

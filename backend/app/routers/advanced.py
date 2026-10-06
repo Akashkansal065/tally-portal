@@ -466,7 +466,9 @@ async def create_einvoice_metadata(
         ack_date=ack_dt,
         eway_bill_no=req.eway_bill_no,
         eway_bill_date=ew_dt,
-        raw_response=req.raw_response
+        raw_response=req.raw_response,
+        # Recorded by hand from an IRN/e-way bill made elsewhere; "mock" is kept for demo values
+        environment="manual",
     )
     db.add(meta)
     await db.commit()
@@ -479,7 +481,13 @@ async def get_einvoice_metadata(
     user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(EinvoiceMetadata).where(EinvoiceMetadata.voucher_id == voucher_id)
+    # Only for the user's own company's vouchers; a real (non-demo) record wins over a demo one
+    stmt = (
+        select(EinvoiceMetadata)
+        .join(TrnVoucher, TrnVoucher.voucher_id == EinvoiceMetadata.voucher_id)
+        .where(EinvoiceMetadata.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id)
+        .order_by((EinvoiceMetadata.environment == "mock").asc(), EinvoiceMetadata.metadata_id.desc())
+    )
     res = await db.execute(stmt)
     meta = res.scalars().first()
     if not meta:

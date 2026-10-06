@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatCurrency, formatDate, toTitleCase } from '@/lib/utils'
@@ -23,11 +23,13 @@ import {
 import ProjectedFinancials from '@/components/ProjectedFinancials'
 import { Watchlists, type WatchlistView } from '@/components/reports/Watchlists'
 import { CityReport } from '@/components/reports/CityReport'
+import { BooksReports } from '@/components/reports/BooksReports'
+import { shareFile } from '@/lib/capacitor-pdf'
 import { remember, remembered } from '@/lib/report-insights'
 import { AsOfToday } from '@/components/reports/AsOfToday'
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
 
-type TabType = 'executive' | 'watchlists' | 'cities' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance'
+type TabType = 'executive' | 'watchlists' | 'cities' | 'financial' | 'sales' | 'inventory' | 'company_stock' | 'compliance' | 'books'
 
 // Report data and where it comes from; TAB_DATASETS says which section needs which (summary is always loaded)
 type DatasetKey = 'summary' | 'exec' | 'topCustomers' | 'inventory' | 'salesRegister' | 'daybook' | 'trialBalance'
@@ -50,14 +52,13 @@ const DATASETS: Record<DatasetKey, { path: string; usesPeriod: boolean }> = {
 }
 
 type StockSubTab = 'overview' | 'trends' | 'dead' | 'loss' | 'negative' | 'fast' | 'turnover' | 'returns' | 'customer_purchases'
-const TABS: TabType[] = ['executive', 'watchlists', 'cities', 'financial', 'sales', 'inventory', 'company_stock', 'compliance']
+const TABS: TabType[] = ['executive', 'watchlists', 'cities', 'financial', 'sales', 'inventory', 'company_stock', 'compliance', 'books']
 const STOCK_SUB_TABS: StockSubTab[] = ['overview', 'trends', 'dead', 'loss', 'negative', 'fast', 'turnover', 'returns', 'customer_purchases']
 
-/** ?tab= and ?sub= from a link into Reports. This page only renders in the browser (after sign-in), so reading
- *  the URL while setting initial state is safe. */
-function linkParams(): { tab?: TabType; watchlist?: WatchlistView; stock?: StockSubTab } {
-  if (typeof window === 'undefined') return {}
-  const params = new URLSearchParams(window.location.search)
+/** ?tab= and ?sub= from a link into Reports (e.g. Home → "29 customers buying less"). They come from
+ *  useSearchParams, not window.location: when a link inside the app opens this page, it first renders before the
+ *  browser's address changes, so window.location still shows the page the link was on. */
+function linkParams(params: URLSearchParams): { tab?: TabType; watchlist?: WatchlistView; stock?: StockSubTab } {
   const tab = params.get('tab') as TabType | null
   const sub = params.get('sub')
   return {
@@ -76,6 +77,7 @@ const TAB_DATASETS: Record<TabType, DatasetKey[]> = {
   inventory: ['inventory'],
   company_stock: ['companyStock', 'customerItem'],
   compliance: ['trialBalance', 'daybook'],
+  books: [],
 }
 type PresetType = 'all' | 'month' | 'quarter' | 'current_fy' | 'prev_fy' | 'year' | 'custom'
 type ExplanationKey = 'revenue_trend' | 'aging' | 'expense' | 'top_customers' | 'inventory' | 'trial_balance' | null
@@ -339,13 +341,24 @@ const ACCOUNT_GROUP_DESCRIPTIONS: Record<string, { desc: string; drCr: string; e
   }
 }
 
-export default function ReportsPage() {
+// useSearchParams needs a Suspense boundary (Next.js)
+export default function ReportsPageWithLinks() {
+  return (
+    <Suspense fallback={null}>
+      <ReportsPage />
+    </Suspense>
+  )
+}
+
+function ReportsPage() {
   const { user, token, permissions, can } = useAuth()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const query = searchParams.toString()
 
   // Opened from a link (e.g. Home → Watchlists): start on that section, so nothing else loads first
-  const [activeTab, setActiveTab] = useState<TabType>(() => linkParams().tab ?? 'executive')
-  const [watchlistView, setWatchlistView] = useState<WatchlistView>(() => linkParams().watchlist ?? 'customers')
+  const [activeTab, setActiveTab] = useState<TabType>(() => linkParams(searchParams).tab ?? 'executive')
+  const [watchlistView, setWatchlistView] = useState<WatchlistView>(() => linkParams(searchParams).watchlist ?? 'customers')
   // Days without a sale before an item in stock counts as dead; remembered per viewer
   const [deadStockDays, setDeadStockDays] = useState<number>(() => remembered('dead_stock', { days: 90 }).days)
   const [deadDaysDraft, setDeadDaysDraft] = useState<string>('')
@@ -412,7 +425,18 @@ export default function ReportsPage() {
   // Company Stock & Profit state
   const [companyStockData, setCompanyStockData] = useState<any>(null)
   const [expandedCompany, setExpandedCompany] = useState<string | null>(null)
-  const [stockSubTab, setStockSubTab] = useState<StockSubTab>(() => linkParams().stock ?? 'overview')
+  const [stockSubTab, setStockSubTab] = useState<StockSubTab>(() => linkParams(searchParams).stock ?? 'overview')
+
+  // A new link while Reports is already open (e.g. a notification): move to its section
+  const [linkedQuery, setLinkedQuery] = useState(query)
+  if (linkedQuery !== query) {
+    setLinkedQuery(query)
+    const link = linkParams(new URLSearchParams(query))
+    if (link.tab) setActiveTab(link.tab)
+    if (link.watchlist) setWatchlistView(link.watchlist)
+    if (link.stock) setStockSubTab(link.stock)
+  }
+
 
   // Customer-Item Purchases state
   const [customerItemData, setCustomerItemData] = useState<any>(null)
@@ -821,17 +845,12 @@ export default function ReportsPage() {
     }
   }
 
+  // CSV export for every report: shared on phones (WhatsApp, email apps, Drive), downloaded on computers
   const exportToCsv = (filename: string, rows: any[]) => {
     if (!rows || rows.length === 0) return
-    const headers = Object.keys(rows[0]).join(',')
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers, ...rows.map(r => Object.values(r).map(v => `"${v}"`).join(','))].join('\n')
-    const encodedUri = encodeURI(csvContent)
-    const link = document.createElement('a')
-    link.setAttribute('href', encodedUri)
-    link.setAttribute('download', `${filename}.csv`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+    const csv = [Object.keys(rows[0]).map(cell).join(','), ...rows.map(r => Object.values(r).map(cell).join(','))].join('\n')
+    shareFile(new Blob([csv], { type: 'text/csv' }), `${filename}.csv`, filename)
   }
 
   const currentExp = explanationKey ? EXPLANATIONS[explanationKey] : null
@@ -1243,7 +1262,8 @@ export default function ReportsPage() {
           { id: 'sales', label: 'Sales & Customers', icon: BookOpen, desc: 'Top Debtors & Invoicing Register' },
           { id: 'inventory', label: 'Inventory Valuation', icon: Layers, desc: 'Stock Group Capital & Item Valuation' },
           { id: 'company_stock', label: 'Company Stock & Profit', icon: PackageCheck, desc: 'Purchased vs Sold, Pending & Realized Profit' },
-          { id: 'compliance', label: 'Audit & Trial Balance', icon: FileText, desc: 'Double-Entry Trial Balance & Daybook' }
+          { id: 'compliance', label: 'Audit & Trial Balance', icon: FileText, desc: 'Double-Entry Trial Balance & Daybook' },
+          { id: 'books', label: 'Books & Stock', icon: BookOpen, desc: 'Cash & bank book, cost centres, godowns, batches' }
         ].map(tab => {
           const Icon = tab.icon
           const isActive = activeTab === tab.id
@@ -1266,7 +1286,10 @@ export default function ReportsPage() {
         })}
       </div>
 
-      {/* Interactive KPI Cards Bar (Click card to open itemized data modal) */}
+      {/* Interactive KPI Cards Bar (Click card to open itemized data modal). Executive Analytics only: its figures
+          come from that section's data, which other sections don't load (they showed ₹0.00 and pushed the
+          section someone linked to below the fold) */}
+      {activeTab === 'executive' && (
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
         <KpiCard
           title={isGrossGst ? "Total Revenue" : "Taxable Sales"}
@@ -1317,6 +1340,7 @@ export default function ReportsPage() {
           onClick={() => { setKpiModalKey('payables'); setKpiSearchQuery('') }}
         />
       </div>
+      )}
 
       {/* TAB 1: EXECUTIVE ANALYTICS */}
       {activeTab === 'executive' && (
@@ -4726,6 +4750,7 @@ export default function ReportsPage() {
       {activeTab === 'watchlists' && <Watchlists view={watchlistView} onViewChange={setWatchlistView} />}
 
       {activeTab === 'cities' && <CityReport />}
+      {activeTab === 'books' && <BooksReports from={fromDate} to={toDate} />}
 
       {activeTab === 'compliance' && (
         <div className="space-y-6">

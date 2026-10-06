@@ -30,12 +30,14 @@ import {
   FileText,
   Building,
   PhoneCall,
-  Sparkles
+  Sparkles,
+  BellRing
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useReorderableColumns, DraggableTh, ResetColumnsButton } from '@/components/ui/reorderable-columns'
 import { CreditDaysLabel, CreditDaysSheet } from '@/components/outstanding/CreditDays'
 import { CollectionsPanel } from '@/components/outstanding/CollectionsPanel'
+import { AutoRemindersStrip, ReminderSheet } from '@/components/outstanding/AutoReminders'
 import { isAdminUser } from '@/lib/navigation'
 
 interface CustomerAgingBill {
@@ -268,6 +270,9 @@ export default function DebtorsAgingPage() {
   // Credit days being edited: a customer's, or the default (ledgerId null)
   // Bumped after each reload so the collections panel refreshes too (e.g. after changing credit days)
   const [collectionsKey, setCollectionsKey] = useState(0)
+  // Automatic reminders (email / WhatsApp API) for one customer, and a counter to refresh the summary strip
+  const [autoTarget, setAutoTarget] = useState<{ ledgerId: number; name: string } | null>(null)
+  const [remindersKey, setRemindersKey] = useState(0)
   const [creditDaysTarget, setCreditDaysTarget] = useState<{ ledgerId: number | null; name: string; days: number; source?: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -583,8 +588,14 @@ export default function DebtorsAgingPage() {
           </div>
         </div>
 
+        {token && <AutoRemindersStrip token={token} reloadKey={remindersKey} onChanged={() => setRemindersKey(k => k + 1)} />}
+
         {/* Who to chase first, and how long customers take to pay */}
-        <CollectionsPanel reloadKey={collectionsKey} onRemind={(ledgerId) => handleOpenReminder(ledgerId, 'auto', 'OVERDUE')} />
+        <CollectionsPanel
+          reloadKey={collectionsKey}
+          onRemind={(ledgerId) => handleOpenReminder(ledgerId, 'auto', 'OVERDUE')}
+          onSchedule={(ledgerId, name) => setAutoTarget({ ledgerId, name })}
+        />
 
         {/* Aging Buckets Filter Bar */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -836,6 +847,14 @@ export default function DebtorsAgingPage() {
                         >
                           <MessageCircle className="w-3.5 h-3.5" />
                           <span>WhatsApp</span>
+                        </button>
+                        <button
+                          onClick={() => setAutoTarget({ ledgerId: cust.party_ledger_id, name: cust.party_name })}
+                          className="py-2 px-3 rounded-xl border border-border bg-background hover:bg-muted text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0"
+                          aria-label={`Automatic reminders for ${cust.party_name}`}
+                        >
+                          <BellRing className="w-3.5 h-3.5" />
+                          <span>Auto</span>
                         </button>
                       </div>
 
@@ -1100,6 +1119,14 @@ export default function DebtorsAgingPage() {
                                             >
                                               <MessageCircle className="w-3.5 h-3.5" />
                                               <span>WhatsApp</span>
+                                            </button>
+                                            <button
+                                              onClick={() => setAutoTarget({ ledgerId: cust.party_ledger_id, name: cust.party_name })}
+                                              className="h-8 px-3 rounded-xl text-xs font-bold border border-border hover:bg-muted transition-all flex items-center gap-1.5 cursor-pointer"
+                                              title="Email and WhatsApp reminders: send now or on a schedule"
+                                            >
+                                              <BellRing className="w-3.5 h-3.5" />
+                                              <span>Auto</span>
                                             </button>
                                           </div>
                                         </td>
@@ -1440,6 +1467,15 @@ export default function DebtorsAgingPage() {
           </div>
         )
       })()}
+
+      {token && (
+        <ReminderSheet
+          target={autoTarget}
+          token={token}
+          onClose={() => setAutoTarget(null)}
+          onChanged={() => setRemindersKey(k => k + 1)}
+        />
+      )}
 
       {/* Bulk Reminders Modal */}
       {bulkModalOpen && (

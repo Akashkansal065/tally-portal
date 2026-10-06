@@ -24,6 +24,7 @@ import {
   Warehouse,
   Coins,
   Receipt,
+  PartyPopper,
   type LucideIcon,
 } from 'lucide-react'
 import type { UserPermissions } from '@/context/AuthContext'
@@ -76,6 +77,8 @@ export const NAV_MODULES: NavModule[] = [
   // Sales & field
   { id: 'customers', href: '/customers', label: 'Customers', icon: Users, group: 'field', keywords: 'shops directory parties',
     visible: ({ permissions: p, can }) => Boolean(p.showCustomers && can('customers', 'read')) },
+  { id: 'greetings', href: '/greetings', label: 'Greetings', icon: PartyPopper, group: 'field', keywords: 'festival wishes diwali whatsapp inactive customers',
+    visible: ({ permissions: p }) => p.showReports },
   { id: 'check-in', href: '/check-in', label: 'Check-in', icon: MapPin, group: 'field', keywords: 'visit shop gps',
     visible: ({ permissions: p }) => p.showCheckIn },
   { id: 'planner', href: '/planner', label: 'Beat planner', icon: Calendar, group: 'field', keywords: 'route plan daily',

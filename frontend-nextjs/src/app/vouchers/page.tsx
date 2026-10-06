@@ -8,6 +8,8 @@ import { Search, FileText, ChevronRight, X, Loader2, SlidersHorizontal, Phone, D
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherFormModal from '@/components/VoucherFormModal'
+import { ApprovalQueue } from '@/components/vouchers/ApprovalQueue'
+import { LinkParams } from '@/components/LinkParams'
 
 type Voucher = {
   voucher_id: number
@@ -81,6 +83,9 @@ function formatIndianNumber(num: number) {
 
 export default function VouchersPage() {
   const { user, token, permissions, can } = useAuth()
+  // Notification links open /vouchers?tab=approvals (read via LinkParams: during an in-app navigation the page
+  // first renders before the address changes, so window.location would still be the previous page)
+  const [approvalsLinked, setApprovalsLinked] = useState(false)
   const router = useRouter()
   const [allVouchers, setAllVouchers] = useState<Voucher[]>([])
   const [loading, setLoading] = useState(true)
@@ -740,6 +745,9 @@ export default function VouchersPage() {
 
       {/* Main Container */}
       <div className="max-w-lg mx-auto px-4 py-4 space-y-5 w-full">
+        {/* Vouchers waiting for approval (maker-checker); hidden when there are none */}
+        <LinkParams onChange={params => setApprovalsLinked(params.get('tab') === 'approvals')} />
+        {token && <ApprovalQueue token={token} focus={approvalsLinked} />}
         {/* Voucher items listing */}
         <div className="space-y-3.5">
           {loading ? (

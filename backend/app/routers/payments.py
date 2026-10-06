@@ -48,7 +48,7 @@ async def generate_payment_link(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Generate dynamic UPI payment link and Tally Prime 7.0 Paylink for an invoice.
+    Generate a UPI payment link (upi://pay, with the bill amount) for an invoice. Free; no provider needed.
     """
     v_stmt = select(TrnVoucher).options(
         selectinload(TrnVoucher.payment_links),
@@ -92,7 +92,9 @@ async def generate_payment_link(
     upi_uri = f"upi://pay?{urllib.parse.urlencode(params)}"
     
     link_id = f"PL-{voucher.voucher_id}-{uuid.uuid4().hex[:8].upper()}"
-    portal_payment_url = f"https://pay.mytally.in/{link_id}"
+    # The UPI link is the payment link: there's no hosted payment page (card/net-banking links need the
+    # payment_gateway integration)
+    portal_payment_url = upi_uri
 
     # Check if existing pending link
     existing_link = next((pl for pl in voucher.payment_links if pl.status == "PENDING"), None)

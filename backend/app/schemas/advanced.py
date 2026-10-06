@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 from typing import Optional, List
 from decimal import Decimal
 from datetime import date, datetime
@@ -138,6 +138,13 @@ class EinvoiceMetadataResponse(BaseModel):
     eway_bill_no: Optional[str] = None
     eway_bill_date: Optional[datetime] = None
     raw_response: Optional[str] = None
-    
+    environment: Optional[str] = None
+
+    @computed_field
+    @property
+    def demo(self) -> bool:
+        """Made up by MyTally's demo e-invoice (no GSP connected), not a registered IRN."""
+        return self.environment == "mock"
+
     class Config:
         from_attributes = True

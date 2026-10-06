@@ -1,4 +1,6 @@
 import jsPDF from 'jspdf'
+import { fitImage, qrPngDataUrl, upiUri, type Branding } from '@/lib/branding'
+import { saveOrSharePdf } from '@/lib/capacitor-pdf'
 
 export interface VoucherHeader {
   voucherType?: string | null
@@ -177,6 +179,8 @@ export async function generateVoucherPdf({
   accounts,
   inventory,
   partyLedger,
+  branding = null,
+  edocs = null,
   shouldDownload = true
 }: {
   voucherGuid: string
@@ -184,6 +188,10 @@ export async function generateVoucherPdf({
   accounts: AccountEntry[]
   inventory: InventoryEntry[]
   partyLedger: PartyLedger | null
+  /** Company details, logo, bank, signature (GET /branding). Without it the company block is left blank. */
+  branding?: Branding | null
+  /** A live e-invoice / e-way bill from the GST portal (never demo numbers) */
+  edocs?: { irn: string | null; ackNo: string | null; ackDate: string | null; signedQr: string | null; ewbNo: string | null } | null
   shouldDownload?: boolean
 }) {
   const safeAccounts = Array.isArray(accounts) ? accounts : []
@@ -215,6 +223,38 @@ export async function generateVoucherPdf({
       .reduce((sum, a) => sum + parseFloat(String(a.amount || '0')), 0)
     totalAmount = Math.abs(invSum + ledgerSum)
   }
+
+  // Company details and images (Admin → Invoice design + Company profile)
+  const company = branding?.company
+  const companyName = company?.name || ''
+  const logo = branding?.logo ? { data: branding.logo, ...(await fitImage(branding.logo, 24, 24)) } : null
+  const signature = branding?.signature ? { data: branding.signature, ...(await fitImage(branding.signature, 42, 12)) } : null
+  const isSales = (header.voucherType || '').toLowerCase().includes('sales')
+  let upiQr: string | null = null
+  if (isSales && branding?.show_upi_qr && company?.upi_id && totalAmount > 0) {
+    try {
+      upiQr = await qrPngDataUrl(upiUri(company.upi_id, companyName, totalAmount, `Invoice ${header.voucherNumber || ''}`.trim()))
+    } catch (err) {
+      console.warn('[generateVoucherPdf] UPI QR code left out:', err)
+      upiQr = null
+    }
+  }
+  // The e-invoice QR holds the IRP's signed data; it's printed as issued
+  let irnQr: string | null = null
+  if (edocs?.signedQr) {
+    try {
+      irnQr = await qrPngDataUrl(edocs.signedQr, 400)
+    } catch (err) {
+      console.warn('[generateVoucherPdf] e-invoice QR code left out:', err)
+    }
+  }
+  const bank = branding?.bank
+  const bankRows: [string, string][] = ([
+    ["A/c Holder's Name", bank?.account_name || (bank?.account_no ? companyName : '')],
+    ['Bank Name', bank?.bank_name || ''],
+    ['A/c No.', bank?.account_no || ''],
+    ['Branch & IFS Code', [bank?.branch, bank?.ifsc].filter(Boolean).join(' & ')],
+  ] as [string, string][]).filter(([, value]) => value)
 
   // Group by HSN/SAC for Tax Analysis
   const groupItemsByHsn = () => {
@@ -365,16 +405,29 @@ export async function generateVoucherPdf({
     doc.setFontSize(8)
     doc.text('(ORIGINAL FOR RECIPIENT)', 200, yTop - 3, { align: 'right' })
 
-    // Left Header: Sneh Distributors Details
+    // Left Header: the company (logo, then name and details beside it)
+    let companyX = 12
+    if (logo) {
+      doc.addImage(logo.data, imageFormat(logo.data), 12, yTop + 2 + (24 - logo.h) / 2, logo.w, logo.h, 'logo', 'FAST')
+      companyX = 12 + logo.w + 3
+    }
+    const textWidth = 103 - companyX
+    doc.setFont('helvetica', 'bold')
     doc.setFontSize(11.5)
-    doc.text('Sneh Distributors', 12, yTop + 6)
+    doc.text(doc.splitTextToSize(companyName, textWidth)[0] || '', companyX, yTop + 6)
     doc.setFont('helvetica', 'normal')
-    doc.setFontSize(9.5)
-    doc.text('43/7, Shastri Nagar, Meerut', 12, yTop + 11)
-    doc.text('GSTIN/UIN: 09GAHPK5367P1ZR', 12, yTop + 16)
-    doc.text('State Name : Uttar Pradesh, Code : 09', 12, yTop + 21)
-    doc.text('Contact : +91-8384854172', 12, yTop + 26)
-    doc.text('E-Mail : sneh.distributor@gmail.com', 12, yTop + 31)
+    doc.setFontSize(9)
+    const companyAddress = [...(company?.address_lines || []), company?.pincode ? `PIN ${company.pincode}` : ''].filter(Boolean).join(', ')
+    const stateCodeOfCompany = getStateCode(company?.state)
+    const companyLines = [
+      ...doc.splitTextToSize(companyAddress, textWidth).slice(0, 2),
+      company?.gstin ? `GSTIN/UIN: ${company.gstin}` : '',
+      company?.state ? `State Name : ${company.state}${stateCodeOfCompany ? `, Code : ${stateCodeOfCompany}` : ''}` : '',
+      company?.phone ? `Contact : ${company.phone}` : '',
+      company?.email ? `E-Mail : ${company.email}` : '',
+    ].filter(Boolean).slice(0, 6)
+    const lineGap = companyLines.length > 5 ? 4.4 : 5
+    companyLines.forEach((line: string, i: number) => doc.text(line, companyX, yTop + 11 + i * lineGap))
 
     // Vertical divider at X = 105
     doc.line(105, yTop, 105, yTop + 75)
@@ -423,14 +476,36 @@ export async function generateVoucherPdf({
     doc.text('Destination', 154, yTop + 46)
     doc.line(105, yTop + 52, 200, yTop + 52)
 
-    // Row 6 (Terms of Delivery)
-    doc.text('Terms of Delivery', 107, yTop + 56)
+    // Row 6 (Terms of Delivery), or the e-invoice / e-way bill details when there are any
+    if (edocs?.irn || edocs?.ewbNo) {
+      doc.setFontSize(7.5)
+      let ey = yTop + 56
+      if (edocs.irn) {
+        doc.setFont('helvetica', 'bold')
+        doc.text('IRN:', 107, ey)
+        doc.setFont('helvetica', 'normal')
+        doc.splitTextToSize(edocs.irn, 62).slice(0, 2).forEach((line: string) => { doc.text(line, 114, ey); ey += 3.3 })
+        if (edocs.ackNo) {
+          doc.text(`Ack No: ${edocs.ackNo}${edocs.ackDate ? `   Ack Date: ${formatDate(edocs.ackDate)}` : ''}`, 107, ey)
+          ey += 3.6
+        }
+      }
+      if (edocs.ewbNo) {
+        doc.setFont('helvetica', 'bold')
+        doc.text(`e-Way Bill No: ${edocs.ewbNo}`, 107, ey)
+        doc.setFont('helvetica', 'normal')
+      }
+      if (irnQr) doc.addImage(irnQr, 'PNG', 177, yTop + 53, 21, 21, 'irn-qr', 'FAST')
+      doc.setFontSize(8.5)
+    } else {
+      doc.text('Terms of Delivery', 107, yTop + 56)
+    }
 
     // Inner vertical line on right side rows at X = 152.5
     doc.line(152.5, yTop, 152.5, yTop + 52)
 
     // Big Divider under upper block
-    doc.line(10, yTop + 35, 105, yTop + 35) // separates Sneh details from Buyer
+    doc.line(10, yTop + 35, 105, yTop + 35) // separates the company details from the buyer
 
     // Buyer details (below line, Y = 50 to 90)
     let buyerY = yTop + 39
@@ -677,40 +752,33 @@ export async function generateVoucherPdf({
     // ======== BOTTOM: Bank (center) then Declaration (left) / Signatory (right) ========
     const bottomStartY = nextY
 
-    // Company's Bank Details heading (centered)
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(9)
-    doc.text("Company's Bank Details", 105, bottomStartY + 4, { align: 'center' })
-
-    // Bank details
-    const bLabelX = 80
-    const bValX = 84
-    const bY = bottomStartY + 9
-
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(9)
-    doc.text('A/c Holder\'s Name', bLabelX, bY, { align: 'right' })
-    doc.text(':', bLabelX + 2, bY)
-    doc.setFont('helvetica', 'bold')
-    doc.text('Sneh Distributors', bValX, bY)
-
-    doc.setFont('helvetica', 'normal')
-    doc.text('Bank Name', bLabelX, bY + 4, { align: 'right' })
-    doc.text(':', bLabelX + 2, bY + 4)
-    doc.setFont('helvetica', 'bold')
-    doc.text('Punjab National Bank', bValX, bY + 4)
-
-    doc.setFont('helvetica', 'normal')
-    doc.text('A/c No.', bLabelX, bY + 8, { align: 'right' })
-    doc.text(':', bLabelX + 2, bY + 8)
-    doc.setFont('helvetica', 'bold')
-    doc.text('4007002100062882', bValX, bY + 8)
-
-    doc.setFont('helvetica', 'normal')
-    doc.text('Branch & IFS Code', bLabelX, bY + 12, { align: 'right' })
-    doc.text(':', bLabelX + 2, bY + 12)
-    doc.setFont('helvetica', 'bold')
-    doc.text('Jagriti Vihar & PUNB0400700', bValX, bY + 12)
+    // UPI QR for the invoice amount (sales invoices with a UPI ID), then the bank details beside it
+    if (upiQr) {
+      doc.addImage(upiQr, 'PNG', 12, bottomStartY + 1.5, 21, 21, 'upi-qr', 'FAST')
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(9)
+      doc.text('Scan to pay', 35, bottomStartY + 7)
+      doc.text(`Rs. ${totalAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 35, bottomStartY + 11.5)
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8)
+      doc.text(doc.splitTextToSize(`UPI: ${company?.upi_id || ''}`, 42), 35, bottomStartY + 16)
+    }
+    if (bankRows.length > 0) {
+      const bankCentre = upiQr ? 150 : 105
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
+      doc.text("Company's Bank Details", bankCentre, bottomStartY + 4, { align: 'center' })
+      const bLabelX = upiQr ? 125 : 80
+      const bValX = bLabelX + 4
+      bankRows.forEach(([label, value], i) => {
+        const y = bottomStartY + 9 + i * 4
+        doc.setFont('helvetica', 'normal')
+        doc.text(label, bLabelX, y, { align: 'right' })
+        doc.text(':', bLabelX + 2, y)
+        doc.setFont('helvetica', 'bold')
+        doc.text(doc.splitTextToSize(value, 198 - bValX)[0] || '', bValX, y)
+      })
+    }
 
     // Horizontal line below bank details
     const postBankY = bottomStartY + 24
@@ -723,8 +791,8 @@ export async function generateVoucherPdf({
     doc.line(12, postBankY + 4.5, 30, postBankY + 4.5)
 
     doc.setFontSize(8.5)
-    const decText = 'We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.'
-    const decLines = doc.splitTextToSize(decText, 90)
+    const decText = branding?.declaration || 'We declare that this invoice shows the actual price of the goods described and that all particulars are true and correct.'
+    const decLines = doc.splitTextToSize(decText, 90).slice(0, 4)
     decLines.forEach((line: string, idx: number) => {
       doc.text(line, 12, postBankY + 8 + idx * 3.5)
     })
@@ -734,7 +802,10 @@ export async function generateVoucherPdf({
 
     doc.setFont('helvetica', 'italic')
     doc.setFontSize(10)
-    doc.text('for Sneh Distributors', 152.5, postBankY + 5, { align: 'center' })
+    doc.text(companyName ? `for ${companyName}` : '', 152.5, postBankY + 5, { align: 'center' })
+    if (signature) {
+      doc.addImage(signature.data, imageFormat(signature.data), 152.5 - signature.w / 2, postBankY + 7, signature.w, signature.h, 'signature', 'FAST')
+    }
 
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(9.5)
@@ -813,10 +884,19 @@ export async function generateVoucherPdf({
     }
   }
 
-  // Save document
+  // Save document (on the Android app this opens the share sheet, where it can be saved)
   if (shouldDownload) {
-    doc.save(`Invoice_${header.voucherNumber ? header.voucherNumber.replace(/[\/\\?%*:|"<>\s]/g, '_') : 'voucher'}.pdf`)
+    saveOrSharePdf(doc, invoiceFileName(header.voucherNumber))
   }
 
   return doc
+}
+
+/** jsPDF image format from a data URL */
+function imageFormat(dataUrl: string): 'PNG' | 'JPEG' {
+  return dataUrl.startsWith('data:image/jpeg') ? 'JPEG' : 'PNG'
+}
+
+export function invoiceFileName(voucherNumber?: string | null): string {
+  return `Invoice_${voucherNumber ? voucherNumber.replace(/[\/\\?%*:|"<>\s]/g, '_') : 'voucher'}.pdf`
 }

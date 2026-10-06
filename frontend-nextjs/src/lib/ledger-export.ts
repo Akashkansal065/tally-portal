@@ -60,6 +60,8 @@ export interface ExportOptions {
   company?: ExportCompanyInfo
   customerPhone?: string
   customerName?: string
+  /** Company logo (data URL) from Admin → Invoice design, printed top right of the PDF */
+  logo?: string | null
 }
 
 const formatNumber = (val: string | number): string => {
@@ -105,7 +107,7 @@ export function exportLedgerToCsv({
   company,
   customerName
 }: ExportOptions): void {
-  const companyName = company?.name || 'Sneh Distributors'
+  const companyName = company?.name || ''
   const partyName = customerName || ledgerInfo.name || 'Customer'
   const filterLabel = getFilterLabel(filterType)
 
@@ -228,15 +230,16 @@ export function exportLedgerToPdf({
   endDate,
   filterType,
   company,
-  customerName
-}: ExportOptions): void {
+  customerName,
+  logo
+}: ExportOptions, output: 'save' | 'doc' = 'save'): jsPDF {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4'
   })
 
-  const companyName = company?.name || 'Sneh Distributors'
+  const companyName = company?.name || ''
   const partyName = customerName || ledgerInfo.name || 'Customer'
   const filterLabel = getFilterLabel(filterType)
 
@@ -253,6 +256,16 @@ export function exportLedgerToPdf({
     let y = 12
 
     if (isFirstPage) {
+      if (logo) {
+        try {
+          const props = doc.getImageProperties(logo)
+          const scale = Math.min(32 / props.width, 16 / props.height)
+          const w = props.width * scale, h = props.height * scale
+          doc.addImage(logo, logo.startsWith('data:image/jpeg') ? 'JPEG' : 'PNG', xRight - w, 5, w, h, 'logo', 'FAST')
+        } catch {
+          // An unreadable logo is left out rather than failing the statement
+        }
+      }
       // Company Info Header
       doc.setFont('helvetica', 'bold')
       doc.setFontSize(15)
@@ -568,10 +581,14 @@ export function exportLedgerToPdf({
   drawPageFooter(currentPage)
 
   // Trigger browser download or native Android/iOS share
+  if (output === 'save') saveOrSharePdf(doc, statementFileName(partyName, filterType, startDate, endDate))
+  return doc
+}
+
+export function statementFileName(partyName: string, filterType: string, startDate: string, endDate: string): string {
   const cleanParty = partyName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 30)
   const cleanFilter = filterType.replace(/[^a-zA-Z0-9_-]/g, '_')
-  const fileName = `${cleanParty}_Statement_${cleanFilter}_${startDate || 'all'}_to_${endDate || 'all'}.pdf`
-  saveOrSharePdf(doc, fileName)
+  return `${cleanParty}_Statement_${cleanFilter}_${startDate || 'all'}_to_${endDate || 'all'}.pdf`
 }
 
 /**
@@ -590,7 +607,7 @@ export function generateWhatsAppStatementMessage({
   company,
   customerName
 }: ExportOptions): string {
-  const companyName = company?.name || 'Sneh Distributors'
+  const companyName = company?.name || ''
   const partyName = customerName || ledgerInfo.name || 'Customer'
   const filterLabel = getFilterLabel(filterType)
 

@@ -12,21 +12,6 @@ from pydantic import BaseModel
 logger = logging.getLogger("app.routers.gst")
 logger.setLevel(logging.INFO)
 
-def log_gst_portal(title: str, request_data: dict, response_data: dict) -> str:
-    log_text = (
-        f"\n========================== [GST PORTAL OUTBOUND REQUEST: {title}] ==========================\n"
-        f"URL/Action : {request_data.get('url', 'N/A')}\n"
-        f"Headers    : {request_data.get('headers', {})}\n"
-        f"Payload    : {request_data.get('payload', {})}\n"
-        f"-------------------------- [GST PORTAL INBOUND RESPONSE: {title}] --------------------------\n"
-        f"Status Code: {response_data.get('status', '200 OK')}\n"
-        f"Response   : {response_data.get('body', {})}\n"
-        f"=========================================================================================="
-    )
-    print(log_text, flush=True)
-    logger.info(log_text)
-    return log_text
-
 from app.core.database import get_db
 from app.core.datetime_utils import get_ist_now
 from app.core.permissions import require_permission
@@ -36,6 +21,9 @@ from app.models.tally_core import MstLedger, MstGroup, MstGstReconConfig
 from app.models.portal_core import GstReturnPeriod, Gstr1LineItem, Gstr1HsnSummary, Gstr3bSummary, ItcEntry, Gstr2bEntry, Gstr9AnnualReturn, ManualPurchase, GstComplianceException, GstFilingSnapshot, GstProviderAttempt
 from app.services.gst.validation import validate_return_lines
 from app.services.gst.providers import create_provider, make_idempotency_key
+from app.services.integrations import is_enabled, not_available_yet, require_integration
+from app.routers.admin import require_admin
+from app.models.portal_core import AuditLog
 from app.core.config import settings
 from app.schemas.gst import (
     GstReturnPeriodCreate, GstReturnPeriodResponse,
@@ -215,8 +203,10 @@ async def submit_gst_period(
     req: GstProviderSubmitRequest,
     user: User = Depends(require_permission("reports", "update")),
     db: AsyncSession = Depends(get_db),
+    _on: User = Depends(require_integration("gst_filing")),
 ):
-    """Submit a locked period through an isolated provider and retain filing evidence."""
+    """Submit a locked period through an isolated provider and retain filing evidence. Only the demo provider
+    exists so far ("mock"); the result is marked demo and the period is not marked filed."""
     period = (
         await db.execute(
             select(GstReturnPeriod).where(
@@ -231,6 +221,8 @@ async def submit_gst_period(
         raise HTTPException(status_code=409, detail="Validate and lock the GST period before provider submission.")
     if req.environment not in {"mock", "sandbox", "production"}:
         raise HTTPException(status_code=422, detail="Unsupported GST provider environment.")
+    if req.environment != "mock":
+        raise not_available_yet("gst_filing", "Only a demo submission is possible for now.")
 
     lines = (
         await db.execute(select(Gstr1LineItem).where(Gstr1LineItem.return_period_id == period_id))
@@ -268,6 +260,7 @@ async def submit_gst_period(
             status=existing.status,
             correlation_id=existing.correlation_id,
             acknowledgement_number=(existing.response or {}).get("acknowledgement_number"),
+            demo=existing.provider == "mock",
         )
 
     try:
@@ -311,6 +304,7 @@ async def submit_gst_period(
         status=result.status,
         correlation_id=result.correlation_id,
         acknowledgement_number=result.response.get("acknowledgement_number"),
+        demo=result.provider == "mock",
     )
 
 @router.delete("/periods/{period_id}")
@@ -988,227 +982,27 @@ async def upload_gstr2b_json(
         "mismatches": reconcile_res.get("mismatches", 0)
     }
 
+# Fetching GSTR-2B from the GST portal needs a GSP connection, which isn't built. These routes used to answer
+# "OTP sent" and then replace the period's GSTR-2B rows with copies of our own purchase vouchers, so they now refuse.
+GSTR2B_UPLOAD_HINT = "Download the GSTR-2B JSON from the GST portal and use Upload instead."
+
+
 @router.post("/gstr2b/request-otp")
 async def request_gstr2b_otp(
     req: Gstr2bOtpRequest,
     user: User = Depends(require_permission("reports", "update")),
-    db: AsyncSession = Depends(get_db)
+    _on: User = Depends(require_integration("gst_portal")),
 ):
-    """Initiate OTP request to GST Portal for fetching GSTR-2B data, checking if data already exists first"""
-    from app.models.portal_core import Company
-    import os
+    raise not_available_yet("gst_portal", GSTR2B_UPLOAD_HINT)
 
-    period_q = await db.execute(
-        select(GstReturnPeriod).where(
-            GstReturnPeriod.return_period_id == req.period_id,
-            GstReturnPeriod.company_id == user.company_id
-        )
-    )
-    period = period_q.scalars().first()
-    if not period:
-        raise HTTPException(status_code=404, detail="Return period not found.")
-
-    comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
-    company = comp_q.scalars().first()
-    gstin = company.gstin if company and company.gstin else "09GAHPK5367P1ZR"
-
-    # Check database entries
-    g2b_count_q = await db.execute(
-        select(Gstr2bEntry).where(
-            Gstr2bEntry.return_period_id == req.period_id,
-            Gstr2bEntry.company_id == user.company_id
-        )
-    )
-    existing_entries = g2b_count_q.scalars().all()
-    existing_count = len(existing_entries)
-
-    # Check disk storage archive
-    storage_dir = os.path.join(os.getcwd(), "storage", "gstr2b")
-    file_path = os.path.join(storage_dir, f"GSTR2B_comp{user.company_id}_{period.period_month:02d}_{period.period_year}.json")
-    file_exists = os.path.exists(file_path)
-
-    if (existing_count > 0 or file_exists) and not req.force_refetch:
-        return {
-            "exists": True,
-            "count": existing_count,
-            "detail": f"GSTR-2B data for this period is already present in your database ({existing_count} entries saved).",
-            "gstin": gstin,
-            "period_id": req.period_id
-        }
-
-    import uuid
-    txn_id = f"TXN_{uuid.uuid4().hex[:8].upper()}"
-
-    gsp_client_id = company.einvoice_gsp_client_id or "GSP_CLIENT_ID" if company else "GSP_CLIENT_ID"
-    ret_period_str = f"{period.period_month:02d}{period.period_year}"
-
-    req_data = {
-        "url": "POST https://api.gst.gov.in/taxpayer/otp",
-        "headers": { "client_id": gsp_client_id, "state-cd": "09", "ip-usr": "127.0.0.1" },
-        "payload": { "action": "OTPREQUEST", "gstin": gstin, "period": ret_period_str }
-    }
-    res_data = {
-        "status": "200 OK",
-        "body": { "status_cd": "1", "txn": txn_id, "message": f"OTP sent to registered mobile/email for GSTIN {gstin}" }
-    }
-    log_text = log_gst_portal("OTP REQUEST", req_data, res_data)
-
-    return {
-        "exists": False,
-        "detail": f"OTP sent successfully to registered mobile/email linked to GSTIN {gstin}.",
-        "txn_id": txn_id,
-        "gstin": gstin,
-        "period_id": req.period_id,
-        "logs": log_text
-    }
 
 @router.post("/gstr2b/verify-otp")
 async def verify_gstr2b_otp_and_fetch(
     req: Gstr2bOtpVerify,
     user: User = Depends(require_permission("reports", "update")),
-    db: AsyncSession = Depends(get_db)
+    _on: User = Depends(require_integration("gst_portal")),
 ):
-    """Verify OTP, download GSTR-2B statement from portal, and run auto-reconciliation"""
-    if len(req.otp.strip()) != 6:
-        raise HTTPException(status_code=400, detail="Invalid OTP format. Please enter 6-digit OTP.")
-
-    period_q = await db.execute(
-        select(GstReturnPeriod).where(
-            GstReturnPeriod.return_period_id == req.period_id,
-            GstReturnPeriod.company_id == user.company_id
-        )
-    )
-    period = period_q.scalars().first()
-    if not period:
-        raise HTTPException(status_code=404, detail="Return period not found.")
-
-    # Archive download to disk
-    import os, json
-    storage_dir = os.path.join(os.getcwd(), "storage", "gstr2b")
-    os.makedirs(storage_dir, exist_ok=True)
-    file_path = os.path.join(storage_dir, f"GSTR2B_comp{user.company_id}_{period.period_month:02d}_{period.period_year}.json")
-    try:
-        raw_archive = {
-            "rtnprd": f"{period.period_month:02d}{period.period_year}",
-            "gstin": "09GAHPK5367P1ZR",
-            "fetched_at": str(get_ist_now())
-        }
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(raw_archive, f, indent=2)
-    except Exception:
-        pass
-    start_date = date(period.period_year, period.period_month, 1)
-    last_day = calendar.monthrange(period.period_year, period.period_month)[1]
-    end_date = date(period.period_year, period.period_month, last_day)
-
-    vouchers_query = await db.execute(
-        select(TrnVoucher)
-        .options(
-            selectinload(TrnVoucher.entries)
-            .selectinload(TrnAccounting.ledger)
-            .selectinload(MstLedger.group)
-        )
-        .where(
-            TrnVoucher.company_id == user.company_id,
-            TrnVoucher.is_optional == False,
-            TrnVoucher.voucher_date >= start_date,
-            TrnVoucher.voucher_date <= end_date
-        )
-    )
-    vouchers = vouchers_query.scalars().all()
-
-    # Clear existing entries for this period
-    del_q = await db.execute(select(Gstr2bEntry).where(
-        Gstr2bEntry.return_period_id == req.period_id,
-        Gstr2bEntry.company_id == user.company_id
-    ))
-    for entry in del_q.scalars().all():
-        await db.delete(entry)
-    await db.commit()
-
-    imported_count = 0
-    from app.routers.vouchers import _resolve_party_and_amount
-    from app.models.tally_core import MstLedger
-
-    for v in vouchers:
-        # Check if purchase voucher
-        if any(e.ledger and 'PURCHASE' in e.ledger.name.upper() for e in v.entries):
-            party_name, party_amount, *_ = _resolve_party_and_amount(v.entries)
-            
-            party_gstin = "09AABCU9603R1ZM"
-            if party_name:
-                party_q = await db.execute(
-                    select(MstLedger).where(
-                        MstLedger.name == party_name,
-                        MstLedger.company_id == user.company_id
-                    )
-                )
-                party_ledger = party_q.scalars().first()
-                if party_ledger and party_ledger.gstin:
-                    party_gstin = party_ledger.gstin
-
-            taxable = Decimal("0.00")
-            cgst = Decimal("0.00")
-            sgst = Decimal("0.00")
-            igst = Decimal("0.00")
-
-            for e in v.entries:
-                if not e.ledger: continue
-                name_upper = e.ledger.name.upper()
-                net_debit = e.debit_amount - e.credit_amount
-                if 'IGST' in name_upper:
-                    igst += net_debit
-                elif 'CGST' in name_upper:
-                    cgst += net_debit
-                elif 'SGST' in name_upper:
-                    sgst += net_debit
-                elif 'PURCHASE' in name_upper:
-                    taxable += net_debit
-
-            entry = Gstr2bEntry(
-                company_id=user.company_id,
-                return_period_id=req.period_id,
-                supplier_gstin=party_gstin,
-                supplier_name=party_name or "Supplier",
-                invoice_number=v.voucher_number,
-                invoice_date=v.voucher_date,
-                taxable_value=taxable,
-                cgst_amount=cgst,
-                sgst_amount=sgst,
-                igst_amount=igst,
-                cess_amount=Decimal("0.00"),
-                itc_availability="Available",
-                match_status="Unmatched"
-            )
-            db.add(entry)
-            imported_count += 1
-
-    await db.commit()
-
-    # Automatically trigger reconciliation for book entries
-    reconcile_res = await reconcile_gstr2b(user=user, db=db)
-
-    gsp_client_id = company.einvoice_gsp_client_id or "GSP_CLIENT_ID" if company else "GSP_CLIENT_ID"
-    ret_period_str = f"{period.period_month:02d}{period.period_year}"
-
-    req_data = {
-        "url": "GET https://api.gst.gov.in/taxpayer/gstr2b",
-        "headers": { "client_id": gsp_client_id, "auth-token": f"SEK_AUTH_{req.txn_id or 'SESSION_TOKEN'}", "gstin": gstin },
-        "payload": { "action": "GSTR2B", "gstin": gstin, "ret_period": ret_period_str, "otp": "******" }
-    }
-    res_data = {
-        "status": "200 OK",
-        "body": { "status_cd": "1", "data": "GSTR-2B Statement Payload Received", "records_imported": imported_count, "reconciled": reconcile_res.get("matched", 0), "mismatches": reconcile_res.get("mismatches", 0) }
-    }
-    log_text = log_gst_portal("VERIFY OTP & FETCH GSTR-2B", req_data, res_data)
-
-    return {
-        "detail": f"Successfully authenticated with GST Portal! Imported {imported_count} auto-drafted GSTR-2B entries and completed reconciliation.",
-        "imported": imported_count,
-        "matched": reconcile_res.get("matched", 0),
-        "mismatches": reconcile_res.get("mismatches", 0),
-        "logs": log_text
-    }
+    raise not_available_yet("gst_portal", GSTR2B_UPLOAD_HINT)
 
 @router.get("/gstr2b", response_model=List[Gstr2bEntryResponse])
 async def get_gstr2b_entries(
@@ -1856,9 +1650,12 @@ async def file_gstr9(
 async def generate_einvoice_irn(
     voucher_id: int,
     user: User = Depends(require_permission("vouchers", "update")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _on: User = Depends(require_integration("einvoice")),
 ):
-    """Generate E-Invoice (IRN, QR Code) for B2B Sales Voucher based on company active environment"""
+    """e-Invoice (IRN) for a B2B sales voucher. In Live mode it goes through the GSP (app/services/einvoicing.py).
+    In Demo mode the IRN, ack number and e-way bill number are made up, saved under the "mock" environment and
+    flagged demo; they must never be printed on an invoice or sent to Tally."""
     from app.models.portal_core import Company
     from app.models.portal_core import EinvoiceMetadata
     
@@ -1868,16 +1665,22 @@ async def generate_einvoice_irn(
     if not company:
         raise HTTPException(status_code=400, detail="Company details not found.")
     active_env = company.einvoice_env or "mock"
-    
-    # Credentials check for live environments
-    if active_env in ["sandbox", "production"]:
-        if not company.einvoice_username or not company.einvoice_password:
-            raise HTTPException(status_code=400, detail=f"E-Invoicing Portal credentials (Username/Password) are not configured for {active_env.title()} env.")
-        if not company.einvoice_gsp_client_id or not company.einvoice_gsp_client_secret:
-            raise HTTPException(status_code=400, detail=f"GSP credentials (Client ID/Client Secret) are not configured for {active_env.title()} env.")
+    if active_env != "mock":
+        from app.services import einvoicing
+        from app.services.gsp import GspError
+        try:
+            record = await einvoicing.generate_irn(db, company, voucher_id, user.user_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Voucher not found.")
+        except einvoicing.NotReady as e:
+            raise HTTPException(status_code=422, detail={"message": "Fix these first:", "problems": e.problems})
+        except GspError as e:
+            raise HTTPException(status_code=502, detail=f"The e-invoice portal refused it: {e}")
+        await db.commit()
+        return {"detail": "e-Invoice registered.", "demo": False, **einvoicing.record_out(record)}
 
     # 2. Fetch voucher
-    stmt = select(TrnVoucher).where(
+    stmt = select(TrnVoucher).options(selectinload(TrnVoucher.voucher_type)).where(
         TrnVoucher.voucher_id == voucher_id,
         TrnVoucher.company_id == user.company_id
     )
@@ -1900,7 +1703,8 @@ async def generate_einvoice_irn(
     existing = meta_q.scalars().first()
     if existing and existing.irn:
         return {
-            "detail": f"E-Invoice already generated under {active_env} environment.",
+            "detail": "A demo e-invoice already exists for this voucher.",
+            "demo": True,
             "irn": existing.irn,
             "ack_no": existing.ack_no,
             "ack_date": existing.ack_date.strftime("%Y-%m-%d %H:%M:%S") if existing.ack_date else None,
@@ -1915,18 +1719,18 @@ async def generate_einvoice_irn(
     company_id = user.company_id
     
     # Calculate a valid-looking 64-char hex string for IRN
-    hash_input = f"{company_id}-{inv_num}-{inv_date}-gst-einvoicing-{active_env}-sneh-distributors"
+    hash_input = f"{company_id}-{inv_num}-{inv_date}-demo-einvoice"
     irn = hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
     
     # Mock Acknowledgement Details
     ack_no = "".join([str(random.randint(0, 9)) for _ in range(15)])
     ack_date = get_ist_now()
     
-    # Mock E-Way Bill Number if voucher amount is >= 50,000
+    # Demo e-way bill number for bills of ₹50,000 or more, only when the e-way bill switch is on too
     total_amount = float(voucher.total_amount or 0)
     eway_bill_no = None
     eway_bill_date = None
-    if total_amount >= 50000.00:
+    if total_amount >= 50000.00 and await is_enabled(db, user.company_id, "eway_bill"):
         eway_bill_no = "12" + "".join([str(random.randint(0, 9)) for _ in range(10)])
         eway_bill_date = get_ist_now()
         
@@ -1938,14 +1742,15 @@ async def generate_einvoice_irn(
         eway_bill_no=eway_bill_no,
         eway_bill_date=eway_bill_date,
         environment=active_env,
-        raw_response=f'{{"success": true, "status": "ACT", "irp": "NIC-IRP-1", "environment": "{active_env}"}}'
+        raw_response='{"demo": true, "detail": "Made up by MyTally; not registered on the invoice portal"}'
     )
     
     db.add(meta)
     await db.commit()
     
     return {
-        "detail": f"E-Invoice generated successfully in {active_env.title()} environment.",
+        "detail": "Demo e-invoice created. The IRN is made up and not valid on any invoice.",
+        "demo": True,
         "irn": irn,
         "ack_no": ack_no,
         "ack_date": ack_date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1956,7 +1761,8 @@ async def generate_einvoice_irn(
 @router.get("/einvoices", response_model=List[GstEinvoiceListResponse])
 async def get_einvoices_list(
     user: User = Depends(require_permission("reports", "read")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _on: User = Depends(require_integration("einvoice")),
 ):
     """Fetch B2B Sales Invoices list and their corresponding E-invoicing status filtered by company environment"""
     from app.models.portal_core import Company
@@ -2001,11 +1807,11 @@ async def get_einvoices_list(
             party_res = await db.execute(party_stmt)
             party_gstin = party_res.scalars().first()
             
-        # Fetch metadata filtered by active environment
+        # Fetch metadata for the active mode (demo records in Demo, GSP records in Live)
         meta_stmt = select(EinvoiceMetadata).where(
             EinvoiceMetadata.voucher_id == v.voucher_id,
-            EinvoiceMetadata.environment == active_env
-        )
+            EinvoiceMetadata.environment == ("mock" if active_env == "mock" else "live")
+        ).order_by(EinvoiceMetadata.metadata_id.desc())
         meta_res = await db.execute(meta_stmt)
         meta = meta_res.scalars().first()
         
@@ -2018,60 +1824,73 @@ async def get_einvoices_list(
             "amount": float(amount or v.total_amount or 0),
             "irn": meta.irn if meta else None,
             "ack_no": meta.ack_no if meta else None,
-            "eway_bill_no": meta.eway_bill_no if meta else None
+            "eway_bill_no": meta.eway_bill_no if meta else None,
+            "demo": bool(meta and meta.environment == "mock"),
         })
         
     return result
 
-@router.get("/einvoice/settings", response_model=EinvoiceSettingsResponse)
-async def get_einvoice_settings(
-    user: User = Depends(require_permission("reports", "read")),
-    db: AsyncSession = Depends(get_db)
-):
-    """Retrieve the company's active e-invoicing settings and environment configuration"""
-    from app.models.portal_core import Company
-    comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
-    company = comp_q.scalars().first()
-    if not company:
-        raise HTTPException(status_code=404, detail="Company details not found.")
-    
+async def _either_switch_on(user: User = Depends(require_permission("reports", "read")), db: AsyncSession = Depends(get_db)) -> User:
+    """e-Invoice and e-way bill share one set-up, so either switch being on is enough to see it."""
+    if not (await is_enabled(db, user.company_id, "einvoice") or await is_enabled(db, user.company_id, "eway_bill")):
+        from app.services.integrations import switched_off
+        raise switched_off("einvoice")
+    return user
+
+
+def _settings_out(company) -> dict:
+    from app.services.gsp import gsp_account_ready
+    mode = "demo" if (company.einvoice_env or "mock") == "mock" else "live"
     return {
-        "einvoice_env": company.einvoice_env or "mock",
-        "einvoice_username": company.einvoice_username,
-        "einvoice_gsp_client_id": company.einvoice_gsp_client_id,
-        "has_password": bool(company.einvoice_password),
-        "has_gsp_client_secret": bool(company.einvoice_gsp_client_secret)
+        "mode": mode, "einvoice_env": "mock" if mode == "demo" else "live", "gsp_provider": settings.GSP_PROVIDER,
+        "gsp_account_ready": gsp_account_ready(), "company_gstin": company.gstin,
+        "einvoice_username": company.einvoice_username, "has_einvoice_password": bool(company.einvoice_password),
+        "eway_username": company.eway_username, "has_eway_password": bool(company.eway_password),
     }
 
-@router.put("/einvoice/settings")
-async def update_einvoice_settings(
-    payload: EinvoiceSettingsUpdate,
-    user: User = Depends(require_permission("reports", "update")),
-    db: AsyncSession = Depends(get_db)
-):
-    """Update the company's e-invoicing environment and credentials settings"""
+
+@router.get("/einvoice/settings", response_model=EinvoiceSettingsResponse)
+async def get_einvoice_settings(user: User = Depends(_either_switch_on), db: AsyncSession = Depends(get_db)):
     from app.models.portal_core import Company
-    comp_q = await db.execute(select(Company).where(Company.company_id == user.company_id))
-    company = comp_q.scalars().first()
+    company = (await db.execute(select(Company).where(Company.company_id == user.company_id))).scalars().first()
     if not company:
         raise HTTPException(status_code=404, detail="Company details not found.")
-    
-    # Validate environment values
-    if payload.einvoice_env not in ["mock", "sandbox", "production"]:
-        raise HTTPException(status_code=400, detail="Invalid environment choice. Select Mock, Sandbox, or Production.")
-        
-    company.einvoice_env = payload.einvoice_env
-    if payload.einvoice_username is not None:
-        company.einvoice_username = payload.einvoice_username
-    if payload.einvoice_password:
-        company.einvoice_password = payload.einvoice_password
-    if payload.einvoice_gsp_client_id is not None:
-        company.einvoice_gsp_client_id = payload.einvoice_gsp_client_id
-    if payload.einvoice_gsp_client_secret:
-        company.einvoice_gsp_client_secret = payload.einvoice_gsp_client_secret
-        
+    return _settings_out(company)
+
+
+@router.put("/einvoice/settings", response_model=EinvoiceSettingsResponse)
+async def update_einvoice_settings(
+    payload: EinvoiceSettingsUpdate,
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+    _on: User = Depends(_either_switch_on),
+):
+    """Admin: Demo or Live mode, and the company's e-invoice / e-way bill portal API users (passwords write-only)."""
+    from app.models.portal_core import Company
+    from app.services.gsp import gsp_account_ready
+    company = (await db.execute(select(Company).where(Company.company_id == user.company_id))).scalars().first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company details not found.")
+    mode = payload.mode or (None if payload.einvoice_env is None else ("demo" if payload.einvoice_env == "mock" else "live"))
+    if mode not in (None, "demo", "live"):
+        raise HTTPException(status_code=422, detail="Mode must be demo or live.")
+    if mode == "live" and not gsp_account_ready():
+        raise HTTPException(status_code=422, detail="Live needs the GST provider's account keys on the server first (GSP_EMAIL, GSP_CLIENT_ID, GSP_CLIENT_SECRET).")
+    if mode:
+        company.einvoice_env = "mock" if mode == "demo" else "live"
+    for field, length in (("einvoice_username", 100), ("eway_username", 100)):
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(company, field, value.strip()[:length] or None)
+    for field in ("einvoice_password", "eway_password"):
+        value = getattr(payload, field)
+        if value:  # empty leaves the saved password as it is
+            setattr(company, field, value[:255])
+    db.add(AuditLog(company_id=company.company_id, user_id=user.user_id, action="UPDATE", entity_type="GstDocsSettings",
+                    entity_id=company.company_id, new_value={"mode": mode, "fields": [k for k, v in payload.model_dump().items() if v and "password" not in k]}))
     await db.commit()
-    return {"detail": "E-Invoicing configuration settings updated successfully."}
+    return _settings_out(company)
+
 
 # --- Manual Purchases ---
 

@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
 import { useAuth } from '@/context/AuthContext'
+import { BackupScheduleCard } from '@/components/backup/BackupScheduleCard'
 import { API_BASE, authHeaders, formatDate, cn } from '@/lib/utils'
 import {
   Database,
@@ -419,6 +420,7 @@ export default function BackupPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 space-y-6">
+        {token && <BackupScheduleCard token={token} />}
 
         {/* 1. Tally Status & Server Banner */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

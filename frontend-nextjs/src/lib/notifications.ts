@@ -44,6 +44,8 @@ export const NOTIFICATION_FILTERS = [
   { id: 'visits', label: 'Check-ins' },
   { id: 'alerts', label: 'Alerts' },
   { id: 'security', label: 'Security' },
+  { id: 'collections', label: 'Collections' },
+  { id: 'system', label: 'System' },
 ] as const
 
 export type NotificationFilter = (typeof NOTIFICATION_FILTERS)[number]['id']

@@ -4,12 +4,13 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders, formatCurrency, cn } from '@/lib/utils'
+import { useIntegrations } from '@/lib/integrations'
+import { API_BASE, authHeaders, formatCurrency } from '@/lib/utils'
 import {
   FileSpreadsheet, Plus, RefreshCw, CheckCircle2, Download, Calendar,
   ChevronDown, Loader2, ArrowUpDown, Receipt, ShieldCheck, FileText,
-  AlertTriangle, Eye, Lock, ArrowRight, Activity, HelpCircle, Check, Info, Shield,
-  Trash2, Settings, X, Upload, Key, ShieldAlert, Sparkles
+  AlertTriangle, Eye, Lock, ArrowRight, Activity, HelpCircle, Check, Shield,
+  Trash2, X, Upload, ShieldAlert, Sparkles
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -156,12 +157,16 @@ type GstEinvoice = {
   irn: string | null
   ack_no: string | null
   eway_bill_no: string | null
+  demo: boolean
 }
 
 type TabId = 'periods' | 'gstr1' | 'gstr3b' | 'itc' | 'manualPurchases' | 'gstr2b' | 'gstr9' | 'einvoices' | 'msme'
 
 export default function GstPage() {
   const { user, token, permissions } = useAuth()
+  // e-Invoice and return submission need a GST Suvidha Provider; each is hidden unless its switch is on
+  const { canUse } = useIntegrations()
+  const einvoiceOn = canUse('einvoice')
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState<TabId>('periods')
@@ -175,7 +180,6 @@ export default function GstPage() {
   const [gstr2bEntries, setGstr2bEntries] = useState<Gstr2bEntry[]>([])
   const [gstr9Returns, setGstr9Returns] = useState<Gstr9AnnualReturn[]>([])
   const [einvoices, setEinvoices] = useState<GstEinvoice[]>([])
-  const [currentEinvEnv, setCurrentEinvEnv] = useState('mock')
   
   const [manualPurchases, setManualPurchases] = useState<ManualPurchase[]>([])
   const [showManualPurchaseModal, setShowManualPurchaseModal] = useState(false)
@@ -183,15 +187,6 @@ export default function GstPage() {
     source: '', invoice_number: '', invoice_date: new Date().toISOString().split('T')[0],
     product_description: '', taxable_value: 0, cgst_amount: 0, sgst_amount: 0, igst_amount: 0
   })
-
-  // GSTR-2B OTP Modal State
-  const [showGstr2bOtpModal, setShowGstr2bOtpModal] = useState(false)
-  const [gstr2bOtpStep, setGstr2bOtpStep] = useState<'request' | 'verify' | 'exists_prompt'>('request')
-  const [gstr2bExistingCount, setGstr2bExistingCount] = useState(0)
-  const [gstr2bTxnId, setGstr2bTxnId] = useState('')
-  const [gstr2bOtpInput, setGstr2bOtpInput] = useState('')
-  const [gstr2bMaskedGstin, setGstr2bMaskedGstin] = useState('')
-  const [lastGstLog, setLastGstLog] = useState<string | null>(null)
 
   const [loading, setLoading] = useState(false)
   const [selectedPeriodId, setSelectedPeriodId] = useState<number | null>(null)
@@ -212,12 +207,6 @@ export default function GstPage() {
   const [fileGstr9Arn, setFileGstr9Arn] = useState('')
 
   // E-Invoicing Settings State
-  const [showSettingsModal, setShowSettingsModal] = useState(false)
-  const [settingsEnv, setSettingsEnv] = useState('mock')
-  const [settingsUsername, setSettingsUsername] = useState('')
-  const [settingsPassword, setSettingsPassword] = useState('')
-  const [settingsClientId, setSettingsClientId] = useState('')
-  const [settingsClientSecret, setSettingsClientSecret] = useState('')
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -334,11 +323,6 @@ export default function GstPage() {
     if (!token) return
     setLoading(true)
     try {
-      const settingsRes = await fetch(`${API_BASE}/gst/einvoice/settings`, { headers: authHeaders(token) })
-      if (settingsRes.ok) {
-        const settingsData = await settingsRes.json()
-        setCurrentEinvEnv(settingsData.einvoice_env)
-      }
       const res = await fetch(`${API_BASE}/gst/einvoices`, { headers: authHeaders(token) })
       if (res.ok) setEinvoices(await res.json())
     } catch (e) { console.error(e) }
@@ -367,9 +351,9 @@ export default function GstPage() {
     if (activeTab === 'itc') fetchItc()
     if (activeTab === 'gstr2b') fetchGstr2b()
     if (activeTab === 'gstr9') fetchGstr9()
-    if (activeTab === 'einvoices') fetchEinvoices()
+    if (activeTab === 'einvoices' && einvoiceOn) fetchEinvoices()
     if (activeTab === 'msme') fetchMsmeData()
-  }, [activeTab, fetchPeriods, fetchItc, fetchGstr2b, fetchGstr9, fetchEinvoices, fetchMsmeData])
+  }, [activeTab, einvoiceOn, fetchPeriods, fetchItc, fetchGstr2b, fetchGstr9, fetchEinvoices, fetchMsmeData])
 
   useEffect(() => {
     if (selectedPeriodId) {
@@ -468,64 +452,6 @@ export default function GstPage() {
     finally { setActionLoading(null) }
   }
 
-  const handleOpenSettings = async () => {
-    if (!token) return
-    setLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/gst/einvoice/settings`, { headers: authHeaders(token) })
-      if (res.ok) {
-        const data = await res.json()
-        setSettingsEnv(data.einvoice_env)
-        setSettingsUsername(data.einvoice_username || '')
-        setSettingsPassword('') // Do not expose password
-        setSettingsClientId(data.einvoice_gsp_client_id || '')
-        setSettingsClientSecret('') // Do not expose client secret
-        setShowSettingsModal(true)
-      }
-    } catch (e) {
-      console.error(e)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!token) return
-    setActionLoading('save-settings')
-    try {
-      const payload: any = {
-        einvoice_env: settingsEnv,
-        einvoice_username: settingsUsername || null,
-        einvoice_gsp_client_id: settingsClientId || null
-      }
-      if (settingsPassword) payload.einvoice_password = settingsPassword
-      if (settingsClientSecret) payload.einvoice_gsp_client_secret = settingsClientSecret
-
-      const res = await fetch(`${API_BASE}/gst/einvoice/settings`, {
-        method: 'PUT',
-        headers: {
-          ...authHeaders(token),
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      })
-
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to save e-invoicing settings')
-      }
-
-      alert('E-Invoicing settings updated successfully!')
-      setShowSettingsModal(false)
-      setCurrentEinvEnv(settingsEnv)
-    } catch (err: any) {
-      alert(err.message || 'Failed to save settings')
-    } finally {
-      setActionLoading(null)
-    }
-  }
-
   const handleGenerate = async (periodId: number) => {
     setActionLoading(`gen-${periodId}`)
     try {
@@ -589,7 +515,9 @@ export default function GstPage() {
       })
       const result = await res.json()
       if (!res.ok) throw new Error(result.detail || 'GST provider submission failed')
-      alert(`GST submission accepted: ${result.acknowledgement_number || result.correlation_id}`)
+      alert(result.demo
+        ? `Demo submission recorded (${result.acknowledgement_number || result.correlation_id}). Nothing was sent to the GST portal.`
+        : `GST submission accepted: ${result.acknowledgement_number || result.correlation_id}`)
       fetchPeriods()
     } catch (e: any) { alert(e.message) }
     finally { setActionLoading(null) }
@@ -717,84 +645,6 @@ export default function GstPage() {
     }
   }
 
-  const handleOpenGstr2bOtpModal = () => {
-    setGstr2bOtpStep('request')
-    setGstr2bOtpInput('')
-    setGstr2bTxnId('')
-    if (!selectedPeriodId && periods.length > 0) {
-      setSelectedPeriodId(periods[0].return_period_id)
-    }
-    setShowGstr2bOtpModal(true)
-    handleRequestGstr2bOtp(false)
-  }
-
-  const handleRequestGstr2bOtp = async (forceRefetch: boolean = false) => {
-    const pId = selectedPeriodId || (periods.length > 0 ? periods[0].return_period_id : null)
-    if (!pId || !token) {
-      alert('Please select a return period first.')
-      return
-    }
-    setActionLoading('request-gstr2b-otp')
-    try {
-      const res = await fetch(`${API_BASE}/gst/gstr2b/request-otp`, {
-        method: 'POST',
-        headers: authHeaders(token),
-        body: JSON.stringify({ period_id: pId, force_refetch: forceRefetch })
-      })
-      if (res.ok) {
-        const result = await res.json()
-        if (result.logs) {
-          console.log('%c[GST PORTAL REQUEST/RESPONSE LOGS]', 'color: #a855f7; font-weight: bold; font-size: 12px;\n', result.logs)
-          setLastGstLog(result.logs)
-        }
-        setGstr2bMaskedGstin(result.gstin || '')
-        if (result.exists) {
-          setGstr2bExistingCount(result.count || 0)
-          setGstr2bOtpStep('exists_prompt')
-        } else {
-          setGstr2bTxnId(result.txn_id || '')
-          setGstr2bOtpStep('verify')
-        }
-      } else {
-        const err = await res.json()
-        alert(err.detail || 'Failed to request OTP from GST Portal')
-      }
-    } catch (e: any) { alert(e.message) }
-    finally { setActionLoading(null) }
-  }
-
-  const handleVerifyGstr2bOtp = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const pId = selectedPeriodId || (periods.length > 0 ? periods[0].return_period_id : null)
-    if (!pId || !token || !gstr2bOtpInput) return
-    setActionLoading('verify-gstr2b-otp')
-    try {
-      const res = await fetch(`${API_BASE}/gst/gstr2b/verify-otp`, {
-        method: 'POST',
-        headers: authHeaders(token),
-        body: JSON.stringify({
-          period_id: pId,
-          otp: gstr2bOtpInput,
-          txn_id: gstr2bTxnId
-        })
-      })
-      if (res.ok) {
-        const result = await res.json()
-        if (result.logs) {
-          console.log('%c[GST PORTAL REQUEST/RESPONSE LOGS]', 'color: #10b981; font-weight: bold; font-size: 12px;\n', result.logs)
-          setLastGstLog(result.logs)
-        }
-        alert(result.detail || 'GSTR-2B statement successfully fetched and reconciled!')
-        setShowGstr2bOtpModal(false)
-        fetchGstr2b()
-      } else {
-        const err = await res.json()
-        alert(err.detail || 'OTP Verification failed')
-      }
-    } catch (e: any) { alert(e.message) }
-    finally { setActionLoading(null) }
-  }
-
   const handleCreateGstr9 = async () => {
     setActionLoading('create-gstr9')
     try {
@@ -841,7 +691,7 @@ export default function GstPage() {
         headers: authHeaders(token)
       })
       if (res.ok) {
-        alert('E-Invoice (IRN & Acknowledgement) generated successfully!')
+        alert('Demo e-invoice created. The IRN is made up and not valid on any invoice.')
         fetchEinvoices()
       } else {
         const err = await res.json()
@@ -863,7 +713,7 @@ export default function GstPage() {
     { id: 'gstr9', label: 'GSTR-9 (Annual)', icon: FileSpreadsheet },
     { id: 'einvoices', label: 'E-Invoices', icon: Shield },
     { id: 'msme', label: 'MSME 43B(h)', icon: ShieldAlert },
-  ]
+  ].filter(t => t.id !== 'einvoices' || einvoiceOn) as { id: TabId; label: string; icon: React.ElementType }[]
 
   const fmt = (n: number) => Number(n).toFixed(2)
 
@@ -1024,14 +874,14 @@ export default function GstPage() {
                     {p.locked_at && p.status === 'Draft' && (
                       <>
                         <span className="text-[11px] font-semibold text-muted-foreground">Locked for filing</span>
-                        <button
+                        {canUse('gst_filing') && <button
                           onClick={() => handleProviderSubmit(p.return_period_id)}
                           disabled={actionLoading === `submit-${p.return_period_id}`}
                           className="flex items-center gap-1 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 text-[11px] font-bold rounded-lg transition-colors disabled:opacity-50"
                         >
                           {actionLoading === `submit-${p.return_period_id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowRight className="h-3 w-3" />}
-                          Submit (Mock)
-                        </button>
+                          Submit (Demo)
+                        </button>}
                       </>
                     )}
                     <button
@@ -1828,14 +1678,6 @@ export default function GstPage() {
                 className="hidden"
               />
               <button
-                onClick={handleOpenGstr2bOtpModal}
-                disabled={actionLoading === 'request-gstr2b-otp'}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
-              >
-                {actionLoading === 'request-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Key className="h-3.5 w-3.5" />}
-                Fetch via GST Portal
-              </button>
-              <button
                 onClick={() => document.getElementById('gstr2b-file-input')?.click()}
                 disabled={actionLoading === 'upload-gstr2b'}
                 className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold rounded-lg transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
@@ -2079,30 +1921,18 @@ export default function GstPage() {
       )}
 
       {/* ========== TAB: E-Invoices ========== */}
-      {activeTab === 'einvoices' && !loading && (
+      {activeTab === 'einvoices' && einvoiceOn && !loading && (
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">E-Invoicing Management Portal</h2>
-              <p className="text-[11px] text-muted-foreground mt-0.5">Upload sales invoices to the government Invoice Registration Portal (IRP)</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleOpenSettings}
-                className="flex items-center gap-1.5 px-3 py-1 bg-muted hover:bg-muted/80 text-foreground text-xs font-bold rounded-lg border border-border transition-colors cursor-pointer"
-              >
-                <Settings className="h-3.5 w-3.5" /> Configure
-              </button>
-              <span className={cn(
-                "px-3 py-1 rounded-full text-xs font-bold capitalize border shrink-0",
-                currentEinvEnv === 'production' ? "bg-rose-500/10 text-rose-600 border-rose-500/20" :
-                currentEinvEnv === 'sandbox' ? "bg-amber-500/10 text-amber-600 border-amber-500/20" :
-                "bg-muted text-muted-foreground border-border"
-              )}>
-                Environment: {currentEinvEnv}
-              </span>
+              <h2 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">E-Invoices</h2>
+              <p className="text-[11px] text-muted-foreground mt-0.5">B2B sales invoices and their IRN</p>
             </div>
           </div>
+          <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+            <strong>Demo only.</strong> No GST Suvidha Provider is connected yet, so IRNs made here are not registered on the
+            invoice portal and are not valid on any invoice. They are never printed or sent to Tally.
+          </p>
 
           {einvoices.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
@@ -2138,7 +1968,11 @@ export default function GstPage() {
                       </td>
                       <td className="py-2.5 px-2 text-right font-medium">{fmt(einv.amount)}</td>
                       <td className="py-2.5 px-2 text-center">
-                        {einv.irn ? (
+                        {einv.irn && einv.demo ? (
+                          <span className="px-2.5 py-0.5 bg-amber-500/15 text-amber-800 dark:text-amber-300 rounded-full text-[10px] font-bold">
+                            DEMO – not valid
+                          </span>
+                        ) : einv.irn ? (
                           <span className="px-2.5 py-0.5 bg-emerald-500/10 text-emerald-600 rounded-full text-[10px] font-bold inline-flex items-center gap-1">
                             <Check className="h-3 w-3" /> Generated
                           </span>
@@ -2163,7 +1997,7 @@ export default function GstPage() {
                               {actionLoading === `einv-${einv.voucher_id}` ? (
                                 <Loader2 className="h-3 w-3 animate-spin" />
                               ) : (
-                                'Generate IRN'
+                                'Demo IRN'
                               )}
                             </button>
                           )}
@@ -2377,95 +2211,6 @@ export default function GstPage() {
           </div>
         </div>
       )}
-      {/* ========== MODAL: E-Invoicing Settings ========== */}
-      {showSettingsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowSettingsModal(false)}>
-          <form className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4" onClick={e => e.stopPropagation()} onSubmit={handleSaveSettings}>
-            <div>
-              <h3 className="text-lg font-extrabold">E-Invoicing API Configuration</h3>
-              <p className="text-xs text-muted-foreground mt-1">Configure environment and credentials for government IRP uploads</p>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-semibold text-muted-foreground mb-1.5 block">Environment</label>
-                <select
-                  value={settingsEnv}
-                  onChange={e => setSettingsEnv(e.target.value)}
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 font-bold"
-                >
-                  <option value="mock">Mock Sandbox (Simulation)</option>
-                  <option value="sandbox">Government Sandbox (Testing)</option>
-                  <option value="production">Government Production (Live)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-muted-foreground mb-1 block">IRP Username</label>
-                <input
-                  type="text"
-                  value={settingsUsername}
-                  onChange={e => setSettingsUsername(e.target.value)}
-                  placeholder="e.g. GSTIN_USER_01"
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-muted-foreground mb-1 block">IRP Password</label>
-                <input
-                  type="password"
-                  value={settingsPassword}
-                  onChange={e => setSettingsPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-muted-foreground mb-1 block">GSP Client ID</label>
-                <input
-                  type="text"
-                  value={settingsClientId}
-                  onChange={e => setSettingsClientId(e.target.value)}
-                  placeholder="e.g. gsp-client-id"
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-muted-foreground mb-1 block">GSP Client Secret</label>
-                <input
-                  type="password"
-                  value={settingsClientSecret}
-                  onChange={e => setSettingsClientSecret(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowSettingsModal(false)}
-                className="flex-1 py-2.5 bg-muted text-foreground rounded-lg text-xs font-bold hover:bg-muted/80 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={actionLoading === 'save-settings'}
-                className="flex-1 py-2.5 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
-              >
-                {actionLoading === 'save-settings' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                Save Settings
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
       {/* Modal: Add Manual Purchase */}
       {showManualPurchaseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -2586,164 +2331,6 @@ export default function GstPage() {
               </button>
             </div>
           </form>
-        </div>
-      )}
-
-      {/* Modal: GSTR-2B OTP Authorization */}
-      {showGstr2bOtpModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-card w-full max-w-md rounded-2xl shadow-xl overflow-hidden border border-border flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
-              <h2 className="text-sm font-extrabold flex items-center gap-2">
-                <Key className="h-4 w-4 text-purple-500" />
-                GST Portal OTP Authentication
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowGstr2bOtpModal(false)}
-                className="p-1 text-muted-foreground hover:bg-muted rounded-md transition-colors"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {gstr2bOtpStep === 'exists_prompt' ? (
-              <div className="p-5 space-y-4 text-xs">
-                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 text-amber-900 space-y-1">
-                  <p className="font-bold flex items-center gap-1.5 text-amber-700">
-                    <Info className="h-4 w-4" /> GSTR-2B Statement Already Saved
-                  </p>
-                  <p className="text-[11px] text-amber-800 leading-relaxed">
-                    Data for this return period is already saved in your portal database (<strong>{gstr2bExistingCount} entries</strong> saved).
-                  </p>
-                </div>
-
-                <div className="space-y-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowGstr2bOtpModal(false)
-                      handleReconcileGstr2b()
-                    }}
-                    className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    Use Saved Data & Reconcile
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleRequestGstr2bOtp(true)}
-                    disabled={actionLoading === 'request-gstr2b-otp'}
-                    className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
-                  >
-                    {actionLoading === 'request-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                    Force Refetch from GST Portal (Send OTP)
-                  </button>
-                </div>
-              </div>
-            ) : gstr2bOtpStep === 'request' ? (
-              <div className="p-5 space-y-4 text-xs">
-                <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3.5 text-purple-900 space-y-1">
-                  <p className="font-bold flex items-center gap-1.5 text-purple-700">
-                    <ShieldCheck className="h-4 w-4" /> Direct Portal Sync (GSTN API)
-                  </p>
-                  <p className="text-[11px] text-purple-800 leading-relaxed">
-                    Request an OTP from GSTN to authorize downloading your official GSTR-2B statement directly from the government portal.
-                  </p>
-                </div>
-
-                <div className="space-y-1.5 bg-muted/40 p-3 rounded-lg border border-border">
-                  <label className="text-[11px] font-bold text-muted-foreground block">Select Return Period to Fetch:</label>
-                  <div className="relative">
-                    <select
-                      value={selectedPeriodId ?? ''}
-                      onChange={(e) => {
-                        const newId = e.target.value ? Number(e.target.value) : null
-                        setSelectedPeriodId(newId)
-                      }}
-                      className="w-full appearance-none bg-background border border-border rounded-lg px-3 py-2 text-xs font-bold text-foreground pr-8 focus:outline-none focus:ring-2 focus:ring-purple-500/50 cursor-pointer"
-                    >
-                      <option value="">-- Select Return Period --</option>
-                      {periods.map(p => (
-                        <option key={p.return_period_id} value={p.return_period_id}>
-                          {MONTHS[p.period_month - 1]} {p.period_year} ({p.return_type}) — {p.status}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                  </div>
-                </div>
-
-                <div className="pt-2 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowGstr2bOtpModal(false)}
-                    className="flex-1 py-2.5 bg-background border border-border text-foreground rounded-lg font-bold hover:bg-muted transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRequestGstr2bOtp(false)}
-                    disabled={actionLoading === 'request-gstr2b-otp'}
-                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg font-bold hover:bg-purple-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                  >
-                    {actionLoading === 'request-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Key className="h-3.5 w-3.5" />}
-                    Send OTP to Mobile/Email
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={handleVerifyGstr2bOtp} className="p-5 space-y-4 text-xs">
-                <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3.5 text-emerald-900 space-y-1">
-                  <p className="font-bold flex items-center gap-1.5 text-emerald-700">
-                    <CheckCircle2 className="h-4 w-4" /> OTP Sent Successfully!
-                  </p>
-                  <p className="text-[11px] text-emerald-800 leading-relaxed">
-                    Enter the 6-digit OTP sent to the registered mobile number & email linked to GSTIN <strong className="font-mono">{gstr2bMaskedGstin}</strong>.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="text-xs font-bold text-foreground mb-1 block">Enter 6-Digit OTP</label>
-                  <input
-                    type="text"
-                    required
-                    maxLength={6}
-                    placeholder="e.g. 123456"
-                    value={gstr2bOtpInput}
-                    onChange={e => setGstr2bOtpInput(e.target.value)}
-                    className="w-full bg-background border border-border rounded-lg px-3 py-2.5 text-center text-lg font-mono font-bold tracking-widest focus:outline-none focus:ring-2 focus:ring-purple-500/50"
-                  />
-                </div>
-
-                <div className="pt-2 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setGstr2bOtpStep('request')}
-                    className="py-2.5 px-3 bg-background border border-border text-foreground rounded-lg font-bold hover:bg-muted transition-colors cursor-pointer"
-                  >
-                    Resend
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={actionLoading === 'verify-gstr2b-otp' || gstr2bOtpInput.length !== 6}
-                    className="flex-1 py-2.5 bg-purple-600 text-white rounded-lg font-bold hover:bg-purple-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                  >
-                    {actionLoading === 'verify-gstr2b-otp' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                    Verify OTP & Fetch GSTR-2B
-                  </button>
-                </div>
-              </form>
-            )}
-            {lastGstLog && (
-              <div className="p-3 bg-zinc-950 text-emerald-400 font-mono text-[10px] border-t border-border overflow-x-auto max-h-36 no-scrollbar">
-                <p className="text-zinc-500 font-bold mb-1 uppercase tracking-wider text-[9px]">Live GST Portal Log Stream:</p>
-                <pre className="whitespace-pre-wrap leading-relaxed">{lastGstLog}</pre>
-              </div>
-            )}
-          </div>
         </div>
       )}
 

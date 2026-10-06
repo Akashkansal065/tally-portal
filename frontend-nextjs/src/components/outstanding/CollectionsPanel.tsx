@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Loader2, MessageCircle, Phone } from 'lucide-react'
+import { BellRing, Loader2, MessageCircle, Phone } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { cn } from '@/lib/utils'
 import { getCollections, rupees, rupeesShort, type Collections } from '@/lib/report-insights'
@@ -14,7 +14,12 @@ const monthLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateStri
  * Outstanding → who to chase first (overdue amount weighted by how late it is) and how long customers take
  * to pay (days sales outstanding, DSO) by month-end. Reminders reuse the screen's WhatsApp reminder flow.
  */
-export function CollectionsPanel({ reloadKey, onRemind }: { reloadKey: number; onRemind: (ledgerId: number) => void }) {
+export function CollectionsPanel({ reloadKey, onRemind, onSchedule }: {
+  reloadKey: number
+  onRemind: (ledgerId: number) => void
+  /** Automatic email / WhatsApp reminders for this customer */
+  onSchedule?: (ledgerId: number, name: string) => void
+}) {
   const { token } = useAuth()
   const [data, setData] = useState<Collections | null>(null)
   const [showAll, setShowAll] = useState(false)
@@ -118,6 +123,16 @@ export function CollectionsPanel({ reloadKey, onRemind }: { reloadKey: number; o
                   >
                     <MessageCircle className="h-4 w-4" /> Remind
                   </button>
+                  {onSchedule && (
+                    <button
+                      type="button"
+                      onClick={() => onSchedule(c.ledger_id, c.name)}
+                      className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-border px-3 text-sm font-semibold hover:bg-muted cursor-pointer"
+                      aria-label={`Automatic reminders for ${c.name}`}
+                    >
+                      <BellRing className="h-4 w-4" /> Auto
+                    </button>
+                  )}
                 </div>
                 </div>
               </li>

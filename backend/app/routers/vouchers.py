@@ -15,6 +15,7 @@ from app.core.permissions import require_permission, get_current_user, require_v
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.core.pagination import PaginationParams, apply_pagination_headers
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
+from app.models.tally_core import MstGodown, Batch
 from app.models.tally_core import (
     MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, BillAllocation, MstLedger, MstGroup, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration, TrnCostCentreAllocation
 )
@@ -110,7 +111,20 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
             is_inward = True
             if vtype.parent_type in ['Sales', 'Debit Note']:
                 is_inward = False
-                
+
+            # A godown / batch must be this company's (and the batch this item's)
+            if inv_req.godown_id is not None:
+                ok = (await db.execute(select(MstGodown.godown_id).where(
+                    MstGodown.godown_id == inv_req.godown_id, MstGodown.company_id == user.company_id))).scalar()
+                if not ok:
+                    raise HTTPException(status_code=400, detail="Godown not found.")
+            if inv_req.batch_id is not None:
+                ok = (await db.execute(select(Batch.batch_id).where(
+                    Batch.batch_id == inv_req.batch_id, Batch.company_id == user.company_id,
+                    Batch.stock_item_id == inv_req.stock_item_id))).scalar()
+                if not ok:
+                    raise HTTPException(status_code=400, detail="That batch isn't for this item.")
+
             inv = TrnInventory(
                 voucher_id=voucher.voucher_id,
                 stock_item_id=inv_req.stock_item_id,
@@ -379,28 +393,9 @@ async def create_voucher(
         
     vdate = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
         
-    # Check Maker-Checker rule threshold
-    mod_query = await db.execute(select(Module).where(Module.code == 'vouchers'))
-    vouchers_module = mod_query.scalars().first()
-    
-    matching_rule = None
-    if vouchers_module:
-        rule_query = await db.execute(
-            select(ApprovalRule).where(
-                ApprovalRule.company_id == user.company_id,
-                ApprovalRule.module_id == vouchers_module.module_id,
-                (ApprovalRule.voucher_type_id == None) | (ApprovalRule.voucher_type_id == req.voucher_type_id),
-                ApprovalRule.is_active == True
-            )
-        )
-        rules = rule_query.scalars().all()
-        for r in rules:
-            if r.condition_operator == '>' and total_debits > r.condition_value:
-                matching_rule = r
-                break
-            elif r.condition_operator == '>=' and total_debits >= r.condition_value:
-                matching_rule = r
-                break
+    # Maker-checker: a voucher matching an approval rule is held back from Tally until approved
+    from app.services import approvals as approvals_svc
+    matching_rule = await approvals_svc.rule_for(db, user, req.voucher_type_id, v_total)
                 
     final_status = req.status
     if matching_rule:
@@ -427,7 +422,7 @@ async def create_voucher(
     await handle_inventory_posting(db, user, voucher, vtype, req)
         
     if matching_rule:
-        db.add(ApprovalRequest(rule_id=matching_rule.rule_id, voucher_id=voucher.voucher_id, requested_by=user.user_id, status="Pending"))
+        await approvals_svc.request_approval(db, user, voucher, matching_rule, vtype.name if vtype else "Voucher")
         
     await log_audit(db, user.company_id, user.user_id, "CREATE", "Voucher", voucher.voucher_id)
     
@@ -449,6 +444,8 @@ async def create_voucher(
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
+            # The response includes each entry's cost-centre allocations
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.cost_centre_allocations),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
         .where(TrnVoucher.voucher_id == voucher.voucher_id)
@@ -643,6 +640,8 @@ async def update_voucher(
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
+            # The response includes each entry's cost-centre allocations
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.cost_centre_allocations),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
         .where(TrnVoucher.voucher_id == voucher.voucher_id)
@@ -820,6 +819,8 @@ async def rollback_voucher_alter(
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bank_allocations),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.bill_allocations).selectinload(BillAllocation.bill),
+            # The response includes each entry's cost-centre allocations
+            selectinload(TrnVoucher.entries).selectinload(TrnAccounting.cost_centre_allocations),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
         .where(TrnVoucher.voucher_id == vid)
@@ -1187,7 +1188,7 @@ async def get_voucher_detail(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
-    cache_key = f"voucher_detail_{voucher_id}"
+    cache_key = f"voucher_detail_v2_{voucher_id}"  # v2: party_gstin and party_details
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
@@ -1220,6 +1221,14 @@ async def get_voucher_detail(
     party_name, amount, party_ledger_id = _resolve_party_and_amount(voucher.entries)
     if voucher.party_ledger_id:
         party_ledger_id = voucher.party_ledger_id
+    # The party's ledger (for its GSTIN, B2B or not, and the invoice's buyer block), from the entries
+    party_ledger = next((e.ledger for e in voucher.entries if e.ledger and e.ledger_id == party_ledger_id), None)
+    party_gstin = party_ledger.gstin if party_ledger and party_ledger.gstin else None
+    party_details = {
+        "name": party_ledger.name, "address": party_ledger.address, "state": party_ledger.state,
+        "pincode": party_ledger.pincode, "gstin": party_ledger.gstin, "mobile": party_ledger.mobile or party_ledger.phone,
+        "email": party_ledger.email,
+    } if party_ledger else None
 
     entries = []
     for entry in voucher.entries:
@@ -1396,6 +1405,8 @@ async def get_voucher_detail(
         "cancelled_at": cancelled_at,
         "party_name": party_name,
         "party_ledger_id": party_ledger_id,
+        "party_gstin": party_gstin,
+        "party_details": party_details,
         "original_voucher_id": voucher.original_voucher_id,
         "is_invoice": voucher.is_invoice,
         "amount": amount,
