@@ -106,6 +106,7 @@ export interface CompanyInfo {
 
 export interface AuthUser {
   id: number
+  user_id?: number
   email: string
   username: string
   role: string
@@ -185,7 +186,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (errText) errorDetail = errText.slice(0, 200)
           }
         } catch {}
-        console.error(`[AuthContext] /auth/me failed with status ${res.status}:`, errorDetail)
+        if (res.status === 401 || res.status === 403) {
+          console.warn(`[AuthContext] Session invalid or expired (${res.status}):`, errorDetail)
+        } else {
+          console.error(`[AuthContext] /auth/me failed with status ${res.status}:`, errorDetail)
+        }
         const errorObj = new Error(errorDetail) as Error & { status?: number }
         errorObj.status = res.status
         throw errorObj
@@ -212,6 +217,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       )
       setUser({
         ...data,
+        id: data.user_id ?? data.id,
+        user_id: data.user_id ?? data.id,
         allowedCompanies,
         capabilities: data.capabilities || {},
         username: data.email?.split('@')[0] ?? data.email ?? 'User',
@@ -238,7 +245,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         },
       })
     } catch (err: any) {
-      console.error('[AuthContext] Failed to load session user profile:', err)
       // Only clear storage and state if it is an actual authentication error (HTTP 401 / 403 or invalid credentials),
       // NEVER clear the token on transient network errors (like TypeError: Failed to fetch)
       const isAuthError =
@@ -247,11 +253,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         err?.message?.toLowerCase().includes('unauthorized') ||
         err?.message?.toLowerCase().includes('session expired') ||
         err?.message?.toLowerCase().includes('could not validate credentials')
-      if (isAuthError && typeof window !== 'undefined' && localStorage.getItem('mytally_token') === tok) {
-        setUser(null)
-        setToken('')
-        clearLocalSession()
+
+      if (isAuthError) {
+        // Graceful session expiry: clear stale token without triggering dev error overlay
+        if (typeof window !== 'undefined' && localStorage.getItem('mytally_token') === tok) {
+          setUser(null)
+          setToken('')
+          clearLocalSession()
+        }
+        return
       }
+
+      console.error('[AuthContext] Failed to load session user profile:', err)
       throw err
     } finally {
       setIsLoading(false)

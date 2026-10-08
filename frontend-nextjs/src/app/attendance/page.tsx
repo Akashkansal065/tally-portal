@@ -823,28 +823,28 @@ export default function AttendancePage() {
     }
   }
 
-  const renderApprovalBadge = (status?: string | null, isOut?: boolean | null, className?: string) => {
+  const renderApprovalBadge = (status?: string | null, isOut?: boolean | null, className?: string, compact = false) => {
     const s = status || 'approved'
     if (s === 'pending') {
       return (
-        <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30", className)}>
+        <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 whitespace-nowrap", className)} title="Pending Admin Approval">
           <AlertTriangle className="h-2.5 w-2.5 shrink-0 text-amber-500 animate-pulse" />
-          <span>Pending Admin Approval</span>
+          <span>{compact ? "Pending" : "Pending Admin Approval"}</span>
         </span>
       )
     }
     if (s === 'rejected') {
       return (
-        <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30", className)}>
+        <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30 whitespace-nowrap", className)} title="Rejected">
           <XCircle className="h-2.5 w-2.5 shrink-0 text-rose-500" />
           <span>Rejected</span>
         </span>
       )
     }
     return (
-      <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30", className)}>
+      <span className={cn("inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 whitespace-nowrap", className)} title={isOut ? "Approved (Out of Office)" : "Approved (In Office)"}>
         <CheckCircle2 className="h-2.5 w-2.5 shrink-0 text-emerald-500" />
-        <span>{isOut ? "Approved (Out of Office)" : "Approved"}</span>
+        <span>{compact ? (isOut ? "Approved (OOO)" : "Approved") : (isOut ? "Approved (Out of Office)" : "Approved")}</span>
       </span>
     )
   }
@@ -994,7 +994,7 @@ export default function AttendancePage() {
         title={titleParts.join('\n')}
       >
         <Compass className={cn("h-2.5 w-2.5 shrink-0", wrap && "mt-[3px]")} />
-        <span className={cn("min-w-0", wrap ? "line-clamp-2 break-words" : "truncate max-w-[180px]")}>{placeName ? `${placeName}` : tag}</span>
+        <span className={cn("min-w-0", wrap ? "line-clamp-2 break-words" : "truncate max-w-[120px] 2xl:max-w-[180px]")}>{placeName ? `${placeName}` : tag}</span>
         {accuracy != null && <span className="text-[8px] opacity-60 shrink-0">±{accuracy}m</span>}
       </span>
     )
@@ -1081,7 +1081,7 @@ export default function AttendancePage() {
       <LinkParams onChange={applyLink} />
       {/* Header */}
       <div className="border-b border-border bg-card/50 backdrop-blur-md sticky top-0 z-10">
-        <div className={cn("mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between transition-all", activeTab === 'admin' && adminSubTab === 'muster' ? "max-w-7xl" : "max-w-4xl")}>
+        <div className={cn("mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between transition-all", activeTab === 'admin' ? "max-w-[1536px] w-full" : "max-w-4xl")}>
           <button 
             onClick={() => router.push('/')}
             className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
@@ -1101,7 +1101,7 @@ export default function AttendancePage() {
         </div>
       </div>
 
-      <div className={cn("mx-auto px-3 sm:px-4 mt-4 sm:mt-6 space-y-4 sm:space-y-6 transition-all", activeTab === 'admin' && adminSubTab === 'muster' ? "max-w-7xl" : "max-w-4xl")}>
+      <div className={cn("mx-auto px-3 sm:px-4 mt-4 sm:mt-6 space-y-4 sm:space-y-6 transition-all", activeTab === 'admin' ? "max-w-[1536px] w-full" : "max-w-4xl")}>
         {/* Title */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
@@ -1951,18 +1951,29 @@ export default function AttendancePage() {
                 {/* Desktop Table View (>= md) */}
                 <div className="hidden md:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
+                    <table className="w-full text-left border-collapse table-fixed">
+                      <colgroup>
+                        <col className="w-[13%]" /> {/* Salesperson */}
+                        <col className="w-[8%]" />  {/* Punch In */}
+                        <col className="w-[9%]" />  {/* Punch Out */}
+                        <col className="w-[19%]" /> {/* GPS In */}
+                        <col className="w-[19%]" /> {/* GPS Out */}
+                        <col className="w-[7%]" />  {/* Duration */}
+                        <col className="w-[7%]" />  {/* Status */}
+                        <col className="w-[9%]" />  {/* Approval */}
+                        <col className="w-[9%]" />  {/* Actions */}
+                      </colgroup>
                       <thead>
                         <tr className="bg-muted/40 border-b border-border text-[10px] text-muted-foreground uppercase font-black tracking-wider">
-                          <th className="p-4">Salesperson</th>
-                          <th className="p-4">Punch In</th>
-                          <th className="p-4">Punch Out</th>
-                          <th className="p-4">GPS In</th>
-                          <th className="p-4">GPS Out</th>
-                          <th className="p-4">Duration</th>
-                          <th className="p-4 text-center">Status</th>
-                          <th className="p-4 text-center">Approval</th>
-                          <th className="p-4 text-right">Actions</th>
+                          <th className="px-3 py-3">Salesperson</th>
+                          <th className="px-2 py-3">Punch In</th>
+                          <th className="px-2 py-3">Punch Out</th>
+                          <th className="px-2.5 py-3">GPS In</th>
+                          <th className="px-2.5 py-3">GPS Out</th>
+                          <th className="px-2 py-3">Duration</th>
+                          <th className="px-1.5 py-3 text-center">Status</th>
+                          <th className="px-1.5 py-3 text-center">Approval</th>
+                          <th className="px-2 py-3 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border/60 text-xs">
@@ -1973,14 +1984,15 @@ export default function AttendancePage() {
                         ) : (
                           filteredTeamToday.map(item => (
                             <tr key={item.userId} className="hover:bg-muted/10">
-                              <td className="p-4 font-bold text-foreground">
-                                <div className="flex items-center gap-2">
-                                  <span>{item.username}</span>
+                              {/* 1. Salesperson */}
+                              <td className="px-3 py-2.5 font-bold text-foreground">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="truncate" title={item.username}>{item.username}</span>
                                   {item.attendance?.checkInPhotoUrl && (
                                     <button
                                       type="button"
                                       onClick={() => setPreviewPhotoUrl(item.attendance?.checkInPhotoUrl || null)}
-                                      className="text-sky-500 hover:text-sky-600 transition-colors p-0.5 cursor-pointer"
+                                      className="text-sky-500 hover:text-sky-600 transition-colors p-0.5 shrink-0 cursor-pointer"
                                       title="View punch-in selfie"
                                     >
                                       <Camera className="h-3.5 w-3.5" />
@@ -1988,23 +2000,29 @@ export default function AttendancePage() {
                                   )}
                                 </div>
                               </td>
-                              <td className="p-4 text-muted-foreground">{item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}</td>
-                              <td className="p-4 text-muted-foreground">
-                                <div className="flex items-center gap-1.5 flex-wrap">
+
+                              {/* 2. Punch In */}
+                              <td className="px-2 py-2.5 text-muted-foreground whitespace-nowrap font-medium text-xs">
+                                {item.attendance ? formatTimeStr(item.attendance.checkInTime) : '--:--'}
+                              </td>
+
+                              {/* 3. Punch Out */}
+                              <td className="px-2 py-2.5 text-muted-foreground whitespace-nowrap font-medium text-xs">
+                                <div className="flex items-center gap-1 flex-wrap">
                                   <span>{item.attendance ? formatTimeStr(item.attendance.checkOutTime) : '--:--'}</span>
                                   {item.attendance?.isAutoPunchOut && (
-                                    <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.5 px-1.5 rounded-full inline-flex items-center gap-0.5" title={item.attendance.checkOutComments || "Auto Punched Out by System"}>
-                                      ⚡ {item.attendance.autoPunchOutReason === 'midnight_boundary' ? 'Auto 23:58' : 'Auto 9h'}
+                                    <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.2 px-1 rounded-full inline-flex items-center" title={item.attendance.checkOutComments || "Auto Punched Out by System"}>
+                                      ⚡ {item.attendance.autoPunchOutReason === 'midnight_boundary' ? '23:58' : '9h'}
                                     </span>
                                   )}
                                 </div>
                               </td>
                               
-                              {/* GPS In */}
-                              <td className="p-4 text-muted-foreground">
-                                <div className="space-y-1">
+                              {/* 4. GPS In */}
+                              <td className="px-2.5 py-2.5 text-muted-foreground min-w-0">
+                                <div className="space-y-0.5 min-w-0">
                                   {item.attendance?.checkInLocationTag && (
-                                    <div>
+                                    <div className="min-w-0">
                                       {renderLocationBadge(item.attendance.checkInLocationTag, item.attendance.checkInDistanceMeters, item.attendance.checkInPlaceName, item.attendance.checkInAccuracyMeters)}
                                     </div>
                                   )}
@@ -2013,26 +2031,26 @@ export default function AttendancePage() {
                                       href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkInLatitude},${item.attendance.checkInLongitude}`)}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group text-[11px]"
-                                      title="Open Punch-In location in Google Maps"
+                                      className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group text-[10px] whitespace-nowrap"
+                                      title={`Open Punch-In location (${item.attendance.checkInLatitude}, ${item.attendance.checkInLongitude}) in Google Maps`}
                                     >
-                                      <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                      <span>{item.attendance.checkInLatitude.substring(0, 8)}, {item.attendance.checkInLongitude.substring(0, 8)}</span>
-                                      <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                      <MapPin className="h-3 w-3 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                      <span>{item.attendance.checkInLatitude.substring(0, 7)}, {item.attendance.checkInLongitude.substring(0, 7)}</span>
+                                      <ExternalLink className="h-2.5 w-2.5 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
                                     </a>
                                   ) : item.attendance ? (
-                                    <span className="text-muted-foreground/60 italic text-[11px]">GPS Unavailable</span>
+                                    <span className="text-muted-foreground/60 italic text-[10px]">GPS N/A</span>
                                   ) : (
-                                    <span className="text-muted-foreground/40 italic text-[11px]">Not Checked In</span>
+                                    <span className="text-muted-foreground/40 italic text-[10px]">Not Checked In</span>
                                   )}
                                 </div>
                               </td>
 
-                              {/* GPS Out */}
-                              <td className="p-4 text-muted-foreground">
-                                <div className="space-y-1">
+                              {/* 5. GPS Out */}
+                              <td className="px-2.5 py-2.5 text-muted-foreground min-w-0">
+                                <div className="space-y-0.5 min-w-0">
                                   {item.attendance?.checkOutLocationTag && (
-                                    <div>
+                                    <div className="min-w-0">
                                       {renderLocationBadge(item.attendance.checkOutLocationTag, item.attendance.checkOutDistanceMeters, item.attendance.checkOutPlaceName, item.attendance.checkOutAccuracyMeters)}
                                     </div>
                                   )}
@@ -2041,17 +2059,17 @@ export default function AttendancePage() {
                                       href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.attendance.checkOutLatitude},${item.attendance.checkOutLongitude}`)}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group text-[11px]"
-                                      title="Open Punch-Out location in Google Maps"
+                                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group text-[10px] whitespace-nowrap"
+                                      title={`Open Punch-Out location (${item.attendance.checkOutLatitude}, ${item.attendance.checkOutLongitude}) in Google Maps`}
                                     >
-                                      <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                      <span>{item.attendance.checkOutLatitude.substring(0, 8)}, {item.attendance.checkOutLongitude.substring(0, 8)}</span>
-                                      <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                      <MapPin className="h-3 w-3 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                      <span>{item.attendance.checkOutLatitude.substring(0, 7)}, {item.attendance.checkOutLongitude.substring(0, 7)}</span>
+                                      <ExternalLink className="h-2.5 w-2.5 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
                                     </a>
                                   ) : item.attendance?.isAutoPunchOut ? (
-                                    <span className="text-amber-600/80 italic text-[11px] font-medium">Auto System Punch</span>
+                                    <span className="text-amber-600/80 italic text-[10px] font-medium">Auto System</span>
                                   ) : item.attendance && !item.attendance.checkOutTime ? (
-                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-600">
+                                    <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-semibold bg-sky-500/10 text-sky-600">
                                       In Progress
                                     </span>
                                   ) : (
@@ -2060,38 +2078,45 @@ export default function AttendancePage() {
                                 </div>
                               </td>
 
-                              <td className="p-4 font-semibold text-foreground">
+                              {/* 6. Duration */}
+                              <td className="px-2 py-2.5 font-semibold text-foreground whitespace-nowrap text-xs">
                                 {item.attendance ? getWorkingDuration(item.attendance.checkInTime, item.attendance.checkOutTime) : '--'}
                               </td>
-                              <td className="p-4 text-center">
+
+                              {/* 7. Status */}
+                              <td className="px-1.5 py-2.5 text-center whitespace-nowrap">
                                 {item.attendance ? (
-                                  <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                                  <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 whitespace-nowrap">
                                     Present
                                   </span>
                                 ) : (
-                                  <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20">
+                                  <span className="inline-flex py-0.5 px-2 rounded-full text-[10px] font-bold bg-destructive/10 text-destructive border border-destructive/20 whitespace-nowrap">
                                     Absent
                                   </span>
                                 )}
                               </td>
-                              <td className="p-4 text-center">
+
+                              {/* 8. Approval */}
+                              <td className="px-1.5 py-2.5 text-center whitespace-nowrap">
                                 {item.attendance ? (
-                                  renderApprovalBadge(item.attendance.approvalStatus, item.attendance.isOutOfOffice)
+                                  renderApprovalBadge(item.attendance.approvalStatus, item.attendance.isOutOfOffice, undefined, true)
                                 ) : (
                                   <span className="text-muted-foreground/40 text-[11px]">--</span>
                                 )}
                               </td>
-                              <td className="p-4 text-right">
-                                <div className="flex items-center justify-end gap-1.5 flex-wrap">
+
+                              {/* 9. Actions */}
+                              <td className="px-2 py-2.5 text-right">
+                                <div className="flex items-center justify-end gap-1 flex-wrap">
                                   {item.attendance && (
                                     <button
                                       type="button"
                                       onClick={() => handleOpenTrailModal(item.attendance!.id, `${item.username}'s Route`)}
-                                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                      className="inline-flex items-center gap-1 px-2 py-1 bg-sky-500/10 hover:bg-sky-500/20 text-sky-600 dark:text-sky-400 border border-sky-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
                                       title="View movement trail & breadcrumbs"
                                     >
                                       <Route className="h-3 w-3" />
-                                      <span>Route</span>
+                                      <span className="hidden xl:inline">Route</span>
                                     </button>
                                   )}
                                   {item.attendance?.approvalStatus === 'pending' ? (
@@ -2100,25 +2125,25 @@ export default function AttendancePage() {
                                         type="button"
                                         onClick={() => handleApproveAttendance(item.attendance!.id)}
                                         disabled={actionProcessingId === item.attendance.id}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                                        className="inline-flex items-center gap-1 px-1.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
                                         title="Approve Out-of-Office Attendance"
                                       >
                                         {actionProcessingId === item.attendance.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
-                                        <span>Approve</span>
+                                        <span className="hidden xl:inline">Approve</span>
                                       </button>
                                       <button
                                         type="button"
                                         onClick={() => handleOpenRejectModal(item.attendance!)}
                                         disabled={actionProcessingId === item.attendance.id}
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
+                                        className="inline-flex items-center gap-1 px-1.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-bold shadow-2xs cursor-pointer transition-colors disabled:opacity-50"
                                         title="Reject Out-of-Office Attendance"
                                       >
                                         <XCircle className="h-3 w-3" />
-                                        <span>Reject</span>
+                                        <span className="hidden xl:inline">Reject</span>
                                       </button>
                                     </>
                                   ) : item.attendance?.approvalStatus === 'rejected' ? (
-                                    <span className="text-[10px] font-medium text-rose-600 truncate max-w-[120px] inline-block" title={item.attendance.rejectionReason || "Rejected"}>
+                                    <span className="text-[10px] font-medium text-rose-600 truncate max-w-[80px] inline-block" title={item.attendance.rejectionReason || "Rejected"}>
                                       {item.attendance.rejectionReason || "Rejected"}
                                     </span>
                                   ) : !item.attendance ? (
@@ -2501,17 +2526,27 @@ export default function AttendancePage() {
                 {/* Desktop Table View (>= md) */}
                 <div className="hidden md:block bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
+                    <table className="w-full text-left border-collapse table-fixed">
+                      <colgroup>
+                        <col className="w-[11%]" /> {/* Date */}
+                        <col className="w-[14%]" /> {/* Username */}
+                        <col className="w-[8%]" />  {/* In Time */}
+                        <col className="w-[9%]" />  {/* Out Time */}
+                        <col className="w-[23%]" /> {/* GPS In */}
+                        <col className="w-[23%]" /> {/* GPS Out */}
+                        <col className="w-[6%]" />  {/* Duration */}
+                        <col className="w-[6%]" />  {/* Route */}
+                      </colgroup>
                       <thead>
                         <tr className="bg-muted/40 border-b border-border text-[10px] text-muted-foreground uppercase font-black tracking-wider">
-                          <th className="p-4">Date</th>
-                          <th className="p-4">Username</th>
-                          <th className="p-4">In Time</th>
-                          <th className="p-4">Out Time</th>
-                          <th className="p-4">GPS In</th>
-                          <th className="p-4">GPS Out</th>
-                          <th className="p-4">Working hours</th>
-                          <th className="p-4 text-right">Route</th>
+                          <th className="px-3 py-3">Date</th>
+                          <th className="px-3 py-3">Username</th>
+                          <th className="px-2 py-3">In Time</th>
+                          <th className="px-2 py-3">Out Time</th>
+                          <th className="px-2.5 py-3">GPS In</th>
+                          <th className="px-2.5 py-3">GPS Out</th>
+                          <th className="px-2 py-3">Duration</th>
+                          <th className="px-2 py-3 text-right">Route</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border/60 text-xs">
@@ -2522,15 +2557,15 @@ export default function AttendancePage() {
                         ) : (
                           filteredTeamHistory.map(item => (
                             <tr key={item.id} className="hover:bg-muted/10">
-                              <td className="p-4 font-bold text-foreground">{formatDate(item.checkInTime.split('T')[0])}</td>
-                              <td className="p-4 font-semibold text-foreground">
-                                <div className="flex items-center gap-2">
-                                  <span>{item.username}</span>
+                              <td className="px-3 py-2.5 font-bold text-foreground whitespace-nowrap text-xs">{formatDate(item.checkInTime.split('T')[0])}</td>
+                              <td className="px-3 py-2.5 font-semibold text-foreground">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="truncate" title={item.username}>{item.username}</span>
                                   {item.checkInPhotoUrl && (
                                     <button
                                       type="button"
                                       onClick={() => setPreviewPhotoUrl(item.checkInPhotoUrl)}
-                                      className="text-sky-500 hover:text-sky-600 transition-colors p-0.5 cursor-pointer"
+                                      className="text-sky-500 hover:text-sky-600 transition-colors p-0.5 shrink-0 cursor-pointer"
                                       title="View punch-in selfie"
                                     >
                                       <Camera className="h-3.5 w-3.5" />
@@ -2538,23 +2573,23 @@ export default function AttendancePage() {
                                   )}
                                 </div>
                               </td>
-                              <td className="p-4 text-muted-foreground">{formatTimeStr(item.checkInTime)}</td>
-                              <td className="p-4 text-muted-foreground">
-                                <div className="flex items-center gap-1.5 flex-wrap">
+                              <td className="px-2 py-2.5 text-muted-foreground whitespace-nowrap font-medium text-xs">{formatTimeStr(item.checkInTime)}</td>
+                              <td className="px-2 py-2.5 text-muted-foreground whitespace-nowrap font-medium text-xs">
+                                <div className="flex items-center gap-1 flex-wrap">
                                   <span>{formatTimeStr(item.checkOutTime)}</span>
                                   {item.isAutoPunchOut && (
-                                    <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.5 px-1.5 rounded-full inline-flex items-center gap-0.5" title={item.checkOutComments || "Auto Punched Out by System"}>
-                                      ⚡ {item.autoPunchOutReason === 'midnight_boundary' ? 'Auto 23:58' : 'Auto 9h'}
+                                    <span className="text-[9px] font-bold text-amber-600 bg-amber-500/10 border border-amber-500/20 py-0.2 px-1 rounded-full inline-flex items-center" title={item.checkOutComments || "Auto Punched Out by System"}>
+                                      ⚡ {item.autoPunchOutReason === 'midnight_boundary' ? '23:58' : '9h'}
                                     </span>
                                   )}
                                 </div>
                               </td>
                               
                               {/* GPS In */}
-                              <td className="p-4 text-muted-foreground">
-                                <div className="space-y-1">
+                              <td className="px-2.5 py-2.5 text-muted-foreground min-w-0">
+                                <div className="space-y-0.5 min-w-0">
                                   {item.checkInLocationTag && (
-                                    <div>
+                                    <div className="min-w-0">
                                       {renderLocationBadge(item.checkInLocationTag, item.checkInDistanceMeters, item.checkInPlaceName, item.checkInAccuracyMeters)}
                                     </div>
                                   )}
@@ -2563,24 +2598,24 @@ export default function AttendancePage() {
                                       href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkInLatitude},${item.checkInLongitude}`)}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group text-[11px]"
-                                      title="Open Punch-In location in Google Maps"
+                                      className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-400 hover:text-sky-700 hover:underline font-medium cursor-pointer transition-colors group text-[10px] whitespace-nowrap"
+                                      title={`Open Punch-In location (${item.checkInLatitude}, ${item.checkInLongitude}) in Google Maps`}
                                     >
-                                      <MapPin className="h-3.5 w-3.5 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                      <span>{item.checkInLatitude.substring(0, 8)}, {item.checkInLongitude.substring(0, 8)}</span>
-                                      <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                      <MapPin className="h-3 w-3 text-sky-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                      <span>{item.checkInLatitude.substring(0, 7)}, {item.checkInLongitude.substring(0, 7)}</span>
+                                      <ExternalLink className="h-2.5 w-2.5 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
                                     </a>
                                   ) : (
-                                    <span className="text-muted-foreground/50">--</span>
+                                    <span className="text-muted-foreground/40 italic text-[10px]">--</span>
                                   )}
                                 </div>
                               </td>
 
                               {/* GPS Out */}
-                              <td className="p-4 text-muted-foreground">
-                                <div className="space-y-1">
+                              <td className="px-2.5 py-2.5 text-muted-foreground min-w-0">
+                                <div className="space-y-0.5 min-w-0">
                                   {item.checkOutLocationTag && (
-                                    <div>
+                                    <div className="min-w-0">
                                       {renderLocationBadge(item.checkOutLocationTag, item.checkOutDistanceMeters, item.checkOutPlaceName, item.checkOutAccuracyMeters)}
                                     </div>
                                   )}
@@ -2589,23 +2624,23 @@ export default function AttendancePage() {
                                       href={`https://www.google.com/maps?q=${encodeURIComponent(`${item.checkOutLatitude},${item.checkOutLongitude}`)}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group text-[11px]"
-                                      title="Open Punch-Out location in Google Maps"
+                                      className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:underline font-medium cursor-pointer transition-colors group text-[10px] whitespace-nowrap"
+                                      title={`Open Punch-Out location (${item.checkOutLatitude}, ${item.checkOutLongitude}) in Google Maps`}
                                     >
-                                      <MapPin className="h-3.5 w-3.5 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
-                                      <span>{item.checkOutLatitude.substring(0, 8)}, {item.checkOutLongitude.substring(0, 8)}</span>
-                                      <ExternalLink className="h-3 w-3 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
+                                      <MapPin className="h-3 w-3 text-emerald-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                      <span>{item.checkOutLatitude.substring(0, 7)}, {item.checkOutLongitude.substring(0, 7)}</span>
+                                      <ExternalLink className="h-2.5 w-2.5 opacity-60 group-hover:opacity-100 shrink-0 ml-0.5" />
                                     </a>
                                   ) : item.isAutoPunchOut ? (
-                                    <span className="text-amber-600/80 italic text-[11px] font-medium">Auto System Punch</span>
+                                    <span className="text-amber-600/80 italic text-[10px] font-medium">Auto System</span>
                                   ) : (
-                                    <span className="text-muted-foreground/50">--</span>
+                                    <span className="text-muted-foreground/40 italic text-[10px]">--</span>
                                   )}
                                 </div>
                               </td>
 
-                              <td className="p-4 font-bold text-foreground">{getWorkingDuration(item.checkInTime, item.checkOutTime)}</td>
-                              <td className="p-4 text-right">
+                              <td className="px-2 py-2.5 font-bold text-foreground whitespace-nowrap text-xs">{getWorkingDuration(item.checkInTime, item.checkOutTime)}</td>
+                              <td className="px-2 py-2.5 text-right">
                                 <button
                                   type="button"
                                   onClick={() => handleOpenTrailModal(item.id, `${item.username}'s Route (${formatDate(item.checkInTime.split('T')[0])})`)}
@@ -2613,7 +2648,7 @@ export default function AttendancePage() {
                                   title="View movement route trail"
                                 >
                                   <Route className="h-3 w-3" />
-                                  <span>Route</span>
+                                  <span className="hidden xl:inline">Route</span>
                                 </button>
                               </td>
                             </tr>
