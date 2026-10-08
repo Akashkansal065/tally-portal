@@ -114,6 +114,134 @@ async def check_in(
     db.add(visit)
     await db.flush()
 
+    # ─── Auto-Attendance: If user has no attendance today, auto-create one ────
+    # This ensures the first shop check-in of the day also counts as attendance
+    # punch-in, and location tracking starts immediately.
+    auto_attendance_created = False
+    auto_attendance_id = None
+    try:
+        from app.routers.attendance import (
+            Attendance, AttendanceLocationLog, OfficeLocation,
+            resolve_location_tag, reverse_geocode_place_async,
+            forget_ping_state,
+        )
+        from sqlalchemy import desc as sql_desc, and_
+
+        now_ist = get_ist_now()
+
+        # Check if user already has attendance for today (active or completed)
+        att_stmt = (
+            select(Attendance)
+            .where(Attendance.user_id == user.user_id)
+            .order_by(sql_desc(Attendance.check_in_time))
+            .limit(1)
+        )
+        att_res = await db.execute(att_stmt)
+        latest_att = att_res.scalars().first()
+
+        has_today_attendance = False
+        if latest_att:
+            if latest_att.check_out_time is None:
+                # Active shift exists
+                has_today_attendance = True
+            elif latest_att.check_in_time.date() == now_ist.date():
+                # Already completed a shift today
+                has_today_attendance = True
+
+        if not has_today_attendance:
+            # Fetch office locations for geofence tagging
+            offices_res = await db.execute(
+                select(OfficeLocation).where(
+                    OfficeLocation.company_id == user.company_id,
+                    OfficeLocation.is_active == True
+                )
+            )
+            att_offices = offices_res.scalars().all()
+            loc_tag, dist_m, off_id = resolve_location_tag(req.latitude, req.longitude, att_offices)
+            is_out = not loc_tag.startswith("In Office:")
+            approval_status = "pending" if is_out else "approved"
+
+            # Reverse geocode for human-readable place name
+            att_place_name = await reverse_geocode_place_async(req.latitude, req.longitude)
+
+            shop_label = req.custom_shop_name or "Shop Check-In"
+            auto_comment = f"[Auto-Attendance] Created from shop check-in at {shop_label}"
+
+            attendance = Attendance(
+                user_id=user.user_id,
+                check_in_time=now_ist,
+                check_in_latitude=str(req.latitude),
+                check_in_longitude=str(req.longitude),
+                check_in_comments=auto_comment,
+                check_in_ip_address=None,
+                check_in_device_fingerprint="auto-checkin",
+                check_in_location_tag=loc_tag,
+                check_in_distance_meters=dist_m,
+                check_in_office_id=off_id,
+                check_in_accuracy_meters=None,
+                check_in_place_name=att_place_name,
+                is_out_of_office=is_out,
+                approval_status=approval_status,
+                last_known_latitude=str(req.latitude),
+                last_known_longitude=str(req.longitude),
+                last_known_place_name=att_place_name,
+                last_known_time=now_ist,
+            )
+            db.add(attendance)
+            await db.flush()
+            auto_attendance_id = attendance.id
+            forget_ping_state(user.user_id)
+
+            # Record initial location breadcrumb
+            init_log = AttendanceLocationLog(
+                attendance_id=attendance.id,
+                user_id=user.user_id,
+                latitude=str(req.latitude),
+                longitude=str(req.longitude),
+                accuracy_meters=None,
+                distance_from_prev_meters=0.0,
+                place_name=att_place_name,
+                recorded_at=now_ist,
+            )
+            db.add(init_log)
+
+            auto_attendance_created = True
+
+            # Notify admins about auto-attendance
+            from app.routers.notifications import notify_admins as _notify_admins
+            formatted_ist = now_ist.strftime("%I:%M %p")
+            if is_out:
+                await _notify_admins(
+                    db=db,
+                    company_id=user.company_id,
+                    type="attendance_approval",
+                    title="Auto-Attendance: Approval Required",
+                    message=f"{user.username} auto-clocked in via shop check-in OUTSIDE office geofence ({loc_tag}) at {formatted_ist}.",
+                    reference_id=str(attendance.id),
+                    reference_type="attendance",
+                    link=f"/attendance?tab=admin&sub=approvals&id={attendance.id}",
+                    group_key=f"approval:attendance:{attendance.id}",
+                    exclude_user_id=user.user_id,
+                    auto_commit=False,
+                )
+            else:
+                await _notify_admins(
+                    db=db,
+                    company_id=user.company_id,
+                    type="attendance_activity",
+                    title="Auto-Attendance: Clock-In",
+                    message=f"{user.username} auto-clocked in via shop check-in at {formatted_ist} ({loc_tag})",
+                    reference_id=str(attendance.id),
+                    reference_type="attendance",
+                    link="/attendance?tab=admin&sub=today",
+                    group_key=f"clock_in:{now_ist.date().isoformat()}",
+                    group_title=lambda n: f"{n} staff clocked in today",
+                    exclude_user_id=user.user_id,
+                    auto_commit=False,
+                )
+    except Exception as auto_att_err:
+        print(f"Warning: Auto-attendance creation failed for user {user.user_id}: {auto_att_err}")
+
     # Location audit & Customer Profile synchronization
     from app.models.portal_core import CustomerProfile, CustomerLocationLog, CustomerPhoto
     from app.services.geo_service import evaluate_checkin_proximity
@@ -339,6 +467,14 @@ async def check_in(
             auto_commit=True,
         )
 
+    # Build response message
+    if auto_attendance_created:
+        base_msg = "Check-in recorded! Attendance also auto-applied for today."
+    elif location_established:
+        base_msg = "Check-in recorded! Master GPS location established & verified for this shop."
+    else:
+        base_msg = "Check-in recorded successfully"
+
     return {
         "success": True,
         "id": visit.id,
@@ -348,11 +484,9 @@ async def check_in(
         "location_established": location_established,
         "location_verified": profile.location_verified if profile else True,
         "photo_url": visit.photo_url,
-        "message": (
-            "Check-in recorded! Master GPS location established & verified for this shop."
-            if location_established
-            else "Check-in recorded successfully"
-        )
+        "auto_attendance_created": auto_attendance_created,
+        "auto_attendance_id": auto_attendance_id,
+        "message": base_msg,
     }
 
 

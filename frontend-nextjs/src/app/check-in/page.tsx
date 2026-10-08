@@ -11,6 +11,7 @@ import { LocationPermissionModal } from '@/components/LocationPermissionModal'
 import Link from 'next/link'
 import { MapPin, Camera, CheckCircle, Clock, AlertTriangle, ChevronLeft, Search, CheckCircle2, X, CloudOff, RefreshCw, History, CalendarCheck, ExternalLink, MapPinOff, Compass } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { startHeadlessNativeTracking, requestNativeBatteryExemption } from '@/lib/capacitor-native-tracking'
 
 type RecentVisit = {
   id: number
@@ -360,7 +361,15 @@ export default function CheckInPage() {
       if (!res.ok) throw new Error((await res.json()).detail || 'Failed')
       const data = await res.json()
       
-      if (data.location_established) {
+      // If auto-attendance was created via this check-in, activate shift tracking
+      if (data.auto_attendance_created) {
+        localStorage.setItem('mytally_shift_active', '1')
+        if (token) {
+          startHeadlessNativeTracking(token).catch(() => {})
+          requestNativeBatteryExemption().catch(() => {})
+        }
+        setSuccess('✓ Check-in recorded! Attendance also auto-applied for today. Location tracking started.')
+      } else if (data.location_established) {
         setSuccess('✓ Check-in recorded! Master GPS location established & verified for this shop.')
       } else if (data.verification_status === 'MISMATCH_FAR') {
         const dist = data.distance_from_base_meters ? `${Math.round(data.distance_from_base_meters)}m` : ''
