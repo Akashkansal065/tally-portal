@@ -30,11 +30,43 @@ function requestAuthorization(input: RequestInfo | URL, init?: RequestInit): str
   return record.Authorization ?? record.authorization ?? null
 }
 
+// ─── Write-once requests ─────────────────────────────────────────────────────
+// Every write to the API carries an Idempotency-Key, and the server carries out a key only once. The
+// same write sent again within a few seconds (a double tap, a retry after a dropped connection) reuses
+// the key, so it returns the first result instead of creating a second record.
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+const SAME_WRITE_WINDOW_MS = 3000
+const recentWrites = new Map<string, { key: string; at: number }>()
+
+function withIdempotencyKey(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
+  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+  if (!WRITE_METHODS.has(method) || !requestUrl(input).startsWith(API_BASE)) return init
+  // Only plain (JSON or empty) bodies can be compared; uploads go through untouched
+  const body = init?.body
+  if (body != null && typeof body !== 'string') return init
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+  if (headers.has('Idempotency-Key')) return init
+
+  const now = Date.now()
+  for (const [signature, entry] of recentWrites) {
+    if (now - entry.at > SAME_WRITE_WINDOW_MS) recentWrites.delete(signature)
+  }
+  const signature = `${method} ${requestUrl(input)} ${body ?? ''}`
+  let entry = recentWrites.get(signature)
+  if (!entry) {
+    entry = { key: `${now.toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`, at: now }
+    recentWrites.set(signature, entry)
+  }
+  headers.set('Idempotency-Key', entry.key)
+  return { ...init, headers }
+}
+
 function installSessionEndedInterceptor() {
   if (fetchPatched || typeof window === 'undefined') return
   fetchPatched = true
   const originalFetch = window.fetch.bind(window)
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    init = withIdempotencyKey(input, init)
     const response = await originalFetch(input, init)
     if (response.status === 401 && activeToken && onSessionEnded) {
       const url = requestUrl(input)
