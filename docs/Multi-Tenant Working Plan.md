@@ -2,7 +2,7 @@
 
 Last updated: 10 Oct 2026
 
-This is the single document to work from. It merges and supersedes:
+This is the single document to work from. The steps to run by hand at rollout are in `Multi-Tenant Rollout Runbook.md`. It merges and supersedes:
 
 - `Multi-Company Sync Strategy Livekeeping Benchmark.md` (strategy, UI, agent architecture, first roadmap)
 - `Multi-Tenant Design Migration, Onboarding, Isolation.md` (schema, onboarding, migration)
@@ -14,7 +14,8 @@ Where the two disagreed or a later decision changed them, this document is right
 | Item | State |
 | --- | --- |
 | Phase 0: explicit sync company, accounts table, account-scoped Admin | Code complete, in PR [Akashkansal065/tally-portal#67](https://github.com/Akashkansal065/tally-portal/pull/67). Not merged, not deployed. |
-| Step 1: expand the schema | Code complete, in the same pull request (tally-portal#67). Backend tests: 214 passed. Not run against MySQL. |
+| Step 1: expand the schema | Code complete, in the same pull request (tally-portal#67). Not run against MySQL. |
+| Step 2: migrate production into one account | Script written and tested on the test database (`scripts/migrate_to_account.py`), in the same pull request. Not run against MySQL or production. |
 | Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
 | Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
 | Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
@@ -262,33 +263,49 @@ Code complete on the Phase 0 branch, in the same pull request. Nothing below has
 - [x] `account_id` on `roles` (nullable, not read yet)
 - [x] Child tables: none needs its own `company_id` now. The two that are queried directly, `trn_attendance` and `trn_payhead`, are always reached through their voucher.
 - [x] The parentless Tally-side tables: eleven are not read or written by any code (listed in `app/services/tenant_inventory.py`); the inventory reports their row counts so they can be dropped if empty
-- [x] Read-only inventory: `python scripts/tenant_inventory.py` (add `--json` for the full report)
-- [x] Foreign-key script: `python scripts/add_tenant_foreign_keys.py` shows what it would add; `--apply` adds it
+- [x] Read-only ownership inventory (`app/services/tenant_inventory.py`), shown by the Step 2 script
 - [ ] Deploy, so startup creates the new tables, columns and indexes
-- [ ] Run the foreign-key script with `--apply` on production
-- [ ] Run the inventory on production and keep its output for Step 2
+
+The foreign keys and the inventory are no longer separate scripts: both are part of the one Step 2 script.
 
 Two details of the new tables: "one active link per company" and "one open invite per email" are enforced with a flag that is true on the current row and empty on ended ones, because MySQL has no partial unique index.
 
-**Gate:** startup and both scripts run clean on a copy of production; the old code paths behave as before.
+**Gate:** startup runs clean on a copy of production; the old code paths behave as before.
 
 ### Step 2: Migrate production into one account
 
-- [ ] Create one account for the existing company
-- [ ] Set `account_id` on the company and on every user
-- [ ] Keep every Admin-role user as an admin of the account (D9); give "Manage sync agent" to all of them (D21)
-- [ ] Fill child `company_id` from each row's parent; export orphans to a file before deleting them
-- [ ] Fill `company_id` on the sales-side tables: from the ledger for orders, visits and shop payments; from the one existing company for expenses; `account_id` from the one account for attendance
-- [ ] Set `account_id` on the existing roles
-- [ ] Resolve duplicate (`company_id`, `tally_guid`) rows by content: keep the highest `tally_alter_id`, re-point children, log the comparison
-- [ ] Confirm the company has its `tally_guid`; if not, run one full sync
-- [ ] Create the `agent_devices` row and link for the current agent PC
-- [ ] Verification queries, all returning zero rows: users or companies with no account; accounts with no admin, or no admin holding "Manage sync agent"; grants crossing accounts; data rows with no `company_id`; duplicate keys
-- [ ] Compare row counts with the Step 0 record
+One script does the whole step: `backend/scripts/migrate_to_account.py`. It connects with the database settings in `backend/.env` (the ones the backend already runs on), creates no user and deletes nothing. Code complete; not yet run on production.
 
-The script is repeat-safe: it skips rows already carrying the intended account and stops on any row carrying a different one.
+```
+python scripts/migrate_to_account.py            # shows what is there and what would change; saves nothing
+python scripts/migrate_to_account.py --apply    # does it
+```
 
-**Gate:** verification queries are clean and counts match, apart from logged orphans and duplicates.
+What `--apply` does, in order:
+
+- [x] Creates one account, named after the first company (or `--name "..."`)
+- [x] Sets `account_id` on every company, user and role
+- [x] Keeps every Admin-role user as an admin and gives each "Manage sync agent" (D9, D21), recorded as a permission on a new `sync_agent` module
+- [x] Sets `company_id` on orders, visits and shop payments from their ledger, and on expenses and ledger-less rows from their owner's company
+- [x] Sets `account_id` on attendance and its location trail
+- [x] Checks that no company, user, role or field-sales row is left without an owner; if any is, nothing is saved
+- [x] Adds the foreign keys for the new owner columns (MySQL only; a column holding a value its parent lacks is reported and skipped)
+- [x] Lists what is still open for later steps: companies with no Tally GUID, duplicate (`company_id`, `tally_guid`) rows
+
+Without `--apply` it runs the same changes in a transaction and rolls them back, so the numbers it prints are exactly what `--apply` would do. Running it twice is safe: rows that already carry the account are left alone. It refuses to run if more than one account already exists, or if no active admin exists.
+
+Left out on purpose:
+
+- **Duplicate rows are reported, not merged.** Merging means deleting rows, and deletes in this app can reach Tally. That needs a look at the real duplicates first; it blocks only the unique keys in Step 6.
+- **The agent's device row is created in Step 3,** when the agent signs in and sends its machine id. With one PC there is nothing to save by guessing it now.
+
+To do on production:
+
+- [ ] Run without `--apply` and read the output
+- [ ] Run with `--apply`
+- [ ] If a company shows no Tally GUID, run one full sync from the agent
+
+**Gate:** the script reports every row owned and the foreign keys added.
 
 ### Step 3: Agent-first onboarding and device tokens
 
