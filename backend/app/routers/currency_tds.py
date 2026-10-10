@@ -229,7 +229,10 @@ async def delete_currency(
         
     code = curr.code
     curr_symbol = curr.symbol
-    new_sq = SyncQueue(company_id=user.company_id, record_type="Currency", record_id=currency_id, action="Delete", is_processed=False)
+    # The row is about to go, so the queue entry carries the name Tally knows the currency by (its symbol).
+    # Without it a delete that Tally did not answer could never be sent again.
+    new_sq = SyncQueue(company_id=user.company_id, record_type="Currency", record_id=currency_id, action="Delete",
+                       is_processed=False, snapshot_data={"tally_name": curr_symbol, "code": code})
     db.add(new_sq)
     # The currency is this company's own, and its exchange rates go with it
     from sqlalchemy import delete as sql_delete

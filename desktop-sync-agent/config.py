@@ -56,6 +56,8 @@ class AgentConfig:
     companies: List[Dict[str, str]] = field(default_factory=list)
     sync_interval_seconds: int = 5
     inbound_interval_seconds: int = 60
+    # About how many vouchers a full sync sends to the server in one request (see agent.VOUCHERS_PER_RANGE)
+    vouchers_per_range: int = 50
     tally_app_path: Optional[str] = None
     tally_data_path: Optional[str] = None
     auto_discover_paths: bool = True

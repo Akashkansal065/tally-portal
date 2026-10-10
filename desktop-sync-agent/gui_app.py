@@ -1451,6 +1451,15 @@ class SettingsView(ctk.CTkFrame):
         self.inbound_entry.insert(0, str(self.app.config.inbound_interval_seconds or 60))
         self.inbound_entry.pack(side="left", padx=(8, 0))
 
+        range_row = ctk.CTkFrame(card, fg_color="transparent")
+        range_row.pack(fill="x", padx=16, pady=(0, 12))
+
+        ctk.CTkLabel(range_row, text="Vouchers per Full Sync Range:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(side="left")
+        self.range_entry = ctk.CTkEntry(range_row, width=70, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34)
+        self.range_entry.insert(0, str(self.app.config.vouchers_per_range or 25))
+        self.range_entry.pack(side="left", padx=(8, 8))
+        ctk.CTkLabel(range_row, text="Lower it if a full sync times out.", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(side="left")
+
         # 4. Toggles
         self.auto_discover_var = ctk.BooleanVar(value=self.app.config.auto_discover_paths)
         self.auto_discover_switch = ctk.CTkSwitch(
@@ -1585,8 +1594,9 @@ class SettingsView(ctk.CTkFrame):
         try:
             out_sec = int(self.outbound_entry.get().strip() or "5")
             in_sec = int(self.inbound_entry.get().strip() or "60")
+            per_range = int(self.range_entry.get().strip() or "25")
         except ValueError:
-            self.feedback_lbl.configure(text="❌ Intervals must be numbers.", text_color=ERROR_RED)
+            self.feedback_lbl.configure(text="❌ Intervals and vouchers per range must be numbers.", text_color=ERROR_RED)
             return
 
         tally_url = f"http://{host}:{port}"
@@ -1594,6 +1604,7 @@ class SettingsView(ctk.CTkFrame):
         self.app.config.backend_url = backend_url
         self.app.config.sync_interval_seconds = max(1, out_sec)
         self.app.config.inbound_interval_seconds = max(5, in_sec)
+        self.app.config.vouchers_per_range = max(1, per_range)
         self.app.config.auto_discover_paths = auto_disc
         self.app.config.force_full_sync = force_full
         self.app.config.autostart_enabled = autostart

@@ -1004,6 +1004,9 @@ async def get_outbound_queue(
   </BODY>
 </ENVELOPE>"""
 
+        if item.record_type == "Currency":
+            xml_envelope = await queued_currency_xml(db, item) or ""
+
         if xml_envelope:
             outbound_payloads.append({
                 "sync_id": item.sync_id,
@@ -2028,116 +2031,101 @@ async def try_push_cost_centre_class_realtime(class_id: int, sync_id: int, actio
     except Exception as e:
         logger.error(f"Error in try_push_cost_centre_class_realtime: {str(e)}")
 
-async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str, db: AsyncSession, deleted_symbol: str = None, deleted_code: str = None):
-    try:
-        from sqlalchemy.orm import selectinload
-        from sqlalchemy.future import select
-        from sqlalchemy import update
-        from app.models.portal_core import SyncQueue, Company, Currency
-        from app.core.config import settings
-
-        tally_url = current_tally_url()
-        if not tally_url:
-            return
-
-        curr = None
-        if action != "Delete":
-            stmt = select(Currency).options(selectinload(Currency.rates)).where(Currency.currency_id == currency_id)
-            curr = (await db.execute(stmt)).scalars().first()
-            if not curr: return
-        
-        sq = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_id))).scalars().first()
-        if not sq: return
-        # A currency belongs to one company and is only ever sent to that company's Tally
-        if curr is not None and curr.company_id != sq.company_id:
-            logger.error(f"Currency {currency_id} is not company {sq.company_id}'s; not sent to Tally.")
-            return
-        
-        comp = (await db.execute(select(Company).where(Company.company_id == sq.company_id))).scalars().first()
-        comp_name = comp.name if comp else ""
-
-        if action == "Delete":
-            xml_envelope = f"""<ENVELOPE>
-<HEADER>
-<TALLYREQUEST>Import Data</TALLYREQUEST>
-</HEADER>
-<BODY>
-<IMPORTDATA>
-<REQUESTDESC>
-<REPORTNAME>All Masters</REPORTNAME>
-<STATICVARIABLES>
-<SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
-</STATICVARIABLES>
-</REQUESTDESC>
-<REQUESTDATA>
-<TALLYMESSAGE xmlns:UDF="TallyUDF">
-<CURRENCY NAME="{x(deleted_symbol)}" ACTION="Delete">
-</CURRENCY>
-</TALLYMESSAGE>
-</REQUESTDATA>
-</IMPORTDATA>
-</BODY>
-</ENVELOPE>"""
-        else:
-            in_millions = "Yes" if curr.show_amount_in_millions else "No"
-            is_suffix = "Yes" if curr.suffix_symbol_to_amount else "No"
-            has_space = "Yes" if curr.add_space_between_amount_and_symbol else "No"
-            formal_name = curr.formal_name or curr.code
-            decimal_word = curr.word_representing_amount_after_decimal or ""
-            
-            rates_xml = ""
-            for r in curr.rates:
-                if r.company_id == sq.company_id:
-                    rdate_str = r.rate_date.strftime("%Y%m%d")
-                    if r.standard_rate:
-                        rates_xml += f"<DAILYSTDRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{x(r.standard_rate)}/{x(curr.symbol)}</SPECIFIEDRATE>\n</DAILYSTDRATE.LIST>\n"
-                    if r.selling_rate:
-                        rates_xml += f"<DAILYSELLINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{x(r.selling_rate)}/{x(curr.symbol)}</SPECIFIEDRATE>\n</DAILYSELLINGRATE.LIST>\n"
-                    if r.buying_rate:
-                        rates_xml += f"<DAILYBUYINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{x(r.buying_rate)}/{x(curr.symbol)}</SPECIFIEDRATE>\n</DAILYBUYINGRATE.LIST>\n"
-
-            xml_envelope = f"""<ENVELOPE>
-<HEADER>
-<TALLYREQUEST>Import Data</TALLYREQUEST>
-</HEADER>
-<BODY>
-<IMPORTDATA>
-<REQUESTDESC>
-<REPORTNAME>All Masters</REPORTNAME>
-<STATICVARIABLES>
-<SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
-</STATICVARIABLES>
-</REQUESTDESC>
-<REQUESTDATA>
-<TALLYMESSAGE xmlns:UDF="TallyUDF">
-<CURRENCY NAME="{x(curr.symbol)}" ACTION="{x(action)}">
+def currency_import_xml(company_name: str, action: str, curr=None, tally_name: str = None) -> str:
+    """The request that creates, alters or deletes one currency in Tally. Tally names a currency by its
+    symbol; tally_name is that name when the row itself is gone (a delete)."""
+    if (action or "").lower() == "delete":
+        inner = f'<CURRENCY NAME="{x(tally_name)}" ACTION="Delete">\n</CURRENCY>'
+    else:
+        yes = lambda flag: "Yes" if flag else "No"
+        formal_name = curr.formal_name or curr.code
+        rates_xml = ""
+        for r in curr.rates:
+            rdate_str = r.rate_date.strftime("%Y%m%d")
+            for tag, rate in (("DAILYSTDRATE", r.standard_rate), ("DAILYSELLINGRATE", r.selling_rate),
+                              ("DAILYBUYINGRATE", r.buying_rate)):
+                if rate:
+                    rates_xml += (f"<{tag}.LIST>\n<DATE>{rdate_str}</DATE>\n"
+                                  f"<SPECIFIEDRATE>{x(rate)}/{x(curr.symbol)}</SPECIFIEDRATE>\n</{tag}.LIST>\n")
+        inner = f"""<CURRENCY NAME="{x(curr.symbol)}" ACTION="{x(action)}">
 <ORIGINALNAME>{x(curr.symbol)}</ORIGINALNAME>
 <MAILINGNAME>{x(formal_name)}</MAILINGNAME>
 <EXPANDEDSYMBOL>{x(formal_name)}</EXPANDEDSYMBOL>
 <ISOCURRENCYCODE>{x(curr.code)}</ISOCURRENCYCODE>
 <DECIMALPLACES>{curr.decimal_places}</DECIMALPLACES>
-<INMILLIONS>{in_millions}</INMILLIONS>
-<ISSUFFIX>{is_suffix}</ISSUFFIX>
-<HASSPACE>{has_space}</HASSPACE>
-<DECIMALSYMBOL>{x(decimal_word)}</DECIMALSYMBOL>
+<INMILLIONS>{yes(curr.show_amount_in_millions)}</INMILLIONS>
+<ISSUFFIX>{yes(curr.suffix_symbol_to_amount)}</ISSUFFIX>
+<HASSPACE>{yes(curr.add_space_between_amount_and_symbol)}</HASSPACE>
+<DECIMALSYMBOL>{x(curr.word_representing_amount_after_decimal or "")}</DECIMALSYMBOL>
 <DECIMALPLACESFORPRINTING>{curr.decimal_places_for_words}</DECIMALPLACESFORPRINTING>
 {rates_xml}
-</CURRENCY>
+</CURRENCY>"""
+    return f"""<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
+<IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>All Masters</REPORTNAME>
+<STATICVARIABLES>
+<SVCURRENTCOMPANY>{x(company_name)}</SVCURRENTCOMPANY>
+</STATICVARIABLES>
+</REQUESTDESC>
+<REQUESTDATA>
+<TALLYMESSAGE xmlns:UDF="TallyUDF">
+{inner}
 </TALLYMESSAGE>
 </REQUESTDATA>
 </IMPORTDATA>
 </BODY>
 </ENVELOPE>"""
 
+
+async def queued_currency_xml(db: AsyncSession, item) -> Optional[str]:
+    """The Tally request for a queued currency change, or None when there is nothing left to send: the
+    currency was deleted before its create or alter went out, or it is not this company's."""
+    from sqlalchemy.orm import selectinload
+    from app.models.portal_core import Company, Currency
+    company_name = (await db.execute(select(Company.name).where(Company.company_id == item.company_id))).scalar() or ""
+    if (item.action or "").lower() == "delete":
+        # The row is gone; the queue entry kept the name Tally knows it by
+        tally_name = (item.snapshot_data or {}).get("tally_name")
+        return currency_import_xml(company_name, "Delete", tally_name=tally_name) if tally_name else None
+    curr = (await db.execute(select(Currency).options(selectinload(Currency.rates)).where(
+        Currency.currency_id == item.record_id, Currency.company_id == item.company_id))).scalars().first()
+    return currency_import_xml(company_name, item.action, curr) if curr else None
+
+
+async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str, db: AsyncSession, deleted_symbol: str = None, deleted_code: str = None):
+    """Send one queued currency change straight to Tally when this server can reach it. On any failure the
+    queue entry stays waiting, so the PC's agent or the next attempt sends it."""
+    try:
+        from sqlalchemy import update
+        from app.models.portal_core import SyncQueue
+
+        tally_url = current_tally_url()
+        if not tally_url:
+            return
+        sq = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_id))).scalars().first()
+        if not sq or sq.is_processed:
+            return
+        xml_envelope = await queued_currency_xml(db, sq)
+        if not xml_envelope:
+            return
+
         response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
-        if check_tally_success(response):
-            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True))
+        # Deleting what Tally no longer has is done, not failed: the same delete may arrive twice
+        already_gone = action == "Delete" and "does not exist" in (response or "").lower()
+        if check_tally_success(response) or already_gone:
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True, status="SUCCESS"))
             await db.commit()
-            logger.info(f"Real-time Tally Push Success for Currency {curr.symbol} ({action})")
+            logger.info(f"Real-time Tally Push Success for Currency {currency_id} ({action})")
         else:
-            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(attempts=SyncQueue.attempts + 1, error_message=str(response)[:500]))
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
+                attempts=SyncQueue.attempts + 1, error_message=(str(response)[:500] or "Tally did not answer")))
             await db.commit()
-            logger.error(f"Real-time Tally Push Failed for Currency {curr.symbol} ({action}). Tally Response: {response}")
+            logger.error(f"Real-time Tally Push Failed for Currency {currency_id} ({action}). Tally Response: {response}")
 
     except Exception as e:
         logger.error(f"Error in try_push_currency_realtime: {str(e)}")

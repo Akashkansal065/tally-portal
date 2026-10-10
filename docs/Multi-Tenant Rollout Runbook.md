@@ -89,7 +89,7 @@ To give the account a different name than the company's: add `--name "Your Busin
 - [ ] If it says "You are not allowed to use the sync agent", that person is not an admin, or an admin removed their permission.
 - [ ] If it asks "Move sync to this PC?", another PC is syncing the company. Answer Yes only if this PC should take over.
 - [ ] In the agent log, the next cycle should sync as before.
-- [ ] A company with 1,000 vouchers or more now does its full sync in date ranges, a part each cycle: the log shows `Full sync of N vouchers planned in M date ranges` and the status line `Full sync 3 of 12`. It finishes over several cycles and survives a restart. If the log says `This Tally does not return vouchers by date range`, it has gone back to one export, as before; send me that line.
+- [ ] A full sync now sends vouchers in date ranges of about 50 each (Vouchers per Full Sync Range in the agent's Settings), a few each cycle: the log shows `Full sync of N vouchers planned in M date ranges` and the status line `Full sync 3 of 12`. It finishes over several cycles and survives a restart. If the log says `This Tally does not return vouchers by date range`, it has gone back to one export, as before; send me that line.
 
 ## 6. Check it worked
 
@@ -164,10 +164,12 @@ Do this only when sections 1 to 6 are done and everything has run normally for a
 | --- | --- |
 | Backend will not start after deploying | Redeploy the previous version. The new columns and tables are ignored by the old code. |
 | The migration script prints `Refused` | Nothing was changed. Send me the message. |
+| The migration script stops with `Unknown column '….companies.account_id'` | Nothing was changed. The database in `backend/.env` has not had the new backend started on it yet, so the new columns are missing. Do section 3 against that database (start the backend once and check the `Auto Schema Synchronizer:` lines), then run the script again. Also check `DATABASE_URL` names the database you mean to migrate. |
 | The migration script fails on Windows with "No time zone found with key Asia/Kolkata" | Run `python -m pip install -r requirements.txt` in `backend`: Windows needs the `tzdata` package. And check you are on the backend's machine (section 4). |
 | After signing the PC in there are two companies with the same name | The name in Tally did not match the name in the app, so a second company was added. Stop the agent and send me the output of the section 4 script; the two have to be joined by hand. |
 | The migration script prints `NOT saved` | Nothing was changed. The lines starting with `!` say why. |
 | Users cannot see their company after section 4 | Run the script again without `--apply` and check every user shows the same account as the company. |
+| Agent log says a range `could not be pushed (HTTP 524 …)` or timed out during a full sync | The server did not finish importing that range before the proxy in front of it gave up (Cloudflare waits 100 seconds). An agent built before the evening of 10 Oct 2026 sends 500 vouchers a range and repeats the failed one forever: rebuild the `.exe` (section 5) and replace it. The new one sends about 50 a range, and plans the rest of a half-done full sync again by itself. If it still times out, lower Vouchers per Full Sync Range in the agent's Settings. Nothing needs doing on the server; a range that arrives twice is stored once. |
 | Agent stops syncing after section 5 | Put the previous `.exe` back. The new backend still accepts the old agent. |
 | Agent says "This PC is signed out of the sync agent" | Someone signed it out in Admin → Sync agent & team, or the person who signed it in was deactivated. Sign in again from Setup. |
 | Agent or app says a company is "a different copy of the books" | The company open in Tally has the same identity as the synced one but a different Tally company number or books-from date: a copy or a restored backup. Open the right one. If the company really was moved or restored on purpose, press Unlink beside it in the agent's Companies window, then Link. |

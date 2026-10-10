@@ -136,13 +136,13 @@ def test_a_full_sync_pulls_vouchers_range_by_range(tmp_path):
 
 
 def test_a_small_company_is_exported_in_one_go(tmp_path):
-    tally, cloud = Tally(many_vouchers(count=300)), Cloud()
+    tally, cloud = Tally(many_vouchers(count=40)), Cloud()
     agent = make_agent(tmp_path, tally, cloud)
 
     agent.sync_inbound_cycle(is_incremental=False)
 
     assert tally.calls.count("whole") == 1 and range_calls(tally) == []
-    assert cloud.all_numbers() == list(range(1, 301)) and agent.config.full_sync_cursors == {}
+    assert cloud.all_numbers() == list(range(1, 41)) and agent.config.full_sync_cursors == {}
 
 
 def test_a_tally_that_ignores_date_ranges_gets_one_export_instead(tmp_path):
@@ -201,6 +201,40 @@ def test_a_failed_range_is_carried_on_from_in_the_next_cycle(tmp_path):
     assert range_calls(tally)[calls_before][1] == cursor["ranges"][done][0]   # from the failed range, not the first
     assert cloud.all_numbers() == list(range(1, 2401)) and "whole" not in tally.calls
     assert agent.config.full_sync_cursors == {} and agent._last_company_ok is True
+
+
+def test_ranges_are_the_size_set_in_settings(tmp_path):
+    tally, cloud = Tally(many_vouchers()), Cloud()
+    agent = make_agent(tmp_path, tally, cloud)
+    assert agent.config.vouchers_per_range == 50                         # the size unless Settings says otherwise
+    agent.config.vouchers_per_range = 200
+    cloud.fail_on = {1}                                                  # stop at once, to read the plan
+
+    agent.sync_inbound_cycle(is_incremental=False)
+
+    cursor = agent.config.full_sync_cursors["guid-alpha"]
+    assert cursor["per_range"] == 200 and [count for _, _, count in cursor["ranges"]] == [200] * 12
+
+
+def test_changing_the_size_plans_the_rest_again_and_keeps_what_is_done(tmp_path):
+    tally, cloud = Tally(many_vouchers()), Cloud()
+    agent = make_agent(tmp_path, tally, cloud)
+    agent.config.vouchers_per_range = 500
+    cloud.fail_on = {1500}                                               # stops in the third range
+    agent.sync_inbound_cycle(is_incremental=False)
+    cursor = agent.config.full_sync_cursors["guid-alpha"]
+    done, kept, arrived = cursor["next"], [list(r) for r in cursor["ranges"][:cursor["next"]]], cloud.all_numbers()
+    assert done == 2
+    cursor.pop("per_range")                                              # as an older agent saved it
+
+    cloud.fail_on = set()
+    agent.config.vouchers_per_range = 50
+    agent.sync_inbound_cycle(is_incremental=True)
+
+    assert cloud.all_numbers() == list(range(1, 2401)) and agent.config.full_sync_cursors == {}
+    sizes = [len(numbers) for numbers, _ in cloud.pushed if numbers != [0]]
+    assert sizes[:done] == [520, 520] and max(sizes[done:]) == 80        # two days of 40: the rest in small ranges
+    assert arrived == list(range(1, 1041))                               # the first two ranges were not sent again
 
 
 def test_a_restart_carries_on_from_the_saved_position(tmp_path):

@@ -22,10 +22,11 @@ from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
 from cloud_client import CloudClient, halt_message
 from xml.sax.saxutils import unescape
 
-# A full voucher sync is cut into date ranges of about this many vouchers each, so Tally is never asked for
-# everything at once. A company with fewer than MIN_VOUCHERS_TO_SPLIT is small enough to export whole.
-VOUCHERS_PER_RANGE = 500
-MIN_VOUCHERS_TO_SPLIT = 1000
+# A full voucher sync is cut into date ranges of about this many vouchers each, so neither Tally nor the
+# server is given everything at once (a proxy in front of the server waits only so long for an answer).
+# Settings can change it (config.vouchers_per_range). A company with no more vouchers than one range is
+# exported whole.
+VOUCHERS_PER_RANGE = 50
 # How long one company's full sync may run in a cycle before the other companies, and the entries waiting to
 # reach Tally, get their turn. It carries on in the next cycle.
 FULL_SYNC_SLICE_SECONDS = 90
@@ -609,6 +610,12 @@ class DesktopSyncAgent:
                 # or for an Alter/Delete/Cancel (the voucher exists either way), finding it proves nothing.
                 recovered = False
                 is_network_failure = resp_str.startswith(NETWORK_ERROR_PREFIX)
+                # Tally answering that the thing to delete is not there means the delete is already done (it was
+                # sent before and the answer was lost, or it never reached Tally in the first place)
+                if not is_network_failure and str(action or "").lower() == "delete" and "does not exist" in resp_str.lower():
+                    logger.info(f"✅ {rec_type} #{rec_id} is already gone from Tally. Acknowledging the delete.")
+                    successful_ids.append(sync_id)
+                    recovered = True
                 if is_network_failure and str(rec_type or "").lower() == "voucher" and str(action or "").lower() == "create":
                     m_remote = re.search(r'REMOTEID="([^"]+)"', xml_payload)
                     remote_id = m_remote.group(1) if m_remote else f"MYTALLY-VCH-{rec_id}"
@@ -919,6 +926,27 @@ class DesktopSyncAgent:
             return xml_data
         return False
 
+    def _vouchers_per_range(self) -> int:
+        try:
+            return max(1, int(getattr(self.config, "vouchers_per_range", None) or VOUCHERS_PER_RANGE))
+        except (TypeError, ValueError):
+            return VOUCHERS_PER_RANGE
+
+    def _replan_remaining_ranges(self, company_key: str, cursor: Dict[str, Any], per_range: int) -> Optional[Dict[str, Any]]:
+        """The range size was changed while a full sync is under way: plan what is left again at the new
+        size. The ranges already done stay done. None when Tally did not answer (try again later)."""
+        ranges, position = cursor["ranges"], cursor["next"]
+        dates = self.tally.export_voucher_index(self.active_company_name)
+        if dates is None:
+            return None
+        date_from = ranges[position][0]
+        cursor["ranges"] = ranges[:position] + plan_voucher_ranges([day for day in dates if day >= date_from], per_range)
+        cursor["per_range"] = per_range
+        self._save_full_sync_cursor(company_key, cursor)
+        logger.info(f"   🗓️ The rest of the full sync is planned again in ranges of about {per_range} vouchers "
+                    f"({len(cursor['ranges'])} ranges in all).")
+        return cursor
+
     def _sync_vouchers_in_ranges(self, company_key: str, force_all: bool) -> Optional[Tuple[bool, int]]:
         """Carry a full voucher sync forward by one time slice: plan it if it has no plan, then export and push
         range after range, saving the position after each. Returns (clean, vouchers imported), or None when
@@ -927,6 +955,7 @@ class DesktopSyncAgent:
         if cursor and cursor.get("ranges") and time.time() - cursor.get("planned_at", 0) > FULL_SYNC_PLAN_MAX_AGE_SECONDS:
             logger.info("   🗓️ The full sync plan is old; planning it again.")
             cursor = {"ranges": None, "next": 0, "force": cursor.get("force", False), "planned_at": 0}
+        per_range = self._vouchers_per_range()
         if cursor is None:
             # Written before anything else, so a full sync that could not even be planned is still owed
             cursor = {"ranges": None, "next": 0, "force": force_all, "planned_at": 0}
@@ -936,12 +965,19 @@ class DesktopSyncAgent:
             if dates is None:
                 logger.error("   ❌ Could not list the vouchers in Tally; the full sync will be tried again.")
                 return False, 0
-            if len(dates) < MIN_VOUCHERS_TO_SPLIT:
+            if len(dates) <= per_range:
                 self._drop_full_sync_cursor(company_key)
                 return None
-            cursor = {"ranges": plan_voucher_ranges(dates), "next": 0, "force": cursor.get("force", False), "planned_at": time.time()}
+            cursor = {"ranges": plan_voucher_ranges(dates, per_range), "next": 0, "force": cursor.get("force", False),
+                      "planned_at": time.time(), "per_range": per_range}
             self._save_full_sync_cursor(company_key, cursor)
             logger.info(f"   🗓️ Full sync of {len(dates)} vouchers planned in {len(cursor['ranges'])} date ranges.")
+        elif cursor.get("per_range") != per_range and cursor["next"] < len(cursor["ranges"]):
+            # Also a plan saved by an agent that had one fixed size and did not record it
+            cursor = self._replan_remaining_ranges(company_key, cursor, per_range)
+            if cursor is None:
+                logger.error("   ❌ Could not list the vouchers in Tally; the full sync will be tried again.")
+                return False, 0
 
         ranges = cursor["ranges"]
         deadline = time.time() + FULL_SYNC_SLICE_SECONDS

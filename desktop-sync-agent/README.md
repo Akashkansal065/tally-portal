@@ -22,7 +22,7 @@ The **SnehDistribuors Desktop Sync Agent** is a modern Windows desktop applicati
    - **🧪 Test Connection**: Live diagnostic test verifying connectivity to both Tally and Cloud before saving.
 
 3. **LiveKeeping-Style Connection Settings**:
-   - Customize Tally host, port, cloud backend URL, and sync intervals.
+   - Customize Tally host, port, cloud backend URL, sync intervals, and vouchers per full sync range.
    - Auto-discover Tally application and data paths.
    - Toggle **"Always Sync All Records (Bypass Tally Alter ID Filter)"** for complete baseline synchronizations.
    - **🔐 Re-login / Switch User** returns to Setup to sign the PC in again.
@@ -43,7 +43,7 @@ The **SnehDistribuors Desktop Sync Agent** is a modern Windows desktop applicati
    - **Inbound Delta (Tally $\to$ Cloud)**: Periodically pulls incremental changes (`ALTERID > min_alter_id`) across Ledgers, Vouchers, and Stock Items.
    - **Empty Payload Filtering**: Unchanged collections returning empty `<DATA><COLLECTION></COLLECTION></DATA>` are automatically discarded, preventing redundant network calls to `/sync/inbound`.
    - **Sync All Option**: Users can trigger an instant full baseline sync anytime from the Dashboard, Settings, Tray Menu, or CLI (`--sync-all`).
-   - **Full Sync in Date Ranges**: A company with 1,000 vouchers or more does its full sync in date ranges, a part each cycle (log: `Full sync of N vouchers planned in M date ranges`). Progress is saved, so a restart or a failed range carries on from where it stopped. If Tally does not return vouchers by date range, the agent falls back to one export.
+   - **Full Sync in Date Ranges**: A full sync sends vouchers in date ranges of about 50 vouchers each, a few ranges each cycle (log: `Full sync of N vouchers planned in M date ranges`), so no single request is too big for the server to answer in time. The size is **Vouchers per Full Sync Range** in ⚙ Settings; lower it if a range fails with a timeout or HTTP 524. Changing it while a full sync is under way plans the rest again at the new size; ranges already done are not sent again. Progress is saved, so a restart or a failed range carries on from where it stopped. A company with no more vouchers than one range is exported whole, and so is one whose Tally does not return vouchers by date range.
 
 7. **Secure Credential Storage & Sign-In State**:
    - Once the PC is signed in as a device, the agent uses its device token and needs no password. An older install keeps syncing on its saved per-person login until the PC is signed in from Setup; a server with `REQUIRE_AGENT_DEVICE_SIGNIN` on refuses that older login.
