@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
@@ -182,7 +183,7 @@ export default function StockItemsPage() {
   }
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this stock item? All history will be lost.')) return
+    if (!confirmInCompany('Are you sure you want to delete this stock item? All history will be lost.')) return
     try {
       await fetch(`${API_BASE}/inventory/items/${id}`, {
         method: 'DELETE',

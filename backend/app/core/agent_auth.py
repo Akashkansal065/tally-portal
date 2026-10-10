@@ -99,8 +99,28 @@ async def authenticate_device(request: Request, token: str, db: AsyncSession) ->
     return user
 
 
-async def device_company(db: AsyncSession, device: AgentDevice, tally_guid: str) -> Company:
-    """The company of the device's account linked to this Tally GUID, which this device is the one syncing."""
+COPY_MISMATCH = "company_copy_mismatch"
+
+
+def different_copy(company: Company, fingerprint: Optional[str]) -> bool:
+    """Whether the company open in Tally is another copy of the books than the one this company was linked
+    from. A copied or restored company keeps its GUID; its Tally company number or books-from date gives it
+    away. Nothing to compare (an older agent, or a company linked before fingerprints) is not a difference."""
+    return bool(fingerprint and company.tally_fingerprint and fingerprint.strip() != company.tally_fingerprint.strip())
+
+
+def copy_mismatch_error(company: Company) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT, headers={"X-Sync-Reason": COPY_MISMATCH},
+        detail=f"The '{company.name}' open in Tally is a different copy of the books from the one that is synced "
+               "(its Tally company number or books-from date differs). Sync is stopped so two sets of books are not "
+               "mixed. If the company was moved or restored on purpose, unlink it in the agent's Companies window "
+               "and link it again.")
+
+
+async def device_company(db: AsyncSession, device: AgentDevice, tally_guid: str, fingerprint: Optional[str] = None) -> Company:
+    """The company of the device's account linked to this Tally GUID, which this device is the one syncing.
+    With a fingerprint, a different copy of the books under the same GUID is refused."""
     companies = (await db.execute(
         select(Company).where(Company.account_id == device.account_id, Company.tally_guid == tally_guid)
     )).scalars().all()
@@ -117,6 +137,8 @@ async def device_company(db: AsyncSession, device: AgentDevice, tally_guid: str)
     if linked is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, headers={"X-Sync-Reason": "company_not_linked_to_device"},
                             detail=f"'{company.name}' is not synced from this PC.")
+    if different_copy(company, fingerprint):
+        raise copy_mismatch_error(company)
     return company
 
 

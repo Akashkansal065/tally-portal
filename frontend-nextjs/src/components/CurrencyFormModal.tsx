@@ -70,7 +70,7 @@ export default function CurrencyFormModal({ isOpen, onClose, onSuccess, currency
   useEffect(() => {
     const fetchIsoList = async () => {
       try {
-        const res = await fetch(`${API_BASE}/currency`, { headers: authHeaders(token) })
+        const res = await fetch(`${API_BASE}/currency/iso`, { headers: authHeaders(token) })
         if (res.ok) {
           const data = await res.json()
           setIsoList(data.map((c: any) => ({

@@ -123,6 +123,9 @@ async def companies_sync_status(
     return [
         {**status[c.company_id], "name": c.name, "gstin": c.gstin, "city": c.city, "state": c.state,
          "financial_year_start": c.financial_year_start.isoformat() if c.financial_year_start else None,
+         # What tells two companies of the same name apart when nothing else is filled in
+         "books_begin_date": c.books_begin_date.isoformat() if c.books_begin_date else None,
+         "tally_id": (c.tally_guid or "")[-6:].upper() or None,
          "is_current": c.company_id == user.company_id}
         for c in companies
     ]

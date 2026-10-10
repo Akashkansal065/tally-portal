@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.permissions import ADMIN_ROLE_NAMES
-from app.models.portal_core import DevicePushToken, Notification, NotificationPreference, PushSubscription, Role, User
+from app.models.portal_core import Company, DevicePushToken, Notification, NotificationPreference, PushSubscription, Role, User
 from app.services import fcm
 
 try:
@@ -49,6 +49,9 @@ CATEGORY_BY_TYPE = {
     "voucher_approval": "approvals",
     "voucher_decision": "approvals",
     "backup_failed": "system",
+    "sync_unlinked": "system",
+    "sync_stale": "system",
+    "account_refused": "security",
 }
 
 CATEGORIES: Tuple[dict, ...] = (
@@ -65,11 +68,11 @@ CATEGORIES: Tuple[dict, ...] = (
     {"id": "alerts", "label": "Location alerts", "can_turn_off": True,
      "description": "Someone denied location access or sent an invalid location"},
     {"id": "security", "label": "Security", "can_turn_off": False,
-     "description": "Sign-ins on new devices"},
+     "description": "Sign-ins on new devices, and requests from outside your business that were refused"},
     {"id": "collections", "label": "Collections", "can_turn_off": True,
      "description": "Automatic payment reminders that couldn't be sent or delivered"},
     {"id": "system", "label": "System", "can_turn_off": True,
-     "description": "Scheduled backups that couldn't run"},
+     "description": "Scheduled backups that couldn't run, and companies that stopped syncing with Tally"},
 )
 CATEGORY_IDS = {c["id"] for c in CATEGORIES}
 DELIVERY_CHOICES = ("all", "in_app", "off")
@@ -210,15 +213,21 @@ def invalidate_unread_count(user_ids: Optional[Iterable[int]] = None) -> None:
 
 # ─── Creating notifications ──────────────────────────────────────────────────
 
-async def admin_user_ids(db: AsyncSession) -> List[int]:
-    """Active admins. Admins can open every active company (see accessible_company_ids), so each one hears
-    about every company, not only the company their account was created in."""
-    rows = await db.execute(
-        select(User.user_id)
-        .join(Role, User.role_id == Role.role_id)
-        .where(User.is_active == True, func.lower(Role.name).in_(ADMIN_ROLE_NAMES))
-    )
-    return list(rows.scalars().all())
+async def admin_user_ids(db: AsyncSession, company_id: Optional[int] = None) -> List[int]:
+    """Active admins of the business a company belongs to. An admin can open every company of their own account
+    (see accessible_company_ids), so each hears about all of them, and never about another customer's.
+    A company from before accounts has none, and is matched with the admins who have none either."""
+    query = (select(User.user_id).join(Role, User.role_id == Role.role_id)
+             .where(User.is_active == True, func.lower(Role.name).in_(ADMIN_ROLE_NAMES)))  # noqa: E712
+    if company_id is not None:
+        account_id = (await db.execute(select(Company.account_id).where(Company.company_id == company_id))).scalar()
+        if account_id is not None:
+            query = query.where(User.account_id == account_id)
+        elif settings.ACCOUNTS_ENFORCED:
+            return []
+        else:
+            query = query.where(User.account_id.is_(None))
+    return list((await db.execute(query)).scalars().all())
 
 
 async def create_notifications(
@@ -329,7 +338,7 @@ async def notify_admins(
     """Notify every admin (except the one who caused the event). Never raises: a failed alert must not fail
     the action that triggered it."""
     try:
-        recipients = [uid for uid in await admin_user_ids(db) if uid != exclude_user_id]
+        recipients = [uid for uid in await admin_user_ids(db, company_id) if uid != exclude_user_id]
         return await create_notifications(
             db, company_id=company_id, user_ids=recipients, type=type, title=title, message=message,
             reference_id=reference_id, reference_type=reference_type, link=link,

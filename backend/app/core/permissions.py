@@ -3,7 +3,7 @@ import logging
 import time
 import copy
 from collections import defaultdict
-from typing import Dict, Any, Optional, Sequence, Set
+from typing import Dict, Any, Optional, Sequence, Set, Tuple
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import update, and_, or_
@@ -61,6 +61,8 @@ logger = logging.getLogger("app.core.permissions")
 
 # The Desktop Sync Agent names the Tally company it is syncing on every call, by Tally's company GUID
 SYNC_COMPANY_GUID_HEADER = "x-tally-company-guid"
+# ...and, from agents that know it, what tells one copy of those books from another (see agent_auth.different_copy)
+SYNC_COMPANY_FINGERPRINT_HEADER = "x-tally-company-fingerprint"
 # user_id -> when an agent call without the header was last logged (the agent polls every few seconds)
 _legacy_sync_warned: Dict[int, float] = {}
 LEGACY_SYNC_WARN_INTERVAL_SECONDS = 600
@@ -272,6 +274,30 @@ async def get_optional_current_user(
         return None
 
 
+# (user id, company id) -> when it was last looked at, so a device stuck on a company it lost is checked rarely
+_outside_company_checked: Dict[Tuple[int, int], float] = {}
+
+
+async def _note_company_outside_account(db: AsyncSession, user: User, company_id: int) -> None:
+    """A request named a company the caller may not open. If that company belongs to another business, its
+    admins are told a request from outside was refused. A company of the caller's own business that they
+    simply have no access to is not news. Never fails the request."""
+    try:
+        now = time.time()
+        if now - _outside_company_checked.get((user.user_id, company_id), 0) < 3600:
+            return
+        if len(_outside_company_checked) > 1000:
+            _outside_company_checked.clear()
+        _outside_company_checked[(user.user_id, company_id)] = now
+        owner = (await db.execute(select(Company.account_id).where(Company.company_id == company_id))).first()
+        if owner is None or owner[0] is None or owner[0] == user.account_id:
+            return
+        from app.services.alerts import outside_request_refused
+        await outside_request_refused(db.bind, company_id, "open the books")
+    except Exception as e:
+        logger.warning(f"Could not check a refused company request: {e}")
+
+
 async def _request_user(db: AsyncSession, request: Request, snapshot: User, allowed_company_ids: Set[int]) -> User:
     """Copy the cached user snapshot into this request's session (no DB query) and apply X-Company-ID.
 
@@ -287,6 +313,8 @@ async def _request_user(db: AsyncSession, request: Request, snapshot: User, allo
             h_cid = None
         if h_cid is not None and h_cid != user.company_id and h_cid in allowed_company_ids:
             set_committed_value(user, "company_id", h_cid)
+        elif h_cid is not None and h_cid != user.company_id:
+            await _note_company_outside_account(db, user, h_cid)
     await note_request_company(db, user.company_id)
     return user
 
@@ -309,7 +337,7 @@ async def bind_sync_company(
         if not tally_guid:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="The sync agent did not say which Tally company this is for.")
-        company = await device_company(db, device, tally_guid)
+        company = await device_company(db, device, tally_guid, request.headers.get(SYNC_COMPANY_FINGERPRINT_HEADER))
         if company.company_id != user.company_id:
             set_committed_value(user, "company_id", company.company_id)
         await note_request_company(db, company.company_id)

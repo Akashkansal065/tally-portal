@@ -535,6 +535,7 @@ class CompanySyncState(Base):
     master_alter_id = Column(BigInteger, nullable=True)
     voucher_alter_id = Column(BigInteger, nullable=True)
     pending_count = Column(Integer, nullable=True)
+    progress = Column(String(60), nullable=True)   # "Full sync 3 of 12" while a full sync is under way
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
@@ -659,10 +660,16 @@ class WebhookEvent(Base):
 
 class Currency(Base):
     __tablename__ = "currencies"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    # Each company has its own currencies, as in Tally: the same code can exist once per company.
+    # A row with no company is from before that and is given one at startup (services/currency_ownership.py).
+    __table_args__ = (
+        Index("ix_currencies_company_code", "company_id", "code", unique=True),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
     
     currency_id = Column(Integer, primary_key=True, index=True)
-    code = Column(String(3), nullable=False, unique=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=True, index=True)
+    code = Column(String(3), nullable=False)
     symbol = Column(String(10), nullable=False)
     formal_name = Column(String(100), nullable=True)
     decimal_places = Column(Integer, default=2)
@@ -1690,3 +1697,23 @@ def _close_redundant_sync_rows(session, flush_context):
             _update(SyncQueue).where(SyncQueue.sync_id.in_([sync_id for sync_id, _ in older]))
             .values(is_processed=True, status="SUPERSEDED")
         )
+
+
+# A new company starts with the world currencies as its own list, however it was created (sign-up, a PC
+# linking a Tally company, an import). A sync from Tally then updates the ones Tally has, matched by code.
+@event.listens_for(Company, "after_insert")
+def _give_new_company_its_currencies(mapper, connection, company):
+    from app.core.world_currencies import WORLD_CURRENCIES
+    connection.execute(Currency.__table__.insert(), [{
+        "company_id": company.company_id,
+        "code": c["code"],
+        "symbol": c["symbol"],
+        "formal_name": c["formal_name"],
+        "decimal_places": c["decimal_places"],
+        "show_amount_in_millions": c.get("show_amount_in_millions", False),
+        "suffix_symbol_to_amount": c.get("suffix_symbol_to_amount", False),
+        "add_space_between_amount_and_symbol": c.get("add_space_between_amount_and_symbol", True),
+        "word_representing_amount_after_decimal": c.get("word_representing_amount_after_decimal", ""),
+        "decimal_places_for_words": c.get("decimal_places_for_words", 2),
+        "is_base_currency": False,
+    } for c in WORLD_CURRENCIES])

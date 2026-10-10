@@ -45,6 +45,7 @@ mysqldump -u <user> -p --single-transaction --routines tally_sync > tally_sync_b
 - [ ] In the startup log, look for lines beginning `Auto Schema Synchronizer:`. They list each column and index it adds. New tables (`accounts`, `agent_devices`, `agent_company_links`, `company_sync_state`, `user_invites`, `signup_verifications`) are created silently.
 - [ ] Confirm there is no line beginning `Warning during auto schema sync`.
 - [ ] The first start on this version also prints `Device-session times moved from UTC to IST.` once. It moves the stored sign-in times so they match the rest of the app; nobody is signed out. It must not appear on later starts.
+- [ ] The same first start prints `N shared currencies given to each company as its own.` once. Currencies were one list for the whole server; each company now gets its own copy, and its exchange rates, ledgers and voucher entries follow it. Nothing to run by hand. To confirm: `SELECT company_id, COUNT(*) FROM currencies GROUP BY company_id;` shows the same count for every company and no row with a NULL company. If it stops halfway, start the server again; it finishes without making second copies.
 - [ ] Sign in to the web app and open a ledger and a voucher. Nothing should look different.
 
 - [ ] Deploy the web app (the Vercel project). The Android and iOS apps load the web app from there, so they pick up the change without a new app build.
@@ -99,6 +100,7 @@ To give the account a different name than the company's: add `--name "Your Busin
 - [ ] Run the script from section 4 once more without `--apply`. It must list one company (not two with the same name), and that company must now show a GUID.
 - [ ] In the web app, open Admin → Sync agent & team. The PC should be listed as signed in, syncing your company, and every admin should be ticked under "Who may use the sync agent".
 - [ ] Untick any admin who should not be able to use the sync agent.
+- [ ] Admins now get three kinds of alert in the bell: a company no PC syncs any more, a company not synced for a day, and a request from outside the business that was refused. Each comes at most once a day per company. Sync alerts can be turned off under Notifications → System; the refused-request one cannot.
 - [ ] Invite a test user from that tab, open the link in a private browser window, set a password and sign in. Then try that user's email in the agent's Setup screen: it must be refused.
 
 - [ ] The company name in the header should have a green dot within a couple of minutes of the agent syncing. Tap the name: the list shows each company with "Synced … ago".
@@ -134,7 +136,18 @@ Do this only when sections 1 to 6 are done and everything has run normally for a
 ```
 
 - [ ] If it says "Not ready to enforce", run the script without `--enforce` first (section 4), then try again.
-- [ ] Read the plan. Lines starting `would` are what it will do. A line starting `STOP` names a key that still has duplicate rows: it will be skipped, and everything else still goes ahead. Send me the `STOP` lines; those rows need merging by hand.
+- [ ] Read the plan. Lines starting `would` are what it will do. A line starting `STOP` names a key that still has duplicate rows: it will be skipped, and everything else still goes ahead.
+- [ ] If there are `STOP` lines for Tally records, merge the duplicates. Look first, then apply, then run the `--enforce` look again:
+
+```bash
+./venv/bin/python scripts/migrate_to_account.py --merge-duplicates
+```
+
+```bash
+./venv/bin/python scripts/migrate_to_account.py --merge-duplicates --apply
+```
+
+  It keeps the copy Tally changed last, points everything at it and removes the other from the app's database only. Nothing is sent to Tally. A `STOP` line here means that pair could not be merged and was left alone; send it to me.
 - [ ] Do it:
 
 ```bash
@@ -157,6 +170,7 @@ Do this only when sections 1 to 6 are done and everything has run normally for a
 | Users cannot see their company after section 4 | Run the script again without `--apply` and check every user shows the same account as the company. |
 | Agent stops syncing after section 5 | Put the previous `.exe` back. The new backend still accepts the old agent. |
 | Agent says "This PC is signed out of the sync agent" | Someone signed it out in Admin → Sync agent & team, or the person who signed it in was deactivated. Sign in again from Setup. |
+| Agent or app says a company is "a different copy of the books" | The company open in Tally has the same identity as the synced one but a different Tally company number or books-from date: a copy or a restored backup. Open the right one. If the company really was moved or restored on purpose, press Unlink beside it in the agent's Companies window, then Link. |
 | Agent says a company "is not open in Tally" | Open it in TallyPrime. The other linked companies keep syncing meanwhile. |
 | Agent says "Two companies named ... are open" | Close the copy that should not be synced. |
 | The header dot stays grey "No sync agent has connected this company yet" | The agent on that PC is older than Step 4, or has not finished a cycle yet. Update it and wait one minute. |

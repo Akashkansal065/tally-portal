@@ -1128,7 +1128,9 @@ async def get_attendance_trail(
         .where(Attendance.id == attendance_id)
     )
     att = att_res.scalars().first()
-    if not att:
+    # Attendance belongs to an account: a record of another business does not exist as far as this caller goes
+    if not att or (att.account_id is not None and att.account_id != user.account_id) \
+            or (att.account_id is None and att.user is not None and att.user.account_id != user.account_id):
         raise HTTPException(status_code=404, detail="Attendance record not found")
 
     # Authorization: Owner or Admin/Manager

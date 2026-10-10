@@ -138,6 +138,9 @@ class DesktopSyncAgent:
     _voucher_ranges_work: Optional[bool] = None
     _voucher_range_method: Optional[str] = None
     _restart_full_sync = False
+    # Company GUID -> the highest master and voucher ALTERIDs the cloud held at the last cycle, for the state report
+    _watermarks: Dict[str, Tuple[int, int]] = {}
+    _last_push_error = ""
 
     def __init__(self, config_path: Optional[str] = None):
         # Default to the file next to the script/.exe (gitignored), never the current working directory
@@ -165,6 +168,7 @@ class DesktopSyncAgent:
         self.is_syncing = False
         self.immediate_sync_requested = False
         self.force_full_sync_next = False
+        self._watermarks = {}
         self.last_sync_time = None
         self.last_sync_timestr = "Never"
         self.last_sync_status = "Ready"
@@ -445,7 +449,8 @@ class DesktopSyncAgent:
                 guid, name, changed = guid or match.get("guid", ""), match["name"], True   # a rename in Tally is fine
                 entry["guid"], entry["name"] = guid, name
             state = "ambiguous" if same_name.get(name, 0) > 1 else "open"
-            resolved.append({"guid": guid, "name": name, "state": state, "starting_from": match.get("starting_from", "")})
+            resolved.append({"guid": guid, "name": name, "state": state, "starting_from": match.get("starting_from", ""),
+                             "fingerprint": match.get("fingerprint", "")})
 
         if resolved and (legacy_single or changed):
             first = resolved[0]
@@ -460,6 +465,7 @@ class DesktopSyncAgent:
         """Point the agent and its cloud calls at one company for the work that follows."""
         self.active_company_name, self.active_company_guid = company["name"], company["guid"]
         self.cloud.company_guid = self.active_company_guid
+        self.cloud.company_fingerprint = company.get("fingerprint", "")
 
     def _companies_to_work_on(self) -> List[Dict[str, str]]:
         """Resolve the linked companies, note what is stopping the others, and return the ones that can be synced."""
@@ -679,8 +685,13 @@ class DesktopSyncAgent:
                 continue
             ok, error = outcomes.get(company["guid"], (False, ""))
             state = {"closed": "closed", "ambiguous": "ambiguous"}.get(company["state"], "live" if ok else "error")
-            reports.append({"tally_guid": company["guid"], "state": state, "ok": ok and company["state"] == "open",
-                            "error": error or None})
+            report = {"tally_guid": company["guid"], "state": state, "ok": ok and company["state"] == "open",
+                      "error": error or None, "fingerprint": company.get("fingerprint") or None,
+                      "progress": self._full_sync_progress(company["guid"]) or None}
+            masters, vouchers = self._watermarks.get(company["guid"], (None, None))
+            if masters is not None:
+                report["master_alter_id"], report["voucher_alter_id"] = masters, vouchers
+            reports.append(report)
         if reports:
             try:
                 self.cloud.report_state(reports)
@@ -718,6 +729,7 @@ class DesktopSyncAgent:
             if is_incremental:
                 # Masters and vouchers have separate change counters in Tally, hence separate watermarks
                 master_watermark, voucher_watermark = self.cloud.get_last_alter_id()
+                self._watermarks[company_key] = (master_watermark, voucher_watermark)
                 server_watermark = max(master_watermark, voucher_watermark)
                 # After a failed cycle, re-pull from where that cycle started: the server's watermark is
                 # the highest AlterID it holds, which can be past records that never arrived.
@@ -785,7 +797,10 @@ class DesktopSyncAgent:
             self.last_sync_time = time.time()
             self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
 
-            if (total_vouchers + total_ledgers + total_items) > 0 or not is_incremental:
+            if total_errors and self._last_push_error:
+                # The server's own words (a company refused as a different copy, for one) reach the status line
+                self.last_sync_status = f"Sync failed: {self._last_push_error}"
+            elif (total_vouchers + total_ledgers + total_items) > 0 or not is_incremental:
                 msg = f"🎉 [DATABASE UPDATED] Synced {total_vouchers} Vouchers, {total_ledgers} Ledgers, {total_items} Items for '{self.active_company_name}'! (Errors: {total_errors})"
                 logger.info(msg)
                 self.last_sync_status = f"Synced {total_vouchers} Vouchers, {total_ledgers} Ledgers"
@@ -805,6 +820,7 @@ class DesktopSyncAgent:
     def _push_collections(self, collections: List[Tuple[str, str]], force_all: bool) -> Tuple[int, int, int, int]:
         """Push exported collections to the cloud. Returns (vouchers, ledgers, items imported, pushes that failed)."""
         total_vouchers = total_ledgers = total_items = total_errors = total_record_errors = 0
+        self._last_push_error = ""
         for idx, (label, xml_data) in enumerate(collections, 1):
             size_kb = len(xml_data.encode("utf-8")) / 1024.0
             logger.info(f"   • [{idx}/{len(collections)}] Exported '{label}' from Tally ({size_kb:.1f} KB). Pushing to cloud...")
@@ -831,6 +847,7 @@ class DesktopSyncAgent:
                 total_errors += 1
                 err_type = res.get("error_type", "SYNC_ERROR")
                 err_msg = res.get("error", "Unknown error")
+                self._last_push_error = str(err_msg)[:300]
                 status_code = res.get("status_code")
                 endpoint = res.get("endpoint", "/sync/inbound")
 

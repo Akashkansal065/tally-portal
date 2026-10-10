@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import { API_BASE, authHeaders } from '@/lib/utils'
+import { noteCompanySwitch, setCurrentCompany } from '@/lib/current-company'
 import { signOutMessage } from '@/lib/device'
 import { stopHeadlessNativeTracking } from '@/lib/capacitor-native-tracking'
 
@@ -189,7 +190,8 @@ interface AuthContextValue {
   isLoading: boolean
   login: (token: string, email: string) => Promise<void>
   logout: () => void
-  switchCompany: (company_id: number) => Promise<void>
+  /** Switch this device to another company. With `to`, open that path there instead of the home screen. */
+  switchCompany: (company_id: number, to?: string) => Promise<void>
   permissions: UserPermissions
   can: (module: string, action: 'create' | 'read' | 'update' | 'delete') => boolean
 }
@@ -285,6 +287,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const isAdmin = data.isAdmin ?? (
         typeof data.role === 'string' && ['admin', 'superadmin', 'owner'].includes(data.role.toLowerCase())
       )
+      const here = (allowedCompanies as { company_id: number; name: string }[]).find(c => c.company_id === data.company_id)
+      setCurrentCompany(here?.name ?? '', allowedCompanies.length, data.company_id)
       setUser({
         ...data,
         id: data.user_id ?? data.id,
@@ -397,16 +401,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken('')
   }
 
-  const switchCompany = async (company_id: number) => {
+  const switchCompany = async (company_id: number, to?: string) => {
     if (!token || !user || company_id === user.company_id) return
     if (!user.allowedCompanies?.some(c => c.company_id === company_id)) return
     // A form open in a dialog belongs to the company being left: never carry it across
     if (document.querySelector('[role="dialog"] form, [data-unsaved="true"]')
       && !window.confirm('You have a form open. Switch company and discard what you entered?')) return
     rememberCompany(company_id)
-    // Start again from the home screen with nothing of the previous company left in memory. The server checks
-    // the company against what this person may open on every request.
-    window.location.assign('/')
+    noteCompanySwitch(user.allowedCompanies.find(c => c.company_id === company_id)?.name ?? '', Boolean(to))
+    // Start again with nothing of the previous company left in memory: at the home screen, or at the page a
+    // link or notification was for. The server checks the company against what this person may open on every request.
+    window.location.assign(to && to.startsWith('/') ? to : '/')
   }
 
   const SUB_MODULE_PARENT_MAP: Record<string, string> = {

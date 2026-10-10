@@ -1,3 +1,4 @@
+import { CompanyLinks } from '@/components/CompanyLinks'
 import type { Metadata } from 'next'
 import './globals.css'
 import { AuthProvider } from '@/context/AuthContext'
@@ -91,6 +92,7 @@ export default function RootLayout({
 
               {/* Scrollable main content, padded for the bottom nav (slimmer from md) and iOS home indicator */}
               <main className="flex-1 overflow-y-auto overflow-x-hidden pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] md:pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))]">
+                <CompanyLinks />
                 <RouteGuard>{children}</RouteGuard>
               </main>
 

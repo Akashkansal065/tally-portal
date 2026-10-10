@@ -1,5 +1,6 @@
 'use client'
 
+import { CompanyNote } from '@/components/CompanyNote'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -4078,6 +4079,7 @@ export default function CustomersPage() {
                 Are you sure you want to delete <span className="font-semibold text-foreground">"{customerToDelete.name}"</span>?
                 This customer was tagged in the field and has no Tally ledger mapping.
               </p>
+              <CompanyNote />
               <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-left text-xs text-rose-600 space-y-1">
                 <p className="font-semibold">⚠️ What will be removed:</p>
                 <ul className="list-disc list-inside space-y-0.5 text-[11px]">

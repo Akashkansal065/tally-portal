@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import React, { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2, Info } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -38,7 +39,7 @@ export default function CurrenciesPage() {
   }, [user, token, can, router])
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this currency?')) return
+    if (!confirmInCompany('Are you sure you want to delete this currency?')) return
     try {
       const res = await fetch(`${API_BASE}/currency/${id}`, {
         method: 'DELETE',

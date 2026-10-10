@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
@@ -143,7 +144,7 @@ export default function SyncCenterPage() {
 
   // Discard an item
   const handleDiscard = async (id: string, name: string) => {
-    if (!confirm(`Are you sure you want to discard offline item for "${name}"? This cannot be undone.`)) {
+    if (!confirmInCompany(`Are you sure you want to discard offline item for "${name}"? This cannot be undone.`)) {
       return
     }
     await removeOfflineItem(id)

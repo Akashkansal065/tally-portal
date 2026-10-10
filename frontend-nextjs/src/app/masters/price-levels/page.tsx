@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
@@ -61,7 +62,7 @@ export default function PriceLevelsPage() {
   }
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this price level? Any associated rates will be lost.')) return
+    if (!confirmInCompany('Are you sure you want to delete this price level? Any associated rates will be lost.')) return
     try {
       await fetch(`${API_BASE}/inventory/price-levels/${id}`, {
         method: 'DELETE',

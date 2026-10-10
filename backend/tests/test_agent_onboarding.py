@@ -250,3 +250,45 @@ def test_an_admin_already_signed_in_can_open_a_company_the_moment_it_is_linked(h
 
     opened = client.get("/auth/me", headers={**owner, "X-Company-ID": str(beta["company_id"])}).json()
     assert opened["company_id"] == beta["company_id"] != first
+
+
+def test_another_copy_of_the_same_books_is_refused_until_it_is_linked_on_purpose(harness, client, mail):
+    """A copied or restored company keeps its Tally GUID. Its company number or books-from date differs, and
+    that is what stops it from being synced into the original."""
+    original = {**ALPHA, "fingerprint": "100004|20250401"}
+    signed = sign_up(client, mail, company=original)
+    token = signed["device_token"]
+    same = {"X-Tally-Company-Fingerprint": "100004|20250401"}
+    copy = {"X-Tally-Company-Fingerprint": "100009|20250401"}
+
+    assert client.get("/sync/last-alter-id", headers={**device_headers(token, "guid-alpha"), **same}).status_code == 200
+    assert client.get("/sync/last-alter-id", headers=device_headers(token, "guid-alpha")).status_code == 200   # an older agent sends none
+    refused = client.get("/sync/last-alter-id", headers={**device_headers(token, "guid-alpha"), **copy})
+    assert refused.status_code == 409 and refused.headers["X-Sync-Reason"] == "company_copy_mismatch"
+    assert client.post("/agent/companies/link", json={**ALPHA, "fingerprint": "100009|20250401"},
+                       headers=device_headers(token)).status_code == 409
+
+    # The state report says why, where the app shows it, and does not count as a sync
+    client.post("/sync/state", headers=device_headers(token), json=[{"tally_guid": "guid-alpha", "state": "live", "ok": True,
+                                                                     "fingerprint": "100009|20250401"}])
+    state = harness.query(select(P.CompanySyncState.state, P.CompanySyncState.last_error, P.CompanySyncState.last_success_at))[0]
+    assert state[0] == "error" and "different copy" in state[1] and state[2] is None
+
+    # Unlinking and linking again is the deliberate way to say "this is the copy to sync now"
+    client.post("/agent/companies/unlink", json={"tally_guid": "guid-alpha"}, headers=device_headers(token))
+    assert client.post("/agent/companies/link", json={**ALPHA, "fingerprint": "100009|20250401"},
+                       headers=device_headers(token)).status_code == 200
+    assert client.get("/sync/last-alter-id", headers={**device_headers(token, "guid-alpha"), **copy}).status_code == 200
+
+
+def test_the_first_report_records_which_copy_is_synced_and_the_progress_of_a_full_sync(harness, client, mail):
+    signed = sign_up(client, mail)                                           # linked by an agent that sent no fingerprint
+    token = signed["device_token"]
+    client.post("/sync/state", headers=device_headers(token), json=[{"tally_guid": "guid-alpha", "state": "live", "ok": True,
+                "fingerprint": "100004|20250401", "progress": "Full sync 3 of 12", "master_alter_id": 40, "voucher_alter_id": 90}])
+
+    assert harness.scalar(select(P.Company.tally_fingerprint)) == "100004|20250401"
+    row = harness.query(select(P.CompanySyncState.progress, P.CompanySyncState.master_alter_id, P.CompanySyncState.voucher_alter_id))[0]
+    assert tuple(row) == ("Full sync 3 of 12", 40, 90)
+    client.post("/sync/state", headers=device_headers(token), json=[{"tally_guid": "guid-alpha", "state": "live", "ok": True}])
+    assert harness.scalar(select(P.CompanySyncState.progress)) is None        # finished: the note goes away

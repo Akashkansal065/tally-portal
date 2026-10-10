@@ -82,6 +82,16 @@ async def get_gst_periods(
     return res.scalars().all()
 
 
+async def _own_period(db: AsyncSession, user: User, period_id: int) -> GstReturnPeriod:
+    """The return period, if it belongs to the company the caller is working in. A period id alone proves
+    nothing: its lines, summaries and HSN table are read through this, never by the id directly."""
+    period = (await db.execute(select(GstReturnPeriod).where(
+        GstReturnPeriod.return_period_id == period_id, GstReturnPeriod.company_id == user.company_id))).scalars().first()
+    if period is None:
+        raise HTTPException(status_code=404, detail="GST return period not found.")
+    return period
+
+
 @router.post("/periods/{period_id}/validate", response_model=GstValidationResponse)
 async def validate_gst_period(
     period_id: int,
@@ -552,6 +562,7 @@ async def get_gstr1_lines(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db)
 ):
+    await _own_period(db, user, period_id)
     stmt = select(Gstr1LineItem).where(Gstr1LineItem.return_period_id == period_id)
     res = await db.execute(stmt)
     return res.scalars().all()
@@ -562,6 +573,7 @@ async def get_gstr3b_summary(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db)
 ):
+    await _own_period(db, user, period_id)
     stmt = select(Gstr3bSummary).where(Gstr3bSummary.return_period_id == period_id)
     res = await db.execute(stmt)
     summary = res.scalars().first()
@@ -766,6 +778,7 @@ async def get_hsn_summary(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db)
 ):
+    await _own_period(db, user, period_id)
     stmt = select(Gstr1HsnSummary).where(Gstr1HsnSummary.return_period_id == period_id)
     res = await db.execute(stmt)
     return res.scalars().all()

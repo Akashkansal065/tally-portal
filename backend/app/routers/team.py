@@ -25,7 +25,7 @@ from app.models.portal_core import (
     Account, AgentCompanyLink, AgentDevice, Company, Role, User, UserCompanyAccess, UserInvite,
 )
 from app.routers.admin import require_admin
-from app.services import messaging
+from app.services import alerts, messaging
 
 logger = logging.getLogger("app.routers.team")
 router = APIRouter(prefix="/admin", tags=["Account team"])
@@ -217,6 +217,10 @@ async def set_sync_agent_access(user_id: int, payload: SyncAgentAccess, db: Asyn
         .where(User.user_id == user_id, User.account_id == account.account_id, func.lower(Role.name).in_(ADMIN_ROLE_NAMES))
     )).scalars().first()
     if target is None:
+        their_company = (await db.execute(select(User.company_id).where(
+            User.user_id == user_id, User.account_id.is_not(None), User.account_id != account.account_id))).scalar()
+        if their_company is not None:
+            await alerts.outside_request_refused(db.bind, their_company, "change who may use the sync agent")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin not found.")
     if payload.allowed:
         await grant_sync_agent(db, target.user_id, admin.user_id, f"Granted by {admin.email}")
@@ -260,12 +264,20 @@ async def revoke_agent_device(device_id: int, db: AsyncSession = Depends(get_db)
     device = (await db.execute(select(AgentDevice).where(
         AgentDevice.device_id == device_id, AgentDevice.account_id == account.account_id))).scalars().first()
     if device is None:
+        theirs = (await db.execute(select(AgentDevice.account_id).where(AgentDevice.device_id == device_id))).scalar()
+        target = await alerts.company_of_account(db, theirs)
+        if target is not None:
+            await alerts.outside_request_refused(db.bind, target, "sign out a sync agent PC")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PC not found.")
     if device.revoked_at is None:
         device.revoked_at = get_ist_now()   # the token hash is kept, so the PC is told it was signed out, not that it is unknown
+    freed = []
     for link in (await db.execute(select(AgentCompanyLink).where(
             AgentCompanyLink.device_id == device.device_id, AgentCompanyLink.is_active == True))).scalars():  # noqa: E712
         link.is_active = None
         link.unlinked_at = get_ist_now()
+        freed.append(link.company_id)
     await db.commit()
+    for company_id in freed:
+        await alerts.company_unlinked(db, company_id, by_user_id=admin.user_id)
     return {"device_id": device.device_id, "revoked": True}

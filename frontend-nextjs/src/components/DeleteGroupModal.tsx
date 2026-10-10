@@ -1,5 +1,6 @@
 'use client'
 
+import { CompanyNote } from '@/components/CompanyNote'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, BookOpen, CheckCircle2, FolderTree, Loader2, RefreshCw, Trash2, X, XCircle } from 'lucide-react'
 import { API_BASE, authHeaders, cn } from '@/lib/utils'
@@ -163,6 +164,7 @@ export default function DeleteGroupModal({
             </div>
             <div className="min-w-0">
               <h2 className="text-xl font-black text-foreground tracking-tight">{title}</h2>
+              <CompanyNote />
               <p className="text-sm text-muted-foreground mt-0.5 font-semibold truncate">{group.name}</p>
             </div>
           </div>

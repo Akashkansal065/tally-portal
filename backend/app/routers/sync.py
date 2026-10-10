@@ -1090,6 +1090,8 @@ class CompanySyncReport(BaseModel):
     master_alter_id: Optional[int] = None
     voucher_alter_id: Optional[int] = None
     pending_count: Optional[int] = None
+    fingerprint: Optional[str] = Field(default=None, max_length=200)   # which copy of the books is open in Tally
+    progress: Optional[str] = Field(default=None, max_length=60)       # "Full sync 3 of 12" while one is under way
 
 
 @router.post("/state")
@@ -1104,7 +1106,7 @@ async def report_sync_state(
     Tally. This is where the app's "Last synced" comes from: last_success_at moves only when ok is true.
     A company the caller is not the one syncing is skipped, not an error, so one stale entry cannot lose the rest.
     """
-    from app.core.agent_auth import device_company
+    from app.core.agent_auth import COPY_MISMATCH, device_company
     from app.core.datetime_utils import get_ist_now
     from app.core.permissions import company_for_tally_guid
     from app.models.portal_core import CompanySyncState
@@ -1113,10 +1115,16 @@ async def report_sync_state(
     now = get_ist_now()
     for report in reports:
         guid = report.tally_guid.strip()
+        wrong_copy = None
         try:
-            company = await device_company(db, device, guid) if device is not None else await company_for_tally_guid(db, user, guid)
-        except HTTPException:
+            company = (await device_company(db, device, guid, report.fingerprint) if device is not None
+                       else await company_for_tally_guid(db, user, guid))
+        except HTTPException as refused:
             company = None
+            if device is not None and (refused.headers or {}).get("X-Sync-Reason") == COPY_MISMATCH:
+                # Still this PC's company: say why it stopped, where the app will show it
+                wrong_copy = refused.detail
+                company = await device_company(db, device, guid)
         if company is None:
             skipped.append(guid)
             continue
@@ -1125,8 +1133,15 @@ async def report_sync_state(
             row = CompanySyncState(company_id=company.company_id)
             db.add(row)
         row.device_id = device.device_id if device is not None else row.device_id
-        row.state = report.state
         row.last_attempt_at = now
+        row.progress = report.progress
+        if wrong_copy:
+            row.state, row.last_error = "error", wrong_copy
+            recorded += 1
+            continue
+        if report.fingerprint and not company.tally_fingerprint:
+            company.tally_fingerprint = report.fingerprint.strip()    # first seen: this is the copy that is synced
+        row.state = report.state
         row.last_error = None if report.ok else (report.error or row.last_error)
         if report.ok:
             row.last_success_at = now
@@ -2031,9 +2046,12 @@ async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str
             curr = (await db.execute(stmt)).scalars().first()
             if not curr: return
         
-        # Currency is global in DB but synced per company queue
         sq = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_id))).scalars().first()
         if not sq: return
+        # A currency belongs to one company and is only ever sent to that company's Tally
+        if curr is not None and curr.company_id != sq.company_id:
+            logger.error(f"Currency {currency_id} is not company {sq.company_id}'s; not sent to Tally.")
+            return
         
         comp = (await db.execute(select(Company).where(Company.company_id == sq.company_id))).scalars().first()
         comp_name = comp.name if comp else ""

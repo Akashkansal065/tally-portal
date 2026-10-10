@@ -21,8 +21,8 @@ All six steps are in PR [Akashkansal065/tally-portal#67](https://github.com/Akas
 | Step 3: agent sign-up, device tokens, invitations | Code complete and tested end to end on MySQL. The agent's Setup sign-in was done on a real PC; its Create account window was not. |
 | Step 4: multi-company agent, company-owned sales rows | Code complete, including the full sync in date ranges. The agent's Companies window has not been used with two companies open in Tally. |
 | Step 5: company switcher, last synced, Companies page | Code complete and opened in a browser. Not checked on a phone. |
-| Step 6: enforce and harden | Enforcement stage run for real on a throwaway MySQL database, with both switches on afterwards. Not run on the development or production database. Operator role, alerts and the all-routers scoping helper are not built. |
-| Tests | Backend 249 passed, agent 48 passed, frontend type-check clean, 63 + 15 end-to-end checks on MySQL passed. |
+| Step 6: enforce and harden | Enforcement stage run for real on a throwaway MySQL database, with both switches on afterwards. Not run on the development or production database. The operator role is not built. Alerts and an audit of every endpoint as another customer were added on 10 Oct. |
+| Tests | Backend 260 passed, agent 49 passed, frontend type-check clean, 63 + 15 end-to-end checks on MySQL passed. |
 | Development database today | One account, one company with its Tally GUID, one signed-in PC syncing it. |
 | Production | Not deployed. One company, several users, no accounts. |
 | Stopgap until Phase 0 is deployed to production | Do not switch company in the web app on the login the agent uses. |
@@ -231,7 +231,8 @@ Fix: add `company_id` to all six tables, set at creation from the caller's compa
 | --- | --- | --- |
 | `roles` (name unique across the server), `permissions` | Any admin can create, edit or delete roles and change their permissions through `/admin/roles`. One customer editing "Salesman" changes it for every customer. | Add `account_id` to `roles`; unique (`account_id`, `name`); seed the default roles per account at sign-up; keep the built-in set as read-only templates |
 | `app_settings` (key, value) | One global key/value store; a setting changed by one customer applies to all | Split into platform settings (operator only) and per-account settings |
-| `modules`, `currencies`, `gst_registration_types`, `pincode_cities`, `bank_transaction_types` | Reference data, the same for everyone | Leave shared; make them read-only to customers |
+| `modules`, `gst_registration_types`, `pincode_cities`, `bank_transaction_types` | Reference data, the same for everyone | Leave shared; make them read-only to customers |
+| `currencies` | Was one list for the server | **Done:** each company has its own (`company_id`), as in Tally |
 
 **Child tables with no company of their own.** About 40 tables in the Tally mirror and 15 in the portal database reach a company only through a parent (voucher entries, stock entries, bill allocations, order items, payslips, GSTR line items). That is safe as long as the parent is always checked. The earlier plan to add `company_id` to "child tables" applies to the ones that are queried directly; the inventory in Step 1 decides which.
 
@@ -396,8 +397,8 @@ Code complete, in the Phase 0 pull request. The backend is tested and the web co
 - [x] Company name under the title of the voucher form
 - [x] Opened in a desktop browser: header dot, switcher, switching and reload, Companies page
 - [ ] Not checked: a phone, the "Data as of" line, the company name on the voucher form
-- [ ] Company name on delete confirmations and share sheets (not done: there are many, each with its own dialog)
-- [ ] Deep links that carry the company and switch to it with a notice (not done)
+- [x] Company name on delete confirmations and share sheets
+- [x] Links that carry the company and switch to it with a notice
 
 How freshness is decided (`backend/app/services/sync_status.py`):
 
@@ -437,11 +438,11 @@ Done:
 
 Not done, and why:
 
-- [ ] **One scoping helper used by every router.** That is a rewrite of the queries in about 30 routers; too large and too risky to do blind in the same change. The isolation tests added in Phases 0 to 6 cover accounts, roles, settings, sync, invitations, sync status and field-sales rows, not every endpoint.
+- [x] **Every router checked for scoping**, by an audit that calls every endpoint as another customer rather than by rewriting the queries (section 7). It found four leaks, now fixed.
 - [ ] **Platform-operator role** (D12). Needs its own design: how operators are created, where a customer grants access, what an operator may do. Until it exists nobody can see across accounts at all, which is the safe default.
-- [ ] **Alerts** for unlinked companies, refused cross-account requests and a company not synced for a day. The first two are written to the server log; none raises a notification yet.
+- [x] **Alerts** for unlinked companies, refused requests from outside and a company not synced for a day (section 7).
 - [x] **Leftover screens' code removed** (10 Oct 2026): the first-time setup form on the login page and the Register Company dialog on the Admin page.
-- [ ] **Merging duplicate Tally records.** The enforcement stage reports and skips them; merging needs a look at the real rows.
+- [x] **Merging duplicate Tally records**: `--merge-duplicates` in the migration script (section 7).
 
 Two findings from this step:
 
@@ -532,18 +533,38 @@ Ordered by what blocks what. Each line says who has to act.
 - [ ] The web screens on a phone; the "Data as of" line; the company name on the voucher form
 - [ ] The new `build_windows_exe.bat` on a PC with no Python at all (its offer to install one)
 - [ ] A full sync in date ranges of a company with 1,000 vouchers or more, from a rebuilt agent
+- [ ] The three alerts arriving on a phone; a `?company=` link opened from another company; the delete prompts and share sheet with two companies
+- [ ] A copied company in Tally being refused by the rebuilt agent (the check is tested on the server and the fingerprint was read from real Tally; the two have not met)
 - [ ] Livekeeping trial walkthrough: their switcher and last-synced screens were not seen directly
+
+### Built on 10 Oct 2026 (second round)
+
+- [x] **Alerts** (`app/services/alerts.py`), as ordinary notifications to the business's admins, at most one a day per company and kind:
+  - a company that no PC syncs any more (unlinked in the agent, or its PC signed out; moving it to another PC is not an alert);
+  - a company that has gone a day without a clean sync, checked hourly, saying whether it is closed in Tally or the PC is off;
+  - a request from outside the business that was refused (opening its books, signing out its PC, changing who may use its agent). It says that it happened, never who it was.
+- [x] **Every read and write endpoint audited as another customer** (`tests/test_isolation_audit.py`), instead of rewriting 30 routers. One business's rows carry a marker in every text column of 125 tables; the other business's admin then calls every GET route (366 calls) and every POST, PUT, PATCH and DELETE route (450 calls) with the first one's ids. No marker may come back and no row may change. A new endpoint that forgets to scope its query fails this test without anyone writing one for it.
+- [x] **Company name on delete confirmations and share sheets.** The 17 delete prompts name the company, the voucher, ledger, group and customer delete dialogs show "In <company>", and the phone's share sheet is headed with it. Only for people who can open more than one company.
+- [x] **Links that carry the company.** A link ending `?company=3` opens in that company: the device switches first and says "Switched to … to open this", or says the link is for a company the person cannot open. `linkInCompany()` builds such links.
+- [x] **Two same-named companies are told apart** by the date their books begin, then by the end of their Tally ID, when GSTIN, city and financial year do not differ.
+- [x] **The agent reports which copy of the books is open, its watermarks and full-sync progress.** A copied or restored company keeps its Tally GUID but not its Tally company number or books-from date. The first report records them; after that a different copy under the same GUID is refused on every sync call and shown in the app as needing attention. Unlinking and linking again is the deliberate way to accept a moved company. The app shows "Full sync 3 of 12" while one is under way.
+- [x] **Merging duplicate Tally records**: `scripts/migrate_to_account.py --merge-duplicates` (dry look) and `--merge-duplicates --apply`. It keeps the row Tally changed last, points references at it, removes the others with their own parts, and sends nothing to Tally. Checked on MySQL with a duplicated group and a duplicated voucher.
+
+Leaks these found and fixed:
+
+| Found by | Problem | Fix |
+| --- | --- | --- |
+| Reading the notification code | **Every "to admins" notification (new order, expense claim, attendance) went to the admins of every business on the server** | Admins of the company's own account only |
+| Read audit | A location trail of another business's attendance record could be read by its id | Refused as not found |
+| Read audit | GSTR-1 lines, GSTR-3B summary and HSN summary of another business's return period could be read by its id | The period must belong to the caller's company |
+| Write audit | Deleting a currency deleted every business's exchange rates for it | Superseded: currencies are now per company, so deleting one removes only that company's currency and rates |
+| Reading the notification code | Opening a notification that belongs to another company landed on the home screen instead of its page | It opens the page in that company |
 
 ### Not built
 
 - [ ] **Platform-operator role** (D12). Needs its own design.
-- [ ] **Alerts** for unlinked companies, refused cross-account requests and a company not synced for a day.
-- [ ] **One scoping helper used by every router** (about 30 routers).
-- [ ] **Merging duplicate Tally records.** The enforcement stage reports and skips them. None exist on the development database.
-- [ ] **Company name on delete confirmations and share sheets.**
-- [ ] **Deep links that carry the company** and switch to it with a notice.
-- [ ] **Telling two same-named companies apart when neither has a GSTIN, city or financial year filled in.** The switcher and the Companies page show them identically. Showing the books-from date or which PC syncs each would do.
-- [ ] **The agent's state report carries no watermarks or waiting count,** and no fingerprint is recorded on link. The columns exist (`company_sync_state.master_alter_id`, `voucher_alter_id`, `pending_count`; `companies.tally_fingerprint`) and stay empty. Nothing shown to users depends on them; the restored-copy risk in section 5 does depend on the fingerprint.
+- [x] **Currencies per company** (built 10 Oct 2026). Each company has its own currency list, as in Tally, so one business editing a currency no longer changes it for another. The first start on this version hands the old shared list out by itself: every company gets its own copy, and its exchange rates, ledgers and voucher entries are pointed at that copy (`services/currency_ownership.py`; repeat-safe). The picker for adding a currency reads a fixed world list (`GET /currency/iso`), not the company's list. A new company, however it is created, starts with that world list as its own (`app/core/world_currencies.py`); a sync from Tally then updates the ones Tally has. Ran on the development MySQL: 87 currencies, two companies, 87 each. Not checked by hand: the Currencies screen in a browser, and a currency pushed to Tally.
+- [ ] **What the audits cannot see.** 12 read endpoints run SQL the test database cannot execute (MySQL-only report queries), and write endpoints that reject an empty body are stopped before they reach their query. Both are covered only by their own tests and by the scoping in their code.
 
 ### Found in this round, not part of the multi-tenant work
 

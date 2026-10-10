@@ -1,5 +1,7 @@
 'use client'
 
+import { CompanyNote } from '@/components/CompanyNote'
+import { confirmInCompany } from '@/lib/current-company'
 import { useState, useEffect, useMemo, useRef, Suspense } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
@@ -668,7 +670,7 @@ function CustomerProfileContent() {
       alert('You do not have permission to delete customer photos.')
       return
     }
-    if (!confirm('Are you sure you want to permanently delete this photo from ImageKit storage?')) {
+    if (!confirmInCompany('Are you sure you want to permanently delete this photo from ImageKit storage?')) {
       return
     }
 
@@ -3858,6 +3860,7 @@ function CustomerProfileContent() {
                 Are you sure you want to delete <span className="font-semibold text-foreground">"{customer.name}"</span>?
                 This customer lead was tagged in the field and is not linked to any Tally ledger.
               </p>
+              <CompanyNote />
               <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-left text-xs text-rose-600 space-y-1">
                 <p className="font-semibold">⚠️ What will be removed:</p>
                 <ul className="list-disc list-inside space-y-0.5 text-[11px]">

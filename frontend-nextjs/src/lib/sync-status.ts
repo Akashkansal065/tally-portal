@@ -13,6 +13,9 @@ export interface CompanySyncStatus {
   city: string | null
   state: string | null
   financial_year_start: string | null
+  books_begin_date: string | null
+  /** The end of the company's Tally GUID: the last resort for telling two look-alikes apart */
+  tally_id: string | null
   is_current: boolean
   freshness: Freshness
   last_synced_at: string | null
@@ -20,6 +23,8 @@ export interface CompanySyncStatus {
   agent_online: boolean
   last_error: string | null
   synced_from: string | null
+  /** "Full sync 3 of 12" while the first or a requested full sync is still bringing vouchers in */
+  progress: string | null
   pending_to_tally: number
 }
 
@@ -75,6 +80,28 @@ export function useCompanySyncStatus(token: string | null): CompanySyncStatus[] 
   return rows
 }
 
+function basicIdentity(c: CompanySyncStatus): string {
+  return [c.gstin, c.city || c.state, c.financial_year_start ? `FY from ${c.financial_year_start}` : ''].filter(Boolean).join(' · ')
+}
+
+/**
+ * The line under a company's name that says which one it is: GSTIN, place and financial year. When another
+ * company in the list has the same name and the same line (often because none of that is filled in), the date
+ * its books begin is added, and if even that matches, the end of its Tally ID.
+ */
+export function companyIdentity(c: CompanySyncStatus, all: CompanySyncStatus[]): string {
+  const base = basicIdentity(c)
+  const sameName = (other: CompanySyncStatus) => other.company_id !== c.company_id && other.name.trim().toLowerCase() === c.name.trim().toLowerCase()
+  const twins = all.filter(other => sameName(other) && basicIdentity(other) === base)
+  if (twins.length === 0) return base
+  const parts = [base]
+  if (c.books_begin_date) {
+    parts.push(`Books from ${new Date(`${c.books_begin_date}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`)
+  }
+  if (c.tally_id && twins.some(other => other.books_begin_date === c.books_begin_date)) parts.push(`Tally ID …${c.tally_id}`)
+  return parts.filter(Boolean).join(' · ')
+}
+
 /** "3 min ago" under an hour, a clock time today, a date before that. */
 export function whenText(iso: string | null, now: Date = new Date()): string {
   if (!iso) return ''
@@ -92,9 +119,11 @@ export function describeFreshness(status: CompanySyncStatus, now: Date = new Dat
   const synced = status.last_synced_at ? `Last synced ${whenText(status.last_synced_at, now)}` : 'Not synced yet'
   switch (status.freshness) {
     case 'live':
-      return { text: `Synced ${whenText(status.last_synced_at, now)}`, dot: 'bg-emerald-500' }
+      // During a full sync the latest cycle was clean, but older vouchers are still on their way
+      return { text: status.progress ? `${status.progress} · older entries are still arriving` : `Synced ${whenText(status.last_synced_at, now)}`,
+               dot: status.progress ? 'bg-amber-500' : 'bg-emerald-500' }
     case 'behind':
-      return { text: `Synced ${whenText(status.last_synced_at, now)}`, dot: 'bg-amber-500' }
+      return { text: status.progress ? `${status.progress} · ${synced}` : `Synced ${whenText(status.last_synced_at, now)}`, dot: 'bg-amber-500' }
     case 'closed':
       return { text: `Open this company in Tally to sync. ${synced}`, dot: 'bg-slate-400' }
     case 'offline':

@@ -13,6 +13,12 @@ Later, once everything has run on the new version for a while (see the rollout r
     python scripts/migrate_to_account.py --enforce           # show the rules the database would start refusing on
     python scripts/migrate_to_account.py --enforce --apply   # switch them on
 
+If the enforce look reports STOP lines for duplicate Tally records, merge them first:
+
+    python scripts/migrate_to_account.py --merge-duplicates           # show what would be kept and removed
+    python scripts/migrate_to_account.py --merge-duplicates --apply   # do it (removes rows from the mirror only;
+                                                                      # nothing is sent to Tally)
+
     --name "Sneh Distributors"    name for the account (default: the first company's name)
 
 Start the backend once on the new code first, so the new columns and tables exist. Running it twice is safe.
@@ -28,8 +34,8 @@ from app.core.config import settings  # noqa: E402
 from app.core.database import AsyncSessionLocal, engine  # noqa: E402
 from app.services.tenant_inventory import blocking_findings, collect_inventory  # noqa: E402
 from app.services.tenant_migration import (  # noqa: E402
-    MigrationRefused, add_foreign_keys, allow_role_names_per_account, enforce_account_rules, migrate_to_single_account,
-    remaining_problems,
+    MigrationRefused, add_foreign_keys, allow_role_names_per_account, enforce_account_rules,
+    merge_duplicate_tally_rows, migrate_to_single_account, remaining_problems,
 )
 
 
@@ -73,8 +79,25 @@ async def enforce(apply: bool) -> None:
         print("unique on a large table (vouchers) can take minutes and holds the table while it runs.")
 
 
+async def merge_duplicates(apply: bool) -> None:
+    """Keep one row where a company holds the same Tally record twice. Removes rows, so it is its own step."""
+    if "mysql" not in settings.DATABASE_URL:
+        print("Merging duplicates is for the MySQL database; nothing to do here.")
+        return
+    print("== Merging duplicate Tally records ==" if apply else "== Duplicate Tally records (nothing is changed) ==")
+    async with engine.begin() as conn:
+        for line in await merge_duplicate_tally_rows(conn, apply):
+            print(f"  {line}")
+    if not apply:
+        print("\nNothing was changed. Back up the Tally mirror database, then run again with --merge-duplicates --apply.")
+        print("Rows are removed from the mirror only: nothing is sent to Tally, which holds each record once already.")
+
+
 async def main() -> None:
     apply = "--apply" in sys.argv
+    if "--merge-duplicates" in sys.argv:
+        await merge_duplicates(apply)
+        return
     if "--enforce" in sys.argv:
         await enforce(apply)
         return

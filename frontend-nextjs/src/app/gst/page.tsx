@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -384,7 +385,7 @@ export default function GstPage() {
   }
 
   const handleDeletePeriod = async (periodId: number) => {
-    if (!window.confirm("Are you sure you want to delete this GST Return Period? This will delete all generated snapshot line items, GSTR-1, and GSTR-3B summaries for this period.")) {
+    if (!confirmInCompany("Are you sure you want to delete this GST Return Period? This will delete all generated snapshot line items, GSTR-1, and GSTR-3B summaries for this period.")) {
       return
     }
     
@@ -439,7 +440,7 @@ export default function GstPage() {
   }
 
   const handleDeleteManualPurchase = async (purchaseId: number) => {
-    if (!window.confirm("Are you sure you want to delete this manual purchase?")) return
+    if (!confirmInCompany("Are you sure you want to delete this manual purchase?")) return
     setActionLoading(`del-mp-${purchaseId}`)
     try {
       const res = await fetch(`${API_BASE}/gst/manual-purchases/${purchaseId}`, {

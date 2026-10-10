@@ -27,105 +27,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Currency & TDS"])
 
-# Comprehensive ISO 4217 seed data — all fields match the Currency DB model
-SEED_CURRENCIES = [
-    # South Asia
-    {"code": "INR", "symbol": "INR", "formal_name": "Indian Rupee", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "paise", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "BDT", "symbol": "BDT", "formal_name": "Bangladeshi Taka", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "poisha", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "LKR", "symbol": "LKR", "formal_name": "Sri Lankan Rupee", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "NPR", "symbol": "NPR", "formal_name": "Nepalese Rupee", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "paisa", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "PKR", "symbol": "PKR", "formal_name": "Pakistani Rupee", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "paisa", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "MVR", "symbol": "MVR", "formal_name": "Maldivian Rufiyaa", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "laari", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "AFN", "symbol": "AFN", "formal_name": "Afghan Afghani", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "pul", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    # Americas
-    {"code": "USD", "symbol": "USD", "formal_name": "US Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "CAD", "symbol": "CAD", "formal_name": "Canadian Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "BRL", "symbol": "BRL", "formal_name": "Brazilian Real", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "centavos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "MXN", "symbol": "MXN", "formal_name": "Mexican Peso", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "centavos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "ARS", "symbol": "ARS", "formal_name": "Argentine Peso", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "centavos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "CLP", "symbol": "CLP", "formal_name": "Chilean Peso", "decimal_places": 0, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": False},
-    {"code": "COP", "symbol": "COP", "formal_name": "Colombian Peso", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "centavos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "PEN", "symbol": "PEN", "formal_name": "Peruvian Sol", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "céntimos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "UYU", "symbol": "UYU", "formal_name": "Uruguayan Peso", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "centésimos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "DOP", "symbol": "DOP", "formal_name": "Dominican Peso", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "centavos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "JMD", "symbol": "JMD", "formal_name": "Jamaican Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "TTD", "symbol": "TTD", "formal_name": "Trinidad Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    # Europe
-    {"code": "EUR", "symbol": "EUR", "formal_name": "Euro", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "GBP", "symbol": "GBP", "formal_name": "British Pound Sterling", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "pence", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "CHF", "symbol": "CHF", "formal_name": "Swiss Franc", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "centimes", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "SEK", "symbol": "SEK", "formal_name": "Swedish Krona", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "öre", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "NOK", "symbol": "NOK", "formal_name": "Norwegian Krone", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "øre", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "DKK", "symbol": "DKK", "formal_name": "Danish Krone", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "øre", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "PLN", "symbol": "PLN", "formal_name": "Polish Zloty", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "groszy", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "CZK", "symbol": "CZK", "formal_name": "Czech Koruna", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "haléřů", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "HUF", "symbol": "HUF", "formal_name": "Hungarian Forint", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "fillér", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "RON", "symbol": "RON", "formal_name": "Romanian Leu", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "bani", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "BGN", "symbol": "BGN", "formal_name": "Bulgarian Lev", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "stotinki", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "HRK", "symbol": "HRK", "formal_name": "Croatian Kuna", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "lipa", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "RSD", "symbol": "RSD", "formal_name": "Serbian Dinar", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "para", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "ISK", "symbol": "ISK", "formal_name": "Icelandic Krona", "decimal_places": 0, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": False},
-    {"code": "UAH", "symbol": "UAH", "formal_name": "Ukrainian Hryvnia", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "kopiyok", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "RUB", "symbol": "RUB", "formal_name": "Russian Ruble", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "kopecks", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "TRY", "symbol": "TRY", "formal_name": "Turkish Lira", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "kuruş", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "GEL", "symbol": "GEL", "formal_name": "Georgian Lari", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "tetri", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "AMD", "symbol": "AMD", "formal_name": "Armenian Dram", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "luma", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "AZN", "symbol": "AZN", "formal_name": "Azerbaijani Manat", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "qəpik", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    # Middle East
-    {"code": "AED", "symbol": "AED", "formal_name": "UAE Dirham", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "fils", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "SAR", "symbol": "SAR", "formal_name": "Saudi Riyal", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "halalas", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "QAR", "symbol": "QAR", "formal_name": "Qatari Riyal", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "dirhams", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "OMR", "symbol": "OMR", "formal_name": "Omani Rial", "decimal_places": 3, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "baisa", "decimal_places_for_words": 3, "show_amount_in_millions": False},
-    {"code": "KWD", "symbol": "KWD", "formal_name": "Kuwaiti Dinar", "decimal_places": 3, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "fils", "decimal_places_for_words": 3, "show_amount_in_millions": False},
-    {"code": "BHD", "symbol": "BHD", "formal_name": "Bahraini Dinar", "decimal_places": 3, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "fils", "decimal_places_for_words": 3, "show_amount_in_millions": False},
-    {"code": "JOD", "symbol": "JOD", "formal_name": "Jordanian Dinar", "decimal_places": 3, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "fils", "decimal_places_for_words": 3, "show_amount_in_millions": False},
-    {"code": "LBP", "symbol": "LBP", "formal_name": "Lebanese Pound", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "piastres", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "IQD", "symbol": "IQD", "formal_name": "Iraqi Dinar", "decimal_places": 3, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "fils", "decimal_places_for_words": 3, "show_amount_in_millions": False},
-    {"code": "IRR", "symbol": "IRR", "formal_name": "Iranian Rial", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "dinars", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "ILS", "symbol": "ILS", "formal_name": "Israeli Shekel", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "agorot", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "EGP", "symbol": "EGP", "formal_name": "Egyptian Pound", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "piastres", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "MAD", "symbol": "MAD", "formal_name": "Moroccan Dirham", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "centimes", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    # East Asia
-    {"code": "JPY", "symbol": "JPY", "formal_name": "Japanese Yen", "decimal_places": 0, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": True},
-    {"code": "CNY", "symbol": "CNY", "formal_name": "Chinese Yuan", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "fen", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "KRW", "symbol": "KRW", "formal_name": "South Korean Won", "decimal_places": 0, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": True},
-    {"code": "TWD", "symbol": "TWD", "formal_name": "Taiwan Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "MNT", "symbol": "MNT", "formal_name": "Mongolian Tugrik", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "möngö", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "HKD", "symbol": "HKD", "formal_name": "Hong Kong Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    # Southeast Asia
-    {"code": "SGD", "symbol": "SGD", "formal_name": "Singapore Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "MYR", "symbol": "MYR", "formal_name": "Malaysian Ringgit", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "sen", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "THB", "symbol": "THB", "formal_name": "Thai Baht", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "satang", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "IDR", "symbol": "IDR", "formal_name": "Indonesian Rupiah", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "sen", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "PHP", "symbol": "PHP", "formal_name": "Philippine Peso", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "centavos", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "VND", "symbol": "VND", "formal_name": "Vietnamese Dong", "decimal_places": 0, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": False},
-    {"code": "MMK", "symbol": "MMK", "formal_name": "Myanmar Kyat", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "pya", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "KHR", "symbol": "KHR", "formal_name": "Cambodian Riel", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "sen", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "LAK", "symbol": "LAK", "formal_name": "Lao Kip", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "att", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "BND", "symbol": "BND", "formal_name": "Brunei Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    # Oceania
-    {"code": "AUD", "symbol": "AUD", "formal_name": "Australian Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "NZD", "symbol": "NZD", "formal_name": "New Zealand Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": True},
-    {"code": "FJD", "symbol": "FJD", "formal_name": "Fijian Dollar", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "PGK", "symbol": "PGK", "formal_name": "Papua New Guinean Kina", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "toea", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    # Africa
-    {"code": "ZAR", "symbol": "ZAR", "formal_name": "South African Rand", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "NGN", "symbol": "NGN", "formal_name": "Nigerian Naira", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "kobo", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "KES", "symbol": "KES", "formal_name": "Kenyan Shilling", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "GHS", "symbol": "GHS", "formal_name": "Ghanaian Cedi", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": False, "word_representing_amount_after_decimal": "pesewas", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "TZS", "symbol": "TZS", "formal_name": "Tanzanian Shilling", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "UGX", "symbol": "UGX", "formal_name": "Ugandan Shilling", "decimal_places": 0, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": False},
-    {"code": "ETB", "symbol": "ETB", "formal_name": "Ethiopian Birr", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "santim", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "ZMW", "symbol": "ZMW", "formal_name": "Zambian Kwacha", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "ngwee", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "BWP", "symbol": "BWP", "formal_name": "Botswanan Pula", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "thebe", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "MUR", "symbol": "MUR", "formal_name": "Mauritian Rupee", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "SCR", "symbol": "SCR", "formal_name": "Seychellois Rupee", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "cents", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "XOF", "symbol": "XOF", "formal_name": "West African CFA Franc", "decimal_places": 0, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": False},
-    {"code": "XAF", "symbol": "XAF", "formal_name": "Central African CFA Franc", "decimal_places": 0, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "", "decimal_places_for_words": 0, "show_amount_in_millions": False},
-    # Central Asia
-    {"code": "KZT", "symbol": "KZT", "formal_name": "Kazakhstani Tenge", "decimal_places": 2, "suffix_symbol_to_amount": False, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "tiyin", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-    {"code": "UZS", "symbol": "UZS", "formal_name": "Uzbekistani Som", "decimal_places": 2, "suffix_symbol_to_amount": True, "add_space_between_amount_and_symbol": True, "word_representing_amount_after_decimal": "tiyin", "decimal_places_for_words": 2, "show_amount_in_millions": False},
-]
+from app.core.world_currencies import WORLD_CURRENCIES as SEED_CURRENCIES
+
+
+def _own_currency(user: User, *conditions):
+    """A query for currencies of the signed-in user's company. Each company has its own list."""
+    return select(Currency).where(Currency.company_id == user.company_id, *conditions)
+
+
+@router.get("/currency/iso")
+async def list_world_currencies(user: User = Depends(require_permission("currencies", "read"))):
+    """The world currencies to pick from when adding one. The same for everyone; not a company's own list."""
+    return [{"code": c["code"], "symbol": c["symbol"], "formal_name": c["formal_name"],
+             "decimal_places": c["decimal_places"]} for c in SEED_CURRENCIES]
 
 
 @router.post("/currency/seed")
@@ -133,15 +47,16 @@ async def seed_currencies(
     user: User = Depends(require_permission("currencies", "update")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Bulk-insert world currencies into the DB. Skips any that already exist by code."""
+    """Bulk-insert world currencies for this company. Skips any it already has by code."""
     inserted = 0
     skipped = 0
     for c in SEED_CURRENCIES:
-        existing = (await db.execute(select(Currency).where(Currency.code == c["code"]))).scalars().first()
+        existing = (await db.execute(_own_currency(user, Currency.code == c["code"]))).scalars().first()
         if existing:
             skipped += 1
             continue
         curr = Currency(
+            company_id=user.company_id,
             code=c["code"],
             symbol=c["code"],
             formal_name=c["formal_name"],
@@ -167,12 +82,13 @@ async def create_currency(
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.email} attempting to create currency: {req.code}")
-    dup_query = await db.execute(select(Currency).where(Currency.code == req.code))
+    dup_query = await db.execute(_own_currency(user, Currency.code == req.code))
     if dup_query.scalars().first():
         logger.warning(f"Currency creation failed: Code {req.code} already exists.")
         raise HTTPException(status_code=400, detail="Currency code already exists.")
         
     currency = Currency(
+        company_id=user.company_id,
         code=req.code,
         symbol=req.symbol,
         formal_name=req.formal_name,
@@ -218,7 +134,9 @@ async def create_currency(
     logger.info(f"Triggering real-time Tally push for Currency {currency.code} (Create)...")
     await try_push_currency_realtime(currency.currency_id, new_sq.sync_id, "Create", db)
 
-    return currency
+    # Reload with its rates: the response lists them, and they cannot be fetched lazily here
+    return (await db.execute(_own_currency(user, Currency.currency_id == currency.currency_id)
+                             .options(selectinload(Currency.rates)).execution_options(populate_existing=True))).scalars().first()
 
 @router.put("/currency/{currency_id}", response_model=CurrencyResponse)
 async def update_currency(
@@ -228,13 +146,13 @@ async def update_currency(
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.email} attempting to alter currency ID {currency_id} to code {req.code}")
-    curr = (await db.execute(select(Currency).options(selectinload(Currency.rates)).where(Currency.currency_id == currency_id))).scalars().first()
+    curr = (await db.execute(_own_currency(user, Currency.currency_id == currency_id).options(selectinload(Currency.rates)))).scalars().first()
     if not curr:
         logger.warning(f"Currency alter failed: Currency ID {currency_id} not found.")
         raise HTTPException(status_code=404, detail="Currency not found.")
         
     if curr.code != req.code:
-        dup = (await db.execute(select(Currency).where(Currency.code == req.code))).scalars().first()
+        dup = (await db.execute(_own_currency(user, Currency.code == req.code))).scalars().first()
         if dup:
             logger.warning(f"Currency alter failed: Code {req.code} already exists.")
             raise HTTPException(status_code=400, detail="Currency code already exists.")
@@ -281,8 +199,9 @@ async def update_currency(
     logger.info(f"Triggering real-time Tally push for Currency {curr.code} (Alter)...")
     await try_push_currency_realtime(currency_id, new_sq.sync_id, "Alter", db)
     
-    # Reload with new rates
-    curr = (await db.execute(select(Currency).options(selectinload(Currency.rates)).where(Currency.currency_id == currency_id))).scalars().first()
+    # Reload with the new rates
+    curr = (await db.execute(_own_currency(user, Currency.currency_id == currency_id)
+                             .options(selectinload(Currency.rates)).execution_options(populate_existing=True))).scalars().first()
     return curr
 
 @router.get("/currency", response_model=List[CurrencyResponse])
@@ -290,9 +209,9 @@ async def get_currencies(
     user: User = Depends(require_permission("currencies", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    # Fetch all global currencies and eager load their exchange rates for the user's company
+    # This company's currencies with their exchange rates
     async def load():
-        res = await db.execute(select(Currency).options(selectinload(Currency.rates.and_(ExchangeRate.company_id == user.company_id))))
+        res = await db.execute(_own_currency(user).options(selectinload(Currency.rates)).order_by(Currency.code))
         return as_schema_list(CurrencyResponse, res.scalars().all())
     return await cached_master(user.company_id, master_cache.CURRENCIES, load)
     
@@ -303,7 +222,7 @@ async def delete_currency(
     db: AsyncSession = Depends(get_db)
 ):
     logger.info(f"User {user.email} attempting to delete currency ID {currency_id}")
-    curr = (await db.execute(select(Currency).where(Currency.currency_id == currency_id))).scalars().first()
+    curr = (await db.execute(_own_currency(user, Currency.currency_id == currency_id))).scalars().first()
     if not curr:
         logger.warning(f"Currency delete failed: Currency ID {currency_id} not found.")
         raise HTTPException(status_code=404, detail="Currency not found.")
@@ -312,6 +231,9 @@ async def delete_currency(
     curr_symbol = curr.symbol
     new_sq = SyncQueue(company_id=user.company_id, record_type="Currency", record_id=currency_id, action="Delete", is_processed=False)
     db.add(new_sq)
+    # The currency is this company's own, and its exchange rates go with it
+    from sqlalchemy import delete as sql_delete
+    await db.execute(sql_delete(ExchangeRate).where(ExchangeRate.currency_id == currency_id))
     await db.delete(curr)
     await db.commit()
     

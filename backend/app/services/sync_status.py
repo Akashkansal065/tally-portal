@@ -75,6 +75,7 @@ async def company_sync_status(db: AsyncSession, company_ids: Iterable[int]) -> D
             "agent_online": bool(row and row.last_attempt_at and now - row.last_attempt_at <= AGENT_OFFLINE_AFTER),
             "last_error": row.last_error if row else None,
             "synced_from": device_name,
+            "progress": row.progress if row else None,
             # Entries made in the app that have not reached Tally yet: a separate fact from how fresh the data is
             "pending_to_tally": int(pending.get(company_id, 0)),
         }

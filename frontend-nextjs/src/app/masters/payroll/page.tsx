@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Plus, Edit2, Trash2, Info, X, Loader2, Users, Wallet, CalendarCheck } from 'lucide-react'
@@ -62,7 +63,7 @@ export default function PayrollMastersPage() {
   }, [user, can, router, load])
 
   const remove = async (path: string, name: string) => {
-    if (!confirm(`Delete ${name}? It will be deleted in Tally as well.`)) return
+    if (!confirmInCompany(`Delete ${name}? It will be deleted in Tally as well.`)) return
     const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE', headers: authHeaders(token) })
     const data = await res.json().catch(() => ({}))
     if (!res.ok) { toast.error(data.detail || 'Could not delete'); return }

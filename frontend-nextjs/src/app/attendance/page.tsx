@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import React, { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
@@ -612,7 +613,7 @@ export default function AttendancePage() {
   }
 
   const handleDeleteOffice = async (officeId: number) => {
-    if (!confirm("Are you sure you want to delete this office geofence location?")) return
+    if (!confirmInCompany("Are you sure you want to delete this office geofence location?")) return
     try {
       const res = await fetch(`${API_BASE}/attendance/offices/${officeId}`, {
         method: 'DELETE',

@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2, Info } from 'lucide-react'
 import CostCentreClassFormModal from '@/components/CostCentreClassFormModal'
@@ -48,7 +49,7 @@ export default function CostCentreClassesPage() {
   }, [token])
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this Cost Centre Class?')) return
+    if (!confirmInCompany('Are you sure you want to delete this Cost Centre Class?')) return
 
     try {
       const res = await fetch(`${API_BASE}/masters/cost-centre-classes/${id}`, {

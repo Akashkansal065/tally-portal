@@ -99,6 +99,8 @@ class CloudClient:
         # GUID of the Tally company this agent is tied to. Sent on every sync call so the server works on
         # that company, whichever company the account has active in the app.
         self.company_guid = ""
+        # Which copy of that company's books is open in Tally (TallyClient.get_open_companies); '' when not known
+        self.company_fingerprint = ""
 
     def _halt(self, reason: str) -> None:
         if self.auth_halt_reason == reason:
@@ -195,6 +197,8 @@ class CloudClient:
             headers["Authorization"] = f"Bearer {self.token}"
         if self.company_guid:
             headers["X-Tally-Company-GUID"] = self.company_guid
+        if self.company_guid and getattr(self, "company_fingerprint", ""):
+            headers["X-Tally-Company-Fingerprint"] = self.company_fingerprint
         return headers
 
     def authenticate(self, username_or_email: str, password: str) -> Tuple[bool, str]:
@@ -375,6 +379,8 @@ class CloudClient:
             headers["x-company-name"] = company_name
         if self.company_guid:
             headers["X-Tally-Company-GUID"] = self.company_guid
+        if self.company_guid and getattr(self, "company_fingerprint", ""):
+            headers["X-Tally-Company-Fingerprint"] = self.company_fingerprint
         if force:
             headers["x-force-sync"] = "true"
 

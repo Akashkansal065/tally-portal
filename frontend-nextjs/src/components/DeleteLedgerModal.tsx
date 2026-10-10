@@ -1,5 +1,6 @@
 'use client'
 
+import { CompanyNote } from '@/components/CompanyNote'
 import { useState } from 'react'
 import { AlertTriangle, Trash2, X } from 'lucide-react'
 import { API_BASE, authHeaders } from '@/lib/utils'
@@ -76,6 +77,7 @@ export default function DeleteLedgerModal({
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
             Are you sure you want to delete <span className="font-bold text-foreground">"{ledgerName}"</span>?
           </p>
+          <CompanyNote />
           <p className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold mt-2 bg-amber-50 dark:bg-amber-950/40 p-2.5 rounded-xl border border-amber-200/50">
             ⚠️ Note: Tally Prime only permits deleting ledgers that have <strong>zero voucher entries</strong>.
           </p>

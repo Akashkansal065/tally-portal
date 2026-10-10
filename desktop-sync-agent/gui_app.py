@@ -824,7 +824,8 @@ class CreateAccountDialog(ctk.CTkToplevel):
                 self.after(0, lambda: self._code_sent(False, "Open your company in TallyPrime first, then try again."))
                 return
             self.company = {"tally_guid": match["guid"], "name": match["name"],
-                            "books_from": match.get("starting_from") or None, "tally_url": self.tally_url}
+                            "books_from": match.get("starting_from") or None, "tally_url": self.tally_url,
+                            "fingerprint": match.get("fingerprint") or None}
             ok, message = self.cloud.sign_up(details)
             self.after(0, lambda: self._code_sent(ok, message))
 
@@ -938,7 +939,8 @@ class CompaniesDialog(ctk.CTkToplevel):
     def _link(self, company, take_over: bool = False):
         self._say(f"Linking '{company['name']}'...")
         details = {"tally_guid": company["guid"], "name": company["name"],
-                   "books_from": company.get("starting_from") or None, "tally_url": self.app.config.tally_url}
+                   "books_from": company.get("starting_from") or None, "tally_url": self.app.config.tally_url,
+                   "fingerprint": company.get("fingerprint") or None}
 
         def worker():
             ok, message, reason = self.app.agent.link_company(details, take_over=take_over)

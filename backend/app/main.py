@@ -72,6 +72,13 @@ async def lifespan(app: FastAPI):
         if await ensure_session_times_ist(conn):
             print("Device-session times moved from UTC to IST.")
 
+    # Currencies were one list for the whole server; give each company its own (does nothing once done)
+    from app.services.currency_ownership import ensure_currencies_per_company
+    async with engine.begin() as conn:
+        handed_out = await ensure_currencies_per_company(conn)
+        if handed_out:
+            print(f"{handed_out} shared currencies given to each company as its own.")
+
     # Seed global default roles, modules, and permissions.
     def sync_seed(connection):
         with connection.begin():
@@ -96,6 +103,10 @@ async def lifespan(app: FastAPI):
     from app.services.daily_cleanup import daily_cleanup_worker
     daily_cleanup_task = asyncio.create_task(daily_cleanup_worker())
 
+    # 6b. Hourly look for companies that have gone a day without syncing
+    from app.services.alerts import sync_alert_worker
+    sync_alert_task = asyncio.create_task(sync_alert_worker())
+
     # 7. Automatic payment reminders that are due (every 5 minutes, 9 am-8 pm IST)
     from app.services.reminders import reminder_worker
     reminder_task = asyncio.create_task(reminder_worker())
@@ -110,9 +121,10 @@ async def lifespan(app: FastAPI):
         keep_alive_task.cancel()
         attendance_worker_task.cancel()
         daily_cleanup_task.cancel()
+        sync_alert_task.cancel()
         reminder_task.cancel()
         backup_task.cancel()
-        await asyncio.gather(keep_alive_task, attendance_worker_task, daily_cleanup_task, reminder_task, backup_task, return_exceptions=True)
+        await asyncio.gather(keep_alive_task, attendance_worker_task, daily_cleanup_task, sync_alert_task, reminder_task, backup_task, return_exceptions=True)
 
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware

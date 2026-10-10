@@ -1135,9 +1135,10 @@ async def import_tally_xml(
         dec_print = curr_node.findtext("DECIMALPLACESFORPRINTING", "2")
         dec_print = int(dec_print) if dec_print.isdigit() else 2
         
-        # Match by code OR by symbol to avoid duplicates
+        # Match within this company, by code OR by symbol, to avoid duplicates
         existing_curr = (await db.execute(
-            select(Currency).where((Currency.code == code) | (Currency.symbol == symbol))
+            select(Currency).where(Currency.company_id == company_id,
+                                   (Currency.code == code) | (Currency.symbol == symbol))
         )).scalars().first()
         if existing_curr:
             logger.info(f"Updating existing currency: {existing_curr.code} -> {code}")
@@ -1153,6 +1154,7 @@ async def import_tally_xml(
         else:
             logger.info(f"Creating new currency: {code}")
             new_curr = Currency(
+                company_id=company_id,
                 code=code,
                 symbol=symbol,
                 formal_name=formal_name,

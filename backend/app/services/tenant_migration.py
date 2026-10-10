@@ -330,3 +330,74 @@ async def enforce_account_rules(conn, apply: bool) -> list:
                   f"ALTER TABLE `{PORTAL}`.`{table}` ADD CONSTRAINT `fk_{table}_{column}_req` FOREIGN KEY (`{column}`) "
                   f"REFERENCES `{PORTAL}`.`{parent}` (`{parent_column}`) ON DELETE {on_delete}")
     return lines
+
+
+# ─── Merging duplicate Tally records ─────────────────────────────────────────
+
+async def merge_duplicate_tally_rows(conn, apply: bool) -> list:
+    """MySQL only. Where one company holds the same Tally record twice (two rows of an identity table with the
+    same company and Tally GUID), keep one row and remove the others, so the unique keys can be switched on.
+
+    The row kept is the one Tally changed last (highest ALTERID), the newest row when that ties. For each row
+    removed, whatever points at it is first pointed at the kept row (a voucher entry's ledger, an order's
+    customer), unless it is a part of the removed row that goes with it (a voucher's own entries, which the kept
+    voucher already has). The difference is read from the foreign key itself: one that deletes its rows with
+    the parent marks a part, any other marks a reference.
+
+    Nothing here is sent to Tally: no entry is written to the sync queue, the rows are removed from the
+    mirror only. Tally holds the record once already. Each group of duplicates is merged in a savepoint, so one
+    that cannot be merged is reported and left as it was. Returns one line per group."""
+    from sqlalchemy import text
+    from app.core.database import Base
+    import app.models.tally_core  # noqa: F401
+    lines = []
+    tables = {table.name: table for table in Base.metadata.tables.values()}
+    references = (await conn.execute(text(
+        "SELECT k.TABLE_SCHEMA, k.TABLE_NAME, k.COLUMN_NAME, k.REFERENCED_TABLE_SCHEMA, k.REFERENCED_TABLE_NAME, "
+        "k.REFERENCED_COLUMN_NAME, r.DELETE_RULE FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE k "
+        "JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA "
+        "AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME WHERE k.REFERENCED_TABLE_NAME IS NOT NULL"))).all()
+
+    for name in TALLY_IDENTITY_TABLES:
+        table = tables[name]
+        schema = table.schema or PORTAL
+        key = list(table.primary_key.columns)[0].name
+        pointing = [(s, t, c, rule) for s, t, c, rs, rt, rc, rule in references if rs == schema and rt == name and rc == key]
+        groups = (await conn.execute(text(
+            f"SELECT company_id, tally_guid, COUNT(*) FROM `{schema}`.`{name}` WHERE tally_guid IS NOT NULL AND tally_guid <> '' "
+            "GROUP BY company_id, tally_guid HAVING COUNT(*) > 1"))).all()
+        for company_id, guid, count in groups:
+            rows = (await conn.execute(text(
+                f"SELECT `{key}` FROM `{schema}`.`{name}` WHERE company_id = :c AND tally_guid = :g "
+                f"ORDER BY COALESCE(tally_alter_id, 0) DESC, `{key}` DESC"), {"c": company_id, "g": guid})).scalars().all()
+            keep, remove = rows[0], list(rows[1:])
+            label = f"{name}: company #{company_id}, GUID {guid}: keep #{keep}, remove {', '.join('#' + str(r) for r in remove)}"
+            if not apply:
+                moved = 0
+                for s, t, c, rule in pointing:
+                    if rule != "CASCADE":
+                        moved += (await conn.execute(text(
+                            f"SELECT COUNT(*) FROM `{s}`.`{t}` WHERE `{c}` IN :ids").bindparams(_expanding("ids")), {"ids": remove})).scalar() or 0
+                lines.append(f"would  {label} ({moved} reference(s) to re-point)")
+                continue
+            try:
+                async with conn.begin_nested():
+                    moved = 0
+                    for s, t, c, rule in pointing:
+                        if rule == "CASCADE":
+                            continue   # a part of the removed row: it goes with it
+                        result = await conn.execute(text(
+                            f"UPDATE `{s}`.`{t}` SET `{c}` = :keep WHERE `{c}` IN :ids").bindparams(_expanding("ids")),
+                            {"keep": keep, "ids": remove})
+                        moved += result.rowcount or 0
+                    await conn.execute(text(f"DELETE FROM `{schema}`.`{name}` WHERE `{key}` IN :ids").bindparams(_expanding("ids")),
+                                       {"ids": remove})
+                lines.append(f"done   {label} ({moved} reference(s) re-pointed)")
+            except Exception as e:
+                lines.append(f"STOP   {label}: could not be merged, left as it was ({str(e).splitlines()[0][:160]})")
+    return lines or ["ok     no company holds a Tally record twice"]
+
+
+def _expanding(name: str):
+    from sqlalchemy import bindparam
+    return bindparam(name, expanding=True)

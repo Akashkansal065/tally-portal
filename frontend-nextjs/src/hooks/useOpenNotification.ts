@@ -20,7 +20,11 @@ export function useOpenNotification() {
       }
       const otherCompany = user && n.company_id !== user.company_id
         && user.allowedCompanies?.some(c => c.company_id === n.company_id)
-      if (otherCompany) await switchCompany(n.company_id)
+      if (otherCompany) {
+        // Switching reloads the app: go straight to the notification's page in its company
+        await switchCompany(n.company_id, n.link)
+        return
+      }
       if (replace) router.replace(n.link)
       else router.push(n.link)
     },

@@ -251,7 +251,9 @@ class TallyClient:
     def get_open_companies(self) -> List[Dict[str, str]]:
         """
         Queries Tally for all companies currently open/loaded in memory.
-        Returns list of dicts: [{"name": ..., "guid": ..., "starting_from": ..., "ending_at": ...}]
+        Returns list of dicts: [{"name": ..., "guid": ..., "starting_from": ..., "ending_at": ..., "fingerprint": ...}].
+        fingerprint is the Tally company number and books-from date: what differs between a company and a
+        copied or restored one that still carries its GUID.
         """
         query = """<ENVELOPE>
   <HEADER>
@@ -269,7 +271,7 @@ class TallyClient:
         <TDLMESSAGE>
           <COLLECTION NAME="AllOpenCompanies">
             <TYPE>Company</TYPE>
-            <FETCH>NAME,GUID,STARTINGFROM,ENDINGAT</FETCH>
+            <FETCH>NAME,GUID,STARTINGFROM,ENDINGAT,COMPANYNUMBER,BOOKSFROM</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -292,12 +294,15 @@ class TallyClient:
                         guid = cmp_node.findtext("GUID") or ""
                         s_from = cmp_node.findtext("STARTINGFROM") or ""
                         e_to = cmp_node.findtext("ENDINGAT") or ""
+                        number = (cmp_node.findtext("COMPANYNUMBER") or "").strip()
+                        books_from = (cmp_node.findtext("BOOKSFROM") or "").strip()
                         if name:
                             companies.append({
                                 "name": name.strip(),
                                 "guid": guid.strip(),
                                 "starting_from": s_from.strip(),
-                                "ending_at": e_to.strip()
+                                "ending_at": e_to.strip(),
+                                "fingerprint": f"{number}|{books_from}" if number and books_from else "",
                             })
         except Exception as e:
             logger.debug(f"Error checking open companies: {e}")

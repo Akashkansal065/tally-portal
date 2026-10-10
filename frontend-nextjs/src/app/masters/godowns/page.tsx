@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import React, { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
@@ -115,7 +116,7 @@ export default function GodownsPage() {
   }
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this godown? Inventory could be affected.')) return
+    if (!confirmInCompany('Are you sure you want to delete this godown? Inventory could be affected.')) return
     try {
       await fetch(`${API_BASE}/inventory/godowns/${id}`, {
         method: 'DELETE',

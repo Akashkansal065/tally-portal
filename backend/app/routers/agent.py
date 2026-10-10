@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.agent_auth import (
-    agent_device, can_manage_sync_agent, grant_sync_agent, new_device_token, )
+    agent_device, can_manage_sync_agent, copy_mismatch_error, different_copy, grant_sync_agent, new_device_token, )
 from app.core.account_roles import create_default_roles
 from app.core.config import settings
 from app.core.database import get_db
@@ -28,7 +28,7 @@ from app.core.security import get_password_hash, verify_password
 from app.models.portal_core import (
     Account, AgentCompanyLink, AgentDevice, Company, SignupVerification, User, UserCompanyAccess,
 )
-from app.services import messaging
+from app.services import alerts, messaging
 
 logger = logging.getLogger("app.routers.agent")
 router = APIRouter(prefix="/agent", tags=["Desktop Sync Agent"])
@@ -160,6 +160,13 @@ async def _link_company(db: AsyncSession, account: Account, device: AgentDevice,
 
     current = (await db.execute(select(AgentCompanyLink).where(
         AgentCompanyLink.company_id == company.company_id, AgentCompanyLink.is_active == True))).scalars().first()  # noqa: E712
+    if info.fingerprint:
+        if current is None or not company.tally_fingerprint:
+            # Linking a company that no PC holds is a deliberate choice of which copy of the books to sync.
+            # While a PC holds it, another copy is refused, also when moving it to this PC.
+            company.tally_fingerprint = info.fingerprint.strip()
+        elif different_copy(company, info.fingerprint):
+            raise copy_mismatch_error(company)
     if current is not None and current.device_id != device.device_id:
         if not take_over:
             other = (await db.execute(select(AgentDevice.name).where(AgentDevice.device_id == current.device_id))).scalar()
@@ -374,7 +381,9 @@ async def unlink_company(request: Request, req: UnlinkRequest, user: User = Depe
         .where(Company.account_id == account.account_id, Company.tally_guid == req.tally_guid.strip(),
                AgentCompanyLink.device_id == device.device_id, AgentCompanyLink.is_active == True))).scalars().first()  # noqa: E712
     if link is not None:
+        company_id = link.company_id
         link.is_active = None
         link.unlinked_at = get_ist_now()
         await db.commit()
+        await alerts.company_unlinked(db, company_id)
     return {"unlinked": link is not None}

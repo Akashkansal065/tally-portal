@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -487,7 +488,7 @@ export default function BankReconciliationPage() {
 
   // Handle Undo Match
   const handleUnmatch = async (transactionId: number) => {
-    if (!confirm('Revert this match back to unmatched state?')) return
+    if (!confirmInCompany('Revert this match back to unmatched state?')) return
     try {
       const formData = new FormData()
       formData.append('transaction_id', transactionId.toString())
@@ -510,7 +511,7 @@ export default function BankReconciliationPage() {
     const periodMsg = dateFrom && dateTo
       ? `period ${formatDate(dateFrom)} to ${formatDate(dateTo)}`
       : 'all imported statement batches'
-    if (!confirm(`Accept all high-confidence suggested matches for ${periodMsg}?`)) return
+    if (!confirmInCompany(`Accept all high-confidence suggested matches for ${periodMsg}?`)) return
 
     try {
       const formData = new FormData()

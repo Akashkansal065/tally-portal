@@ -30,7 +30,7 @@ import {
 import { forgetBranding } from '@/lib/branding'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useOfflinePending } from '@/hooks/useOfflinePending'
-import { describeFreshness, pendingText, useCompanySyncStatus } from '@/lib/sync-status'
+import { companyIdentity, describeFreshness, pendingText, useCompanySyncStatus } from '@/lib/sync-status'
 import { useState, useEffect, useRef } from 'react'
 import { NotificationList } from '@/components/notifications/NotificationList'
 import { PushAlertsBanner } from '@/components/notifications/PushAlertsBanner'
@@ -537,7 +537,9 @@ export function GlobalHeader() {
             const status = statusOf(c.company_id)
             const fresh = status ? describeFreshness(status) : null
             // What tells two look-alike companies apart
-            const identity = [c.gstin, c.city || c.state, c.financial_year_start ? `FY from ${c.financial_year_start}` : ''].filter(Boolean).join(' · ')
+            const identity = status
+              ? companyIdentity(status, syncStatus ?? [])
+              : [c.gstin, c.city || c.state, c.financial_year_start ? `FY from ${c.financial_year_start}` : ''].filter(Boolean).join(' · ')
             return (
               <li key={c.company_id}>
                 <button

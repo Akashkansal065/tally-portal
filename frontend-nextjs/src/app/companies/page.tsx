@@ -3,7 +3,7 @@
 import { Building, Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { cn } from '@/lib/utils'
-import { describeFreshness, pendingText, useCompanySyncStatus } from '@/lib/sync-status'
+import { companyIdentity, describeFreshness, pendingText, useCompanySyncStatus } from '@/lib/sync-status'
 
 /** Every company the signed-in person can open, with how fresh its data is. Companies are added by linking
  *  them in the Desktop Sync Agent, never here. */
@@ -30,7 +30,7 @@ export default function CompaniesPage() {
           {companies.map(c => {
             const fresh = describeFreshness(c)
             const current = c.company_id === user?.company_id
-            const identity = [c.gstin, c.city || c.state, c.financial_year_start ? `FY from ${c.financial_year_start}` : ''].filter(Boolean).join(' · ')
+            const identity = companyIdentity(c, companies)
             const pending = pendingText(c)
             return (
               <li key={c.company_id} className={cn('rounded-2xl border bg-card p-4 shadow-sm', current ? 'border-primary/50' : 'border-border')}>

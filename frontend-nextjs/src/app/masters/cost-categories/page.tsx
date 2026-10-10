@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Plus, Edit2, Trash2, Info } from 'lucide-react'
@@ -43,7 +44,7 @@ export default function CostCategoriesPage() {
   }, [user, can, router])
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this Cost Category?')) return
+    if (!confirmInCompany('Are you sure you want to delete this Cost Category?')) return
     try {
       const res = await fetch(`${API_BASE}/masters/cost-categories/${id}`, {
         method: 'DELETE',

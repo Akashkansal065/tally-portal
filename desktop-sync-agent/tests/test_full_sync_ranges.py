@@ -279,3 +279,19 @@ def test_tallys_count_block_is_not_read_as_a_voucher():
     with_counts = ("<ENVELOPE><BODY><DESC><CMPINFO><COMPANY>0</COMPANY><VOUCHER>2</VOUCHER></CMPINFO></DESC><DATA><COLLECTION>"
                    + voucher(1, "20250401") + voucher(2, "20250402") + "</COLLECTION></DATA></BODY></ENVELOPE>")
     assert voucher_dates(with_counts) == ["20250401", "20250402"]
+
+
+def test_each_cycle_reports_which_copy_is_open_and_how_far_a_full_sync_is(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_module, "FULL_SYNC_SLICE_SECONDS", 0)
+    tally, cloud = Tally(many_vouchers()), Cloud()
+    tally.get_open_companies = lambda: [{**ALPHA, "fingerprint": "100004|20250401"}]
+    agent = make_agent(tmp_path, tally, cloud)
+
+    agent.sync_inbound_cycle(is_incremental=False)
+
+    assert cloud.company_fingerprint == "100004|20250401"                # sent with every sync call for this company
+    report = cloud.reports[-1][0]
+    assert report["fingerprint"] == "100004|20250401" and report["progress"].startswith("Full sync 1 of")
+
+    agent.sync_inbound_cycle(is_incremental=True)
+    assert cloud.reports[-1][0]["master_alter_id"] == 5 and cloud.reports[-1][0]["voucher_alter_id"] == 5

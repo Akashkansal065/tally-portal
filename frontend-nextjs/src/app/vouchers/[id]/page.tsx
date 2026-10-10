@@ -1,5 +1,6 @@
 'use client'
 
+import { CompanyNote } from '@/components/CompanyNote'
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
@@ -1000,6 +1001,7 @@ export default function VoucherDetailPage() {
             <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
               How would you like to handle <strong className="text-slate-900 dark:text-white">{voucher.voucher_type} #{voucher.voucher_number}</strong>?
             </p>
+            <CompanyNote />
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="border border-amber-500/20 bg-amber-500/5 rounded-xl p-3.5 space-y-2 flex flex-col justify-between">

@@ -1,5 +1,6 @@
 'use client'
 
+import { confirmInCompany } from '@/lib/current-company'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
@@ -394,7 +395,7 @@ export default function AdminPage() {
 
   const handleDismissAllDeletedAudits = async () => {
     if (!token) return
-    if (!confirm('Mark all active deletion discrepancies as reconciled?')) return
+    if (!confirmInCompany('Mark all active deletion discrepancies as reconciled?')) return
     try {
       const res = await fetch(`${API_BASE}/sync/deleted-audits/dismiss-all`, {
         method: 'POST',
@@ -410,7 +411,7 @@ export default function AdminPage() {
 
   const handleClearResolvedTrafficLogs = async () => {
     if (!token) return
-    if (!confirm('This will clear all historical failed/exception sync logs and mark pending delete discrepancies as resolved. Proceed?')) return
+    if (!confirmInCompany('This will clear all historical failed/exception sync logs and mark pending delete discrepancies as resolved. Proceed?')) return
     try {
       const res = await fetch(`${API_BASE}/sync/traffic-logs/clear-resolved`, {
         method: 'POST',
