@@ -19,10 +19,10 @@ All six steps are in PR [Akashkansal065/tally-portal#67](https://github.com/Akas
 | Step 1: expand the schema | Code complete. Startup created the tables, columns and indexes on MySQL, on the development database and on an empty one. |
 | Step 2: migrate existing data into one account | Run with `--apply` on the development database. Not run on production. |
 | Step 3: agent sign-up, device tokens, invitations | Code complete and tested end to end on MySQL. The agent's Setup sign-in was done on a real PC; its Create account window was not. |
-| Step 4: multi-company agent, company-owned sales rows | Code complete except chunked full sync. The agent's Companies window has not been used with two companies open in Tally. |
+| Step 4: multi-company agent, company-owned sales rows | Code complete, including the full sync in date ranges. The agent's Companies window has not been used with two companies open in Tally. |
 | Step 5: company switcher, last synced, Companies page | Code complete and opened in a browser. Not checked on a phone. |
 | Step 6: enforce and harden | Enforcement stage run for real on a throwaway MySQL database, with both switches on afterwards. Not run on the development or production database. Operator role, alerts and the all-routers scoping helper are not built. |
-| Tests | Backend 246 passed, agent 34 passed, frontend type-check clean, 63 + 15 end-to-end checks on MySQL passed. |
+| Tests | Backend 249 passed, agent 48 passed, frontend type-check clean, 63 + 15 end-to-end checks on MySQL passed. |
 | Development database today | One account, one company with its Tally GUID, one signed-in PC syncing it. |
 | Production | Not deployed. One company, several users, no accounts. |
 | Stopgap until Phase 0 is deployed to production | Do not switch company in the web app on the login the agent uses. |
@@ -356,7 +356,7 @@ Code complete except one item, in the Phase 0 pull request. Backend and agent lo
 - [x] Agent: Companies window on the dashboard: linked companies with their state, open Tally companies to link, unlink, and "move sync to this PC"
 - [x] Field-sales rows record their company when created (orders, visits, shop payments, expenses), attendance its account; lists filter on the row's own company or account
 - [x] Agent tests: two open companies, a closed one, two with the same name, all closed, independent watermarks and retry points, a rename, link and unlink
-- [ ] **Not done: full sync cut into voucher date ranges with a resumable cursor.** See below.
+- [x] Full sync cut into voucher date ranges with a saved position (10 Oct 2026). See below.
 - [ ] Click through the Companies window on a Windows PC with two companies open in Tally
 
 Found and fixed on the way:
@@ -369,7 +369,15 @@ Decisions made while building:
 - **When Tally does not say what is open, the cycle still runs,** as it did before. Nothing can be written to a Tally that is not answering, and the cloud is still asked, which is how a PC learns it was signed out.
 - **Two open companies with the same name stop both from syncing.** Tally can only be addressed by name, so the agent cannot be sure which one a write would reach.
 
-Why chunked full sync is not done: it depends on Tally applying the `SVFROMDATE` / `SVTODATE` range to a voucher collection export. The agent sends one range today (2000 to 2099) and nothing in the code or the audit log shows a narrower range being honoured. If Tally ignores it, cutting a full sync into 20 ranges would export every voucher 20 times. It needs one check against real Tally first: export vouchers for a single month and confirm only that month comes back. Until then a first sync of a large company still runs as one export, and the other companies wait for it.
+How the full sync in ranges works (`desktop-sync-agent/agent.py`, `tally_client.py`):
+
+- **Plan.** The agent first asks Tally for every voucher's date and nothing else, which is small and quick. It cuts the dates into consecutive ranges of about 500 vouchers; a range starts and ends on a date that has vouchers and one day is never split. A company with fewer than 1,000 vouchers is exported in one go as before.
+- **Check every range.** An answer is accepted only if every voucher in it is dated inside the range and none the plan counted is missing (after one recount, in case a voucher was deleted meanwhile). If Tally ignores the range, or drops a boundary day, the agent stops using ranges for that run and exports everything once, as it did before. Nothing depends on Tally behaving a particular way.
+- **Saved position.** After each range is pushed, the position is written to the agent's config. A failed range, a lost connection or a restart carries on from that range. A failed range does not set the "pull everything again" retry point.
+- **Time slices.** One company's full sync runs for at most 90 seconds per cycle, then the other companies and the entries waiting to reach Tally get their turn. It carries on in the next cycle, and the status line shows "Full sync 3 of 12".
+- **Sync All** starts a full sync again from the beginning. The standing `force_full_sync` setting does not restart one that is under way.
+
+Checked against real Tally on 10 Oct 2026 (TallyPrime, "Bhrama Enterprises", 44 vouchers, read-only exports): Tally honours `SVFROMDATE` / `SVTODATE` on a voucher collection export with both ends included, a single day and an empty month answer correctly, and the ranges together returned exactly the vouchers of the single export. The second request form (a filter on the voucher date) works too and is kept as a fallback. Not yet done: a full sync in ranges of a company large enough to be cut up (1,000 vouchers or more), run from the built agent.
 
 **Gate:** two companies open in Tally sync for a day with independent watermarks; closing one pauses only that one; a voucher pushed for A never appears in B.
 
@@ -511,7 +519,7 @@ Ordered by what blocks what. Each line says who has to act.
 
 - [ ] Review and merge the pull request
 - [ ] Back up both production databases
-- [ ] **Development `backend/.env`: replace `SMTP_PASS` with a Gmail app password.** Until then sign-up from the agent and invitation emails cannot be sent (invitations can still be passed on as a link).
+- [x] Development `backend/.env` has a Gmail app password; Gmail accepts the sign-in (10 Oct 2026).
 - [ ] Production `backend/.env`: `SMTP_USER` / `SMTP_PASS`, `APP_PUBLIC_URL`, and `TALLY_URL_COMPANY_GUID` if `TALLY_URL` stays set. The development `.env` has `TALLY_URL` set and no `TALLY_URL_COMPANY_GUID`: harmless with one customer, wrong with two.
 - [ ] Deploy backend, run the migration script, deploy the web app, deploy the agent, sign the PC in
 - [ ] A week or more later: `--enforce --apply`, then `ACCOUNTS_ENFORCED=true` and `REQUIRE_AGENT_DEVICE_SIGNIN=true`
@@ -523,11 +531,11 @@ Ordered by what blocks what. Each line says who has to act.
 - [ ] A voucher created in the app reaching the right Tally company, and a Tally change appearing in the app, with two companies linked
 - [ ] The web screens on a phone; the "Data as of" line; the company name on the voucher form
 - [ ] The new `build_windows_exe.bat` on a PC with no Python at all (its offer to install one)
+- [ ] A full sync in date ranges of a company with 1,000 vouchers or more, from a rebuilt agent
 - [ ] Livekeeping trial walkthrough: their switcher and last-synced screens were not seen directly
 
 ### Not built
 
-- [ ] **Chunked full sync** with a resumable cursor. Blocked on one check against real Tally: export vouchers for a single month and confirm only that month comes back (Step 4).
 - [ ] **Platform-operator role** (D12). Needs its own design.
 - [ ] **Alerts** for unlinked companies, refused cross-account requests and a company not synced for a day.
 - [ ] **One scoping helper used by every router** (about 30 routers).
@@ -539,8 +547,8 @@ Ordered by what blocks what. Each line says who has to act.
 
 ### Found in this round, not part of the multi-tenant work
 
-- [ ] **The Tally database name is written into 101 queries** in `backend/app/routers/reports.py` and `ledgers.py` as `tally_sync.`. A server whose `TALLY_DATABASE_NAME` is anything else gets errors on the dashboard and ledger reports. Development and production both use `tally_sync`, so nothing is broken today.
-- [x] **Times are stored one way now: IST** (10 Oct 2026), the rule the rest of the app already follows (`app/core/datetime_utils.py`; the database session runs at +05:30). The multi-tenant code had been writing UTC for PC last-seen, sync state, invitations, sign-up codes and sign-outs. It now writes IST, and the API sends these times with their `+05:30` offset so the web app does not have to guess. Checked on the development database: last seen, last success and the database's own updated-at now agree. Device sessions (`app/core/sessions.py`, from before this work) still store UTC and were left alone.
+- [x] **The Tally database name written into 101 queries** (`tally_sync.` in `reports.py` and `ledgers.py`) no longer matters (10 Oct 2026). On a server whose `TALLY_DATABASE_NAME` is something else, the name is swapped for the configured one as each statement goes out (`app/core/database.py`); with the usual name nothing is touched. Checked on MySQL with the database named `acme_books`: the dashboard and report endpoints that failed before now answer.
+- [x] **Times are stored one way now: IST** (10 Oct 2026), the rule the rest of the app already follows (`app/core/datetime_utils.py`; the database session runs at +05:30). The multi-tenant code had been writing UTC for PC last-seen, sync state, invitations, sign-up codes and sign-outs. It now writes IST, and the API sends these times with their `+05:30` offset so the web app does not have to guess. Checked on the development database: last seen, last success and the database's own updated-at now agree. Device sessions followed the same day: they write IST too, and the times already stored (session created, last active, expiry, sign-out, blocked-device and last-login times) were moved across once, at startup, by `app/services/session_times.py`, which records that it has so it never runs twice.
 
 ### Decided on 10 Oct 2026
 

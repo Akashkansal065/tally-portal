@@ -66,6 +66,12 @@ async def lifespan(app: FastAPI):
     ):
         await ensure_table_indexes(table, index_names)
         
+    # Device-session times were stored in UTC; move them to IST once (it records that it has)
+    from app.services.session_times import ensure_session_times_ist
+    async with engine.begin() as conn:
+        if await ensure_session_times_ist(conn):
+            print("Device-session times moved from UTC to IST.")
+
     # Seed global default roles, modules, and permissions.
     def sync_seed(connection):
         with connection.begin():

@@ -5,14 +5,14 @@ from sqlalchemy import select
 from sqlalchemy.dialects import mysql
 
 import app.models.portal_core as P
-from app.core.sessions import utcnow
+from app.core.datetime_utils import get_ist_now
 from app.services.daily_cleanup import SYNC_LOG_DELETE_BATCH, purge_old_sync_logs, sync_log_purge_batch
 from tests.conftest import run
 
 
 def test_old_successful_logs_are_purged_and_failures_kept(harness):
     company = harness.company()
-    now = utcnow()
+    now = get_ist_now()
 
     def log(name, status, days_ago):
         harness.add(P.SyncTrafficLog(company_id=company.company_id, entity_type="Voucher", action="Create",
@@ -33,5 +33,5 @@ def test_old_successful_logs_are_purged_and_failures_kept(harness):
 
 
 def test_mysql_purge_deletes_in_limited_batches():
-    statement = sync_log_purge_batch(utcnow()).compile(dialect=mysql.dialect(), compile_kwargs={"literal_binds": True})
+    statement = sync_log_purge_batch(get_ist_now()).compile(dialect=mysql.dialect(), compile_kwargs={"literal_binds": True})
     assert str(statement).endswith(f"LIMIT {SYNC_LOG_DELETE_BATCH}")

@@ -14,14 +14,15 @@ themselves with optional headers (see frontend src/lib/device.ts and the Desktop
 Device ids come from the client, so blocking is a soft control: clearing app data produces a new id.
 To lock a person out, deactivate the user or reset their password.
 
-Timestamps written here are naive UTC. Rows created before device tracking have created_at from
-MySQL NOW(), which runs in IST on this server (see database.py init_command).
+Timestamps written here are IST with no zone attached, like every other time in the app (see
+app/core/datetime_utils.py; MySQL sessions run at +05:30). They were UTC until October 2026;
+app/services/session_times.py moved the stored ones across once.
 """
 import hashlib
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 from fastapi import HTTPException, Request, status
@@ -29,7 +30,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.datetime_utils import IST
+from app.core.datetime_utils import get_ist_now, to_ist_iso
 from app.core.permissions import ADMIN_ROLE_NAMES, invalidate_auth_cache
 from app.core.rate_limiter import get_client_ip
 from app.core.security import create_access_token
@@ -45,11 +46,6 @@ DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,64}$")
 # A device counts as "active now" if it made a request in the last 10 minutes. last_active_at is
 # written at most every 5 minutes, so the threshold is twice that to avoid flicker.
 ACTIVE_NOW_SECONDS = 600
-
-
-def utcnow() -> datetime:
-    """Naive UTC, matching how the app writes DateTime columns."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ─── Device description ──────────────────────────────────────────────────────
@@ -179,7 +175,7 @@ def parse_device(request: Request) -> DeviceInfo:
 # ─── Revocation ──────────────────────────────────────────────────────────────
 
 def live_session_conditions(now: Optional[datetime] = None):
-    now = now or utcnow()
+    now = now or get_ist_now()
     return (UserSession.revoked_at.is_(None), UserSession.expires_at > now)
 
 
@@ -224,7 +220,7 @@ async def revoke_sessions(
     await db.execute(
         update(UserSession)
         .where(UserSession.session_id.in_([r[0] for r in rows]))
-        .values(revoked_at=utcnow(), revoke_reason=reason, revoked_by_user_id=by_user_id)
+        .values(revoked_at=get_ist_now(), revoke_reason=reason, revoked_by_user_id=by_user_id)
         .execution_options(synchronize_session=False)
     )
     await forget_push_devices(db, {(r[2], r[3]) for r in rows if r[3]})
@@ -270,7 +266,7 @@ async def create_user_session(db: AsyncSession, user: User, request: Request) ->
     Refuses a blocked device, replaces older sessions from the same device, applies the role's
     device limit, and alerts admins when a non-admin user signs in from a new device. Commits."""
     info = parse_device(request)
-    now = utcnow()
+    now = get_ist_now()
     revoked_hashes: List[str] = []
 
     role = user.role if "role" in user.__dict__ else await db.get(Role, user.role_id)
@@ -342,7 +338,7 @@ async def create_user_session(db: AsyncSession, user: User, request: Request) ->
         last_active_at=now,
         expires_at=now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     ))
-    user.last_login = datetime.now(timezone.utc)
+    user.last_login = now
 
     # Alert only once tracking already knows other devices of this user; otherwise every user's
     # first tracked login after the upgrade would look like a new device.
@@ -387,16 +383,9 @@ async def session_end_reason(db: AsyncSession, user_id: int, token_hash: str) ->
 
 # ─── Serialization ───────────────────────────────────────────────────────────
 
-def _iso(value: Optional[datetime], tz=timezone.utc) -> Optional[str]:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=tz)
-    return value.isoformat()
-
-
-def to_utc_iso(value: Optional[datetime]) -> Optional[str]:
-    return _iso(value)
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    """Stored times are IST; they go out with +05:30 so no reader has to guess."""
+    return to_ist_iso(value)
 
 
 def is_legacy(s: UserSession) -> bool:
@@ -411,7 +400,7 @@ def session_to_dict(
     username: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> dict:
-    now = now or utcnow()
+    now = now or get_ist_now()
     legacy = is_legacy(s)
     active_now = bool(
         s.revoked_at is None and s.last_active_at is not None
@@ -428,8 +417,7 @@ def session_to_dict(
         "browser_name": s.browser_name,
         "app_version": s.app_version,
         "ip_address": s.ip_address,
-        # Pre-tracking rows got created_at from MySQL NOW() in IST
-        "created_at": _iso(s.created_at, IST if legacy else timezone.utc),
+        "created_at": _iso(s.created_at),
         "last_active_at": _iso(s.last_active_at),
         "expires_at": _iso(s.expires_at),
         "revoked_at": _iso(s.revoked_at),

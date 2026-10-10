@@ -13,6 +13,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 
+from app.core.datetime_utils import IST, get_ist_now
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import decode_access_token
@@ -133,7 +134,7 @@ async def _touch_session(db: AsyncSession, session_id: int) -> None:
             await touch_db.execute(
                 update(UserSession)
                 .where(UserSession.session_id == session_id)
-                .values(last_active_at=datetime.now(timezone.utc).replace(tzinfo=None))
+                .values(last_active_at=get_ist_now())
             )
             await touch_db.commit()
     except Exception as e:  # activity tracking must never fail a request
@@ -200,7 +201,7 @@ async def get_current_user(
             UserSession.user_id == user_id,
             UserSession.token_hash == token_hash,
             UserSession.revoked_at == None,
-            UserSession.expires_at > datetime.now(timezone.utc)
+            UserSession.expires_at > get_ist_now()
         )
     )
     db_session = session_query.scalars().first()
@@ -226,7 +227,7 @@ async def get_current_user(
 
     # Throttled activity heartbeat (also on the cached path above)
     last_active = db_session.last_active_at
-    last_active_epoch = last_active.replace(tzinfo=timezone.utc).timestamp() if last_active else 0.0
+    last_active_epoch = last_active.replace(tzinfo=IST).timestamp() if last_active else 0.0
     if now - last_active_epoch >= LAST_ACTIVE_WRITE_INTERVAL_SECONDS:
         await _touch_session(db, db_session.session_id)
         last_active_epoch = now
@@ -237,7 +238,7 @@ async def get_current_user(
     # Determine session expiry timestamp
     sess_exp = db_session.expires_at
     if sess_exp.tzinfo is None:
-        sess_exp = sess_exp.replace(tzinfo=timezone.utc)
+        sess_exp = sess_exp.replace(tzinfo=IST)   # session times are stored in IST
     cache_expiry = min(now + AUTH_CACHE_TTL_SECONDS, sess_exp.timestamp())
 
     # Detach the loaded user (and role) so the cached snapshot can't be changed by this request

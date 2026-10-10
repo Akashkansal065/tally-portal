@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
-from app.core.sessions import utcnow
+from app.core.datetime_utils import get_ist_now
 from app.models.portal_core import Notification, SyncTrafficLog, UserSession
 
 logger = logging.getLogger("daily_cleanup")
@@ -21,7 +21,7 @@ SYNC_LOG_DELETE_BATCH = 5000
 async def purge_old_sessions(db: AsyncSession) -> int:
     """Delete sessions that expired more than SESSION_PURGE_EXPIRED_AFTER_DAYS ago or were revoked more
     than SESSION_PURGE_REVOKED_AFTER_DAYS ago. Blocked devices and audit log entries are kept."""
-    now = utcnow()
+    now = get_ist_now()
     result = await db.execute(
         delete(UserSession).where(or_(
             UserSession.expires_at < now - timedelta(days=settings.SESSION_PURGE_EXPIRED_AFTER_DAYS),
@@ -45,7 +45,7 @@ async def purge_old_sync_logs(db: AsyncSession) -> int:
     """Delete successful sync traffic logs older than SYNC_LOG_PURGE_SUCCESS_AFTER_DAYS. Each row stores the
     outbound XML, a cURL command and Tally's reply, so the table grows quickly. Failed, timed-out, exception and
     conflict logs are kept until an admin clears them from the sync screen."""
-    cutoff = utcnow() - timedelta(days=settings.SYNC_LOG_PURGE_SUCCESS_AFTER_DAYS)
+    cutoff = get_ist_now() - timedelta(days=settings.SYNC_LOG_PURGE_SUCCESS_AFTER_DAYS)
     removed = 0
     while True:
         result = await db.execute(sync_log_purge_batch(cutoff))
@@ -71,7 +71,7 @@ def notification_purge_batch(now):
 
 async def purge_old_notifications(db: AsyncSession) -> int:
     """Delete old notifications in batches (see notification_purge_batch)."""
-    now = utcnow()
+    now = get_ist_now()
     removed = 0
     while True:
         result = await db.execute(notification_purge_batch(now))

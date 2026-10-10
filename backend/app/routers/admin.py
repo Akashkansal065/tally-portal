@@ -7,6 +7,7 @@ from typing import List, Literal, Optional
 from datetime import date, datetime, timedelta
 from pydantic import BaseModel, Field
 
+from app.core.datetime_utils import get_ist_now, to_ist_iso
 from app.core.database import get_db
 from app.core.account_roles import role_in_account
 from app.core.permissions import (
@@ -24,7 +25,7 @@ from app.core.permissions import (
 from app.core.security import get_password_hash
 from app.core.sessions import (
     ACTIVE_NOW_SECONDS, add_audit, blocked_device_to_dict, current_token_hash, forget_tokens,
-    live_session_conditions, revoke_sessions, session_to_dict, stale_legacy_condition, to_utc_iso, utcnow
+    live_session_conditions, revoke_sessions, session_to_dict, stale_legacy_condition
 )
 from app.models.portal_core import (
     User, Role, Permission, Module, UserPermissionOverride, UserDataScope, AuditLog,
@@ -1287,7 +1288,7 @@ async def _device_stats_by_user(db: AsyncSession, user_ids: List[int]) -> dict:
     """Per user: live devices in use, unused pre-tracking sessions, and last activity on any session."""
     if not user_ids:
         return {}
-    now = utcnow()
+    now = get_ist_now()
     stale = stale_legacy_condition()
     stats = {uid: {"active_devices": 0, "older_sessions": 0, "last_active_at": None} for uid in user_ids}
     live_rows = (await db.execute(
@@ -1308,7 +1309,7 @@ async def _device_stats_by_user(db: AsyncSession, user_ids: List[int]) -> dict:
         .group_by(UserSession.user_id)
     )).all()
     for uid, last in last_rows:
-        stats[uid]["last_active_at"] = to_utc_iso(last)
+        stats[uid]["last_active_at"] = to_ist_iso(last)
     return stats
 
 
@@ -1355,7 +1356,7 @@ async def list_user_sessions(
 ):
     """A user's devices: signed-in ones (status=active) or the full history including signed-out ones."""
     target = await _company_user(db, admin, user_id)
-    now = utcnow()
+    now = get_ist_now()
     query = select(UserSession).where(UserSession.user_id == target.user_id)
     if status_filter == "active":
         query = query.where(*live_session_conditions(now))
@@ -1434,7 +1435,7 @@ async def list_company_sessions(
 ):
     """Every signed-in device in the admin's company, with a summary for the Active Devices tab.
     Unused pre-tracking sessions are left out unless include_older=true."""
-    now = utcnow()
+    now = get_ist_now()
     stale = stale_legacy_condition()
     active_cutoff = now - timedelta(seconds=ACTIVE_NOW_SECONDS)
     base = [User.company_id == admin.company_id, *live_session_conditions(now)]
@@ -1526,7 +1527,7 @@ async def admin_block_device(
             device_type=session.device_type,
             reason=(payload.reason.strip() or None) if payload and payload.reason else None,
             blocked_by_user_id=admin.user_id,
-            created_at=utcnow(),
+            created_at=get_ist_now(),
         )
         db.add(blocked)
         await db.flush()

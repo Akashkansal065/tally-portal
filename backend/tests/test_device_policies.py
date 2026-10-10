@@ -5,7 +5,7 @@ from sqlalchemy import select, update
 
 import app.models.portal_core as P
 from app.core.config import settings
-from app.core.sessions import utcnow
+from app.core.datetime_utils import get_ist_now
 from app.routers import admin as admin_router, auth as auth_router
 from app.services.daily_cleanup import purge_old_sessions
 from tests.conftest import ANDROID_APP, CHROME_WINDOWS, PASSWORD, bearer, login, run
@@ -83,7 +83,7 @@ def test_cleanup_purges_only_old_sessions(harness):
     for _ in range(4):
         login(client, field.email, {**ANDROID_APP, "X-Device-Id": f"android-device-{_:010d}"})
     ids = [i for (i,) in harness.query(select(P.UserSession.session_id).order_by(P.UserSession.session_id))]
-    now = utcnow()
+    now = get_ist_now()
     harness.execute(update(P.UserSession).where(P.UserSession.session_id == ids[0]).values(expires_at=now - timedelta(days=31)))
     harness.execute(update(P.UserSession).where(P.UserSession.session_id == ids[1]).values(revoked_at=now - timedelta(days=91)))
     harness.execute(update(P.UserSession).where(P.UserSession.session_id == ids[2]).values(revoked_at=now - timedelta(days=10)))

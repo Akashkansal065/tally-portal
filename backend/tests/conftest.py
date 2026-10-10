@@ -145,11 +145,11 @@ class Harness:
 
     def legacy_session(self, user, days_ago=3):
         """A session as created before device tracking: no device fields, never used since."""
-        from app.core.sessions import utcnow
+        from app.core.datetime_utils import get_ist_now
         token = create_access_token(user.user_id)
         self.add(P.UserSession(user_id=user.user_id, token_hash=hashlib.sha256(token.encode()).hexdigest(),
-                               created_at=utcnow() - timedelta(days=days_ago),
-                               expires_at=utcnow() + timedelta(days=20)))
+                               created_at=get_ist_now() - timedelta(days=days_ago),
+                               expires_at=get_ist_now() + timedelta(days=20)))
         return token
 
 

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone, date
 from typing import Optional, List, Dict, Any
 import hashlib
 
+from app.core.datetime_utils import get_ist_now
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import verify_password, get_password_hash
@@ -16,7 +17,7 @@ from app.core.permissions import (
 )
 from app.core.sessions import (
     create_user_session, revoke_sessions, forget_tokens, current_token_hash, session_to_dict,
-    live_session_conditions, utcnow
+    live_session_conditions
 )
 from app.core.rate_limiter import limiter
 from app.models.portal_core import Company
@@ -296,7 +297,7 @@ async def list_my_sessions(
     db: AsyncSession = Depends(get_db)
 ):
     """The caller's signed-in devices, current device first."""
-    now = utcnow()
+    now = get_ist_now()
     sessions = (await db.execute(
         select(UserSession).where(UserSession.user_id == user.user_id, *live_session_conditions(now))
     )).scalars().all()

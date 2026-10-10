@@ -22,6 +22,37 @@ from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
 from cloud_client import CloudClient, halt_message
 from xml.sax.saxutils import unescape
 
+# A full voucher sync is cut into date ranges of about this many vouchers each, so Tally is never asked for
+# everything at once. A company with fewer than MIN_VOUCHERS_TO_SPLIT is small enough to export whole.
+VOUCHERS_PER_RANGE = 500
+MIN_VOUCHERS_TO_SPLIT = 1000
+# How long one company's full sync may run in a cycle before the other companies, and the entries waiting to
+# reach Tally, get their turn. It carries on in the next cycle.
+FULL_SYNC_SLICE_SECONDS = 90
+# A plan older than this is made again: its counts no longer describe what is in Tally
+FULL_SYNC_PLAN_MAX_AGE_SECONDS = 6 * 3600
+
+
+def plan_voucher_ranges(dates: List[str], per_range: int = VOUCHERS_PER_RANGE) -> List[List[Any]]:
+    """Cut a company's voucher dates (YYYYMMDD) into consecutive ranges of about per_range vouchers.
+    Each range is [first date, last date, vouchers in it]; ranges start and end on dates that have vouchers,
+    never overlap, and together cover every voucher. One busy day is never split."""
+    counts: Dict[str, int] = {}
+    for day in dates:
+        counts[day] = counts.get(day, 0) + 1
+    ranges: List[List[Any]] = []
+    start, held = None, 0
+    for day in sorted(counts):
+        start = start or day
+        held += counts[day]
+        if held >= per_range:
+            ranges.append([start, day, held])
+            start, held = None, 0
+    if start is not None:
+        ranges.append([start, max(counts), held])
+    return ranges
+
+
 _SV_CURRENT_COMPANY = re.compile(r"<SVCURRENTCOMPANY>(.*?)</SVCURRENTCOMPANY>", re.DOTALL)
 
 
@@ -103,6 +134,11 @@ def print_banner():
     logger.info(banner)
 
 class DesktopSyncAgent:
+    # Whether this Tally returns vouchers by date range, and by which request: not known until tried
+    _voucher_ranges_work: Optional[bool] = None
+    _voucher_range_method: Optional[str] = None
+    _restart_full_sync = False
+
     def __init__(self, config_path: Optional[str] = None):
         # Default to the file next to the script/.exe (gitignored), never the current working directory
         self.config_path = config_path or get_default_config_path()
@@ -614,6 +650,9 @@ class DesktopSyncAgent:
 
         # A requested full sync (Sync All, or force_full_sync) applies to every company in this pass
         force_all = getattr(self.config, "force_full_sync", False) or self.force_full_sync_next
+        # "Sync All" was pressed: a full sync that is under way starts again. The standing force_full_sync
+        # setting does not restart one, or a sync that needs several cycles would never finish.
+        self._restart_full_sync = self.force_full_sync_next
         self.force_full_sync_next = False
         outcomes: Dict[str, Tuple[bool, str]] = {}
         statuses = []
@@ -664,6 +703,16 @@ class DesktopSyncAgent:
                 self.config.inbound_retry_floors = floors
             retry_floor = floors.get(company_key)
 
+            # Vouchers of a full sync are pulled in date ranges when the Tally client can do it. A full sync
+            # that is under way (or one that failed at the start, which leaves a retry point of 0) carries on
+            # here rather than falling back to one export of everything.
+            can_range = hasattr(self.tally, "export_voucher_index") and self._voucher_ranges_work is not False
+            if force_all and self._restart_full_sync:
+                self._drop_full_sync_cursor(company_key)   # "Sync All" starts again from the beginning
+            if can_range and is_incremental and retry_floor == 0:
+                is_incremental = False
+            vouchers_in_ranges = can_range and (not is_incremental or company_key in (self.config.full_sync_cursors or {}))
+
             min_alter = 0
             min_voucher_alter = 0
             if is_incremental:
@@ -683,13 +732,17 @@ class DesktopSyncAgent:
                 prefix = f"📥 [INITIAL INBOUND SYNC] Pulling full baseline data from Tally..."
 
             logger.info(f"{prefix}")
-            collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=min_alter,
-                                                             min_voucher_alter_id=min_voucher_alter if is_incremental else None)
+            if vouchers_in_ranges and not is_incremental:
+                collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=0,
+                                                                 min_voucher_alter_id=None, skip_vouchers=True)
+            else:
+                collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=min_alter,
+                                                                 min_voucher_alter_id=min_voucher_alter if is_incremental else None)
             export_failures = list(getattr(self.tally, "last_export_failures", []) or [])
             if export_failures:
                 logger.error(f"   ❌ Could not export from Tally: {', '.join(export_failures)}")
 
-            if not collections:
+            if not collections and not vouchers_in_ranges:
                 self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures))
                 self._last_company_ok = not export_failures
                 self.last_inbound_time = time.time()
@@ -702,62 +755,33 @@ class DesktopSyncAgent:
                     self.last_sync_status = "Up-to-date (0 changes)"
                 return self._last_company_ok
 
-            total_vouchers = 0
-            total_ledgers = 0
-            total_items = 0
-            total_errors = 0
-            total_record_errors = 0
+            total_vouchers, total_ledgers, total_items, total_errors = self._push_collections(collections, force_all)
 
-            for idx, (label, xml_data) in enumerate(collections, 1):
-                size_kb = len(xml_data.encode("utf-8")) / 1024.0
-                logger.info(f"   • [{idx}/{len(collections)}] Exported '{label}' from Tally ({size_kb:.1f} KB). Pushing to cloud...")
-                
-                ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=force_all)
-                dur = res.get("duration_seconds", 0.0)
-                
-                if ok:
-                    v_count = res.get("imported_vouchers", 0)
-                    l_count = res.get("imported_ledgers", 0)
-                    g_count = res.get("imported_groups", 0)
-                    s_count = res.get("imported_stock_items", 0)
-                    total_vouchers += v_count
-                    total_ledgers += l_count
-                    total_items += s_count
-                    logger.info(f"   • ✅ '{label}' Synced in {dur:.2f}s (Vouchers: {v_count}, Ledgers: {l_count}, Items: {s_count}, Groups: {g_count})")
-                    record_errors = res.get("errors") or []
-                    if record_errors:
-                        # Individual records the server rejected. They would fail the same way on a re-pull,
-                        # so they are reported rather than retried; fix them in Tally and they re-sync on next edit.
-                        total_record_errors += len(record_errors)
-                        logger.warning(f"   ⚠️ '{label}': {len(record_errors)} record(s) rejected by the server, e.g. {record_errors[:3]}")
+            # Vouchers of a full sync come in date ranges, a slice at a time (see _sync_vouchers_in_ranges)
+            range_failed = False
+            if vouchers_in_ranges and not (export_failures or total_errors):
+                ranged = self._sync_vouchers_in_ranges(company_key, force_all)
+                if ranged is None:
+                    # Too few vouchers to be worth cutting up, or this Tally does not honour a date range
+                    whole = self.tally.export_full_collections(self.active_company_name, min_alter_id=0,
+                                                               min_voucher_alter_id=None, only_vouchers=True)
+                    export_failures += list(getattr(self.tally, "last_export_failures", []) or [])
+                    if export_failures:
+                        logger.error(f"   ❌ Could not export from Tally: {', '.join(export_failures)}")
+                    pushed = self._push_collections(whole, force_all)
+                    total_vouchers += pushed[0]
+                    total_errors += pushed[3]
                 else:
-                    total_errors += 1
-                    err_type = res.get("error_type", "SYNC_ERROR")
-                    err_msg = res.get("error", "Unknown error")
-                    status_code = res.get("status_code")
-                    endpoint = res.get("endpoint", "/sync/inbound")
-
-                    logger.error(
-                        f"\n"
-                        f"   ╔═══════════════════════════════════════════════════════════════════════\n"
-                        f"   ║ ❌ INBOUND PUSH FAILED: '{label}'\n"
-                        f"   ╠═══════════════════════════════════════════════════════════════════════\n"
-                        f"   ║ • Error Classification: {err_type}\n"
-                        f"   ║ • Error Details:        {err_msg}\n"
-                        f"   ║ • HTTP Status Code:     {status_code or 'None (Connection/Timeout Issue)'}\n"
-                        f"   ║ • Target Endpoint:      {self.config.backend_url.rstrip('/')}{endpoint}\n"
-                        f"   ║ • Payload Size:         {size_kb:.1f} KB\n"
-                        f"   ║ • Request Duration:     {dur:.2f} seconds\n"
-                        f"   ║ • Possible Cause:       {'Network timeout or server took too long to process XML' if 'TIMEOUT' in err_type else 'Server code exception or invalid credentials' if '500' in str(status_code) or 'AUTH' in err_type else 'Tunnel/network drop'}\n"
-                        f"   ╚═══════════════════════════════════════════════════════════════════════\n"
-                    )
+                    range_ok, range_vouchers = ranged
+                    total_vouchers += range_vouchers
+                    range_failed = not range_ok
 
             self.total_vouchers += total_vouchers
             self.total_ledgers += total_ledgers
             self.total_items += total_items
             self.total_errors += total_errors
             self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures) or total_errors > 0)
-            self._last_company_ok = not (export_failures or total_errors > 0)
+            self._last_company_ok = not (export_failures or total_errors > 0 or range_failed)
             self.last_sync_time = time.time()
             self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
 
@@ -770,10 +794,170 @@ class DesktopSyncAgent:
                 logger.info(msg)
                 self.last_sync_status = "Up-to-date"
 
+            progress = self._full_sync_progress(company_key)
+            if progress:
+                self.last_sync_status += f" · {progress}"
             self.last_inbound_time = time.time()
         finally:
             self.is_syncing = False
         return self._last_company_ok
+
+    def _push_collections(self, collections: List[Tuple[str, str]], force_all: bool) -> Tuple[int, int, int, int]:
+        """Push exported collections to the cloud. Returns (vouchers, ledgers, items imported, pushes that failed)."""
+        total_vouchers = total_ledgers = total_items = total_errors = total_record_errors = 0
+        for idx, (label, xml_data) in enumerate(collections, 1):
+            size_kb = len(xml_data.encode("utf-8")) / 1024.0
+            logger.info(f"   • [{idx}/{len(collections)}] Exported '{label}' from Tally ({size_kb:.1f} KB). Pushing to cloud...")
+            
+            ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=force_all)
+            dur = res.get("duration_seconds", 0.0)
+            
+            if ok:
+                v_count = res.get("imported_vouchers", 0)
+                l_count = res.get("imported_ledgers", 0)
+                g_count = res.get("imported_groups", 0)
+                s_count = res.get("imported_stock_items", 0)
+                total_vouchers += v_count
+                total_ledgers += l_count
+                total_items += s_count
+                logger.info(f"   • ✅ '{label}' Synced in {dur:.2f}s (Vouchers: {v_count}, Ledgers: {l_count}, Items: {s_count}, Groups: {g_count})")
+                record_errors = res.get("errors") or []
+                if record_errors:
+                    # Individual records the server rejected. They would fail the same way on a re-pull,
+                    # so they are reported rather than retried; fix them in Tally and they re-sync on next edit.
+                    total_record_errors += len(record_errors)
+                    logger.warning(f"   ⚠️ '{label}': {len(record_errors)} record(s) rejected by the server, e.g. {record_errors[:3]}")
+            else:
+                total_errors += 1
+                err_type = res.get("error_type", "SYNC_ERROR")
+                err_msg = res.get("error", "Unknown error")
+                status_code = res.get("status_code")
+                endpoint = res.get("endpoint", "/sync/inbound")
+
+                logger.error(
+                    f"\n"
+                    f"   ╔═══════════════════════════════════════════════════════════════════════\n"
+                    f"   ║ ❌ INBOUND PUSH FAILED: '{label}'\n"
+                    f"   ╠═══════════════════════════════════════════════════════════════════════\n"
+                    f"   ║ • Error Classification: {err_type}\n"
+                    f"   ║ • Error Details:        {err_msg}\n"
+                    f"   ║ • HTTP Status Code:     {status_code or 'None (Connection/Timeout Issue)'}\n"
+                    f"   ║ • Target Endpoint:      {self.config.backend_url.rstrip('/')}{endpoint}\n"
+                    f"   ║ • Payload Size:         {size_kb:.1f} KB\n"
+                    f"   ║ • Request Duration:     {dur:.2f} seconds\n"
+                    f"   ║ • Possible Cause:       {'Network timeout or server took too long to process XML' if 'TIMEOUT' in err_type else 'Server code exception or invalid credentials' if '500' in str(status_code) or 'AUTH' in err_type else 'Tunnel/network drop'}\n"
+                    f"   ╚═══════════════════════════════════════════════════════════════════════\n"
+                )
+        return total_vouchers, total_ledgers, total_items, total_errors
+
+    # ─── Full voucher sync in date ranges ────────────────────────────────────────
+
+    def _save_full_sync_cursor(self, company_key: str, cursor: Optional[Dict[str, Any]]) -> None:
+        cursors = dict(self.config.full_sync_cursors or {})
+        if cursor is None:
+            cursors.pop(company_key, None)
+        else:
+            cursors[company_key] = cursor
+        self.config.full_sync_cursors = cursors
+        save_config(self.config, self.config_path)
+
+    def _drop_full_sync_cursor(self, company_key: str) -> None:
+        if company_key in (self.config.full_sync_cursors or {}):
+            self._save_full_sync_cursor(company_key, None)
+
+    def _full_sync_progress(self, company_key: str) -> str:
+        """"Full sync 3 of 12" while one is under way, else ''."""
+        cursor = (self.config.full_sync_cursors or {}).get(company_key)
+        if not cursor or not cursor.get("ranges"):
+            return ""
+        return f"Full sync {cursor.get('next', 0)} of {len(cursor['ranges'])}"
+
+    def _export_voucher_range(self, date_from: str, date_to: str, expected: int):
+        """The vouchers of one range, checked: every voucher returned is dated inside the range and none the
+        plan counted is missing. Returns the export, None when Tally did not answer (try again later), or
+        False when Tally does not honour a date range at all (the caller exports everything in one go)."""
+        from tally_client import VOUCHER_RANGE_METHODS, voucher_dates
+        methods = [self._voucher_range_method] if self._voucher_range_method else list(VOUCHER_RANGE_METHODS)
+        recounted = False
+        for method in methods:
+            xml_data = self.tally.export_vouchers_between(self.active_company_name, date_from, date_to, method)
+            if xml_data is None:
+                return None
+            got = voucher_dates(xml_data)
+            if any(not (date_from <= day <= date_to) for day in got):
+                logger.debug(f"   Tally returned vouchers outside {date_from}..{date_to} with the '{method}' request.")
+                continue
+            if len(got) < expected and not recounted:
+                # A voucher may have been deleted or re-dated since the plan was made: count again before
+                # concluding that the request loses vouchers
+                recounted = True
+                fresh = self.tally.export_voucher_index(self.active_company_name)
+                if fresh is None:
+                    return None
+                expected = sum(1 for day in fresh if date_from <= day <= date_to)
+            if len(got) < expected:
+                logger.debug(f"   Tally returned {len(got)} of {expected} vouchers for {date_from}..{date_to} with the '{method}' request.")
+                continue
+            self._voucher_range_method = method
+            return xml_data
+        return False
+
+    def _sync_vouchers_in_ranges(self, company_key: str, force_all: bool) -> Optional[Tuple[bool, int]]:
+        """Carry a full voucher sync forward by one time slice: plan it if it has no plan, then export and push
+        range after range, saving the position after each. Returns (clean, vouchers imported), or None when
+        the vouchers should be exported in one go instead (few vouchers, or Tally ignores date ranges)."""
+        cursor = (self.config.full_sync_cursors or {}).get(company_key)
+        if cursor and cursor.get("ranges") and time.time() - cursor.get("planned_at", 0) > FULL_SYNC_PLAN_MAX_AGE_SECONDS:
+            logger.info("   🗓️ The full sync plan is old; planning it again.")
+            cursor = {"ranges": None, "next": 0, "force": cursor.get("force", False), "planned_at": 0}
+        if cursor is None:
+            # Written before anything else, so a full sync that could not even be planned is still owed
+            cursor = {"ranges": None, "next": 0, "force": force_all, "planned_at": 0}
+            self._save_full_sync_cursor(company_key, cursor)
+        if not cursor.get("ranges"):
+            dates = self.tally.export_voucher_index(self.active_company_name)
+            if dates is None:
+                logger.error("   ❌ Could not list the vouchers in Tally; the full sync will be tried again.")
+                return False, 0
+            if len(dates) < MIN_VOUCHERS_TO_SPLIT:
+                self._drop_full_sync_cursor(company_key)
+                return None
+            cursor = {"ranges": plan_voucher_ranges(dates), "next": 0, "force": cursor.get("force", False), "planned_at": time.time()}
+            self._save_full_sync_cursor(company_key, cursor)
+            logger.info(f"   🗓️ Full sync of {len(dates)} vouchers planned in {len(cursor['ranges'])} date ranges.")
+
+        ranges = cursor["ranges"]
+        deadline = time.time() + FULL_SYNC_SLICE_SECONDS
+        imported = 0
+        while cursor["next"] < len(ranges):
+            date_from, date_to, expected = ranges[cursor["next"]]
+            label = f"Vouchers {date_from}–{date_to} ({cursor['next'] + 1}/{len(ranges)})"
+            xml_data = self._export_voucher_range(date_from, date_to, expected)
+            if xml_data is False:
+                logger.warning("   ⚠️ This Tally does not return vouchers by date range; exporting them in one go instead.")
+                self._voucher_ranges_work = False
+                self._drop_full_sync_cursor(company_key)
+                return None
+            if xml_data is None:
+                logger.error(f"   ❌ Could not export '{label}' from Tally; the full sync carries on from here next cycle.")
+                return False, imported
+            ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=bool(cursor.get("force")))
+            if not ok:
+                logger.error(f"   ❌ '{label}' could not be pushed ({res.get('error', 'unknown error')}); "
+                             "the full sync carries on from here next cycle.")
+                return False, imported
+            imported += res.get("imported_vouchers", 0)
+            logger.info(f"   • ✅ '{label}' synced ({res.get('imported_vouchers', 0)} vouchers)")
+            cursor["next"] += 1
+            self._save_full_sync_cursor(company_key, cursor)
+            if time.time() >= deadline:
+                break
+        if cursor["next"] >= len(ranges):
+            self._drop_full_sync_cursor(company_key)
+            logger.info(f"   🎉 Full voucher sync of '{self.active_company_name}' finished ({len(ranges)} ranges).")
+        else:
+            logger.info(f"   ⏸️ Full sync paused at {cursor['next']} of {len(ranges)} ranges; it carries on in the next cycle.")
+        return True, imported
 
     def _update_inbound_retry_floor(self, company_key: str, cycle_min_alter: int, failed: bool):
         """Remember (persistently) where a failed inbound cycle started, and forget it once a cycle is clean."""

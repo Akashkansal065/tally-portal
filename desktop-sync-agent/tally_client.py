@@ -54,6 +54,54 @@ def parse_import_result(resp: str) -> Tuple[bool, str]:
     accepted = sum(counts.get(k, 0) for k in ("CREATED", "ALTERED", "DELETED", "CANCELLED", "IGNORED"))
     return (accepted > 0, "OK" if accepted else f"Tally changed nothing ({counts or 'no counts'})")
 
+# What a voucher export fetches. Shared by the whole-company export and the date-range one.
+VOUCHER_FETCH = ("GUID,MASTERID,REMOTEALTGUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,"
+                 "ISCANCELLED,ISOPTIONAL,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST,"
+                 "INVENTORYENTRIESIN.LIST,INVENTORYENTRIESOUT.LIST,ATTENDANCEENTRIES.*,CATEGORYENTRY.LIST")
+
+# Two ways of asking Tally for the vouchers of a date range. Which one a Tally honours is found by trying:
+# "sv" sets the report period; "filter" also filters the collection on the voucher date.
+VOUCHER_RANGE_METHODS = ("sv", "filter")
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_VOUCHER_OPEN = re.compile(r"<VOUCHER[\s>]")
+# One pass over a voucher: where its lists open and close, and every DATE on the way
+_LIST_OR_DATE = re.compile(r"<(/?)[A-Z0-9_.]+\.LIST\b[^>]*?(/?)>|<DATE\b[^>]*>\s*(\d{8})\s*</DATE>")
+
+
+def tally_date_text(yyyymmdd: str) -> str:
+    """20250401 -> 1-Apr-2025, the form Tally's $$Date reads the same way in every regional setting."""
+    return f"{int(yyyymmdd[6:8])}-{_MONTHS[int(yyyymmdd[4:6]) - 1]}-{yyyymmdd[0:4]}"
+
+
+def voucher_dates(resp_xml: str) -> List[str]:
+    """The date (YYYYMMDD) of every voucher in an export, one entry per voucher, '' where none is found.
+
+    Read as text rather than parsed: Tally exports can carry characters an XML parser refuses, and a parser
+    would hold a second copy of a large export in memory. Only a DATE that sits directly in the voucher
+    counts; one inside an entry list (a cheque date, a bill date) is passed over."""
+    dates = []
+    # Tally ends an export with a CMPINFO block of counts, one of them written as <VOUCHER>44</VOUCHER>
+    info = resp_xml.find("<CMPINFO>")
+    info_end = resp_xml.find("</CMPINFO>", info) if info >= 0 else -1
+    starts = [m.start() for m in _VOUCHER_OPEN.finditer(resp_xml) if not (info >= 0 and info < m.start() < info_end)]
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(resp_xml)
+        depth, own_date = 0, ""
+        for token in _LIST_OR_DATE.finditer(resp_xml, start, end):
+            closing, self_closing, date = token.groups()
+            if date:
+                if depth == 0:
+                    own_date = date
+                    break
+            elif closing:
+                depth = max(0, depth - 1)
+            elif not self_closing:
+                depth += 1
+        dates.append(own_date)
+    return dates
+
+
 def has_collection_records(resp_xml: str, obj_type: str) -> bool:
     """
     Checks whether a Tally XML response contains at least one actual entity record inside <DATA>.
@@ -256,10 +304,13 @@ class TallyClient:
         return companies
 
     def export_full_collections(self, company_name: Optional[str] = None, min_alter_id: int = 0,
-                                min_voucher_alter_id: Optional[int] = None) -> List[Tuple[str, str]]:
+                                min_voucher_alter_id: Optional[int] = None, skip_vouchers: bool = False,
+                                only_vouchers: bool = False) -> List[Tuple[str, str]]:
         """
         Exports master and transaction collections from TallyPrime for inbound sync.
         Supports full dump (min_alter_id=0) or incremental changes (min_alter_id > 0).
+        skip_vouchers leaves the vouchers out (they are then pulled in date ranges, see
+        export_vouchers_between); only_vouchers exports nothing else.
         """
         sv_cmp = f"<SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
         
@@ -276,8 +327,12 @@ class TallyClient:
             ("CostCentres", "CostCentre", "NAME,GUID,MASTERID,ALTERID,PARENT,CATEGORY,FORPAYROLL,ISEMPLOYEEGROUP,DATEOFJOIN,DESIGNATION,GENDER,MAILINGNAME.LIST,EMPLOYEEPERIOD.LIST", False),
             ("AttendanceTypes", "AttendanceType", "NAME,GUID,MASTERID,ALTERID,PARENT,ATTENDANCEPRODUCTIONTYPE,ATTENDANCEPERIOD,BASEUNITS", False),
             ("StockItems", "StockItem", "NAME,GUID,MASTERID,ALTERID,PARENT,CATEGORY,BASEUNITS,ADDITIONALUNITS,CONVERSION,DENOMINATOR,OPENINGBALANCE,OPENINGVALUE,OPENINGRATE,DESCRIPTION,NARRATION,ISBATCHWISEON,ISPERISHABLEON,IGNORENEGATIVESTOCK,COSTINGMETHOD,VALUATIONMETHOD,GSTTYPEOFSUPPLY,BATCHALLOCATIONS.LIST", True),
-            ("Vouchers", "Voucher", "GUID,MASTERID,REMOTEALTGUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ISCANCELLED,ISOPTIONAL,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST,INVENTORYENTRIESIN.LIST,INVENTORYENTRIESOUT.LIST,ATTENDANCEENTRIES.*,CATEGORYENTRY.LIST", True)
+            ("Vouchers", "Voucher", VOUCHER_FETCH, True)
         ]
+        if skip_vouchers:
+            collections = [c for c in collections if c[1] != "Voucher"]
+        if only_vouchers:
+            collections = [c for c in collections if c[1] == "Voucher"]
         
         results = []
         self.last_export_failures = []
@@ -360,6 +415,65 @@ class TallyClient:
                 self.last_export_failures.append(label)
 
         return results
+
+    def _export(self, xml_req: str, label: str, timeout: int = 120, retries: int = 2) -> Optional[str]:
+        """Post one export request to Tally. The reply, or None when Tally did not answer with an export."""
+        for attempt in range(retries + 1):
+            try:
+                req = urllib.request.Request(self.tally_url, data=xml_req.encode("utf-8"),
+                                             headers={"Content-Type": "text/xml;charset=utf-8"})
+                with self._urlopen(req, timeout=timeout) as resp:
+                    resp_xml = resp.read().decode("utf-8", errors="replace")
+                    if "<ENVELOPE>" in resp_xml:
+                        return resp_xml
+                    return None
+            except Exception as e:
+                if attempt < retries:
+                    logger.debug(f"Retrying export '{label}' from Tally (attempt {attempt + 1}/{retries}): {e}")
+                    time.sleep(1)
+                else:
+                    logger.warning(f"Failed to export '{label}' from Tally after {retries + 1} attempts: {e}")
+        return None
+
+    def _voucher_request(self, company_name: Optional[str], label: str, fetch: str, date_from: str = "20000101",
+                         date_to: str = "20991231", filter_on_date: bool = False) -> str:
+        sv_cmp = f"<SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
+        filters = formula = ""
+        if filter_on_date:
+            filters = "<FILTERS>MyTallyInRange</FILTERS>"
+            formula = (f'<SYSTEM TYPE="Formulae" NAME="MyTallyInRange">$Date &gt;= $$Date:"{tally_date_text(date_from)}" '
+                       f'AND $Date &lt;= $$Date:"{tally_date_text(date_to)}"</SYSTEM>')
+        return f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>{label}</ID></HEADER>
+  <BODY><DESC>
+    <STATICVARIABLES>
+      <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      <SVFROMDATE TYPE="Date">{date_from}</SVFROMDATE><SVTODATE TYPE="Date">{date_to}</SVTODATE>
+      {sv_cmp}
+    </STATICVARIABLES>
+    <TDL><TDLMESSAGE>
+      <COLLECTION NAME="{label}"><TYPE>Voucher</TYPE><FETCH>{fetch}</FETCH>{filters}</COLLECTION>
+      {formula}
+    </TDLMESSAGE></TDL>
+  </DESC></BODY>
+</ENVELOPE>"""
+
+    def export_voucher_index(self, company_name: Optional[str]) -> Optional[List[str]]:
+        """The date of every voucher in the company (YYYYMMDD), from an export that fetches nothing else, so it
+        is small and quick even for a company whose full export is not. None when Tally did not answer."""
+        resp_xml = self._export(self._voucher_request(company_name, "MyTallyVoucherIndex", "DATE,MASTERID"), "VoucherIndex")
+        if resp_xml is None:
+            return None
+        return [d for d in voucher_dates(resp_xml) if d]
+
+    def export_vouchers_between(self, company_name: Optional[str], date_from: str, date_to: str,
+                                method: str = "sv") -> Optional[str]:
+        """The vouchers dated date_from..date_to (YYYYMMDD, both included), asked for by one of
+        VOUCHER_RANGE_METHODS. The caller must check the answer really is that range: a Tally that ignores
+        the range returns every voucher. None when Tally did not answer."""
+        request = self._voucher_request(company_name, "MyTallyVouchersInRange", VOUCHER_FETCH, date_from, date_to,
+                                        filter_on_date=(method == "filter"))
+        return self._export(request, f"Vouchers {date_from}-{date_to}")
 
     def _log_traffic(self, direction: str, title: str, content: str):
         """Logs exact traffic to a dedicated rotating log file and console logger."""

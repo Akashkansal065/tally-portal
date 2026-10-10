@@ -44,6 +44,7 @@ mysqldump -u <user> -p --single-transaction --routines tally_sync > tally_sync_b
 - [ ] Deploy the backend from `master` and start it once.
 - [ ] In the startup log, look for lines beginning `Auto Schema Synchronizer:`. They list each column and index it adds. New tables (`accounts`, `agent_devices`, `agent_company_links`, `company_sync_state`, `user_invites`, `signup_verifications`) are created silently.
 - [ ] Confirm there is no line beginning `Warning during auto schema sync`.
+- [ ] The first start on this version also prints `Device-session times moved from UTC to IST.` once. It moves the stored sign-in times so they match the rest of the app; nobody is signed out. It must not appear on later starts.
 - [ ] Sign in to the web app and open a ledger and a voucher. Nothing should look different.
 
 - [ ] Deploy the web app (the Vercel project). The Android and iOS apps load the web app from there, so they pick up the change without a new app build.
@@ -87,6 +88,7 @@ To give the account a different name than the company's: add `--name "Your Busin
 - [ ] If it says "You are not allowed to use the sync agent", that person is not an admin, or an admin removed their permission.
 - [ ] If it asks "Move sync to this PC?", another PC is syncing the company. Answer Yes only if this PC should take over.
 - [ ] In the agent log, the next cycle should sync as before.
+- [ ] A company with 1,000 vouchers or more now does its full sync in date ranges, a part each cycle: the log shows `Full sync of N vouchers planned in M date ranges` and the status line `Full sync 3 of 12`. It finishes over several cycles and survives a restart. If the log says `This Tally does not return vouchers by date range`, it has gone back to one export, as before; send me that line.
 
 ## 6. Check it worked
 

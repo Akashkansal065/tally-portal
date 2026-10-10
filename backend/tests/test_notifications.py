@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 import app.models.portal_core as P
-from app.core.sessions import utcnow
+from app.core.datetime_utils import get_ist_now
 from app.routers import auth, notifications
 from app.services import daily_cleanup
 from app.services import notifications as service
@@ -173,7 +173,7 @@ def test_people_only_see_their_own_notifications(world, pushes):
 
 def test_daily_cleanup_purges_old_notifications(world):
     h, owner, alpha = world["harness"], world["owner"], world["alpha"]
-    now = utcnow()
+    now = get_ist_now()
 
     def add(days_old, is_read):
         h.add(P.Notification(company_id=alpha.company_id, user_id=owner.user_id, type="order_created",

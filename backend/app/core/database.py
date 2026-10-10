@@ -1,6 +1,7 @@
+import re
 import ssl
 import os
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from app.core.config import settings
@@ -38,6 +39,23 @@ engine = create_async_engine(
     pool_pre_ping=True, 
     echo=False
 )
+# About a hundred hand-written report and ledger queries name the Tally database as "tally_sync". On a server
+# whose TALLY_DATABASE_NAME is something else they would fail, so the name is swapped for the configured one
+# as each statement goes out. With the usual name nothing is registered and no statement is touched.
+_WRITTEN_TALLY_DATABASE = re.compile(r"(?<![\w`.])tally_sync\.")
+
+
+def use_configured_tally_database(statement: str, name: str = settings.TALLY_DATABASE_NAME) -> str:
+    """The statement with the written-in Tally database name replaced by the configured one."""
+    return _WRITTEN_TALLY_DATABASE.sub(f"{name}.", statement)
+
+
+if settings.TALLY_DATABASE_NAME != "tally_sync":
+    @event.listens_for(engine.sync_engine, "before_cursor_execute", retval=True)
+    def _swap_tally_database_name(conn, cursor, statement, parameters, context, executemany):
+        return use_configured_tally_database(statement), parameters
+
+
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,

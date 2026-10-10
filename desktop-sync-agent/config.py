@@ -3,7 +3,7 @@ import sys
 import json
 import hashlib
 from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from security import store_secret, load_secret, needs_storage_upgrade
 
@@ -64,6 +64,9 @@ class AgentConfig:
     # Company GUID (its name, before GUIDs were used) -> AlterID to re-pull from after a failed inbound cycle. Without it, a later
     # collection's higher AlterIDs advance the server watermark past records that never arrived.
     inbound_retry_floors: Dict[str, int] = field(default_factory=dict)
+    # A full voucher sync that is under way, per company GUID: the date ranges it was cut into and how many
+    # are done, so a restart or a failed range carries on from there instead of starting again.
+    full_sync_cursors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # Set when the server signed this PC out on purpose or blocked it (see cloud_client.AUTO_RELOGIN_REASONS).
     # Kept across restarts so autostart doesn't silently sign back in; cleared when credentials are re-entered.
     auth_halt_reason: str = ""

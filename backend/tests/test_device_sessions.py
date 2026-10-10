@@ -5,7 +5,7 @@ from sqlalchemy import select, update
 
 import app.models.portal_core as P
 from app.core.permissions import clear_all_auth_and_permission_caches
-from app.core.sessions import utcnow
+from app.core.datetime_utils import get_ist_now
 from app.routers import admin as admin_router, auth as auth_router
 from tests.conftest import ANDROID_APP, CHROME_WINDOWS, SYNC_AGENT, bearer, login
 
@@ -174,7 +174,7 @@ def test_last_active_is_tracked_but_throttled(harness):
     client = harness.app(auth_router.router)
     _, _, field = setup_company(harness)
     token = login(client, field.email, ANDROID_APP)
-    long_ago = utcnow() - timedelta(hours=2)
+    long_ago = get_ist_now() - timedelta(hours=2)
     harness.execute(update(P.UserSession).values(last_active_at=long_ago))
     clear_all_auth_and_permission_caches()
 
@@ -182,7 +182,7 @@ def test_last_active_is_tracked_but_throttled(harness):
     first = harness.scalar(select(P.UserSession.last_active_at))
     assert first > long_ago + timedelta(hours=1)
 
-    marker = utcnow() - timedelta(minutes=1)
+    marker = get_ist_now() - timedelta(minutes=1)
     harness.execute(update(P.UserSession).values(last_active_at=marker))
     me(client, token)  # cache hit within 5 minutes: no write
     assert harness.scalar(select(P.UserSession.last_active_at)) == marker
