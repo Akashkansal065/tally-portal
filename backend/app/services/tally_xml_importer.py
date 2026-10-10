@@ -9,7 +9,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import text, func, delete
+from sqlalchemy import text, func, delete, update
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -19,12 +19,13 @@ from app.models.tally_core import (
     MstGodown, MstStockItem, MstVoucherType, MstUom,
     MstVoucherTypePrefix, MstVoucherTypeSuffix, MstVoucherTypeRestart,
     MstVoucherTypeClass, MstVoucherTypeClassGroup,
-    MstCostCategory, MstCostCentre, CostCenter,
+    MstCostCategory, MstCostCentre, CostCenter, MstAttendanceType, MstPayHead, TrnAttendance, TrnPayHead,
     TrnVoucher, TrnAccounting, TrnInventory, TrnBill, TrnBankAllocation,
     BillAllocation, MstLedgerGstRegistration, TrnEwayBill, MstHsnDetail,
     MstLedgerMsmeDetail, MstLedgerAddress, MstLedgerTdsLowerDeduction, TrnCostCentreAllocation
 )
 from app.models.portal_core import Company, User, Role, UserCompanyAccess, Currency, DeletedRecordAudit
+from app.services.voucher_kinds import is_physical_stock, is_payroll
 from app.core.security import get_password_hash
 
 _checked_tally_users = set()
@@ -170,8 +171,16 @@ def sanitize_xml(xml_data: str) -> str:
 
     return sanitized
 
-async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstStockGroup:
+async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None,
+                                    sync_parent: bool = False) -> MstStockGroup:
+    """
+    A top-level stock group has no parent here. Tally reports the top level as the reserved name "Primary";
+    that is a marker, not a group, and is never stored as one (tally_parent_name).
+    sync_parent: the caller read this group itself from Tally, so an existing group is moved to the parent
+    given, or to the top level when there is none.
+    """
     clean_name = name.strip()
+    parent_name = tally_parent_name(parent_name)
     stmt = select(MstStockGroup).where(
         MstStockGroup.company_id == company_id,
         func.lower(func.trim(MstStockGroup.name)) == clean_name.lower()
@@ -180,22 +189,12 @@ async def get_or_create_stock_group(db: AsyncSession, company_id: int, name: str
     group = res.scalars().first()
     
     parent_id = None
-    if parent_name:
+    if parent_name and (group is None or sync_parent):
         parent_group = await get_or_create_stock_group(db, company_id, parent_name)
         parent_id = parent_group.stock_group_id
-    elif clean_name.lower() != "primary":
-        # Check if Primary group exists in this company to maintain Tally group hierarchy
-        prim_stmt = select(MstStockGroup).where(
-            MstStockGroup.company_id == company_id,
-            func.lower(func.trim(MstStockGroup.name)) == "primary"
-        )
-        prim_res = await db.execute(prim_stmt)
-        prim_group = prim_res.scalars().first()
-        if prim_group:
-            parent_id = prim_group.stock_group_id
         
     if group:
-        if parent_id is not None and group.parent_id != parent_id:
+        if sync_parent and group.parent_id != parent_id and parent_id != group.stock_group_id:
             group.parent_id = parent_id
             await db.flush()
         return group
@@ -340,6 +339,9 @@ async def resolve_stock_group_dynamically(
     return await get_or_create_stock_group(db, company_id, "General")
 
 async def get_or_create_stock_category(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None) -> MstStockCategory:
+    # "Primary" is Tally's marker for the top level, not a category
+    name = (name or "").strip()
+    parent_name = tally_parent_name(parent_name)
     stmt = select(MstStockCategory).where(MstStockCategory.company_id == company_id, MstStockCategory.name == name)
     res = await db.execute(stmt)
     cat = res.scalars().first()
@@ -365,6 +367,9 @@ async def get_or_create_stock_category(db: AsyncSession, company_id: int, name: 
     return cat
 
 async def get_or_create_uom(db: AsyncSession, company_id: int, symbol: str, name: Optional[str] = None, decimal_places: int = 0) -> MstUom:
+    # Tally's "no unit" marker arrives as " Not Applicable" (its control character sanitised to a space)
+    symbol = (symbol or "").strip()
+    name = name.strip() if name else name
     stmt = select(MstUom).where(MstUom.company_id == company_id, MstUom.symbol == symbol)
     res = await db.execute(stmt)
     uom = res.scalars().first()
@@ -401,27 +406,179 @@ async def get_or_create_godown(db: AsyncSession, company_id: int, name: str, add
     await db.flush()
     return godown
 
-async def get_or_create_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None, extra_data: dict = None) -> MstGroup:
+GROUP_EXTRA_FIELDS = (
+    'alias_name', 'is_addable', 'is_revenue', 'is_deemed_positive', 'affects_gross_profit',
+    'is_subledger', 'is_billwise_on', 'used_for_calculation', 'method_to_allocate',
+    'tally_guid', 'tally_alter_id',
+)
+
+# Tally's two flags to the nature they encode: (is_revenue, is_deemed_positive)
+GROUP_NATURE_BY_FLAGS = {
+    (False, True): "Asset",
+    (False, False): "Liability",
+    (True, False): "Income",
+    (True, True): "Expense",
+}
+
+def tally_parent_name(raw: Optional[str]) -> Optional[str]:
+    """
+    A group's real parent name, or None for a top-level group. Tally reports the top level as the
+    reserved name "Primary" behind a control character, which sanitising leaves as " Primary".
+    """
+    name = (raw or "").strip()
+    return None if not name or name.lower() == "primary" else name
+
+def apply_group_extra_data(group: MstGroup, extra_data: Optional[dict]):
+    if not extra_data:
+        return
+    for field in GROUP_EXTRA_FIELDS:
+        if field in extra_data:
+            setattr(group, field, extra_data[field])
+    if 'is_revenue' in extra_data and 'is_deemed_positive' in extra_data:
+        group.nature = GROUP_NATURE_BY_FLAGS[(extra_data['is_revenue'], extra_data['is_deemed_positive'])]
+
+def _trim_marker(text_value) -> str:
+    """Tally prefixes its built-in names (Primary, Not Applicable) with a control character."""
+    return (text_value or "").replace("\x04", "").strip()
+
+
+async def _rename_employee_lines(db: AsyncSession, company_id: int, old_name: str, new_name: str) -> None:
+    """Attendance and payroll lines name their employee; they follow a rename made in Tally."""
+    in_company = select(TrnVoucher.voucher_id).where(TrnVoucher.company_id == company_id)
+    for model in (TrnAttendance, TrnPayHead):
+        await db.execute(update(model).where(model.employee_name == old_name, model.voucher_id.in_(in_company)).values(employee_name=new_name))
+
+
+async def _read_payroll_cost_centre(db: AsyncSession, company_id: int, row, node, guid: Optional[str]) -> None:
+    """Employee group / employee fields and salary details of a cost centre. A field Tally did not send is left alone."""
+    from app.models.tally_core import MstEmployeeSalaryRate
+    if guid:
+        row.tally_guid = guid
+        master_id = (node.findtext("MASTERID") or "").strip()
+        if master_id.isdigit():
+            row.tally_master_id = int(master_id)
+    if node.find("ISEMPLOYEEGROUP") is not None:
+        row.is_employee_group = (node.findtext("ISEMPLOYEEGROUP") or "").strip().lower() == "yes"
+    if node.find("DATEOFJOIN") is not None:
+        row.date_of_join = parse_tally_date((node.findtext("DATEOFJOIN") or "").strip())
+    if node.find("DESIGNATION") is not None:
+        row.designation = (node.findtext("DESIGNATION") or "").strip()[:100] or None
+    if node.find("GENDER") is not None:
+        row.gender = (node.findtext("GENDER") or "").strip()[:20] or None
+    if node.find("MAILINGNAME.LIST") is not None:
+        row.employee_number = (node.findtext("MAILINGNAME.LIST/MAILINGNAME") or "").strip()[:50] or None
+    periods = node.findall("EMPLOYEEPERIOD.LIST")
+    if not periods:
+        return
+    await db.flush()
+    await db.execute(delete(MstEmployeeSalaryRate).where(MstEmployeeSalaryRate.cost_centre_id == row.cost_centre_id))
+    position = 0
+    for period in periods:
+        start = parse_tally_date((period.findtext("PERIODFROM") or "").strip())
+        if not start:
+            continue
+        for rate in period.findall("EMPLOYEERATE.LIST"):
+            head = (rate.findtext("NAME") or "").strip()
+            if head:
+                db.add(MstEmployeeSalaryRate(company_id=company_id, cost_centre_id=row.cost_centre_id, effective_from=start, pay_head_name=head[:100],
+                                             rate=_decimal_or_none(rate.findtext("EMPTIMERATE")), position=position))
+                position += 1
+
+
+def _decimal_or_none(text_value) -> Optional[Decimal]:
+    """A Tally number such as " 30" or "-4838.71 Days"; None when there is nothing usable."""
+    cleaned = (text_value or "").replace(",", "").strip().split(" ")[0]
+    try:
+        return Decimal(cleaned) if cleaned else None
+    except Exception:
+        return None
+
+# Master types whose Tally identity (GUID, master id) is kept on the app's row: XML tag, model, name column
+def _identity_types():
+    return (
+        ("GROUP", MstGroup, MstGroup.name),
+        ("LEDGER", MstLedger, MstLedger.name),
+        ("STOCKGROUP", MstStockGroup, MstStockGroup.name),
+        ("STOCKITEM", MstStockItem, MstStockItem.name),
+        ("UNIT", MstUom, MstUom.symbol),
+    )
+
+
+def _master_identity(node) -> tuple:
+    name = (node.get("NAME") or node.findtext("NAME") or "").strip()
+    guid = (node.findtext("GUID") or "").strip() or None
+    master_id = (node.findtext("MASTERID") or "").strip()
+    return name, guid, int(master_id) if master_id.isdigit() else None
+
+
+async def follow_tally_renames(db: AsyncSession, company_id: int, root) -> int:
+    """
+    A master renamed in Tally keeps its GUID. The import matches masters by name, so before it runs, a row
+    that carries a node's GUID under another name takes the node's name; otherwise the rename would arrive as
+    a second record and leave the old one behind. Skipped when the new name is already taken here.
+    """
+    renamed = 0
+    for tag, model, name_col in _identity_types():
+        for node in root.findall(f".//{tag}"):
+            name, guid, _ = _master_identity(node)
+            if not name or not guid or tally_parent_name(name) is None:
+                continue
+            row = (await db.execute(select(model).where(model.company_id == company_id, model.tally_guid == guid))).scalars().first()
+            if row is None or getattr(row, name_col.key) == name:
+                continue
+            taken = (await db.execute(select(model).where(model.company_id == company_id, name_col == name))).scalars().first()
+            if taken is not None:
+                continue
+            logger.info(f"[RENAMED IN TALLY] {tag} '{getattr(row, name_col.key)}' is now '{name}' (GUID {guid})")
+            if model is MstUom and row.name == row.symbol:
+                row.name = name
+            setattr(row, name_col.key, name)
+            renamed += 1
+    if renamed:
+        await db.flush()
+    return renamed
+
+
+async def store_master_identities(db: AsyncSession, company_id: int, root) -> None:
+    """Writes each imported master's GUID and master id onto the app's row of the same name."""
+    for tag, model, name_col in _identity_types():
+        for node in root.findall(f".//{tag}"):
+            name, guid, master_id = _master_identity(node)
+            if not name or not (guid or master_id):
+                continue
+            row = (await db.execute(select(model).where(model.company_id == company_id, name_col == name))).scalars().first()
+            if row is None:
+                continue
+            if guid and row.tally_guid != guid:
+                row.tally_guid = guid
+            if master_id and row.tally_master_id != master_id:
+                row.tally_master_id = master_id
+    await db.flush()
+
+
+async def get_or_create_group(db: AsyncSession, company_id: int, name: str, parent_name: Optional[str] = None, extra_data: dict = None, sync_parent: bool = False) -> MstGroup:
+    """sync_parent: the caller knows the group's parent for certain (it read the group itself from
+    Tally), so an existing group is moved to it, or to the top level when parent_name is empty."""
+    parent_name = tally_parent_name(parent_name)
+    # A ledger directly under Tally's top level (Profit & Loss A/c) names " Primary" as its group
+    name = (name or "").strip()
+
     # Check if group exists
     stmt = select(MstGroup).where(MstGroup.company_id == company_id, MstGroup.name == name)
     res = await db.execute(stmt)
     group = res.scalars().first()
-    if group:
-        if extra_data:
-            if 'alias_name' in extra_data: group.alias_name = extra_data['alias_name']
-            if 'is_addable' in extra_data: group.is_addable = extra_data['is_addable']
-            if 'is_revenue' in extra_data: group.is_revenue = extra_data['is_revenue']
-            if 'is_deemed_positive' in extra_data: group.is_deemed_positive = extra_data['is_deemed_positive']
-            if 'affects_gross_profit' in extra_data: group.affects_gross_profit = extra_data['affects_gross_profit']
-            if 'tally_guid' in extra_data: group.tally_guid = extra_data['tally_guid']
-            if 'tally_alter_id' in extra_data: group.tally_alter_id = extra_data['tally_alter_id']
-        return group
-        
+
     # Get parent id
     parent_id = None
-    if parent_name:
+    if parent_name and (group is None or sync_parent):
         parent_grp = await get_or_create_group(db, company_id, parent_name)
         parent_id = parent_grp.group_id
+
+    if group:
+        apply_group_extra_data(group, extra_data)
+        if sync_parent and group.parent_group_id != parent_id and parent_id != group.group_id:
+            group.parent_group_id = parent_id
+        return group
         
     group = MstGroup(
         company_id=company_id,
@@ -431,14 +588,7 @@ async def get_or_create_group(db: AsyncSession, company_id: int, name: str, pare
         affects_gross_profit=False,
         is_system_defined=False
     )
-    if extra_data:
-        if 'alias_name' in extra_data: group.alias_name = extra_data['alias_name']
-        if 'is_addable' in extra_data: group.is_addable = extra_data['is_addable']
-        if 'is_revenue' in extra_data: group.is_revenue = extra_data['is_revenue']
-        if 'is_deemed_positive' in extra_data: group.is_deemed_positive = extra_data['is_deemed_positive']
-        if 'affects_gross_profit' in extra_data: group.affects_gross_profit = extra_data['affects_gross_profit']
-        if 'tally_guid' in extra_data: group.tally_guid = extra_data['tally_guid']
-        if 'tally_alter_id' in extra_data: group.tally_alter_id = extra_data['tally_alter_id']
+    apply_group_extra_data(group, extra_data)
         
     db.add(group)
     await db.flush()
@@ -741,6 +891,8 @@ async def import_tally_xml(
     imported_currencies = 0
     imported_voucher_types = 0
     
+    await follow_tally_renames(db, company_id, root)
+
     # 1. Parse Groups (<GROUP>)
     for group_node in root.findall(".//GROUP"):
         name = group_node.get("NAME") or group_node.findtext("NAME")
@@ -751,27 +903,40 @@ async def import_tally_xml(
         extra_data = {}
         guid = group_node.findtext("GUID")
         if guid: extra_data['tally_guid'] = guid
-        alter_id = group_node.findtext("ALTERID")
-        if alter_id and alter_id.isdigit(): extra_data['tally_alter_id'] = int(alter_id)
+        alter_id = (group_node.findtext("ALTERID") or "").strip()  # Tally pads numbers with a leading space
+        if alter_id.isdigit(): extra_data['tally_alter_id'] = int(alter_id)
         
-        is_add = group_node.findtext("ISADDABLE")
-        if is_add: extra_data['is_addable'] = (is_add.lower() == 'yes')
-        
-        is_rev = group_node.findtext("ISREVENUE")
-        if is_rev: extra_data['is_revenue'] = (is_rev.lower() == 'yes')
-        
-        is_dp = group_node.findtext("ISDEEMEDPOSITIVE")
-        if is_dp: extra_data['is_deemed_positive'] = (is_dp.lower() == 'yes')
-        
-        affects_gp = group_node.findtext("AFFECTSGROSSPROFIT")
-        if affects_gp: extra_data['affects_gross_profit'] = (affects_gp.lower() == 'yes')
+        for tag, field in (
+            ("ISADDABLE", 'is_addable'), ("ISREVENUE", 'is_revenue'), ("ISDEEMEDPOSITIVE", 'is_deemed_positive'),
+            ("AFFECTSGROSSPROFIT", 'affects_gross_profit'), ("ISSUBLEDGER", 'is_subledger'),
+            ("ISBILLWISEON", 'is_billwise_on'), ("BASICGROUPISCALCULABLE", 'used_for_calculation'),
+        ):
+            value = (group_node.findtext(tag) or "").strip()
+            if value: extra_data[field] = (value.lower() == 'yes')
+
+        alloc = (group_node.findtext("ADDLALLOCTYPE") or "").strip()
+        if alloc: extra_data['method_to_allocate'] = alloc
         
         lang_name = group_node.findtext("LANGUAGENAME.LIST/NAME.LIST/TYPE/NAME")
         if lang_name and lang_name != name:
             extra_data['alias_name'] = lang_name
             
-        await get_or_create_group(db, company_id, name, parent_name, extra_data)
+        if tally_parent_name(name) is None:
+            continue  # "Primary" is Tally's marker for the top level, not a group
+        await get_or_create_group(db, company_id, name, parent_name, extra_data, sync_parent=True)
         imported_groups += 1
+
+    if imported_groups:
+        # Earlier imports stored the "Primary" marker as a real group; lift its children to the top level
+        marker_res = await db.execute(select(MstGroup).where(
+            MstGroup.company_id == company_id,
+            func.lower(func.trim(MstGroup.name)) == "primary"
+        ))
+        for marker in marker_res.scalars().all():
+            await db.execute(update(MstGroup).where(MstGroup.parent_group_id == marker.group_id).values(parent_group_id=None))
+            has_ledgers = (await db.execute(select(MstLedger.ledger_id).where(MstLedger.group_id == marker.group_id).limit(1))).first()
+            if not has_ledgers:
+                await db.delete(marker)
         
     await db.flush()
     if imported_groups > 0:
@@ -784,20 +949,47 @@ async def import_tally_xml(
         if not name:
             continue
         parent_name = sg_node.findtext("PARENT")
-        await get_or_create_stock_group(db, company_id, name, parent_name)
+        if tally_parent_name(name) is None:
+            continue  # "Primary" is Tally's marker for the top level, not a stock group
+        stock_group = await get_or_create_stock_group(db, company_id, name, parent_name, sync_parent=True)
+        # Tally lists the name first and its aliases after it
+        names = [(n.text or "").strip() for n in sg_node.findall("LANGUAGENAME.LIST/NAME.LIST/NAME")]
+        if names:
+            from app.models.tally_core import StockGroupAlias
+            wanted = [n for n in names[1:] if n]
+            current = (await db.execute(select(StockGroupAlias).where(StockGroupAlias.stock_group_id == stock_group.stock_group_id))).scalars().all()
+            if sorted(a.alias for a in current) != sorted(wanted):
+                for row in current:
+                    await db.delete(row)
+                for alias in wanted:
+                    db.add(StockGroupAlias(stock_group_id=stock_group.stock_group_id, alias=alias))
         imported_stock_groups += 1
+
+    if imported_stock_groups:
+        # Earlier imports stored the "Primary" marker as a real stock group: lift what sits under it to the
+        # top level and drop it
+        marker_res = await db.execute(select(MstStockGroup).where(
+            MstStockGroup.company_id == company_id,
+            func.lower(func.trim(MstStockGroup.name)) == "primary"
+        ))
+        for marker in marker_res.scalars().all():
+            await db.execute(update(MstStockGroup).where(MstStockGroup.parent_id == marker.stock_group_id).values(parent_id=None))
+            await db.execute(update(MstStockItem).where(MstStockItem.stock_group_id == marker.stock_group_id).values(stock_group_id=None))
+            await db.delete(marker)
         
     await db.flush()
     if imported_stock_groups > 0:
         await db.commit()
         logger.info(f"Committed {imported_stock_groups} stock groups")
 
-    # 1.2. Parse Units (<UNIT>)
-    for unit_node in root.findall(".//UNIT"):
-        symbol = unit_node.get("NAME") or unit_node.findtext("NAME") or unit_node.findtext("SYMBOL")
-        if not symbol:
-            continue
-        name = unit_node.findtext("NAME") or symbol
+    # 1.2. Parse Units (<UNIT>): simple units first, so a compound unit finds its two parts
+    unit_nodes = [n for n in root.findall(".//UNIT") if n.get("NAME") or n.findtext("NAME") or n.findtext("SYMBOL")]
+
+    def unit_is_compound(node) -> bool:
+        return (node.findtext("ISSIMPLEUNIT") or "").strip().lower() == "no" or bool((node.findtext("BASEUNITS") or "").strip())
+
+    for unit_node in sorted(unit_nodes, key=unit_is_compound):
+        symbol = (unit_node.get("NAME") or unit_node.findtext("NAME") or unit_node.findtext("SYMBOL")).strip()
         dec_places = 0
         dec_str = unit_node.findtext("DECIMALPLACES")
         if dec_str:
@@ -805,7 +997,25 @@ async def import_tally_xml(
                 dec_places = int(dec_str.strip())
             except ValueError:
                 pass
-        await get_or_create_uom(db, company_id, symbol, name, dec_places)
+        uom = await get_or_create_uom(db, company_id, symbol, symbol, dec_places)
+        formal = (unit_node.findtext("ORIGINALNAME") or "").strip()
+        if formal:
+            uom.original_name = formal
+        if dec_str:
+            uom.decimal_places = dec_places
+        if unit_is_compound(unit_node):
+            base_symbol = (unit_node.findtext("BASEUNITS") or "").strip()
+            add_symbol = (unit_node.findtext("ADDITIONALUNITS") or "").strip()
+            if base_symbol and add_symbol:
+                uom.is_simple_unit = False
+                uom.base_unit_id = (await get_or_create_uom(db, company_id, base_symbol)).unit_id
+                uom.additional_unit_id = (await get_or_create_uom(db, company_id, add_symbol)).unit_id
+                try:
+                    uom.conversion_factor = Decimal((unit_node.findtext("CONVERSION") or "").strip())
+                except Exception:
+                    pass
+        elif unit_node.findtext("ISSIMPLEUNIT"):
+            uom.is_simple_unit = True
         imported_uoms += 1
         
     await db.flush()
@@ -1166,15 +1376,27 @@ async def import_tally_xml(
             if parent:
                 parent_id = parent.cost_centre_id
 
+        # By Tally's own GUID first, so a cost centre renamed in Tally is followed instead of duplicated
+        cc_guid = (cc_node.findtext("GUID") or "").strip() or None
         existing_cc = (await db.execute(select(MstCostCentre).where(
-            MstCostCentre.company_id == company_id, 
-            func.lower(MstCostCentre.name) == name.lower()
-        ))).scalars().first()
+            MstCostCentre.company_id == company_id, MstCostCentre.tally_guid == cc_guid))).scalars().first() if cc_guid else None
+        if existing_cc is None:
+            existing_cc = (await db.execute(select(MstCostCentre).where(
+                MstCostCentre.company_id == company_id, 
+                func.lower(MstCostCentre.name) == name.lower()
+            ))).scalars().first()
+        elif existing_cc.name != name:
+            await _rename_employee_lines(db, company_id, existing_cc.name, name)
+            existing_cc.name = name
         
+        # An employee is a cost centre marked for payroll
+        for_payroll_text = (cc_node.findtext("FORPAYROLL") or "").strip().lower()
         if existing_cc:
             existing_cc.category_id = cat.category_id
             existing_cc.parent_id = parent_id
             existing_cc.alias = alias
+            if for_payroll_text:
+                existing_cc.for_payroll = for_payroll_text == "yes"
         else:
             new_cc = MstCostCentre(
                 company_id=company_id,
@@ -1182,13 +1404,46 @@ async def import_tally_xml(
                 alias=alias,
                 category_id=cat.category_id,
                 parent_id=parent_id,
+                for_payroll=for_payroll_text == "yes",
                 is_active=True
             )
             db.add(new_cc)
+        await _read_payroll_cost_centre(db, company_id, existing_cc or new_cc, cc_node, cc_guid)
             
     await db.flush()
     await db.commit()
     logger.info(f"Committed Cost Centres")
+
+    # 1.4b Attendance types (<ATTENDANCETYPE NAME="...">; the same tag inside a voucher is a plain value)
+    for at_node in root.findall(".//ATTENDANCETYPE"):
+        at_name = (at_node.get("NAME") or "").strip()
+        if not at_name:
+            continue
+        kind = (at_node.findtext("ATTENDANCEPRODUCTIONTYPE") or "").strip() or "Attendance / Leave with Pay"
+        at_guid = (at_node.findtext("GUID") or "").strip() or None
+        existing_at = (await db.execute(select(MstAttendanceType).where(
+            MstAttendanceType.company_id == company_id, MstAttendanceType.tally_guid == at_guid))).scalars().first() if at_guid else None
+        if existing_at is None:
+            existing_at = (await db.execute(select(MstAttendanceType).where(
+                MstAttendanceType.company_id == company_id, MstAttendanceType.name == at_name))).scalars().first()
+        elif existing_at.name != at_name:
+            # Renamed in Tally: the attendance lines that name it follow
+            await db.execute(update(TrnAttendance).where(
+                TrnAttendance.attendancetype_name == existing_at.name,
+                TrnAttendance.voucher_id.in_(select(TrnVoucher.voucher_id).where(TrnVoucher.company_id == company_id))).values(attendancetype_name=at_name))
+            existing_at.name = at_name[:100]
+        if existing_at is None:
+            existing_at = MstAttendanceType(company_id=company_id, name=at_name[:100])
+            db.add(existing_at)
+        existing_at.type_of_attendance = kind[:50]
+        if at_node.find("ATTENDANCEPERIOD") is not None or at_node.find("BASEUNITS") is not None:
+            unit = _trim_marker(at_node.findtext("BASEUNITS"))
+            existing_at.period = (at_node.findtext("ATTENDANCEPERIOD") or "").strip()[:20] or None
+            existing_at.unit_name = unit[:50] if unit and unit.lower() != "not applicable" else None
+        if at_guid:
+            existing_at.tally_guid = at_guid
+            existing_at.tally_master_id = int(at_node.findtext("MASTERID").strip()) if (at_node.findtext("MASTERID") or "").strip().isdigit() else existing_at.tally_master_id
+    await db.flush()
 
     # 1.5. Parse Godowns (<GODOWN>)
     for gd_node in root.findall(".//GODOWN"):
@@ -1210,6 +1465,8 @@ async def import_tally_xml(
         if not name:
             continue
         parent_name = sc_node.findtext("PARENT")
+        if tally_parent_name(name) is None:
+            continue
         await get_or_create_stock_category(db, company_id, name, parent_name)
         imported_stock_categories += 1
         
@@ -1225,7 +1482,11 @@ async def import_tally_xml(
             continue
         try:
             parent_name = si_node.findtext("PARENT")
-            category_name = si_node.findtext("CATEGORY")
+            # "Not Applicable" is how Tally says "no category"; it is a marker, not a category
+            has_category_tag = si_node.find("CATEGORY") is not None
+            category_name = (si_node.findtext("CATEGORY") or "").strip()
+            if category_name.lower() == "not applicable":
+                category_name = ""
             uom_symbol = si_node.findtext("BASEUNITS")
             
             op_bal_str = si_node.findtext("OPENINGBALANCE")
@@ -1275,12 +1536,17 @@ async def import_tally_xml(
             costing_method = si_node.findtext("COSTINGMETHOD")
             valuation_method = si_node.findtext("VALUATIONMETHOD")
             gst_type_of_supply = si_node.findtext("GSTTYPEOFSUPPLY") or "Goods"
-            is_batch_wise = (si_node.findtext("ISBATCHWISEON") or "No").strip().lower() in ("yes", "true", "1")
-            is_perishable = (si_node.findtext("ISPERISHABLEON") or "No").strip().lower() in ("yes", "true", "1")
-            ignore_negative = (si_node.findtext("IGNORENEGATIVESTOCK") or "No").strip().lower() in ("yes", "true", "1")
+            # None when the export did not carry the flag: an absent tag says nothing, and must not turn
+            # batch tracking off on an item that has it
+            def flag(tag: str):
+                text = si_node.findtext(tag)
+                return None if text is None else text.strip().lower() in ("yes", "true", "1")
+            is_batch_wise = flag("ISBATCHWISEON")
+            is_perishable = flag("ISPERISHABLEON")
+            ignore_negative = flag("IGNORENEGATIVESTOCK")
 
             stock_group = None
-            if parent_name:
+            if tally_parent_name(parent_name):  # an item directly under "Primary" has no stock group
                 stock_group = await get_or_create_stock_group(db, company_id, parent_name)
                 
             stock_category = None
@@ -1304,6 +1570,8 @@ async def import_tally_xml(
                     item.stock_group_id = stock_group.stock_group_id
                 if stock_category:
                     item.stock_category_id = stock_category.stock_category_id
+                elif has_category_tag:
+                    item.stock_category_id = None
                 item.unit_id = uom.unit_id
                 item.opening_qty = op_qty
                 item.opening_rate = op_rate
@@ -1317,9 +1585,12 @@ async def import_tally_xml(
                     item.valuation_method = valuation_method
                 if gst_type_of_supply:
                     item.gst_type_of_supply = gst_type_of_supply
-                item.is_batch_wise = is_batch_wise
-                item.is_perishable = is_perishable
-                item.ignore_negative_stock = ignore_negative
+                if is_batch_wise is not None:
+                    item.is_batch_wise = is_batch_wise
+                if is_perishable is not None:
+                    item.is_perishable = is_perishable
+                if ignore_negative is not None:
+                    item.ignore_negative_stock = ignore_negative
                 if alter_id:
                     item.tally_alter_id = alter_id
                 await db.flush()
@@ -1340,14 +1611,74 @@ async def import_tally_xml(
                     costing_method=costing_method,
                     valuation_method=valuation_method,
                     gst_type_of_supply=gst_type_of_supply,
-                    is_batch_wise=is_batch_wise,
-                    is_perishable=is_perishable,
-                    ignore_negative_stock=ignore_negative,
+                    is_batch_wise=bool(is_batch_wise),
+                    is_perishable=bool(is_perishable),
+                    ignore_negative_stock=bool(ignore_negative),
                     is_active=True,
                     tally_alter_id=alter_id
                 )
                 db.add(item)
                 await db.flush()
+
+            # What a later push from here sends back whole, and would otherwise wipe in Tally:
+            # the description, the alternate unit and the aliases
+            description = (si_node.findtext("DESCRIPTION") or "").strip()
+            if description:
+                item.description = description
+
+            alt_symbol = tally_parent_name(si_node.findtext("ADDITIONALUNITS"))
+            if alt_symbol and alt_symbol.lower() != "not applicable":
+                alt_uom = await get_or_create_uom(db, company_id, alt_symbol)
+                item.alt_unit_id = alt_uom.unit_id
+                # Tally: CONVERSION alternate units = DENOMINATOR base units; kept as that pair, so 1:3 stays exact
+                try:
+                    conversion = Decimal((si_node.findtext("CONVERSION") or "").strip())
+                    denominator = Decimal((si_node.findtext("DENOMINATOR") or "1").strip() or "1")
+                    if conversion > 0 and denominator > 0:
+                        item.alt_unit_conversion = conversion
+                        item.alt_unit_denominator = denominator
+                except Exception:
+                    pass
+            elif si_node.find("ADDITIONALUNITS") is not None:
+                item.alt_unit_id = None
+                item.alt_unit_conversion = None
+                item.alt_unit_denominator = None
+
+            alias_names = [(n.text or "").strip() for n in si_node.findall("LANGUAGENAME.LIST/NAME.LIST/NAME")]
+            if alias_names:
+                from app.models.tally_core import StockItemAlias
+                wanted = [n for n in alias_names[1:] if n]
+                current = (await db.execute(select(StockItemAlias).where(StockItemAlias.stock_item_id == item.stock_item_id))).scalars().all()
+                if sorted(a.alias for a in current) != sorted(wanted):
+                    for row in current:
+                        await db.delete(row)
+                    for alias in wanted:
+                        db.add(StockItemAlias(stock_item_id=item.stock_item_id, alias=alias, alias_type="name"))
+            # Opening stock by godown and batch. A push sends this list back whole, so it has to hold what
+            # Tally has, batch names included, or an edit here would rename the batches there.
+            batch_nodes = [b for b in si_node.findall("BATCHALLOCATIONS.LIST") if (b.findtext("OPENINGBALANCE") or "").strip()]
+            if batch_nodes or si_node.find("BATCHALLOCATIONS.LIST") is not None:
+                from app.models.tally_core import StockItemOpeningBalance
+
+                def leading_number(text: Optional[str]) -> Decimal:
+                    m = re.match(r"\s*-?\s*([\d,]+(?:\.\d+)?)", text or "")
+                    return Decimal(m.group(1).replace(",", "")) if m else Decimal("0")
+
+                for row in (await db.execute(select(StockItemOpeningBalance).where(StockItemOpeningBalance.stock_item_id == item.stock_item_id))).scalars().all():
+                    await db.delete(row)
+                for b in batch_nodes:
+                    qty = leading_number(b.findtext("OPENINGBALANCE"))
+                    if qty <= 0:
+                        continue
+                    godown_name = tally_parent_name(b.findtext("GODOWNNAME")) or "Main Location"
+                    godown = await get_or_create_godown(db, company_id, godown_name)
+                    rate = leading_number(b.findtext("OPENINGRATE"))
+                    amount = leading_number(b.findtext("OPENINGVALUE")) or (qty * rate)
+                    db.add(StockItemOpeningBalance(
+                        stock_item_id=item.stock_item_id, godown_id=godown.godown_id,
+                        batch_name=(b.findtext("BATCHNAME") or "").strip() or "Primary Batch",
+                        quantity=qty, rate=rate, amount=amount))
+            await db.flush()
 
             # Parse HSN Details for Stock Item (<HSNDETAILS.LIST>)
             for hsn_node in si_node.findall(".//HSNDETAILS.LIST"):
@@ -1392,6 +1723,16 @@ async def import_tally_xml(
         
     await db.flush()
     if imported_stock_items > 0:
+        # Earlier imports stored Tally's "Not Applicable" marker as a stock category; drop it once unused
+        marker_res = await db.execute(select(MstStockCategory).where(
+            MstStockCategory.company_id == company_id,
+            func.lower(func.trim(MstStockCategory.name)) == "not applicable"
+        ))
+        for marker in marker_res.scalars().all():
+            in_use = (await db.execute(select(MstStockItem.stock_item_id).where(
+                MstStockItem.stock_category_id == marker.stock_category_id).limit(1))).first()
+            if not in_use:
+                await db.delete(marker)
         await db.commit()
         logger.info(f"Committed {imported_stock_items} stock items (total)")
     
@@ -1823,7 +2164,33 @@ async def import_tally_xml(
             logger.error(f"❌ [LEDGER ERROR] Failed importing ledger '{name}': {str(l_err)}", exc_info=True)
             import_errors.append(f"Ledger '{name}': {str(l_err)}")
         
+    # A ledger with a pay type is a pay head (Basic Salary, PF deduction, ...)
+    for ledger_node in root.findall(".//LEDGER"):
+        pay_head_name = (ledger_node.get("NAME") or ledger_node.findtext("NAME") or "").strip()
+        pay_type = (ledger_node.findtext("PAYTYPE") or "").strip()
+        if not pay_head_name or ledger_node.find("PAYTYPE") is None:
+            continue
+        existing_ph = (await db.execute(select(MstPayHead).where(
+            MstPayHead.company_id == company_id, MstPayHead.name == pay_head_name))).scalars().first()
+        if not pay_type or pay_type.lower() == "not applicable":
+            if existing_ph:
+                await db.delete(existing_ph)
+        else:
+            if not existing_ph:
+                existing_ph = MstPayHead(company_id=company_id, name=pay_head_name[:100])
+                db.add(existing_ph)
+            existing_ph.pay_head_type = pay_type[:50]
+            pay_ledger = (await db.execute(select(MstLedger).where(
+                MstLedger.company_id == company_id, func.lower(MstLedger.name) == pay_head_name.lower()))).scalars().first()
+            if pay_ledger:
+                existing_ph.ledger_id, existing_ph.under_group_id = pay_ledger.ledger_id, pay_ledger.group_id
+            if ledger_node.find("CALCULATIONTYPE") is not None:
+                existing_ph.calculation_type = (ledger_node.findtext("CALCULATIONTYPE") or "").strip()[:50] or None
+            if ledger_node.find("PAYSLIPNAME") is not None:
+                existing_ph.payslip_name = (ledger_node.findtext("PAYSLIPNAME") or "").strip()[:100] or None
+
     await db.flush()
+    await store_master_identities(db, company_id, root)
     if imported_ledgers > 0:
         await db.commit()
         logger.info(f"Committed {imported_ledgers} ledgers (total)")
@@ -1968,6 +2335,17 @@ async def import_tally_xml(
 
             # Check if voucher already exists by GUID (in-memory lookup)
             voucher = vouchers_by_guid.get(guid)
+
+            # A voucher this app sent whose reply never arrived: the app does not know its GUID yet, but Tally
+            # hands back the identifier the app sent it under, so it is recognised instead of imported twice
+            remote_alt = (v_node.findtext("REMOTEALTGUID") or "").strip()
+            if not voucher and remote_alt:
+                sent = (await db.execute(select(TrnVoucher).where(
+                    TrnVoucher.company_id == company_id, TrnVoucher.tally_remote_id == remote_alt))).scalars().first()
+                if sent is not None and (sent.tally_guid is None or sent.tally_guid == guid):
+                    logger.info(f"🔗 [VOUCHER MATCH] Voucher #{sent.voucher_id} recognised by the identifier it was sent under; GUID {guid}")
+                    sent.tally_guid = guid
+                    voucher = vouchers_by_guid[guid] = sent
             
             # Fallback dedup lookup: by (company_id, voucher_type_id, voucher_number, voucher_date) if GUID is generated/absent
             if not voucher and guid.startswith("GEN-"):
@@ -2033,6 +2411,8 @@ async def import_tally_xml(
                 await db.execute(text(f"DELETE FROM `{tally_db}`.bill_allocations WHERE voucher_entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
                 await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid}"))
                 await db.execute(text(f"DELETE FROM `{tally_db}`.eway_bills WHERE voucher_id = {vid}"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.trn_attendance WHERE voucher_id = {vid}"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.trn_payhead WHERE voucher_id = {vid}"))
                 await db.flush()
             else:
                 logger.info(f"➕ [VOUCHER NEW] Creating voucher #{v_num} ({vtype_name}, Date: {v_date}, Alter: {alter_id})")
@@ -2070,6 +2450,15 @@ async def import_tally_xml(
                 vouchers_by_guid[guid] = voucher
                 
             voucher.voucher_number = v_num
+            # Keep the app's counter ahead of Tally's, so a provisional number given offline is a likely one
+            if v_num.isdigit() and (vtype.numbering_method or "Automatic") == "Automatic" and int(v_num) >= (vtype.next_number or 1):
+                vtype.next_number = int(v_num) + 1
+            # The number is Tally's own, and its master id is what addresses the voucher in a later push
+            voucher.number_is_provisional = False
+            master_id_str = (v_node.findtext("MASTERID") or "").strip()
+            if master_id_str.isdigit():
+                voucher.tally_master_id = int(master_id_str)
+            voucher.tally_date = v_date
             voucher.voucher_date = v_date
             voucher.effective_date = effective_date
             if reference_date: voucher.reference_date = reference_date
@@ -2286,8 +2675,13 @@ async def import_tally_xml(
                     db.add(cc_alloc)
                     await db.flush()
                     
-            # Parse inventory entries inside <ALLINVENTORYENTRIES.LIST>
-            for inv_node in v_node.findall(".//ALLINVENTORYENTRIES.LIST"):
+            # A Stock Journal keeps what it produces in INVENTORYENTRIESIN.LIST and what it consumes in
+            # INVENTORYENTRIESOUT.LIST; Tally may repeat those lines in ALLINVENTORYENTRIES.LIST, so when the
+            # two lists are there, they alone are read. Everything else uses ALLINVENTORYENTRIES.LIST.
+            journal_nodes = ([(n, "destination") for n in v_node.findall("INVENTORYENTRIESIN.LIST")]
+                             + [(n, "source") for n in v_node.findall("INVENTORYENTRIESOUT.LIST")])
+            journal_nodes = [(n, flow) for n, flow in journal_nodes if n.findtext("STOCKITEMNAME")]
+            for inv_node, flow_type in (journal_nodes or [(n, None) for n in v_node.findall(".//ALLINVENTORYENTRIES.LIST")]):
                 item_name = inv_node.findtext("STOCKITEMNAME")
                 if not item_name:
                     continue
@@ -2368,6 +2762,12 @@ async def import_tally_xml(
                 # Get or create MstStockItem (with in-memory cache)
                 is_deemed_pos = inv_node.findtext("ISDEEMEDPOSITIVE") or "No"
                 is_inward = is_deemed_pos.strip().lower() == "yes"
+                if flow_type:
+                    is_inward = flow_type == "destination"
+                physical_count = is_physical_stock(vtype)
+                counted_qty = None
+                if physical_count:
+                    flow_type = None
 
                 item_key = item_name.strip().lower()
                 item = items_by_name.get(item_key)
@@ -2404,15 +2804,13 @@ async def import_tally_xml(
                     items_by_name[item_key] = item
                 else:
                     items_by_name[item_key] = item
-                    if item.stock_group_id is None:
-                        stock_group = await resolve_stock_group_dynamically(
-                            db=db,
-                            company_id=company_id,
-                            candidate_group=cand_group_raw,
-                            item_name=item_name,
-                            party_name=party_context
-                        )
-                        item.stock_group_id = stock_group.stock_group_id
+                    # An item Tally keeps at the top level stays there: giving it a guessed group here
+                    # would send that group back to Tally as its parent on the next push
+                    if physical_count:
+                        # A stock count: kept as the movement that brings the books to the counted figure
+                        counted_qty = qty_val
+                        difference = counted_qty - (item.closing_qty or Decimal("0.000"))
+                        is_inward, qty_val, inv_amt = difference >= 0, abs(difference), Decimal("0.00")
                     if is_inward:
                         item.closing_qty = (item.closing_qty or Decimal("0.000")) + qty_val
                         item.closing_value = (item.closing_value or Decimal("0.00")) + inv_amt
@@ -2463,15 +2861,39 @@ async def import_tally_xml(
                     stock_item_id=item.stock_item_id,
                     quantity=qty_val,
                     billed_qty=qty_val,
-                    actual_quantity=act_qty_val,
+                    actual_quantity=counted_qty if counted_qty is not None else act_qty_val,
                     rate=rate_val,
                     amount=inv_amt,
                     discount_percent=disc_val,
                     item_description=item_desc,
-                    is_inward=is_inward
+                    is_inward=is_inward,
+                    is_deemed_positive=is_inward,
+                    flow_type=flow_type
                 )
                 db.add(stock_entry)
                 await db.flush()
+
+            # Attendance lines: an employee, an attendance type and how much of it
+            for att_node in v_node.findall("ATTENDANCEENTRIES.LIST"):
+                att_employee = (att_node.findtext("NAME") or "").strip()
+                if not att_employee:
+                    continue
+                db.add(TrnAttendance(voucher_id=voucher.voucher_id, guid=guid[:64], employee_name=att_employee,
+                                     attendancetype_name=(att_node.findtext("ATTENDANCETYPE") or "").strip(),
+                                     time_value=_decimal_or_none(att_node.findtext("ATTDTYPETIMEVALUE")),
+                                     type_value=_decimal_or_none(att_node.findtext("ATTDTYPEVALUE"))))
+
+            # Payroll lines: per cost category, per employee, the pay heads and their amounts. Tally uses the
+            # same lists for the cost centre allocations of ordinary vouchers, so only Payroll vouchers count.
+            for cat_node in (v_node.findall("CATEGORYENTRY.LIST") if is_payroll(vtype) else []):
+                pay_category = (cat_node.findtext("CATEGORY") or "").strip()
+                for emp_node in cat_node.findall("EMPLOYEEENTRIES.LIST"):
+                    pay_employee = (emp_node.findtext("EMPLOYEENAME") or "").strip()
+                    for head_node in emp_node.findall("PAYHEADALLOCATIONS.LIST"):
+                        head_name = (head_node.findtext("PAYHEADNAME") or "").strip()
+                        if pay_employee and head_name:
+                            db.add(TrnPayHead(voucher_id=voucher.voucher_id, guid=guid[:64], category=pay_category, employee_name=pay_employee,
+                                              payhead_name=head_name, amount=_decimal_or_none(head_node.findtext("AMOUNT"))))
 
             # Parse e-Way Bill Details (<EWAYBILLDETAILS.LIST>)
             for eb_node in v_node.findall(".//EWAYBILLDETAILS.LIST"):
@@ -2526,6 +2948,17 @@ async def import_tally_xml(
                     db.add(eb_obj)
                     await db.flush()
                     
+            if journal_nodes and not total_amt and not is_physical_stock(vtype):
+                # A Stock Journal has no ledger lines to total: its value is what it produces (else consumes)
+                def line_amount(node) -> Decimal:
+                    try:
+                        return abs(Decimal((node.findtext("AMOUNT") or "0").replace(",", "").strip() or "0"))
+                    except Exception:
+                        return Decimal("0.00")
+
+                def side_total(flow):
+                    return sum((line_amount(n) for n, f in journal_nodes if f == flow), Decimal("0.00"))
+                total_amt = side_total("destination") or side_total("source")
             voucher.total_amount = total_amt
             imported_vouchers += 1
             
@@ -2537,6 +2970,13 @@ async def import_tally_xml(
             logger.error(f"❌ [VOUCHER ERROR] Failed importing voucher #{v_num} ({vtype_name}, GUID: {guid}): {str(v_err)}", exc_info=True)
             import_errors.append(f"Voucher #{v_num} ({vtype_name}): {str(v_err)}")
         
+    if imported_vouchers:
+        # Vouchers arrive in no particular date order; items covered by a Physical Stock count are settled
+        # once everything is in
+        from app.services.stock_counts import items_with_counts, rebalance_stock_counts
+        await db.flush()
+        await rebalance_stock_counts(db, company_id, await items_with_counts(db, company_id))
+
     # Final commit for any remaining records
     await db.commit()
     

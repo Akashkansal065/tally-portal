@@ -1503,3 +1503,48 @@ class BankStatementTransaction(Base):
     matched_allocation = relationship("TrnBankAllocation", foreign_keys=[matched_allocation_id])
     matched_by = relationship("User", foreign_keys=[matched_by_user_id])
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_user_id])
+
+# ---------------------------------------------------------------------------------------------------
+# One pending sync event per record
+# ---------------------------------------------------------------------------------------------------
+# A push to Tally is built from the record as it is when the push runs, so two pending rows for the same
+# record and action would send the same thing twice. Whatever queues a row, for whatever record type,
+# older pending rows it makes redundant are closed here:
+#   * the same action for the same record;
+#   * a pending Create or Alter once a Delete is queued.
+# The name Tally still knows the record by (snapshot_data["tally_name"], set on a rename) is carried over
+# from the oldest pending row, so a rename or delete that follows an unsent rename still finds the object.
+from sqlalchemy import event, select as _select, update as _update
+from sqlalchemy.orm import Session as _Session
+
+
+@event.listens_for(_Session, "after_flush")
+def _close_redundant_sync_rows(session, flush_context):
+    new_rows = [obj for obj in session.new if isinstance(obj, SyncQueue) and obj.sync_id is not None]
+    for row in new_rows:
+        if row.is_processed:
+            continue
+        actions = [row.action]
+        if (row.action or "").lower() == "delete":
+            actions += ["Create", "Alter"]
+        older = session.execute(
+            _select(SyncQueue.sync_id, SyncQueue.snapshot_data).where(
+                SyncQueue.company_id == row.company_id,
+                SyncQueue.record_type == row.record_type,
+                SyncQueue.record_id == row.record_id,
+                SyncQueue.action.in_(actions),
+                SyncQueue.is_processed == False,
+                SyncQueue.sync_id < row.sync_id,
+            ).order_by(SyncQueue.sync_id.asc())
+        ).all()
+        if not older:
+            continue
+        earlier_name = next((snap.get("tally_name") for _, snap in older if snap and snap.get("tally_name")), None)
+        if earlier_name:
+            snapshot = dict(row.snapshot_data or {})
+            snapshot["tally_name"] = earlier_name
+            session.execute(_update(SyncQueue).where(SyncQueue.sync_id == row.sync_id).values(snapshot_data=snapshot))
+        session.execute(
+            _update(SyncQueue).where(SyncQueue.sync_id.in_([sync_id for sync_id, _ in older]))
+            .values(is_processed=True, status="SUPERSEDED")
+        )

@@ -137,6 +137,8 @@ class TrnPayHead(Base):
     category = Column(String(1024), nullable=True)
     employee_name = Column(String(1024), nullable=True)
     employee_sort_order = Column(Integer, nullable=True)
+    # The Payroll voucher this line belongs to
+    voucher_id = Column(BigInteger, nullable=True, index=True)
     payhead_name = Column(String(1024), nullable=True)
     payhead_sort_order = Column(Integer, nullable=True)
     amount = Column(Numeric(17, 2), nullable=True)
@@ -146,6 +148,8 @@ class TrnAttendance(Base):
     __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     guid = Column(String(64), nullable=True, index=True)
+    # The Attendance voucher this line belongs to
+    voucher_id = Column(BigInteger, nullable=True, index=True)
     employee_name = Column(String(1024), nullable=True)
     attendancetype_name = Column(String(1024), nullable=True)
     time_value = Column(Numeric(17, 2), nullable=True)
@@ -208,10 +212,37 @@ class MstCostCentre(Base):
     name = Column(String(100), nullable=False)
     alias = Column(String(100), nullable=True)
     parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centres.cost_centre_id", ondelete="SET NULL"), nullable=True, index=True)
+    # Tally keeps employees as cost centres marked "for payroll"
+    for_payroll = Column(Boolean, default=False)
+    # An employee group is a payroll cost centre that only holds other ones
+    is_employee_group = Column(Boolean, default=False)
+    employee_number = Column(String(50), nullable=True)
+    date_of_join = Column(Date, nullable=True)
+    designation = Column(String(100), nullable=True)
+    gender = Column(String(20), nullable=True)
+    # Tally's own identifiers for the cost centre, so a rename on either side is followed
+    tally_guid = Column(String(100), nullable=True, index=True)
+    tally_master_id = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)
     
     category = relationship("MstCostCategory")
     parent = relationship("MstCostCentre", remote_side=[cost_centre_id])
+    salary_rates = relationship("MstEmployeeSalaryRate", back_populates="employee", cascade="all, delete-orphan", order_by="MstEmployeeSalaryRate.position")
+
+
+class MstEmployeeSalaryRate(Base):
+    """One line of an employee's salary details (Tally: Define Salary): a pay head and its rate."""
+    __tablename__ = "employee_salary_rates"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    rate_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    cost_centre_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.cost_centres.cost_centre_id", ondelete="CASCADE"), nullable=False, index=True)
+    effective_from = Column(Date, nullable=False)
+    pay_head_name = Column(String(100), nullable=False)
+    rate = Column(Numeric(18, 2), nullable=True)
+    position = Column(Integer, default=0)
+
+    employee = relationship("MstCostCentre", back_populates="salary_rates")
 
 class MstCostCentreClass(Base):
     __tablename__ = "cost_centre_classes"
@@ -245,6 +276,11 @@ class MstAttendanceType(Base):
     name = Column(String(100), nullable=False)
     type_of_attendance = Column(String(50), default="Present")
     unit_id = Column(Integer, nullable=True)
+    # Attendance and leave are counted in a period (Days); production in a unit of work
+    period = Column(String(20), nullable=True)
+    unit_name = Column(String(50), nullable=True)
+    tally_guid = Column(String(100), nullable=True, index=True)
+    tally_master_id = Column(Integer, nullable=True)
 
 class MstPayHead(Base):
     __tablename__ = "pay_heads"
@@ -256,6 +292,10 @@ class MstPayHead(Base):
     income_type = Column(String(50), default="Fixed")
     under_group_id = Column(Integer, nullable=True)
     is_statutory = Column(Boolean, default=False)
+    # A pay head is a ledger in Tally; this is the app's ledger for it
+    ledger_id = Column(Integer, nullable=True, index=True)
+    payslip_name = Column(String(100), nullable=True)
+    calculation_type = Column(String(50), nullable=True)
 
 # ==========================================
 # MOVED FROM ledger.py
@@ -301,6 +341,8 @@ class MstGroup(Base):
 
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
+    # Tally's own identifiers for this record, stored once it has been sent to or read from Tally
+    tally_master_id = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
@@ -357,6 +399,8 @@ class MstLedger(Base):
     tax_classification_name = Column(String(100), nullable=True)
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(Integer, nullable=True)
+    # Tally's own identifiers for this record, stored once it has been sent to or read from Tally
+    tally_master_id = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now())
     group = relationship("MstGroup", back_populates="ledgers")
     company = relationship("Company")
@@ -666,6 +710,16 @@ class TrnVoucher(Base):
     irn_source = Column(String(50), nullable=True)
     tally_guid = Column(String(50), nullable=True, index=True)
     tally_alter_id = Column(Integer, nullable=True)
+    # The REMOTEID this voucher was first sent to Tally under. Tally matches a re-send on it but never gives it
+    # back, and its own GUID does not work in its place, so it is kept here for the life of the voucher.
+    tally_remote_id = Column(String(64), nullable=True, index=True)
+    # Tally's master id: the only identifier that addresses a voucher keyed inside Tally
+    tally_master_id = Column(Integer, nullable=True, index=True)
+    # The date the voucher has in Tally. A master id only finds the voucher together with this date, so an
+    # edit that moves the date still has to be addressed to the old one.
+    tally_date = Column(Date, nullable=True)
+    # True until Tally has confirmed the number: Tally numbers its automatic voucher types itself
+    number_is_provisional = Column(Boolean, default=False)
     created_by = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -837,6 +891,9 @@ class MstUom(Base):
     additional_unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="SET NULL"), nullable=True)
     conversion_factor = Column(Numeric(12, 4), nullable=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
+    # Tally's own identifiers for this record, stored once it has been sent to or read from Tally
+    tally_master_id = Column(Integer, nullable=True, index=True)
+    tally_guid = Column(String(64), nullable=True, index=True)
     
     base_unit = relationship("MstUom", foreign_keys=[base_unit_id], remote_side=[unit_id])
     additional_unit = relationship("MstUom", foreign_keys=[additional_unit_id], remote_side=[unit_id])
@@ -860,6 +917,9 @@ class MstStockGroup(Base):
     parent_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_groups.stock_group_id", ondelete="SET NULL"), nullable=True)
     is_active = Column(Boolean, default=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
+    # Tally's own identifiers for this record, stored once it has been sent to or read from Tally
+    tally_master_id = Column(Integer, nullable=True, index=True)
+    tally_guid = Column(String(64), nullable=True, index=True)
     
     parent = relationship("MstStockGroup", remote_side=[stock_group_id], backref="sub_groups")
     items = relationship("MstStockItem", back_populates="group")
@@ -992,6 +1052,9 @@ class MstStockItem(Base):
     # New Phase C fields
     alt_unit_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.units_of_measure.unit_id", ondelete="SET NULL"), nullable=True)
     alt_unit_conversion = Column(Numeric(12, 4), nullable=True)
+    # Tally keeps the ratio as a pair: alt_unit_conversion alternate units = alt_unit_denominator base units.
+    # Kept as a pair so ratios such as 1:3 stay exact; empty means 1.
+    alt_unit_denominator = Column(Numeric(12, 4), nullable=True)
     description = Column(TEXT, nullable=True)
     standard_cost_price = Column(Numeric(14, 2), nullable=True)
     standard_selling_price = Column(Numeric(14, 2), nullable=True)
@@ -1019,6 +1082,9 @@ class MstStockItem(Base):
     
     is_active = Column(Boolean, default=True)
     tally_alter_id = Column(BigInteger, nullable=True, index=True)
+    # Tally's own identifiers for this record, stored once it has been sent to or read from Tally
+    tally_master_id = Column(Integer, nullable=True, index=True)
+    tally_guid = Column(String(64), nullable=True, index=True)
     
     group = relationship("MstStockGroup", back_populates="items")
     category = relationship("MstStockCategory", back_populates="items")

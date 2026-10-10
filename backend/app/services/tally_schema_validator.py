@@ -97,16 +97,8 @@ class TallySchemaValidator:
     @staticmethod
     def escape_xml(text: Any) -> str:
         """Escape XML special characters according to Tally XML requirements."""
-        if text is None:
-            return ""
-        s = str(text)
-        return (
-            s.replace("&", "&amp;")
-             .replace("<", "&lt;")
-             .replace(">", "&gt;")
-             .replace('"', "&quot;")
-             .replace("'", "&apos;")
-        )
+        from app.services.tally_xml import x
+        return x(text)
 
     @staticmethod
     def format_date(d: Union[date, datetime, str, None]) -> str:

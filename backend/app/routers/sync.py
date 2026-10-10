@@ -1,3 +1,5 @@
+import os
+import threading
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,7 @@ from typing import List, Dict, Any, Optional
 import json
 import re
 from decimal import Decimal
+from datetime import datetime
 import urllib.request
 import logging
 import uuid
@@ -22,11 +25,15 @@ from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, Del
 from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting, MstStockItem, MstVoucherType
 from app.services.tally_xml_importer import import_tally_xml
 from app.services.tally_schema_validator import TallySchemaValidator
+from app.services.tally_xml import x, xml_tag, clean_xml_str
 
 logger = logging.getLogger("uvicorn.error")
 schema_validator = TallySchemaValidator()
 
 router = APIRouter(prefix="/sync", tags=["Tally Synchronization"])
+
+# Global lock to serialize direct outbound HTTP requests to Tally Prime (:9000)
+_TALLY_HTTP_LOCK = threading.Lock()
 
 # Global lock to serialize inbound sync background tasks and prevent deadlocks
 sync_lock = asyncio.Lock()
@@ -40,7 +47,8 @@ def generate_curl_command(tally_url: str, payload: str, format_type: str = "XML"
 def parse_tally_response_metrics(resp_str: str) -> dict:
     """Extracts structured counts and error messages from Tally XML / JSON response."""
     metrics = {
-        "created": 0, "altered": 0, "deleted": 0, "errors": 0, "exceptions": 0,
+        "created": 0, "altered": 0, "deleted": 0, "cancelled": 0, "ignored": 0,
+        "errors": 0, "exceptions": 0,
         "vchnumber": None, "error_summary": None, "status": "SUCCESS"
     }
     if not resp_str or not resp_str.strip():
@@ -55,6 +63,13 @@ def parse_tally_response_metrics(resp_str: str) -> dict:
         if cleaned_errors:
             metrics["error_summary"] = " | ".join(cleaned_errors)
             metrics["status"] = "EXCEPTION" if any("does not exist" in err.lower() for err in cleaned_errors) else "FAILED"
+
+    # Extract top-level EXCEPTION tag if present (Tally fatal envelope errors)
+    if not metrics["error_summary"] and "<EXCEPTION>" in resp_str:
+        m_exc = re.search(r'<EXCEPTION>(.*?)</EXCEPTION>', resp_str, re.DOTALL)
+        if m_exc:
+            metrics["error_summary"] = m_exc.group(1).replace("&apos;", "'").replace("&quot;", '"').strip()
+            metrics["status"] = "EXCEPTION"
 
     # Extract general ERROR tag if present
     if not metrics["error_summary"] and "<ERROR>" in resp_str:
@@ -71,6 +86,12 @@ def parse_tally_response_metrics(resp_str: str) -> dict:
     
     m_d = re.search(r'<DELETED>(\d+)</DELETED>', resp_str)
     if m_d: metrics["deleted"] = int(m_d.group(1))
+
+    m_can = re.search(r'<CANCELLED>(\d+)</CANCELLED>', resp_str)
+    if m_can: metrics["cancelled"] = int(m_can.group(1))
+
+    m_ig = re.search(r'<IGNORED>(\d+)</IGNORED>', resp_str)
+    if m_ig: metrics["ignored"] = int(m_ig.group(1))
     
     m_e = re.search(r'<ERRORS>(\d+)</ERRORS>', resp_str)
     if m_e: metrics["errors"] = int(m_e.group(1))
@@ -88,6 +109,8 @@ def parse_tally_response_metrics(resp_str: str) -> dict:
             metrics["created"] = ir.get("created", 0)
             metrics["altered"] = ir.get("altered", 0)
             metrics["deleted"] = ir.get("deleted", 0)
+            metrics["cancelled"] = ir.get("cancelled", 0)
+            metrics["ignored"] = ir.get("ignored", 0)
             metrics["errors"] = ir.get("errors", 0)
             metrics["exceptions"] = ir.get("exceptions", 0)
             metrics["vchnumber"] = str(ir.get("vchnumber") or "")
@@ -100,7 +123,7 @@ def parse_tally_response_metrics(resp_str: str) -> dict:
         metrics["status"] = "EXCEPTION"
     elif metrics["errors"] > 0 and metrics["status"] == "SUCCESS":
         metrics["status"] = "FAILED"
-    elif metrics["created"] == 0 and metrics["altered"] == 0 and metrics["deleted"] == 0 and "<STATUS>0</STATUS>" in resp_str:
+    elif metrics["created"] == 0 and metrics["altered"] == 0 and metrics["deleted"] == 0 and metrics["cancelled"] == 0 and metrics["ignored"] == 0 and "<STATUS>0</STATUS>" in resp_str:
         metrics["status"] = "FAILED"
 
     if not metrics["error_summary"] and metrics["status"] in ["FAILED", "EXCEPTION"]:
@@ -257,7 +280,77 @@ async def inbound_sync(
                 detail=f"Inbound XML import failed on server (error ref {error_ref}). Check the backend logs for this reference."
             )
 
-async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSession) -> str:
+def voucher_remote_id(voucher) -> Optional[str]:
+    """
+    The REMOTEID a voucher created here was sent to Tally under, or None if it has never been sent under one.
+    Tally updates the voucher it first received under a REMOTEID when the same one is sent again, which is
+    what makes a re-sent push harmless.
+    """
+    return voucher.tally_remote_id
+
+
+def new_voucher_remote_id() -> str:
+    """
+    A REMOTEID for a voucher about to be sent for the first time. Random, never built from the voucher's row
+    id: row ids get reused (after deletes and a restart, or a re-import), and a reused id would address some
+    other voucher Tally still holds under it.
+    """
+    return f"MYTALLY-{uuid.uuid4().hex}"
+
+
+def is_tally_guid(guid: Optional[str]) -> bool:
+    """True for a GUID Tally issued, as opposed to a placeholder this app or the importer made up."""
+    return bool(guid) and not guid.startswith(("MYTALLY-", "GEN-"))
+
+
+def voucher_address_attrs(vdate_str: str, remote_id: Optional[str], master_id: Optional[int]) -> str:
+    """
+    How a voucher import says which voucher it means. A voucher Tally already holds is addressed by its
+    master id: Tally's own GUID does not work as a REMOTEID (it creates a second voucher), and a voucher
+    number is not safe (Tally ignores the voucher type when matching one).
+    With a master id, vdate_str must be the date the voucher has in Tally now: Tally looks under that date,
+    and creates a second voucher when a changed date is given here instead.
+    """
+    if master_id:
+        return f'DATE="{vdate_str}" TAGNAME="MASTERID" TAGVALUE="{int(master_id)}"'
+    return f'REMOTEID="{x(remote_id)}"'
+
+
+def build_voucher_address_envelope(comp_name: str, vtype_name: str, vdate_str: str, action: str,
+                                   remote_id: Optional[str] = None, master_id: Optional[int] = None) -> str:
+    """A Delete or Cancel: only the address of the voucher, no content."""
+    return f'''<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Import</TALLYREQUEST>
+        <TYPE>Data</TYPE>
+        <ID>Vouchers</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
+                <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
+            </STATICVARIABLES>
+        </DESC>
+        <DATA>
+            <TALLYMESSAGE xmlns:UDF="TallyUDF">
+             <VOUCHER {voucher_address_attrs(vdate_str, remote_id, master_id)} VCHTYPE="{x(vtype_name)}" ACTION="{x(action)}">
+              <DATE>{vdate_str}</DATE>
+              <VOUCHERTYPENAME>{x(vtype_name)}</VOUCHERTYPENAME>
+             </VOUCHER>
+            </TALLYMESSAGE>
+        </DATA>
+    </BODY>
+</ENVELOPE>'''
+
+
+async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSession, master_id: Optional[int] = None,
+                                    tally_date: Optional[str] = None) -> str:
+    """
+    The voucher as a Tally import. master_id: the voucher's master id when Tally already holds it, with
+    tally_date the date (YYYYMMDD) it has there; without one the voucher goes under its own REMOTEID.
+    """
     try:
         from app.models.tally_core import (
             TrnVoucher, TrnAccounting, MstLedger, MstVoucherType, BillAllocation, 
@@ -266,6 +359,7 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         )
         from app.models.portal_core import Company
         
+        # populate_existing: the caller may hold this voucher with lines it has since replaced
         v_stmt = select(TrnVoucher).options(
             selectinload(TrnVoucher.voucher_type),
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group),
@@ -278,7 +372,7 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations).selectinload(VoucherAccountingAllocation.ledger),
             selectinload(TrnVoucher.eway_bills),
             selectinload(TrnVoucher.payment_links)
-        ).where(TrnVoucher.voucher_id == voucher_id)
+        ).where(TrnVoucher.voucher_id == voucher_id).execution_options(populate_existing=True)
         v_res = await db.execute(v_stmt)
         voucher = v_res.scalars().first()
         if not voucher:
@@ -291,9 +385,17 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         vdate_str = voucher.voucher_date.strftime("%Y%m%d")
         obj_view = "Invoice Voucher View" if is_inv else "Accounting Voucher View"
 
-        if action == "Cancel" or voucher.is_cancelled or voucher.status == "cancelled":
-            guid_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
-            remote_id_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
+        if action in ("Cancel", "Delete"):
+            return build_voucher_address_envelope(comp_name, vtype_name, tally_date or vdate_str, action,
+                                                  voucher_remote_id(voucher), master_id)
+
+        from app.services.voucher_kinds import stock_leaves, is_sales_side, is_stock_journal, is_physical_stock, is_attendance, is_payroll
+        from app.models.tally_core import TrnAttendance, TrnPayHead
+        remote_alt_xml = f"\n              <REMOTEALTGUID>{x(voucher.tally_remote_id)}</REMOTEALTGUID>" if voucher.tally_remote_id else ""
+        cancelled_xml = "\n              <ISCANCELLED>Yes</ISCANCELLED>" if (voucher.is_cancelled or voucher.status == "cancelled") else ""
+
+        def simple_envelope(view: str, body_xml: str) -> str:
+            """A voucher that is only its header and the lines given (no party, no invoice fields)."""
             return f'''<ENVELOPE>
     <HEADER>
         <VERSION>1</VERSION>
@@ -305,28 +407,110 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         <DESC>
             <STATICVARIABLES>
                 <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
-                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+                <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
             </STATICVARIABLES>
         </DESC>
         <DATA>
             <TALLYMESSAGE xmlns:UDF="TallyUDF">
-             <VOUCHER REMOTEID="{remote_id_attr}" VCHTYPE="{vtype_name}" ACTION="Alter" OBJVIEW="{obj_view}">
+             <VOUCHER {voucher_address_attrs(tally_date or vdate_str, voucher_remote_id(voucher), master_id)} VCHTYPE="{x(vtype_name)}" ACTION="{x(action)}" OBJVIEW="{view}">
               <DATE>{vdate_str}</DATE>
-              <EFFECTIVEDATE>{vdate_str}</EFFECTIVEDATE>
-              <VCHSTATUSDATE>{vdate_str}</VCHSTATUSDATE>
-              <VOUCHERTYPENAME>{vtype_name}</VOUCHERTYPENAME>
-              <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>
-              <ISCANCELLED>Yes</ISCANCELLED>
-              <GUID>{guid_attr}</GUID>
+              <VOUCHERTYPENAME>{x(vtype_name)}</VOUCHERTYPENAME>
+              <VOUCHERNUMBER>{x(voucher.voucher_number)}</VOUCHERNUMBER>
+              <PERSISTEDVIEW>{view}</PERSISTEDVIEW>
+              <NARRATION>{x(voucher.narration)}</NARRATION>{cancelled_xml}{remote_alt_xml}{body_xml}
              </VOUCHER>
             </TALLYMESSAGE>
         </DATA>
     </BODY>
 </ENVELOPE>'''
 
-        if action == "Delete":
-            guid_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
-            remote_id_attr = voucher.tally_guid or f"MYTALLY-VCH-{voucher.voucher_id}"
+        if is_attendance(voucher.voucher_type):
+            # Attendance: one line per employee and attendance type; nothing else
+            rows = (await db.execute(select(TrnAttendance).where(TrnAttendance.voucher_id == voucher_id).order_by(TrnAttendance.id))).scalars().all()
+            lines_xml = "".join(f'''
+              <ATTENDANCEENTRIES.LIST>
+               <NAME>{x(row.employee_name)}</NAME>
+               <ATTENDANCETYPE>{x(row.attendancetype_name)}</ATTENDANCETYPE>
+               <ATTDTYPETIMEVALUE> {_qty(row.time_value)}</ATTDTYPETIMEVALUE>
+               <ATTDTYPEVALUE> {_qty(row.time_value)}</ATTDTYPEVALUE>
+              </ATTENDANCEENTRIES.LIST>''' for row in rows)
+            return simple_envelope("Accounting Voucher View", lines_xml)
+
+        pay_rows = (await db.execute(select(TrnPayHead).where(TrnPayHead.voucher_id == voucher_id).order_by(TrnPayHead.id))).scalars().all()
+        if is_payroll(voucher.voucher_type) and pay_rows:
+            # Payroll: per cost category and employee the pay heads, then the ledger lines they add up to.
+            # Signs as Tally keeps them: an earning is debited (negative, deemed positive), a deduction credited.
+            by_category: dict = {}
+            for row in pay_rows:
+                by_category.setdefault(row.category or "Primary Cost Category", {}).setdefault(row.employee_name, []).append(row)
+            lines_xml = ""
+            for category, employees in by_category.items():
+                lines_xml += f"\n              <CATEGORYENTRY.LIST>\n               <CATEGORY>{x(category)}</CATEGORY>"
+                for employee, heads in employees.items():
+                    employee_total = sum((Decimal(str(h.amount or 0)) for h in heads), Decimal("0"))
+                    lines_xml += f"\n               <EMPLOYEEENTRIES.LIST>\n                <EMPLOYEENAME>{x(employee)}</EMPLOYEENAME>\n                <AMOUNT>{float(employee_total):.2f}</AMOUNT>"
+                    for head in heads:
+                        head_amount = Decimal(str(head.amount or 0))
+                        lines_xml += f'''
+                <PAYHEADALLOCATIONS.LIST>
+                 <PAYHEADNAME>{x(head.payhead_name)}</PAYHEADNAME>
+                 <ISDEEMEDPOSITIVE>{'Yes' if head_amount < 0 else 'No'}</ISDEEMEDPOSITIVE>
+                 <AMOUNT>{float(head_amount):.2f}</AMOUNT>
+                </PAYHEADALLOCATIONS.LIST>'''
+                    lines_xml += "\n               </EMPLOYEEENTRIES.LIST>"
+                lines_xml += "\n              </CATEGORYENTRY.LIST>"
+            payable_name = ""
+            for ent in voucher.entries:
+                lname = ent.ledger.name if ent.ledger else ""
+                debit = ent.debit_amount and ent.debit_amount > 0
+                if voucher.party_ledger_id and ent.ledger_id == voucher.party_ledger_id:
+                    payable_name = lname
+                lines_xml += f'''
+              <ALLLEDGERENTRIES.LIST>
+               <LEDGERNAME>{x(lname)}</LEDGERNAME>
+               <ISDEEMEDPOSITIVE>{'Yes' if debit else 'No'}</ISDEEMEDPOSITIVE>
+               <AMOUNT>{-float(ent.debit_amount) if debit else float(ent.credit_amount):.2f}</AMOUNT>
+              </ALLLEDGERENTRIES.LIST>'''
+            party_xml = f"\n              <PARTYLEDGERNAME>{x(payable_name)}</PARTYLEDGERNAME>" if payable_name else ""
+            return simple_envelope("PaySlip Voucher View", f"{party_xml}\n              <ASPAYSLIP>Yes</ASPAYSLIP>{lines_xml}")
+
+        physical = is_physical_stock(voucher.voucher_type)
+        if physical or is_stock_journal(voucher.voucher_type) or any(inv.flow_type for inv in voucher.inventory_entries):
+            # A Stock Journal has no ledger lines and no party: items produced go in INVENTORYENTRIESIN.LIST,
+            # items consumed in INVENTORYENTRIESOUT.LIST, and Tally only takes it in its Consumption view
+            view = "Consumption Voucher View"
+            lines_xml = ""
+            for inv in voucher.inventory_entries:
+                arrives = inv.flow_type == "destination" if inv.flow_type else bool(inv.is_inward)
+                tag = "INVENTORYENTRIESIN.LIST" if arrives else "INVENTORYENTRIESOUT.LIST"
+                uom_name = inv.stock_item.unit.symbol if (inv.stock_item and inv.stock_item.unit) else "nos"
+                amount = f"{'-' if arrives else ''}{float(abs(inv.amount or 0)):.2f}"
+                qty_str = f" {_qty(inv.quantity)} {uom_name}"
+                rate_tag = f"\n               <RATE>{float(inv.rate):.2f}/{x(uom_name)}</RATE>" if inv.rate else ""
+                if physical:
+                    # A Physical Stock count: Tally takes the counted quantity, always in the "in" list, and
+                    # refuses it in any other list or view. Rate and amount are not part of a count.
+                    tag, arrives, amount, rate_tag = "INVENTORYENTRIESIN.LIST", True, "", ""
+                    qty_str = f" {_qty(inv.actual_quantity if inv.actual_quantity is not None else inv.quantity)} {uom_name}"
+                amount_tag = f"\n               <AMOUNT>{amount}</AMOUNT>" if amount else ""
+                batch_amount_tag = f"\n                <AMOUNT>{amount}</AMOUNT>" if amount else ""
+                godown_name = inv.godown.name if (inv.godown and inv.godown.name) else "Main Location"
+                batch_name = inv.batch.batch_number if (inv.batch and inv.batch.batch_number) else "Primary Batch"
+                lines_xml += f'''
+              <{tag}>
+               <STOCKITEMNAME>{x(inv.stock_item.name if inv.stock_item else "")}</STOCKITEMNAME>
+               <ISDEEMEDPOSITIVE>{'Yes' if arrives else 'No'}</ISDEEMEDPOSITIVE>{rate_tag}{amount_tag}
+               <ACTUALQTY>{x(qty_str)}</ACTUALQTY>
+               <BILLEDQTY>{x(qty_str)}</BILLEDQTY>
+               <BATCHALLOCATIONS.LIST>
+                <GODOWNNAME>{x(godown_name)}</GODOWNNAME>
+                <BATCHNAME>{x(batch_name)}</BATCHNAME>{batch_amount_tag}
+                <ACTUALQTY>{x(qty_str)}</ACTUALQTY>
+                <BILLEDQTY>{x(qty_str)}</BILLEDQTY>
+               </BATCHALLOCATIONS.LIST>
+              </{tag}>'''
+            cancelled = "\n              <ISCANCELLED>Yes</ISCANCELLED>" if (voucher.is_cancelled or voucher.status == "cancelled") else ""
+            remote_alt = f"\n              <REMOTEALTGUID>{x(voucher.tally_remote_id)}</REMOTEALTGUID>" if voucher.tally_remote_id else ""
             return f'''<ENVELOPE>
     <HEADER>
         <VERSION>1</VERSION>
@@ -338,26 +522,32 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         <DESC>
             <STATICVARIABLES>
                 <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
-                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+                <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
             </STATICVARIABLES>
         </DESC>
         <DATA>
             <TALLYMESSAGE xmlns:UDF="TallyUDF">
-             <VOUCHER REMOTEID="{remote_id_attr}" VCHTYPE="{vtype_name}" ACTION="Delete" OBJVIEW="{obj_view}">
+             <VOUCHER {voucher_address_attrs(tally_date or vdate_str, voucher_remote_id(voucher), master_id)} VCHTYPE="{x(vtype_name)}" ACTION="{x(action)}" OBJVIEW="{view}">
               <DATE>{vdate_str}</DATE>
-              <GUID>{guid_attr}</GUID>
+              <VOUCHERTYPENAME>{x(vtype_name)}</VOUCHERTYPENAME>
+              <VOUCHERNUMBER>{x(voucher.voucher_number)}</VOUCHERNUMBER>
+              <PERSISTEDVIEW>{view}</PERSISTEDVIEW>
+              <NARRATION>{x(voucher.narration)}</NARRATION>{cancelled}{remote_alt}{lines_xml}
              </VOUCHER>
             </TALLYMESSAGE>
         </DATA>
     </BODY>
 </ENVELOPE>'''
 
-        is_sales = (voucher.voucher_type and voucher.voucher_type.parent_type in ['Sales', 'Debit Note']) or vtype_name in ['Sales', 'Debit Note']
-        sales_pur_ledger_name = "GST Sales" if is_sales else "GST Purchase"
+        # Stock direction and sales/purchase side are separate questions (a Debit Note sends stock out but
+        # posts to a purchase ledger); is_sales below means "stock leaves, party debited"
+        is_sales = stock_leaves(voucher.voucher_type)
+        sales_side = is_sales_side(voucher.voucher_type)
+        sales_pur_ledger_name = "GST Sales" if sales_side else "GST Purchase"
         for ent in voucher.entries:
             if ent.ledger and ent.ledger.group:
                 gname = ent.ledger.group.name.lower()
-                if ("sales" in gname if is_sales else "purchase" in gname):
+                if ("sales" in gname if sales_side else "purchase" in gname):
                     sales_pur_ledger_name = ent.ledger.name
                     break
 
@@ -394,21 +584,21 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                 
                 all_inventory_xml += f'''
               <ALLINVENTORYENTRIES.LIST>
-               <STOCKITEMNAME>{item_name}</STOCKITEMNAME>
+               <STOCKITEMNAME>{x(item_name)}</STOCKITEMNAME>
                <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
-               <RATE>{rate_str}</RATE>{discount_tag}
+               <RATE>{x(rate_str)}</RATE>{discount_tag}
                <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
-               <ACTUALQTY>{qty_str}</ACTUALQTY>
-               <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
+               <ACTUALQTY>{x(qty_str)}</ACTUALQTY>
+               <BILLEDQTY>{x(billed_qty_str)}</BILLEDQTY>
                <BATCHALLOCATIONS.LIST>
-                <GODOWNNAME>{godown_name}</GODOWNNAME>
-                <BATCHNAME>{batch_name}</BATCHNAME>
+                <GODOWNNAME>{x(godown_name)}</GODOWNNAME>
+                <BATCHNAME>{x(batch_name)}</BATCHNAME>
                 <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
-                <ACTUALQTY>{qty_str}</ACTUALQTY>
-                <BILLEDQTY>{billed_qty_str}</BILLEDQTY>
+                <ACTUALQTY>{x(qty_str)}</ACTUALQTY>
+                <BILLEDQTY>{x(billed_qty_str)}</BILLEDQTY>
                </BATCHALLOCATIONS.LIST>
                <ACCOUNTINGALLOCATIONS.LIST>
-                <LEDGERNAME>{sales_pur_ledger_name}</LEDGERNAME>
+                <LEDGERNAME>{x(sales_pur_ledger_name)}</LEDGERNAME>
                 <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
                 <ISPARTYLEDGER>No</ISPARTYLEDGER>
                 <AMOUNT>{signed_inv_amt:.2f}</AMOUNT>
@@ -417,6 +607,9 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
 
         ledger_tag = "LEDGERENTRIES.LIST" if is_inv else "ALLLEDGERENTRIES.LIST"
         entries_xml = ""
+        from app.models.tally_core import TrnBill
+        party_bill_name = (await db.execute(select(TrnBill.bill_reference).where(
+            TrnBill.voucher_id == voucher.voucher_id, TrnBill.party_ledger_id == voucher.party_ledger_id))).scalars().first() if voucher.party_ledger_id else None
         for ent in voucher.entries:
             lname = ent.ledger.name if ent.ledger else "Suspense A/c"
             # In Item Invoices, skip the main Sales/Purchase ledger from top-level entries to avoid double counting
@@ -429,7 +622,7 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
             
             entries_xml += f'''
               <{ledger_tag}>
-               <LEDGERNAME>{lname}</LEDGERNAME>
+               <LEDGERNAME>{x(lname)}</LEDGERNAME>
                <ISDEEMEDPOSITIVE>{is_dp}</ISDEEMEDPOSITIVE>
                <ISPARTYLEDGER>{'Yes' if is_party else 'No'}</ISPARTYLEDGER>
                <AMOUNT>{amt:.2f}</AMOUNT>'''
@@ -439,17 +632,17 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                     ba_amt = -float(ba.amount) if ent.debit_amount > 0 else float(ba.amount)
                     inst_date = ba.instrument_date.strftime("%Y%m%d") if ba.instrument_date else vdate_str
                     tx_type = ba.transaction_type or "Others"
-                    bank_op_tag = f"\n                 <BANKOPERATIONREFERENCE>{ba.bank_operation_ref}</BANKOPERATIONREFERENCE>" if getattr(ba, 'bank_operation_ref', None) else ""
-                bank_prt_tag = f"\n                 <BANKPORTALREFERENCE>{ba.bank_portal_ref}</BANKPORTALREFERENCE>" if getattr(ba, 'bank_portal_ref', None) else ""
-                bank_txn_tag = f"\n                 <BANKTRANSACTIONREFERENCE>{ba.bank_transaction_ref}</BANKTRANSACTIONREFERENCE>" if getattr(ba, 'bank_transaction_ref', None) else ""
-                paylink_tag = f"\n                 <PAYMENTLINK>{ba.payment_link}</PAYMENTLINK>" if getattr(ba, 'payment_link', None) else ""
-                entries_xml += f'''
+                    bank_op_tag = f"\n                 <BANKOPERATIONREFERENCE>{x(ba.bank_operation_ref)}</BANKOPERATIONREFERENCE>" if getattr(ba, 'bank_operation_ref', None) else ""
+                    bank_prt_tag = f"\n                 <BANKPORTALREFERENCE>{x(ba.bank_portal_ref)}</BANKPORTALREFERENCE>" if getattr(ba, 'bank_portal_ref', None) else ""
+                    bank_txn_tag = f"\n                 <BANKTRANSACTIONREFERENCE>{x(ba.bank_transaction_ref)}</BANKTRANSACTIONREFERENCE>" if getattr(ba, 'bank_transaction_ref', None) else ""
+                    paylink_tag = f"\n                 <PAYMENTLINK>{x(ba.payment_link)}</PAYMENTLINK>" if getattr(ba, 'payment_link', None) else ""
+                    entries_xml += f'''
                <BANKALLOCATIONS.LIST>
                 <DATE>{vdate_str}</DATE>
                 <INSTRUMENTDATE>{inst_date}</INSTRUMENTDATE>
-                <TRANSACTIONTYPE>{tx_type}</TRANSACTIONTYPE>
+                <TRANSACTIONTYPE>{x(tx_type)}</TRANSACTIONTYPE>
                 <PAYMENTMODE>Transacted</PAYMENTMODE>{bank_op_tag}{bank_prt_tag}{bank_txn_tag}{paylink_tag}
-                <BANKPARTYNAME>{party_ledger_name or 'Cash'}</BANKPARTYNAME>
+                <BANKPARTYNAME>{x(party_ledger_name or 'Cash')}</BANKPARTYNAME>
                 <AMOUNT>{ba_amt:.2f}</AMOUNT>
                </BANKALLOCATIONS.LIST>'''
 
@@ -459,15 +652,16 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                     b_amt = -abs(float(ba.amount)) if ent.debit_amount > 0 else abs(float(ba.amount))
                     entries_xml += f'''
                <BILLALLOCATIONS.LIST>
-                <NAME>{bname}</NAME>
-                <BILLTYPE>{ba.allocation_type}</BILLTYPE>
+                <NAME>{x(bname)}</NAME>
+                <BILLTYPE>{x(ba.allocation_type)}</BILLTYPE>
                 <AMOUNT>{b_amt:.2f}</AMOUNT>
                </BILLALLOCATIONS.LIST>'''
             elif is_party:
-                bname = str(voucher.reference_number or voucher.voucher_number or '1')
+                # The bill the app raised for this voucher, so both sides hold it under one name
+                bname = str(party_bill_name or voucher.reference_number or voucher.voucher_number or '1')
                 entries_xml += f'''
                <BILLALLOCATIONS.LIST>
-                <NAME>{bname}</NAME>
+                <NAME>{x(bname)}</NAME>
                 <BILLTYPE>New Ref</BILLTYPE>
                 <AMOUNT>{amt:.2f}</AMOUNT>
                </BILLALLOCATIONS.LIST>'''
@@ -479,33 +673,38 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                     cca_amt = -float(cca.amount) if ent.debit_amount > 0 else float(cca.amount)
                     entries_xml += f'''
                <COSTCENTREALLOCATIONS.LIST>
-                <NAME>{cc_name}</NAME>
+                <NAME>{x(cc_name)}</NAME>
                 <AMOUNT>{cca_amt:.2f}</AMOUNT>
                </COSTCENTREALLOCATIONS.LIST>'''
 
             entries_xml += f'''
               </{ledger_tag}>'''
 
-        guid_val = getattr(voucher, 'guid', None) or getattr(voucher, 'tally_guid', None) or f"MYTALLY-VCH-{voucher.voucher_id}"
-        vch_tag_attrs = f'REMOTEID="{guid_val}" VCHTYPE="{vtype_name}" ACTION="{action}" OBJVIEW="{obj_view}"'
-        guid_xml = f"\n              <GUID>{guid_val}</GUID>"
+        vch_tag_attrs = f'{voucher_address_attrs(tally_date or vdate_str, voucher_remote_id(voucher), master_id)} VCHTYPE="{x(vtype_name)}" ACTION="{x(action)}" OBJVIEW="{x(obj_view)}"'
+        cancelled_tag = "\n              <ISCANCELLED>Yes</ISCANCELLED>" if (voucher.is_cancelled or voucher.status == "cancelled") else ""
+        # Tally matches a re-send on the REMOTEID attribute but never gives it back; REMOTEALTGUID it stores and
+        # returns, so the same identifier goes there too and the voucher can be recognised when read from Tally
+        remote_alt_tag = f"\n              <REMOTEALTGUID>{x(voucher.tally_remote_id)}</REMOTEALTGUID>" if voucher.tally_remote_id else ""
 
         is_invoice_tag = "\n              <ISINVOICE>Yes</ISINVOICE>" if is_inv else ""
         
         eff_date_val = voucher.effective_date.strftime("%Y%m%d") if voucher.effective_date else vdate_str
         ref_date_tag = f"\n              <REFERENCEDATE>{voucher.reference_date.strftime('%Y%m%d')}</REFERENCEDATE>" if getattr(voucher, 'reference_date', None) else ""
-        pos_tag = f"\n              <PLACEOFSUPPLY>{voucher.place_of_supply}</PLACEOFSUPPLY>" if getattr(voucher, 'place_of_supply', None) else ""
-        buyer_tag = f"\n              <BASICBUYERNAME>{voucher.buyer_name}</BASICBUYERNAME>" if getattr(voucher, 'buyer_name', None) else ""
-        consignee_tag = f"\n              <CONSIGNEEMAILINGNAME>{voucher.consignee_name}</CONSIGNEEMAILINGNAME>" if getattr(voucher, 'consignee_name', None) else ""
-        order_ref_tag = f"\n              <BASICORDERREF>{voucher.order_reference}</BASICORDERREF>" if getattr(voucher, 'order_reference', None) else ""
-        despatch_tag = f"\n              <BASICSHIPDELIVERYNOTE>{voucher.despatch_doc_no}</BASICSHIPDELIVERYNOTE>" if getattr(voucher, 'despatch_doc_no', None) else ""
+        # The other party's document number (a supplier's invoice number on a purchase)
+        if voucher.reference_number:
+            ref_date_tag = f"\n              <REFERENCE>{x(voucher.reference_number)}</REFERENCE>" + ref_date_tag
+        pos_tag = f"\n              <PLACEOFSUPPLY>{x(voucher.place_of_supply)}</PLACEOFSUPPLY>" if getattr(voucher, 'place_of_supply', None) else ""
+        buyer_tag = f"\n              <BASICBUYERNAME>{x(voucher.buyer_name)}</BASICBUYERNAME>" if getattr(voucher, 'buyer_name', None) else ""
+        consignee_tag = f"\n              <CONSIGNEEMAILINGNAME>{x(voucher.consignee_name)}</CONSIGNEEMAILINGNAME>" if getattr(voucher, 'consignee_name', None) else ""
+        order_ref_tag = f"\n              <BASICORDERREF>{x(voucher.order_reference)}</BASICORDERREF>" if getattr(voucher, 'order_reference', None) else ""
+        despatch_tag = f"\n              <BASICSHIPDELIVERYNOTE>{x(voucher.despatch_doc_no)}</BASICSHIPDELIVERYNOTE>" if getattr(voucher, 'despatch_doc_no', None) else ""
         post_dated_tag = f"\n              <ISPOSTDATED>{'Yes' if getattr(voucher, 'is_post_dated', False) else 'No'}</ISPOSTDATED>"
 
         # e-Invoice XML tags
-        irn_tag = f"\n              <IRN>{voucher.irn}</IRN>" if getattr(voucher, 'irn', None) else ""
-        irn_ack_tag = f"\n              <IRNACKNO>{voucher.irn_ack_no}</IRNACKNO>" if getattr(voucher, 'irn_ack_no', None) else ""
+        irn_tag = f"\n              <IRN>{x(voucher.irn)}</IRN>" if getattr(voucher, 'irn', None) else ""
+        irn_ack_tag = f"\n              <IRNACKNO>{x(voucher.irn_ack_no)}</IRNACKNO>" if getattr(voucher, 'irn_ack_no', None) else ""
         irn_date_tag = f"\n              <IRNACKDATE>{voucher.irn_ack_date.strftime('%Y-%m-%d %H:%M:%S')}</IRNACKDATE>" if getattr(voucher, 'irn_ack_date', None) else ""
-        irn_qr_tag = f"\n              <IRNQRCODE>{voucher.irn_qr_code}</IRNQRCODE>" if getattr(voucher, 'irn_qr_code', None) else ""
+        irn_qr_tag = f"\n              <IRNQRCODE>{x(voucher.irn_qr_code)}</IRNQRCODE>" if getattr(voucher, 'irn_qr_code', None) else ""
         irn_cancelled_tag = f"\n              <IRNCANCELLED>{'Yes' if getattr(voucher, 'irn_cancelled', False) else 'No'}</IRNCANCELLED>" if getattr(voucher, 'irn', None) else ""
 
         # e-Way Bill XML tags
@@ -517,19 +716,19 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
                 d_date = eb.doc_date.strftime("%Y%m%d") if eb.doc_date else ""
                 eway_bills_xml += f'''
               <EWAYBILLDETAILS.LIST>
-               <BILLNUMBER>{eb.bill_number or ''}</BILLNUMBER>
+               <BILLNUMBER>{x(eb.bill_number)}</BILLNUMBER>
                <BILLDATE>{b_date}</BILLDATE>
                <VALIDUPTO>{v_date}</VALIDUPTO>
-               <DISTANCE>{eb.distance_km or '0'}</DISTANCE>
-               <TRANSPORTERID>{eb.transporter_id or ''}</TRANSPORTERID>
-               <TRANSPORTERNAME>{eb.transporter_name or ''}</TRANSPORTERNAME>
-               <DOCNUMBER>{eb.doc_number or ''}</DOCNUMBER>
+               <DISTANCE>{x(eb.distance_km or '0')}</DISTANCE>
+               <TRANSPORTERID>{x(eb.transporter_id)}</TRANSPORTERID>
+               <TRANSPORTERNAME>{x(eb.transporter_name)}</TRANSPORTERNAME>
+               <DOCNUMBER>{x(eb.doc_number)}</DOCNUMBER>
                <DOCDATE>{d_date}</DOCDATE>
-               <VEHICLENUMBER>{eb.vehicle_number or ''}</VEHICLENUMBER>
-               <VEHICLETYPE>{eb.vehicle_type or 'Regular'}</VEHICLETYPE>
-               <TRANSPORTMODE>{eb.transport_mode or 'Road'}</TRANSPORTMODE>
-               <SUBTYPE>{eb.sub_type or 'Supply'}</SUBTYPE>
-               <DOCTYPE>{eb.doc_type or 'Tax Invoice'}</DOCTYPE>
+               <VEHICLENUMBER>{x(eb.vehicle_number)}</VEHICLENUMBER>
+               <VEHICLETYPE>{x(eb.vehicle_type or 'Regular')}</VEHICLETYPE>
+               <TRANSPORTMODE>{x(eb.transport_mode or 'Road')}</TRANSPORTMODE>
+               <SUBTYPE>{x(eb.sub_type or 'Supply')}</SUBTYPE>
+               <DOCTYPE>{x(eb.doc_type or 'Tax Invoice')}</DOCTYPE>
               </EWAYBILLDETAILS.LIST>'''
 
         paylink_xml = ""
@@ -537,10 +736,10 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
             for pl in voucher.payment_links:
                 paylink_xml += f'''
               <PAYLINK.LIST>
-               <PAYLINKID>{pl.link_id}</PAYLINKID>
-               <PAYMENTURL>{pl.payment_url}</PAYMENTURL>
-               <PAYMENTMODE>{pl.payment_mode}</PAYMENTMODE>
-               <STATUS>{pl.status}</STATUS>
+               <PAYLINKID>{x(pl.link_id)}</PAYLINKID>
+               <PAYMENTURL>{x(pl.payment_url)}</PAYMENTURL>
+               <PAYMENTMODE>{x(pl.payment_mode)}</PAYMENTMODE>
+               <STATUS>{x(pl.status)}</STATUS>
                <AMOUNT>{float(pl.amount):.2f}</AMOUNT>
               </PAYLINK.LIST>'''
 
@@ -555,7 +754,7 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         <DESC>
             <STATICVARIABLES>
                 <SVVCHIMPORTFORMAT>XML</SVVCHIMPORTFORMAT>
-                <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+                <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
             </STATICVARIABLES>
         </DESC>
         <DATA>
@@ -564,12 +763,12 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
               <DATE>{vdate_str}</DATE>
               <EFFECTIVEDATE>{eff_date_val}</EFFECTIVEDATE>
               <VCHSTATUSDATE>{vdate_str}</VCHSTATUSDATE>
-              <VOUCHERTYPENAME>{vtype_name}</VOUCHERTYPENAME>
-              <VOUCHERNUMBER>{voucher.voucher_number}</VOUCHERNUMBER>{ref_date_tag}{pos_tag}{buyer_tag}{consignee_tag}{order_ref_tag}{despatch_tag}{post_dated_tag}{irn_tag}{irn_ack_tag}{irn_date_tag}{irn_qr_tag}{irn_cancelled_tag}
-              <PARTYNAME>{party_ledger_name}</PARTYNAME>
-              <PARTYLEDGERNAME>{party_ledger_name}</PARTYLEDGERNAME>
-              <PERSISTEDVIEW>{obj_view}</PERSISTEDVIEW>{is_invoice_tag}
-              <NARRATION>{voucher.narration or ''}</NARRATION>{guid_xml}{eway_bills_xml}{paylink_xml}
+              <VOUCHERTYPENAME>{x(vtype_name)}</VOUCHERTYPENAME>
+              <VOUCHERNUMBER>{x(voucher.voucher_number)}</VOUCHERNUMBER>{ref_date_tag}{pos_tag}{buyer_tag}{consignee_tag}{order_ref_tag}{despatch_tag}{post_dated_tag}{irn_tag}{irn_ack_tag}{irn_date_tag}{irn_qr_tag}{irn_cancelled_tag}
+              <PARTYNAME>{x(party_ledger_name)}</PARTYNAME>
+              <PARTYLEDGERNAME>{x(party_ledger_name)}</PARTYLEDGERNAME>
+              <PERSISTEDVIEW>{x(obj_view)}</PERSISTEDVIEW>{is_invoice_tag}
+              <NARRATION>{x(voucher.narration)}</NARRATION>{cancelled_tag}{remote_alt_tag}{eway_bills_xml}{paylink_xml}
               {all_inventory_xml}
               {entries_xml}
              </VOUCHER>
@@ -619,6 +818,8 @@ async def get_outbound_queue(
             l_stmt = select(MstLedger).where(MstLedger.ledger_id == item.record_id)
             l_res = await db.execute(l_stmt)
             ledger = l_res.scalars().first()
+            # The name Tally knows the ledger by: differs after a rename, and is all that is left after a delete
+            tally_name = (item.snapshot_data or {}).get("tally_name")
             if ledger:
                 g_stmt = select(MstGroup).where(MstGroup.group_id == ledger.group_id)
                 g_res = await db.execute(g_stmt)
@@ -630,11 +831,33 @@ async def get_outbound_queue(
                 comp_obj = c_res.scalars().first()
                 comp_name = comp_obj.name if comp_obj else ""
                 
-                xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create')
+                xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create', tally_name)
+            elif item.action == "Delete" and tally_name:
+                c_res = await db.execute(select(Company).where(Company.company_id == item.company_id))
+                comp_obj = c_res.scalars().first()
+                xml_envelope = build_ledger_delete_envelope(tally_name, comp_obj.name if comp_obj else "")
                 
         # 2. Map Voucher Creation / Alteration / Deletion
         elif item.record_type == "Voucher":
-            xml_envelope = await build_voucher_xml_payload(item.record_id, item.action or 'Create', db)
+            vch = (await db.execute(select(TrnVoucher).where(TrnVoucher.voucher_id == item.record_id))).scalars().first()
+            ident = (item.snapshot_data or {}).get("tally_voucher") or {}
+            if vch:
+                # A voucher Tally already holds is addressed by its master id, a new one by its own REMOTEID
+                action = item.action or 'Create'
+                if action in ("Create", "Alter"):
+                    action = "Alter" if vch.tally_master_id else "Create"
+                if not vch.tally_master_id and not vch.tally_remote_id:
+                    vch.tally_remote_id = new_voucher_remote_id()
+                    await db.commit()
+                xml_envelope = await build_voucher_xml_payload(
+                    item.record_id, action, db, vch.tally_master_id,
+                    vch.tally_date.strftime("%Y%m%d") if vch.tally_master_id and vch.tally_date else None)
+            elif item.action == "Delete" and (ident.get("master_id") or ident.get("remote_id")):
+                c_res = await db.execute(select(Company).where(Company.company_id == item.company_id))
+                comp_obj = c_res.scalars().first()
+                xml_envelope = build_voucher_address_envelope(
+                    comp_obj.name if comp_obj else "", ident.get("vtype") or "Journal", ident.get("date") or "", "Delete",
+                    remote_id=None if ident.get("master_id") else ident.get("remote_id"), master_id=ident.get("master_id"))
 
         # 3. Map Stock Item
         elif item.record_type in ("StockItem", "Stock_Item", "Item"):
@@ -658,9 +881,9 @@ async def get_outbound_queue(
   <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{st_item.name}" Action="Delete"><NAME>{st_item.name}</NAME></STOCKITEM>
+        <STOCKITEM NAME="{x(st_item.name)}" Action="Delete"><NAME>{x(st_item.name)}</NAME></STOCKITEM>
       </TALLYMESSAGE>
     </DESC>
   </BODY>
@@ -668,17 +891,17 @@ async def get_outbound_queue(
                 else:
                     uom_symbol = st_item.unit.symbol if st_item.unit else "nos"
                     raw_group = st_item.group.name.strip() if st_item.group and st_item.group.name else ""
-                    parent_tag = f"<PARENT>{raw_group}</PARENT>" if raw_group and raw_group.lower() not in ("primary", "not applicable") else "<PARENT>&#4; Primary</PARENT>"
+                    parent_tag = f"<PARENT>{x(raw_group)}</PARENT>" if raw_group and raw_group.lower() not in ("primary", "not applicable") else "<PARENT>&#4; Primary</PARENT>"
                     xml_envelope = f"""<ENVELOPE>
   <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{st_item.name}" Action="{item.action or 'Create'}">
-          <NAME>{st_item.name}</NAME>
+        <STOCKITEM NAME="{x(st_item.name)}" Action="{x(item.action or 'Create')}">
+          <NAME>{x(st_item.name)}</NAME>
           {parent_tag}
-          <BASEUNITS>{uom_symbol}</BASEUNITS>
+          <BASEUNITS>{x(uom_symbol)}</BASEUNITS>
         </STOCKITEM>
       </TALLYMESSAGE>
     </DESC>
@@ -690,29 +913,40 @@ async def get_outbound_queue(
             g_stmt = select(MstGroup).where(MstGroup.group_id == item.record_id)
             g_res = await db.execute(g_stmt)
             grp = g_res.scalars().first()
-            if grp:
-                c_stmt = select(Company).where(Company.company_id == grp.company_id)
-                c_res = await db.execute(c_stmt)
-                comp_obj = c_res.scalars().first()
-                comp_name = comp_obj.name if comp_obj else ""
-                
+            # The name Tally knows the group by: differs from grp.name after a rename, and is all
+            # that is left of the group after a delete
+            tally_name = (item.snapshot_data or {}).get("tally_name")
+            group_inner_xml = ""
+            if grp and item.action != "Delete":
                 parent_name = "Primary"
-                if grp.parent_id:
-                    p_res = await db.execute(select(MstGroup).where(MstGroup.group_id == grp.parent_id))
+                if grp.parent_group_id:
+                    p_res = await db.execute(select(MstGroup).where(MstGroup.group_id == grp.parent_group_id))
                     p_grp = p_res.scalars().first()
                     if p_grp:
                         parent_name = p_grp.name
+                group_inner_xml = f"""<GROUP NAME="{x(tally_name or grp.name)}" Action="{x(item.action or 'Create')}">
+          <NAME>{x(grp.name)}</NAME>
+          <PARENT>{x(parent_name)}</PARENT>
+        </GROUP>"""
+            elif item.action == "Delete" and (tally_name or grp):
+                delete_name = tally_name or grp.name
+                group_inner_xml = f"""<GROUP NAME="{x(delete_name)}" Action="Delete">
+          <NAME>{x(delete_name)}</NAME>
+        </GROUP>"""
+
+            if group_inner_xml:
+                c_stmt = select(Company).where(Company.company_id == item.company_id)
+                c_res = await db.execute(c_stmt)
+                comp_obj = c_res.scalars().first()
+                comp_name = comp_obj.name if comp_obj else ""
                 
                 xml_envelope = f"""<ENVELOPE>
   <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <GROUP NAME="{grp.name}" Action="{item.action or 'Create'}">
-          <NAME>{grp.name}</NAME>
-          <PARENT>{parent_name}</PARENT>
-        </GROUP>
+        {group_inner_xml}
       </TALLYMESSAGE>
     </DESC>
   </BODY>
@@ -734,12 +968,12 @@ async def get_outbound_queue(
   <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHERTYPE NAME="{vt.name}" Action="{item.action or 'Create'}">
-          <NAME>{vt.name}</NAME>
-          <PARENT>{parent_type}</PARENT>
-          <NUMBERINGMETHOD>{vt.numbering_method or 'Automatic'}</NUMBERINGMETHOD>
+        <VOUCHERTYPE NAME="{x(vt.name)}" Action="{x(item.action or 'Create')}">
+          <NAME>{x(vt.name)}</NAME>
+          <PARENT>{x(parent_type)}</PARENT>
+          <NUMBERINGMETHOD>{x(vt.numbering_method or 'Automatic')}</NUMBERINGMETHOD>
         </VOUCHERTYPE>
       </TALLYMESSAGE>
     </DESC>
@@ -783,12 +1017,41 @@ async def acknowledge_sync(
     stmt = update(SyncQueue).where(
         SyncQueue.sync_id.in_(sync_ids),
         SyncQueue.company_id == user.company_id
-    ).values(is_processed=True)
+    ).values(is_processed=True, status="SUCCESS", error_message=None)
     
     await db.execute(stmt)
     await db.commit()
     
     return {"status": "success", "acknowledged_count": len(sync_ids)}
+
+@router.post("/voucher-identities")
+async def report_voucher_identities(
+    identities: List[Dict[str, Any]],
+    user: User = Depends(require_permission("sync", "update")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    What Tally made of vouchers the Desktop Sync Agent pushed: each one's master id, GUID, date and the number
+    Tally gave it. The app's provisional number is replaced by Tally's. Safe to send more than once.
+    Body: [{"voucher_id", "master_id", "guid", "number", "date" (YYYYMMDD)}]
+    """
+    from app.core.cache import clear_company_cache
+    updated = 0
+    for ident in identities:
+        if not str(ident.get("master_id") or "").isdigit() or not ident.get("voucher_id"):
+            continue
+        voucher = (await db.execute(select(TrnVoucher).where(
+            TrnVoucher.voucher_id == ident["voucher_id"], TrnVoucher.company_id == user.company_id))).scalars().first()
+        if not voucher:
+            continue
+        await adopt_tally_voucher_identity(db, voucher, {
+            "master_id": int(ident["master_id"]), "guid": ident.get("guid") or None,
+            "number": ident.get("number") or None, "date": ident.get("date") or None})
+        updated += 1
+    await db.commit()
+    if updated:
+        clear_company_cache(user.company_id)
+    return {"status": "success", "updated": updated}
 
 @router.get("/last-alter-id")
 async def get_last_alter_id(
@@ -804,30 +1067,25 @@ async def get_last_alter_id(
         MstStockGroup, MstStockCategory, MstUom, MstGodown, MstStockItem, CostCenter
     )
     
-    tables_to_check = [
-        MstLedger, TrnVoucher, MstStockItem, MstGroup, 
-        MstVoucherType, MstStockGroup, MstStockCategory, MstGodown, CostCenter
-    ]
-    
-    max_alter_id = 0
+    # Tally counts changes to masters and to vouchers separately (the company's ALTMSTID and ALTVCHID), so
+    # each has its own watermark: one shared number would skip whichever kind is behind the other.
+    master_tables = [MstLedger, MstStockItem, MstGroup, MstVoucherType, MstStockGroup, MstStockCategory, MstUom, MstGodown, CostCenter]
     details = {}
-    
-    for model in tables_to_check:
+    for model in master_tables + [TrnVoucher]:
         try:
             stmt = select(func.max(model.tally_alter_id)).where(model.company_id == user.company_id)
-            res = await db.execute(stmt)
-            val = res.scalar() or 0
-            details[model.__tablename__] = int(val)
-            if int(val) > max_alter_id:
-                max_alter_id = int(val)
+            details[model.__tablename__] = int((await db.execute(stmt)).scalar() or 0)
         except Exception:
             pass
 
+    voucher_alter_id = details.get(TrnVoucher.__tablename__, 0)
+    master_alter_id = max([v for k, v in details.items() if k != TrnVoucher.__tablename__], default=0)
     return {
-        "last_alter_id": int(max_alter_id),
-        "last_ledger_alter_id": details.get("mst_ledgers", 0),
-        "last_voucher_alter_id": details.get("trn_vouchers", 0),
-        "last_stock_item_alter_id": details.get("mst_stock_items", 0),
+        "last_alter_id": max(master_alter_id, voucher_alter_id),
+        "last_master_alter_id": master_alter_id,
+        "last_ledger_alter_id": details.get(MstLedger.__tablename__, 0),
+        "last_voucher_alter_id": voucher_alter_id,
+        "last_stock_item_alter_id": details.get(MstStockItem.__tablename__, 0),
         "details": details
     }
 
@@ -837,12 +1095,14 @@ def _post_to_tally_sync(url: str, xml_payload: str, timeout: int = 5) -> str:
     import ssl
     encoded_data = xml_payload.encode('utf-8')
     
-    # SSL Context for HTTPS proxies/tunnels
+    # SSL Context for HTTPS proxies/tunnels (enforces certificate verification unless explicitly overridden)
     ssl_ctx = None
     if url.startswith("https"):
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        insecure_tls = getattr(settings, "TALLY_INSECURE_TLS", False) or os.environ.get("TALLY_INSECURE_TLS", "").lower() in ("1", "true")
+        if insecure_tls:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
 
     req = urllib.request.Request(
         url,
@@ -855,24 +1115,25 @@ def _post_to_tally_sync(url: str, xml_payload: str, timeout: int = 5) -> str:
     )
     
     raw_bytes = bytearray()
-    try:
-        kwargs = {"timeout": timeout}
-        if ssl_ctx:
-            kwargs["context"] = ssl_ctx
+    with _TALLY_HTTP_LOCK:
+        try:
+            kwargs = {"timeout": timeout}
+            if ssl_ctx:
+                kwargs["context"] = ssl_ctx
 
-        with urllib.request.urlopen(req, **kwargs) as response:
-            while True:
-                chunk = response.read(65536)
-                if not chunk:
-                    break
-                raw_bytes.extend(chunk)
-    except http.client.IncompleteRead as e:
-        logger.warning(f"IncompleteRead encountered from Tally XML endpoint ({len(e.partial)} bytes recovered).")
-        raw_bytes.extend(e.partial)
-    except Exception as e:
-        logger.error(f"Connection error while fetching from Tally ({url}): {str(e)}")
-        if not raw_bytes:
-            return ""
+            with urllib.request.urlopen(req, **kwargs) as response:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    raw_bytes.extend(chunk)
+        except http.client.IncompleteRead as e:
+            logger.warning(f"IncompleteRead encountered from Tally XML endpoint ({len(e.partial)} bytes recovered).")
+            raw_bytes.extend(e.partial)
+        except Exception as e:
+            logger.error(f"Connection error while fetching from Tally ({url}): {str(e)}")
+            if not raw_bytes:
+                return ""
 
     if not raw_bytes:
         return ""
@@ -886,7 +1147,47 @@ def _post_to_tally_sync(url: str, xml_payload: str, timeout: int = 5) -> str:
             return bytes(raw_bytes).decode('latin1', errors='replace')
 
 
-def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str, action: str) -> str:
+def _ledger_import_envelope(comp_name: str, ledger_xml: str) -> str:
+    return f"""<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Import Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <IMPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>All Masters</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+      <REQUESTDATA>
+        <TALLYMESSAGE xmlns:UDF="TallyUDF">
+          {ledger_xml}
+        </TALLYMESSAGE>
+      </REQUESTDATA>
+    </IMPORTDATA>
+  </BODY>
+</ENVELOPE>"""
+
+
+def build_ledger_delete_envelope(ledger_name: str, comp_name: str) -> str:
+    return _ledger_import_envelope(comp_name, f"""<LEDGER NAME="{x(ledger_name)}" ACTION="Delete">
+            <NAME>{x(ledger_name)}</NAME>
+          </LEDGER>""")
+
+
+def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str, action: str, tally_name: Optional[str] = None) -> str:
+    """
+    tally_name: the name Tally currently knows the ledger by, when it differs from ledger.name (a rename).
+    Tally finds the object by the NAME attribute and creates a new one if that name is unknown, so a
+    rename must address the old name and carry the new one in <NAME>.
+    Relationships (addresses, GST registrations, MSME, lower deductions, bank details) are sent only
+    when the caller has loaded them.
+    """
+    target_name = tally_name or ledger.name
+    if (action or "").lower() == "delete":
+        return build_ledger_delete_envelope(target_name, comp_name)
+
     gstin_val = ledger.gstin or ''
     pan_val = getattr(ledger, 'pan_number', None) or (gstin_val[2:12].upper() if len(gstin_val) >= 12 else '')
     state_val = ledger.state or ''
@@ -921,14 +1222,19 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
     if not addr_lines and clean_addr:
         addr_lines = [clean_addr]
     
-    address_nodes = "".join([f"<ADDRESS>{line}</ADDRESS>" for line in addr_lines])
+    address_nodes = "".join([f"<ADDRESS>{x(line)}</ADDRESS>" for line in addr_lines])
     addr_list_xml = f"<ADDRESS.LIST>{address_nodes}</ADDRESS.LIST>" if address_nodes else ""
 
+    applicable_from = getattr(ledger, 'gst_applicable_from', None)
+    app_from_str = applicable_from.strftime("%Y%m%d") if applicable_from else "20250401"
+
+    # Tally matches a mailing block by its applicable-from date; a block without one is not stored reliably
     mailing_details_xml = f"""<LEDMAILINGDETAILS.LIST>
-      <MAILINGNAME>{ledger.name}</MAILINGNAME>
-      <STATE>{state_val}</STATE>
-      <COUNTRY>{country_val}</COUNTRY>
-      <PINCODE>{pincode_val}</PINCODE>
+      <APPLICABLEFROM>{app_from_str}</APPLICABLEFROM>
+      <MAILINGNAME>{x(ledger.name)}</MAILINGNAME>
+      <STATE>{x(state_val)}</STATE>
+      <COUNTRY>{x(country_val)}</COUNTRY>
+      <PINCODE>{x(pincode_val)}</PINCODE>
       {addr_list_xml}
     </LEDMAILINGDETAILS.LIST>""" if (state_val or country_val or pincode_val or addr_list_xml) else ""
 
@@ -938,19 +1244,17 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
         mailing_details_xml = ""
         for a in loaded_addrs:
             a_lines = [l.strip() for l in (a.address or '').replace('\n', ',').split(',') if l.strip()]
-            a_nodes = "".join([f"<ADDRESS>{l}</ADDRESS>" for l in a_lines])
+            a_nodes = "".join([f"<ADDRESS>{x(l)}</ADDRESS>" for l in a_lines])
             a_list = f"<ADDRESS.LIST>{a_nodes}</ADDRESS.LIST>" if a_nodes else ""
             mailing_details_xml += f"""<LEDMAILINGDETAILS.LIST>
-      <ADDRESSNAME>{a.address_name or 'Primary'}</ADDRESSNAME>
-      <MAILINGNAME>{a.mailing_name or ledger.name}</MAILINGNAME>
-      <STATE>{a.state_name or state_val}</STATE>
-      <COUNTRY>{a.country_name or country_val}</COUNTRY>
-      <PINCODE>{a.pincode or pincode_val}</PINCODE>
+      <APPLICABLEFROM>{app_from_str}</APPLICABLEFROM>
+      <ADDRESSNAME>{x(a.address_name or 'Primary')}</ADDRESSNAME>
+      <MAILINGNAME>{x(a.mailing_name or ledger.name)}</MAILINGNAME>
+      <STATE>{x(a.state_name or state_val)}</STATE>
+      <COUNTRY>{x(a.country_name or country_val)}</COUNTRY>
+      <PINCODE>{x(a.pincode or pincode_val)}</PINCODE>
       {a_list}
     </LEDMAILINGDETAILS.LIST>"""
-
-    applicable_from = getattr(ledger, 'gst_applicable_from', None)
-    app_from_str = applicable_from.strftime("%Y%m%d") if applicable_from else "20250401"
 
     # Multi-GST Registrations support
     gst_reg_details_xml = ""
@@ -960,16 +1264,16 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
             r_app = reg.applicable_from.strftime("%Y%m%d") if reg.applicable_from else app_from_str
             gst_reg_details_xml += f"""<LEDGSTREGDETAILS.LIST>
       <APPLICABLEFROM>{r_app}</APPLICABLEFROM>
-      <GSTREGISTRATIONTYPE>{reg.registration_type or 'Regular'}</GSTREGISTRATIONTYPE>
-      <GSTIN>{reg.gstin}</GSTIN>
-      <STATENAME>{reg.state_name or state_val}</STATENAME>
-      <PLACEOFSUPPLY>{reg.place_of_supply or state_val}</PLACEOFSUPPLY>
+      <GSTREGISTRATIONTYPE>{x(reg.registration_type or 'Regular')}</GSTREGISTRATIONTYPE>
+      <GSTIN>{x(reg.gstin)}</GSTIN>
+      <STATENAME>{x(reg.state_name or state_val)}</STATENAME>
+      <PLACEOFSUPPLY>{x(reg.place_of_supply or state_val)}</PLACEOFSUPPLY>
     </LEDGSTREGDETAILS.LIST>"""
     elif (gst_reg_type or gstin_val):
         gst_reg_details_xml = f"""<LEDGSTREGDETAILS.LIST>
       <APPLICABLEFROM>{app_from_str}</APPLICABLEFROM>
-      <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
-      <GSTIN>{gstin_val}</GSTIN>
+      <GSTREGISTRATIONTYPE>{x(gst_reg_type)}</GSTREGISTRATIONTYPE>
+      <GSTIN>{x(gstin_val)}</GSTIN>
     </LEDGSTREGDETAILS.LIST>"""
 
     # MSME Details support
@@ -979,8 +1283,8 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
         for m in loaded_msme:
             m_app = m.applicable_from.strftime("%Y%m%d") if m.applicable_from else app_from_str
             msme_details_xml += f"""<MSMEREGISTRATIONDETAILS.LIST>
-      <ENTERPRISETYPE>{m.enterprise_type or 'Micro'}</ENTERPRISETYPE>
-      <UDYAMREGNO>{m.udyam_reg_no or ''}</UDYAMREGNO>
+      <ENTERPRISETYPE>{x(m.enterprise_type or 'Micro')}</ENTERPRISETYPE>
+      <UDYAMREGNO>{x(m.udyam_reg_no or '')}</UDYAMREGNO>
       <APPLICABLEFROM>{m_app}</APPLICABLEFROM>
     </MSMEREGISTRATIONDETAILS.LIST>"""
 
@@ -992,79 +1296,95 @@ def build_ledger_xml_envelope(ledger: MstLedger, group_name: str, comp_name: str
             l_app_from = ld.applicable_from.strftime("%Y%m%d") if ld.applicable_from else "20250401"
             l_app_to = ld.applicable_to.strftime("%Y%m%d") if ld.applicable_to else "20260331"
             lower_ded_xml += f"""<LOWERDEDUCTION.LIST>
-      <SECTIONNUMBER>{ld.section_number}</SECTIONNUMBER>
-      <CERTIFICATENO>{ld.certificate_no}</CERTIFICATENO>
+      <SECTIONNUMBER>{x(ld.section_number)}</SECTIONNUMBER>
+      <CERTIFICATENO>{x(ld.certificate_no)}</CERTIFICATENO>
       <RATEOFDEDUCTION>{ld.rate_of_deduction:.2f}</RATEOFDEDUCTION>
       <APPLICABLEFROM>{l_app_from}</APPLICABLEFROM>
       <APPLICABLETO>{l_app_to}</APPLICABLETO>
-      <LIMIT>{ld.threshold_limit or '0.00'}</LIMIT>
+      <LIMIT>{x(ld.threshold_limit or '0.00')}</LIMIT>
     </LOWERDEDUCTION.LIST>"""
 
-    return f"""<ENVELOPE>
-  <HEADER>
-    <TALLYREQUEST>Import Data</TALLYREQUEST>
-  </HEADER>
-  <BODY>
-    <IMPORTDATA>
-      <REQUESTDESC>
-        <REPORTNAME>All Masters</REPORTNAME>
-        <STATICVARIABLES>
-          <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-        </STATICVARIABLES>
-      </REQUESTDESC>
-      <REQUESTDATA>
-        <TALLYMESSAGE xmlns:UDF="TallyUDF">
-          <LEDGER NAME="{ledger.name}" ACTION="{action}">
-            <NAME>{ledger.name}</NAME>
-            <PARENT>{group_name}</PARENT>
-            <MAILINGNAME>{ledger.name}</MAILINGNAME>
+    # Bank details: a bank ledger carries its own account; any other ledger carries the party's
+    # bank accounts as payment details
+    bank_xml = ""
+    loaded_banks = ledger.__dict__.get('bank_details') or []
+    if getattr(ledger, 'is_bank_account', False):
+        first = loaded_banks[0] if loaded_banks else None
+        account_no = getattr(ledger, 'bank_account_no', None) or (first.account_number if first else None) or ''
+        ifsc = getattr(ledger, 'bank_ifsc', None) or (first.ifsc_code if first else None) or ''
+        holder = (first.account_holder_name if first else None) or ''
+        if account_no or ifsc or holder:
+            bank_xml = f"""<BANKACCHOLDERNAME>{x(holder)}</BANKACCHOLDERNAME>
+            <BANKDETAILS>{x(account_no)}</BANKDETAILS>
+            <IFSCODE>{x(ifsc)}</IFSCODE>"""
+    else:
+        for bd in loaded_banks:
+            if not (bd.account_number or bd.ifsc_code or bd.bank_name):
+                continue
+            bank_xml += f"""<PAYMENTDETAILS.LIST>
+      <IFSCODE>{x(bd.ifsc_code or '')}</IFSCODE>
+      <BANKNAME>{x(bd.bank_name or '')}</BANKNAME>
+      <ACCOUNTNUMBER>{x(bd.account_number or '')}</ACCOUNTNUMBER>
+      <PAYMENTFAVOURING>{x(bd.favouring_name or bd.account_holder_name or ledger.name)}</PAYMENTFAVOURING>
+      <TRANSACTIONNAME>{x(bd.ref_id or 'Primary')}</TRANSACTIONNAME>
+      <SETASDEFAULT>{'Yes' if bd.is_default else 'No'}</SETASDEFAULT>
+      <DEFAULTTRANSACTIONTYPE>{x(bd.transaction_type or 'e-Fund Transfer')}</DEFAULTTRANSACTIONTYPE>
+    </PAYMENTDETAILS.LIST>"""
+
+    return _ledger_import_envelope(comp_name, f"""<LEDGER NAME="{x(target_name)}" ACTION="{x(action)}">
+            <NAME>{x(ledger.name)}</NAME>
+            <PARENT>{x(group_name)}</PARENT>
+            <MAILINGNAME>{x(ledger.name)}</MAILINGNAME>
             <OPENINGBALANCE>{op_bal_str}</OPENINGBALANCE>
-            <COUNTRYOFRESIDENCE>{country_val}</COUNTRYOFRESIDENCE>
-            <COUNTRYNAME>{country_val}</COUNTRYNAME>
-            <PRIORSTATENAME>{state_val}</PRIORSTATENAME>
-            <STATENAME>{state_val}</STATENAME>
-            <PINCODE>{pincode_val}</PINCODE>
+            <COUNTRYOFRESIDENCE>{x(country_val)}</COUNTRYOFRESIDENCE>
+            <COUNTRYNAME>{x(country_val)}</COUNTRYNAME>
+            <PRIORSTATENAME>{x(state_val)}</PRIORSTATENAME>
+            <STATENAME>{x(state_val)}</STATENAME>
+            <PINCODE>{x(pincode_val)}</PINCODE>
             {addr_list_xml}
-            {mailing_details_xml}
-            <LEDGERCONTACT>{contact_val}</LEDGERCONTACT>
-            <LEDGERPHONE>{phone_val}</LEDGERPHONE>
-            <LEDGERMOBILE>{mobile_val}</LEDGERMOBILE>
-            <EMAIL>{email_val}</EMAIL>
+            <LEDGERCONTACT>{x(contact_val)}</LEDGERCONTACT>
+            <LEDGERPHONE>{x(phone_val)}</LEDGERPHONE>
+            <LEDGERMOBILE>{x(mobile_val)}</LEDGERMOBILE>
+            <EMAIL>{x(email_val)}</EMAIL>
             <ISBILLWISEON>{is_billwise}</ISBILLWISEON>
-            <CREDITLIMIT>{credit_limit_val or ''}</CREDITLIMIT>
-            <BILLCREDITPERIOD>{f"{credit_days_val} Days" if credit_days_val else ''}</BILLCREDITPERIOD>
-            <GSTREGISTRATIONTYPE>{gst_reg_type}</GSTREGISTRATIONTYPE>
-            <GSTIN>{gstin_val}</GSTIN>
-            <PAN>{pan_val}</PAN>
-            <LEDGERTYPE>{ledger_type_val}</LEDGERTYPE>
-            <TAXCLASSIFICATIONNAME>{tax_class_name}</TAXCLASSIFICATIONNAME>
+            <CREDITLIMIT>{x(credit_limit_val or '')}</CREDITLIMIT>
+            <BILLCREDITPERIOD>{x(f"{credit_days_val} Days" if credit_days_val else '')}</BILLCREDITPERIOD>
+            <GSTREGISTRATIONTYPE>{x(gst_reg_type)}</GSTREGISTRATIONTYPE>
+            <PARTYGSTIN>{x(gstin_val)}</PARTYGSTIN>
+            <INCOMETAXNUMBER>{x(pan_val)}</INCOMETAXNUMBER>
+            <LEDGERTYPE>{x(ledger_type_val)}</LEDGERTYPE>
+            <TAXCLASSIFICATIONNAME>{x(tax_class_name)}</TAXCLASSIFICATIONNAME>
             {mailing_details_xml}
             {gst_reg_details_xml}
             {msme_details_xml}
             {lower_ded_xml}
-            <LWLEDADHARNOSTORE>{aadhar_val}</LWLEDADHARNOSTORE>
-            <UDF:LWLEDADHARNOSTORE DESC="`LWLedAdharNoStore`" TYPE="String">{aadhar_val}</UDF:LWLEDADHARNOSTORE>
-          </LEDGER>
-        </TALLYMESSAGE>
-      </REQUESTDATA>
-    </IMPORTDATA>
-  </BODY>
-</ENVELOPE>"""
+            {bank_xml}
+            <LWLEDADHARNOSTORE>{x(aadhar_val)}</LWLEDADHARNOSTORE>
+            <UDF:LWLEDADHARNOSTORE DESC="`LWLedAdharNoStore`" TYPE="String">{x(aadhar_val)}</UDF:LWLEDADHARNOSTORE>
+          </LEDGER>""")
 
 
 def check_tally_success(response_xml: str) -> bool:
-    if not response_xml:
+    if not response_xml or not response_xml.strip():
         return False
-    if "<LINEERROR>" in response_xml or "<ERROR>" in response_xml:
+    if "<LINEERROR>" in response_xml or "<ERROR>" in response_xml or "<EXCEPTION>" in response_xml:
         return False
-    return (
-        "<CREATED>1</CREATED>" in response_xml or 
-        "<ALTERED>1</ALTERED>" in response_xml or 
-        "<UPDATED>1</UPDATED>" in response_xml or
-        "<DELETED>1</DELETED>" in response_xml or
-        "<LASTVOUCHERID>" in response_xml or
-        ("<ERRORS>0</ERRORS>" in response_xml and "<LINEERROR>" not in response_xml)
-    )
+
+    # Fail if explicit ERRORS or EXCEPTIONS count is greater than 0
+    m_err = re.search(r'<ERRORS>\s*(\d+)\s*</ERRORS>', response_xml)
+    if m_err and int(m_err.group(1)) > 0:
+        return False
+    m_exc = re.search(r'<EXCEPTIONS>\s*(\d+)\s*</EXCEPTIONS>', response_xml)
+    if m_exc and int(m_exc.group(1)) > 0:
+        return False
+
+    # Success means Tally changed at least one object. STATUS 1 or ERRORS 0 on their own only say the request was
+    # read: a reply with every count at 0 means nothing reached the books, so the push stays queued for retry.
+    for tag in ("CREATED", "ALTERED", "UPDATED", "DELETED", "CANCELLED", "COMBINED", "IGNORED"):
+        m = re.search(rf'<{tag}>\s*(\d+)\s*</{tag}>', response_xml)
+        if m and int(m.group(1)) > 0:
+            return True
+    return "<LASTVOUCHERID>" in response_xml
 
 
 def build_ledger_json_payload(ledger: MstLedger, group_name: str, comp_name: str, action: str) -> dict:
@@ -1260,11 +1580,14 @@ def _post_json_to_tally_sync(url: str, json_payload: dict, timeout: int = 5) -> 
     import ssl
     encoded_data = json.dumps(json_payload).encode('utf-8')
     
+    # SSL Context for HTTPS proxies/tunnels (enforces certificate verification unless explicitly overridden)
     ssl_ctx = None
     if url.startswith("https"):
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        insecure_tls = getattr(settings, "TALLY_INSECURE_TLS", False) or os.environ.get("TALLY_INSECURE_TLS", "").lower() in ("1", "true")
+        if insecure_tls:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
 
     req = urllib.request.Request(
         url,
@@ -1280,21 +1603,22 @@ def _post_json_to_tally_sync(url: str, json_payload: dict, timeout: int = 5) -> 
     )
     
     raw_bytes = bytearray()
-    try:
-        kwargs = {"timeout": timeout}
-        if ssl_ctx:
-            kwargs["context"] = ssl_ctx
+    with _TALLY_HTTP_LOCK:
+        try:
+            kwargs = {"timeout": timeout}
+            if ssl_ctx:
+                kwargs["context"] = ssl_ctx
 
-        with urllib.request.urlopen(req, **kwargs) as response:
-            while True:
-                chunk = response.read(65536)
-                if not chunk:
-                    break
-                raw_bytes.extend(chunk)
-    except Exception as e:
-        logger.error(f"Connection error while posting JSON to Tally ({url}): {str(e)}")
-        if not raw_bytes:
-            return ""
+            with urllib.request.urlopen(req, **kwargs) as response:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    raw_bytes.extend(chunk)
+        except Exception as e:
+            logger.error(f"Connection error while posting JSON to Tally ({url}): {str(e)}")
+            if not raw_bytes:
+                return ""
 
     if not raw_bytes:
         return ""
@@ -1302,19 +1626,38 @@ def _post_json_to_tally_sync(url: str, json_payload: dict, timeout: int = 5) -> 
     return bytes(raw_bytes).decode('utf-8', errors='ignore')
 
 
-def check_tally_json_success(response_str: str) -> bool:
-    if not response_str:
-        return False
+def tally_json_failure_reason(response_str: str) -> Optional[str]:
+    """
+    None when Tally accepted a JSON import, otherwise why it did not.
+    Tally answers status "1" even when it rejects the object, so the counters decide: any error or
+    exception is a rejection, and so is a reply in which nothing was created, altered or deleted.
+    """
+    if not response_str or not response_str.strip():
+        return "No response from Tally"
     try:
         data = json.loads(response_str)
-        if data.get("status") == "1":
-            import_result = data.get("data", {}).get("import_result", {})
-            errors = import_result.get("errors", 0)
-            if errors == 0:
-                return True
     except Exception:
-        pass
-    return "<CREATED>1</CREATED>" in response_str or "<ALTERED>1</ALTERED>" in response_str or "<DELETED>1</DELETED>" in response_str or '"status": "1"' in response_str
+        return f"Unreadable Tally response: {response_str.strip()[:200]}"
+    if not isinstance(data, dict) or str(data.get("status")) != "1":
+        return f"Tally returned status {data.get('status') if isinstance(data, dict) else data!r}"
+    result = (data.get("data") or {}).get("import_result") or {}
+
+    def count(key: str) -> int:
+        try:
+            return int(result.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if count("errors") or count("exceptions"):
+        return f"Tally rejected the request ({count('errors')} error(s), {count('exceptions')} exception(s))"
+    # ignored is what a resend of an already-saved object can return
+    if not sum(count(k) for k in ("created", "altered", "deleted", "combined", "cancelled", "ignored")):
+        return "Tally changed nothing"
+    return None
+
+
+def check_tally_json_success(response_str: str) -> bool:
+    return tally_json_failure_reason(response_str) is None
 
 
 
@@ -1419,112 +1762,6 @@ def build_cost_category_json_payload(category, company_name: str, action: str) -
         "tallymessage": [cat_data]
     }
 
-
-def build_group_json_payload(group, parent_name: str, company_name: str, action: str) -> dict:
-    act_lower = action.lower()
-    if act_lower == "delete":
-        return {
-            "static_variables": [
-                {"name": "svMstImportFormat", "value": "jsonex"},
-                {"name": "svCurrentCompany", "value": company_name}
-            ],
-            "tallymessage": [
-                {
-                    "metadata": {
-                        "type": "Group",
-                        "action": "delete",
-                        "name": group.name
-                    }
-                }
-            ]
-        }
-    
-    group_data = {
-        "metadata": {
-            "type": "Group",
-            "action": act_lower,
-            "name": group.name
-        },
-        "name": group.name,
-        "parent": parent_name,
-        "isaddable": "Yes" if getattr(group, 'is_addable', True) else "No",
-        "isrevenue": "Yes" if getattr(group, 'is_revenue', False) else "No",
-        "isdeemedpositive": "Yes" if getattr(group, 'is_deemed_positive', False) else "No",
-        "affectsGrossprofit": "Yes" if getattr(group, 'affects_gross_profit', False) else "No",
-        "issubledger": "Yes" if getattr(group, 'is_subledger', False) else "No",
-        "isbillwiseon": "Yes" if getattr(group, 'is_billwise_on', False) else "No",
-        "usedforcalculation": "Yes" if getattr(group, 'used_for_calculation', False) else "No",
-        "sortposition": str(getattr(group, 'sort_position', 1000))
-    }
-    
-    if getattr(group, 'method_to_allocate', None) and group.method_to_allocate != "Not Applicable":
-        group_data["methodtoallocate"] = group.method_to_allocate
-        
-    gst_list = getattr(group, 'gst_details', [])
-    if gst_list:
-        hsn_list = []
-        rate_list = []
-        for gst in sorted(gst_list, key=lambda x: x.applicable_from):
-            app_from = gst.applicable_from.strftime("%Y%m%d")
-            
-            # HSN block
-            hsn_obj = {
-                "applicablefrom": app_from,
-                "hsncode": gst.hsn_sac or "",
-                "srcofhsndetails": gst.hsn_sac_details or "As per Company/Group"
-            }
-            hsn_list.append(hsn_obj)
-            
-            # GST Rate block
-            gst_rate_val = float(gst.gst_rate) if gst.gst_rate else 0.0
-            rate_obj = {
-                "applicablefrom": app_from,
-                "taxability": gst.taxability_type or "Unknown",
-                "srcofgstdetails": gst.gst_rate_details or "As per Company/Group",
-                "statewisedetails.list": [
-                    {
-                        "statename": "\u0004 Any",
-                        "ratedetails.list": [
-                            {
-                                "gstratedutyhead": "IGST",
-                                "gstrate": str(gst_rate_val)
-                            },
-                            {
-                                "gstratedutyhead": "CGST",
-                                "gstrate": str(gst_rate_val / 2)
-                            },
-                            {
-                                "gstratedutyhead": "SGST/UTGST",
-                                "gstrate": str(gst_rate_val / 2)
-                            }
-                        ]
-                    }
-                ]
-            }
-            rate_list.append(rate_obj)
-            
-        group_data["hsndetails.list"] = hsn_list
-        group_data["gstdetails.list"] = rate_list
-    
-    if getattr(group, 'alias_name', None):
-        group_data["languagename"] = [
-            {
-                "name": [
-                    {"metadata": True, "type": "String"},
-                    group.name,
-                    group.alias_name
-                ],
-                "languageid": {"type": "Number", "value": str(getattr(group, 'language_id', 1033))}
-            }
-        ]
-        
-    return {
-        "static_variables": [
-            {"name": "svMstImportFormat", "value": "jsonex"},
-            {"name": "svCurrentCompany", "value": company_name}
-        ],
-        "tallymessage": [group_data]
-    }
 
 async def try_push_cost_category_realtime(category_id: int, sync_id: int, action: str, db: AsyncSession):
     try:
@@ -1647,10 +1884,10 @@ async def try_push_cost_centre_class_realtime(class_id: int, sync_id: int, actio
             
         xml_allocations = ""
         for cat_name, allocs in cat_map.items():
-            xml_allocations += f"<CATEGORYALLOCATIONS.LIST>\n<CATEGORY>{cat_name}</CATEGORY>\n"
+            xml_allocations += f"<CATEGORYALLOCATIONS.LIST>\n<CATEGORY>{x(cat_name)}</CATEGORY>\n"
             for alloc in allocs:
                 cc_name = alloc.cost_centre.name if alloc.cost_centre else ""
-                xml_allocations += f"<COSTCENTREALLOCATIONS.LIST>\n<NAME>{cc_name}</NAME>\n<PERCENTAGE>{alloc.percentage}</PERCENTAGE>\n</COSTCENTREALLOCATIONS.LIST>\n"
+                xml_allocations += f"<COSTCENTREALLOCATIONS.LIST>\n<NAME>{x(cc_name)}</NAME>\n<PERCENTAGE>{alloc.percentage}</PERCENTAGE>\n</COSTCENTREALLOCATIONS.LIST>\n"
             xml_allocations += "</CATEGORYALLOCATIONS.LIST>\n"
             
         xml_envelope = f"""<ENVELOPE>
@@ -1662,13 +1899,13 @@ async def try_push_cost_centre_class_realtime(class_id: int, sync_id: int, actio
 <REQUESTDESC>
 <REPORTNAME>All Masters</REPORTNAME>
 <STATICVARIABLES>
-<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+<SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
 </STATICVARIABLES>
 </REQUESTDESC>
 <REQUESTDATA>
 <TALLYMESSAGE xmlns:UDF="TallyUDF">
-<COSTCENTRECLASS NAME="{cls.name}" ACTION="{action}">
-<NAME>{cls.name}</NAME>
+<COSTCENTRECLASS NAME="{x(cls.name)}" ACTION="{x(action)}">
+<NAME>{x(cls.name)}</NAME>
 {xml_allocations}
 </COSTCENTRECLASS>
 </TALLYMESSAGE>
@@ -1725,12 +1962,12 @@ async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str
 <REQUESTDESC>
 <REPORTNAME>All Masters</REPORTNAME>
 <STATICVARIABLES>
-<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+<SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
 </STATICVARIABLES>
 </REQUESTDESC>
 <REQUESTDATA>
 <TALLYMESSAGE xmlns:UDF="TallyUDF">
-<CURRENCY NAME="{deleted_symbol}" ACTION="Delete">
+<CURRENCY NAME="{x(deleted_symbol)}" ACTION="Delete">
 </CURRENCY>
 </TALLYMESSAGE>
 </REQUESTDATA>
@@ -1749,11 +1986,11 @@ async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str
                 if r.company_id == sq.company_id:
                     rdate_str = r.rate_date.strftime("%Y%m%d")
                     if r.standard_rate:
-                        rates_xml += f"<DAILYSTDRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{r.standard_rate}/{curr.symbol}</SPECIFIEDRATE>\n</DAILYSTDRATE.LIST>\n"
+                        rates_xml += f"<DAILYSTDRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{x(r.standard_rate)}/{x(curr.symbol)}</SPECIFIEDRATE>\n</DAILYSTDRATE.LIST>\n"
                     if r.selling_rate:
-                        rates_xml += f"<DAILYSELLINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{r.selling_rate}/{curr.symbol}</SPECIFIEDRATE>\n</DAILYSELLINGRATE.LIST>\n"
+                        rates_xml += f"<DAILYSELLINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{x(r.selling_rate)}/{x(curr.symbol)}</SPECIFIEDRATE>\n</DAILYSELLINGRATE.LIST>\n"
                     if r.buying_rate:
-                        rates_xml += f"<DAILYBUYINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{r.buying_rate}/{curr.symbol}</SPECIFIEDRATE>\n</DAILYBUYINGRATE.LIST>\n"
+                        rates_xml += f"<DAILYBUYINGRATE.LIST>\n<DATE>{rdate_str}</DATE>\n<SPECIFIEDRATE>{x(r.buying_rate)}/{x(curr.symbol)}</SPECIFIEDRATE>\n</DAILYBUYINGRATE.LIST>\n"
 
             xml_envelope = f"""<ENVELOPE>
 <HEADER>
@@ -1764,21 +2001,21 @@ async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str
 <REQUESTDESC>
 <REPORTNAME>All Masters</REPORTNAME>
 <STATICVARIABLES>
-<SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+<SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
 </STATICVARIABLES>
 </REQUESTDESC>
 <REQUESTDATA>
 <TALLYMESSAGE xmlns:UDF="TallyUDF">
-<CURRENCY NAME="{curr.symbol}" ACTION="{action}">
-<ORIGINALNAME>{curr.symbol}</ORIGINALNAME>
-<MAILINGNAME>{formal_name}</MAILINGNAME>
-<EXPANDEDSYMBOL>{formal_name}</EXPANDEDSYMBOL>
-<ISOCURRENCYCODE>{curr.code}</ISOCURRENCYCODE>
+<CURRENCY NAME="{x(curr.symbol)}" ACTION="{x(action)}">
+<ORIGINALNAME>{x(curr.symbol)}</ORIGINALNAME>
+<MAILINGNAME>{x(formal_name)}</MAILINGNAME>
+<EXPANDEDSYMBOL>{x(formal_name)}</EXPANDEDSYMBOL>
+<ISOCURRENCYCODE>{x(curr.code)}</ISOCURRENCYCODE>
 <DECIMALPLACES>{curr.decimal_places}</DECIMALPLACES>
 <INMILLIONS>{in_millions}</INMILLIONS>
 <ISSUFFIX>{is_suffix}</ISSUFFIX>
 <HASSPACE>{has_space}</HASSPACE>
-<DECIMALSYMBOL>{decimal_word}</DECIMALSYMBOL>
+<DECIMALSYMBOL>{x(decimal_word)}</DECIMALSYMBOL>
 <DECIMALPLACESFORPRINTING>{curr.decimal_places_for_words}</DECIMALPLACESFORPRINTING>
 {rates_xml}
 </CURRENCY>
@@ -1852,20 +2089,20 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
     </DESC>
     <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <VOUCHERTYPE NAME="{vt_name}" ACTION="{action}">
-          <ORIGINALNAME>{original_name}</ORIGINALNAME>
+        <VOUCHERTYPE NAME="{x(vt_name)}" ACTION="{x(action)}">
+          <ORIGINALNAME>{x(original_name)}</ORIGINALNAME>
           <LANGUAGENAME.LIST>
             <NAME.LIST TYPE="String">
-              <NAME>{vt_name}</NAME>
+              <NAME>{x(vt_name)}</NAME>
             </NAME.LIST>
           </LANGUAGENAME.LIST>
-          <PARENT>{parent}</PARENT>
-          <NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
+          <PARENT>{x(parent)}</PARENT>
+          <NUMBERINGMETHOD>{x(vt.numbering_method)}</NUMBERINGMETHOD>
           <PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
           <EFFECTIVEDATE>{"Yes" if getattr(vt, 'use_effective_dates', False) else "No"}</EFFECTIVEDATE>
           <USEZEROENTRIES>{"Yes" if getattr(vt, 'allow_zero_valued_transactions', False) else "No"}</USEZEROENTRIES>
@@ -1876,23 +2113,23 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
           <WHATSAPPAFTERSAVE>{"Yes" if getattr(vt, 'whatsapp_voucher_after_saving', False) else "No"}</WHATSAPPAFTERSAVE>
           <ISDEFAULTALLOCENABLED>{"Yes" if getattr(vt, 'enable_default_accounting_allocations', False) else "No"}</ISDEFAULTALLOCENABLED>
           <TRACKADDLCOST>{"Yes" if getattr(vt, 'track_additional_costs_for_purchases', False) else "No"}</TRACKADDLCOST>
-          {f'<VCHPRINTJURISDICTION>{vt.default_jurisdiction}</VCHPRINTJURISDICTION>' if getattr(vt, 'default_jurisdiction', None) else ''}
-          {f'<VCHPRINTTITLE>{vt.default_title_to_print}</VCHPRINTTITLE>' if getattr(vt, 'default_title_to_print', None) else ''}
+          {f'<VCHPRINTJURISDICTION>{x(vt.default_jurisdiction)}</VCHPRINTJURISDICTION>' if getattr(vt, 'default_jurisdiction', None) else ''}
+          {f'<VCHPRINTTITLE>{x(vt.default_title_to_print)}</VCHPRINTTITLE>' if getattr(vt, 'default_title_to_print', None) else ''}
           <VOUCHERNUMBERSERIES.LIST>
             <NAME>Default</NAME>
-            <NUMBERINGMETHOD>{vt.numbering_method}</NUMBERINGMETHOD>
-            <NUMBERINGSUBMETHOD>{vt.numbering_behavior or ""}</NUMBERINGSUBMETHOD>
+            <NUMBERINGMETHOD>{x(vt.numbering_method)}</NUMBERINGMETHOD>
+            <NUMBERINGSUBMETHOD>{x(vt.numbering_behavior or "")}</NUMBERINGSUBMETHOD>
             <PREVENTDUPLICATES>{prevent_duplicates}</PREVENTDUPLICATES>
             <PREFILLZERO>{"Yes" if getattr(vt, 'prefill_with_zero', False) else "No"}</PREFILLZERO>
             <USEDELETEDVCHNUM>{"Yes" if getattr(vt, 'show_unused_vch_nos', False) else "No"}</USEDELETEDVCHNUM>
             <WIDTHOFNUMBER>{getattr(vt, 'width_of_numerical_part', 0)}</WIDTHOFNUMBER>
-            {''.join(f"<PREFIXLIST.LIST><DATE>{p.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{p.particulars}</PARTICULARS></PREFIXLIST.LIST>" for p in vt.prefixes)}
-            {''.join(f"<SUFFIXLIST.LIST><DATE>{s.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{s.particulars}</PARTICULARS></SUFFIXLIST.LIST>" for s in vt.suffixes)}
-            {''.join(f"<RESTARTFROMLIST.LIST><DATE>{r.applicable_from.strftime('%Y%m%d')}</DATE><PERIODBEGINNIGNUM>{r.starting_number}</PERIODBEGINNIGNUM><RESTARTFROM>{r.periodicity}</RESTARTFROM></RESTARTFROMLIST.LIST>" for r in vt.restarts)}
+            {''.join(f"<PREFIXLIST.LIST><DATE>{p.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{x(p.particulars)}</PARTICULARS></PREFIXLIST.LIST>" for p in vt.prefixes)}
+            {''.join(f"<SUFFIXLIST.LIST><DATE>{s.applicable_from.strftime('%Y%m%d')}</DATE><PARTICULARS>{x(s.particulars)}</PARTICULARS></SUFFIXLIST.LIST>" for s in vt.suffixes)}
+            {''.join(f"<RESTARTFROMLIST.LIST><DATE>{r.applicable_from.strftime('%Y%m%d')}</DATE><PERIODBEGINNIGNUM>{r.starting_number}</PERIODBEGINNIGNUM><RESTARTFROM>{x(r.periodicity)}</RESTARTFROM></RESTARTFROMLIST.LIST>" for r in vt.restarts)}
           </VOUCHERNUMBERSERIES.LIST>
           {''.join(f'''<VOUCHERCLASSLIST.LIST>
-            <CLASSNAME>{c.class_name}</CLASSNAME>
-            {f"<BANKALLOCFOR>{c.bank_alloc_for}</BANKALLOCFOR>" if c.bank_alloc_for else ""}
+            <CLASSNAME>{x(c.class_name)}</CLASSNAME>
+            {f"<BANKALLOCFOR>{x(c.bank_alloc_for)}</BANKALLOCFOR>" if c.bank_alloc_for else ""}
           </VOUCHERCLASSLIST.LIST>''' for c in vt.classes)}
         </VOUCHERTYPE>
       </TALLYMESSAGE>
@@ -1902,7 +2139,7 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
 
         response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
         
-        if "<CREATED>1</CREATED>" in response or "<ALTERED>1</ALTERED>" in response or "<DELETED>1</DELETED>" in response or "<IGNORED>1</IGNORED>" in response:
+        if check_tally_success(response):
             await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True, attempts=SyncQueue.attempts + 1))
             await db.commit()
             logger.info(f"Real-time Tally Push Success for VoucherType {vt_name if action == 'Delete' else vt.name} ({action})")
@@ -1915,187 +2152,357 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
         logger.error(f"Error in try_push_voucher_type_realtime: {str(e)}")
 
 
-async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, db: AsyncSession):
+async def find_tally_voucher(tally_url: str, comp_name: str, master_id: Optional[int] = None, guid: Optional[str] = None) -> Optional[dict]:
+    """
+    The voucher Tally holds under this master id or GUID: {"exists": False}, or {"exists": True, "master_id",
+    "guid", "alter_id", "number", "date" (YYYYMMDD), "cancelled"}. None when Tally gave no usable answer.
+    Tally does not give back the REMOTEID a voucher was sent under, so these two are the only ways to find one.
+    """
+    formula = f"$MasterID = {int(master_id)}" if master_id else f'$GUID = "{x(guid)}"'
+    xml = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>MyTallyFindVoucher</ID></HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <SYSTEM TYPE="Formulae" NAME="MyTallyFindVoucherFilter">{formula}</SYSTEM>
+          <COLLECTION NAME="MyTallyFindVoucher" ISMODIFY="No">
+            <TYPE>Voucher</TYPE>
+            <FETCH>GUID,MASTERID,ALTERID,VOUCHERNUMBER,DATE,VOUCHERTYPENAME,ISCANCELLED</FETCH>
+            <FILTERS>MyTallyFindVoucherFilter</FILTERS>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+    resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml, 10)
+    if not resp or "<ENVELOPE>" not in resp or "<ERRORMSG>" in resp or "<LINEERROR>" in resp:
+        return None
+    found = re.search(r"<VOUCHER [^>]*>.*?</VOUCHER>", resp, re.S)
+    if not found:
+        return {"exists": False}
+
+    def field(tag: str) -> str:
+        m = re.search(rf"<{tag}[^>]*>([^<]*)</{tag}>", found.group(0))
+        return m.group(1).strip() if m else ""
+
+    if not field("MASTERID").isdigit():
+        return None
+    return {"exists": True, "master_id": int(field("MASTERID")), "guid": field("GUID") or None,
+            "alter_id": int(field("ALTERID")) if field("ALTERID").isdigit() else None,
+            "number": field("VOUCHERNUMBER") or None, "date": field("DATE") or None,
+            "cancelled": field("ISCANCELLED").lower() == "yes"}
+
+
+async def adopt_tally_voucher_identity(db: AsyncSession, voucher, tally: dict) -> Optional[str]:
+    """
+    Writes what Tally says about a voucher onto the app's copy: master id, GUID, date and the number.
+    Tally numbers its automatic voucher types itself and ignores the number sent, so the number the app gave
+    the voucher is replaced by Tally's. Returns the number that was replaced, or None if it already matched.
+    Flushes, does not commit.
+    """
+    from app.models.tally_core import TrnBill, TrnInventory
+    voucher.tally_master_id = tally["master_id"]
+    if tally.get("date"):
+        try:
+            voucher.tally_date = datetime.strptime(tally["date"], "%Y%m%d").date()
+        except ValueError:
+            pass
+    if tally.get("guid"):
+        voucher.tally_guid = tally["guid"]
+    # tally_alter_id is left alone: the inbound sync pulls "everything altered after the highest alter id the
+    # app holds", so writing the alter id of our own push here would make it skip whatever was changed in
+    # Tally just before. The voucher comes back through that sync, matched by its GUID.
+    voucher.number_is_provisional = False
+    if tally.get("guid"):
+        # The inbound sync may have imported this same Tally voucher as a new one before the app knew they
+        # were the same (a push whose reply was lost). The imported copy goes; this one carries the link.
+        copies = (await db.execute(select(TrnVoucher).where(
+            TrnVoucher.company_id == voucher.company_id, TrnVoucher.tally_guid == tally["guid"],
+            TrnVoucher.voucher_id != voucher.voucher_id))).scalars().all()
+        for copy in copies:
+            if copy.status == "confirmed":
+                for inv in (await db.execute(select(TrnInventory).where(TrnInventory.voucher_id == copy.voucher_id))).scalars().all():
+                    item = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == inv.stock_item_id))).scalars().first()
+                    if item:
+                        qty = float(inv.quantity or 0)
+                        item.closing_qty = float(item.closing_qty or 0) + (-qty if inv.is_inward else qty)
+            logger.info(f"Voucher #{voucher.voucher_id} is Tally voucher {tally['guid']}; removing its imported copy #{copy.voucher_id}")
+            await db.delete(copy)
+    replaced = None
+    number = tally.get("number")
+    if number and number != voucher.voucher_number:
+        replaced = voucher.voucher_number
+        # A bill this voucher raised under its provisional number follows the number
+        await db.execute(update(TrnBill).where(TrnBill.voucher_id == voucher.voucher_id, TrnBill.bill_reference == replaced)
+                         .values(bill_reference=number[:50]))
+        voucher.voucher_number = number
+    if number and voucher.voucher_type_id:
+        # Keep the app's own counter ahead of Tally's so the next provisional number is a likely one
+        vtype = (await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == voucher.voucher_type_id))).scalars().first()
+        tail = re.search(r"(\d+)$", number[len(vtype.prefix or ""):] if vtype and number.startswith(vtype.prefix or "") else "")
+        if vtype and tail and int(tail.group(1)) >= (vtype.next_number or 1):
+            vtype.next_number = int(tail.group(1)) + 1
+    await db.flush()
+    return replaced
+
+
+async def send_voucher(db: AsyncSession, voucher_id: int, action: str, ident: Optional[dict] = None) -> dict:
+    """
+    Sends a voucher to Tally and reports what happened, without committing anything: the caller decides
+    whether its own changes stand. Reads the voucher as it is in the caller's transaction, and on success
+    writes Tally's identifiers and number onto it (flushed, not committed).
+    action: Create, Alter, Cancel or Delete. Create and Alter are the same request to this function: it asks
+    Tally whether it holds the voucher and sends whichever fits.
+    ident: {"company_id", "remote_id", "master_id", "guid", "vtype", "date" (YYYYMMDD)} for a Delete whose
+    voucher is already gone from the app.
+    Returns {"status", "reason", "envelope", "response", "name", "company_id", "duration_ms", "renumbered_from"};
+    status is SUCCESS, ALREADY_ABSENT (a delete of something Tally does not have), NOT_CONFIGURED, REJECTED
+    (Tally answered and refused), NO_RESPONSE or FAILED.
+    """
     import time
-    start_time = time.time()
-    try:
-        tally_url = settings.TALLY_URL
-        if not tally_url:
-            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
+    ident = ident or {}
+    result = {"status": "FAILED", "reason": None, "envelope": None, "response": None, "name": None,
+              "company_id": ident.get("company_id"), "duration_ms": 0, "renumbered_from": None}
+    tally_url = settings.TALLY_URL
+    if not tally_url:
+        result.update(status="NOT_CONFIGURED", reason="TALLY_URL is not configured")
+        return result
 
-        v_stmt = select(TrnVoucher).options(selectinload(TrnVoucher.voucher_type)).where(TrnVoucher.voucher_id == voucher_id)
-        v_res = await db.execute(v_stmt)
-        voucher = v_res.scalars().first()
-        if not voucher and action != "Delete":
-            return (False, "FAILED", f"Voucher #{voucher_id} not found")
+    voucher = (await db.execute(
+        select(TrnVoucher).options(selectinload(TrnVoucher.voucher_type))
+        .where(TrnVoucher.voucher_id == voucher_id).execution_options(populate_existing=True)
+    )).scalars().first()
+    if voucher:
+        company_id = voucher.company_id
+        remote_id, master_id, guid = voucher_remote_id(voucher), voucher.tally_master_id, voucher.tally_guid
+        vtype_name = voucher.voucher_type.name if voucher.voucher_type else "Journal"
+        vdate_str = voucher.voucher_date.strftime("%Y%m%d")
+        result["name"] = f"{vtype_name} #{voucher.voucher_number}"
+    elif action == "Delete" and (ident.get("remote_id") or ident.get("master_id") or ident.get("guid")):
+        company_id = ident.get("company_id")
+        remote_id, master_id, guid = ident.get("remote_id"), ident.get("master_id"), ident.get("guid")
+        vtype_name, vdate_str = ident.get("vtype") or "Journal", ident.get("date") or ""
+        result["name"] = ident.get("name") or f"{vtype_name} voucher #{voucher_id}"
+    else:
+        result["reason"] = f"Voucher #{voucher_id} not found"
+        return result
+    result["company_id"] = company_id
+    comp = (await db.execute(select(Company).where(Company.company_id == company_id))).scalars().first()
+    comp_name = comp.name if comp else ""
 
-        company_id = voucher.company_id if voucher else 1
-        v_name = f"{voucher.voucher_type.name if voucher and voucher.voucher_type else 'Voucher'} #{voucher.voucher_number if voucher else voucher_id}"
+    # Where the voucher is in Tally, if anywhere
+    state = None
+    if master_id:
+        state = await find_tally_voucher(tally_url, comp_name, master_id=master_id)
+        if state and state["exists"] and is_tally_guid(guid) and state["guid"] and state["guid"] != guid:
+            state = {"exists": False}  # that master id now belongs to some other voucher
+    elif is_tally_guid(guid):
+        state = await find_tally_voucher(tally_url, comp_name, guid=guid)
+    else:
+        state = {"exists": False, "never_located": True}
+    if state is None:
+        result.update(status="NO_RESPONSE", reason="No response from Tally")
+        return result
+    in_tally = state["exists"]
 
-        xml_envelope = await build_voucher_xml_payload(voucher_id, action, db)
-        if not xml_envelope:
-            return (False, "FAILED", "Failed to build XML envelope")
+    # A first send (no REMOTEID yet) is the only time a refused create is known to have left nothing real behind
+    first_send = bool(voucher) and not in_tally and not voucher.tally_remote_id
 
-        req_msg = f"\n=======================================================\n📤 [OUTBOUND REALTIME TALLY XML PUSH] (voucher_id={voucher_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n"
-        logger.debug(req_msg)
-
-        response = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope)
-        duration_ms = int((time.time() - start_time) * 1000)
-
-        resp_msg = f"\n=======================================================\n📥 [TALLY REALTIME PUSH RESPONSE] (voucher_id={voucher_id})\nRESPONSE:\n{response}\n=======================================================\n"
-        logger.debug(resp_msg)
-
-        # Record structured log in sync_traffic_logs with Postman-ready cURL
-        await record_sync_traffic_log(
-            db=db,
-            company_id=company_id,
-            sync_id=sync_id if sync_id and sync_id > 0 else None,
-            entity_type="Voucher",
-            entity_id=voucher_id,
-            entity_name=v_name,
-            action=action,
-            outbound_format="XML",
-            outbound_payload=xml_envelope,
-            inbound_response=response,
-            duration_ms=duration_ms,
-            tally_url=tally_url
-        )
-
-        metrics = parse_tally_response_metrics(response)
-        is_success = check_tally_success(response) or "<CREATED>1</CREATED>" in (response or "") or "<ALTERED>1</ALTERED>" in (response or "") or "<DELETED>1</DELETED>" in (response or "") or "<IGNORED>1</IGNORED>" in (response or "")
-        is_already_deleted = (action == "Delete" and "Voucher does not exist" in (response or ""))
-
-        if sync_id and sync_id > 0:
-            if is_success or is_already_deleted:
-                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
-                    is_processed=True,
-                    status="SUCCESS",
-                    last_payload=xml_envelope,
-                    last_response=response,
-                    last_attempt_at=func.now(),
-                    attempts=SyncQueue.attempts + 1
-                ))
-            else:
-                await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
-                    status="FAILED",
-                    attempts=SyncQueue.attempts + 1,
-                    last_payload=xml_envelope,
-                    last_response=response,
-                    last_attempt_at=func.now(),
-                    error_message=metrics["error_summary"] or (str(response)[:500] if response else "Socket timed out / No response")
-                ))
-            await db.commit()
-
-        if action == "Delete":
-            await db.execute(
-                update(DeletedRecordAudit)
-                .where(
-                    DeletedRecordAudit.company_id == company_id,
-                    DeletedRecordAudit.entity_type == "Voucher",
-                    DeletedRecordAudit.record_id == voucher_id
-                )
-                .values(
-                    tally_sync_status="SYNCED_TO_TALLY" if (is_success or is_already_deleted) else "NOT_DELETED_IN_TALLY",
-                    tally_error_message=None if (is_success or is_already_deleted) else (metrics["error_summary"] or "Cannot be deleted in Tally Prime")
-                )
-            )
-            await db.commit()
-
-        if is_success:
-            logger.info(f"Real-time Tally Push Success for Voucher #{voucher_id} ({action})")
-            return (True, "SUCCESS", None)
+    if action == "Delete":
+        sent_action = "Delete"
+        if in_tally:
+            envelope = build_voucher_address_envelope(comp_name, vtype_name, state["date"] or vdate_str, "Delete", master_id=state["master_id"])
+        elif remote_id and state.get("never_located"):
+            # Not known to have reached Tally. Asking by its REMOTEID removes it if it did, and also the
+            # leftover a refused create leaves behind, which would otherwise hold on to its ledgers.
+            envelope = build_voucher_address_envelope(comp_name, vtype_name, vdate_str, "Delete", remote_id=remote_id)
         else:
-            logger.error(f"Real-time Tally Push Failed for Voucher #{voucher_id} ({action}). Tally Response: {response}")
-            return (False, metrics["status"], metrics["error_summary"])
+            result.update(status="ALREADY_ABSENT", reason="Tally no longer has this voucher")
+            return result
+    elif action == "Cancel" and in_tally:
+        sent_action = "Cancel"
+        envelope = build_voucher_address_envelope(comp_name, vtype_name, state["date"] or vdate_str, "Cancel", master_id=state["master_id"])
+    else:
+        # Create, Alter, or the cancel of a voucher Tally never received (sent whole, marked cancelled)
+        sent_action = "Alter" if in_tally else "Create"
+        if not in_tally and not voucher.tally_remote_id:
+            remote_id = voucher.tally_remote_id = new_voucher_remote_id()
+            await db.flush()
+        envelope = await build_voucher_xml_payload(voucher_id, sent_action, db, state["master_id"] if in_tally else None,
+                                                   state.get("date") if in_tally else None)
+        if not envelope:
+            result["reason"] = "Failed to build XML envelope"
+            return result
 
+    async def post(xml: str) -> str:
+        logger.debug(f"\n=======================================================\n📤 [OUTBOUND REALTIME TALLY XML PUSH] (voucher_id={voucher_id}, action={sent_action})\nURL: {tally_url}\nPAYLOAD:\n{xml}\n=======================================================\n")
+        resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml)
+        logger.debug(f"\n=======================================================\n📥 [TALLY REALTIME PUSH RESPONSE] (voucher_id={voucher_id})\nRESPONSE:\n{resp}\n=======================================================\n")
+        return resp
+
+    started = time.time()
+    resp = await post(envelope)
+    result.update(envelope=envelope, response=resp, sent_action=sent_action, duration_ms=int((time.time() - started) * 1000))
+
+    if not resp or not resp.strip():
+        result.update(status="NO_RESPONSE", reason="No response from Tally")
+        return result
+    if not check_tally_success(resp):
+        reason = parse_tally_response_metrics(resp)["error_summary"] or "Tally rejected the voucher"
+        if sent_action == "Delete" and not in_tally:
+            # "Cannot be deleted!" for a voucher never located in Tally: there was nothing there to delete
+            result.update(status="ALREADY_ABSENT", reason="Tally does not have this voucher")
+        else:
+            if sent_action == "Create" and first_send:
+                # A create Tally refuses leaves a hidden voucher behind that keeps its ledgers from being deleted
+                await asyncio.to_thread(_post_to_tally_sync, tally_url,
+                                        build_voucher_address_envelope(comp_name, vtype_name, vdate_str, "Delete", remote_id=remote_id))
+            result.update(status="REJECTED", reason=reason)
+        return result
+
+    result["status"] = "SUCCESS"
+    if voucher and sent_action in ("Create", "Alter", "Cancel"):
+        last = re.search(r"<LASTVCHID>\s*(\d+)\s*</LASTVCHID>", resp)
+        tally = await find_tally_voucher(tally_url, comp_name, master_id=int(last.group(1))) if last and int(last.group(1)) else None
+        if tally and tally["exists"]:
+            old_number = voucher.voucher_number
+            result["renumbered_from"] = await adopt_tally_voucher_identity(db, voucher, tally)
+            if result["renumbered_from"] and sent_action != "Cancel" and f">{x(old_number)}</NAME>" in envelope:
+                # A bill was named after the provisional number: send the voucher once more so the bill
+                # carries the number Tally gave it
+                again = await build_voucher_xml_payload(voucher_id, "Alter", db, tally["master_id"], tally["date"])
+                again_resp = await post(again) if again else ""
+                if check_tally_success(again_resp):
+                    result.update(envelope=again, response=again_resp)
+                    tally = await find_tally_voucher(tally_url, comp_name, master_id=tally["master_id"])
+                    if tally and tally["exists"]:
+                        await adopt_tally_voucher_identity(db, voucher, tally)
+            result["name"] = f"{vtype_name} #{voucher.voucher_number}"
+    return result
+
+
+async def record_voucher_push(db: AsyncSession, voucher_id: int, sync_id: Optional[int], action: str, result: dict):
+    """Writes a send_voucher() outcome to the traffic log, the queue row and, for a delete, the delete audit. Commits."""
+    if result.get("envelope") is not None:
+        await record_sync_traffic_log(
+            db=db, company_id=result["company_id"], sync_id=sync_id if sync_id and sync_id > 0 else None,
+            entity_type="Voucher", entity_id=voucher_id, entity_name=result["name"], action=result.get("sent_action") or action,
+            outbound_format="XML", outbound_payload=result["envelope"], inbound_response=result["response"],
+            duration_ms=result["duration_ms"], tally_url=settings.TALLY_URL)
+    ok = result["status"] in ("SUCCESS", "ALREADY_ABSENT")
+    if sync_id and sync_id > 0 and result["status"] != "NOT_CONFIGURED":
+        await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
+            is_processed=ok, status=result["status"], attempts=func.coalesce(SyncQueue.attempts, 0) + 1,
+            last_payload=result["envelope"], last_response=result["response"], last_attempt_at=func.now(),
+            error_message=None if ok else ((result["reason"] or "")[:500] or None)))
+    if action == "Delete" and result["status"] in ("SUCCESS", "ALREADY_ABSENT", "REJECTED"):
+        await db.execute(
+            update(DeletedRecordAudit)
+            .where(DeletedRecordAudit.company_id == result["company_id"], DeletedRecordAudit.entity_type == "Voucher",
+                   DeletedRecordAudit.record_id == voucher_id)
+            .values(tally_sync_status="SYNCED_TO_TALLY" if ok else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if ok else (result["reason"] or "Cannot be deleted in Tally Prime")))
+    await db.commit()
+
+
+async def try_push_voucher_realtime(voucher_id: int, sync_id: int, action: str, db: AsyncSession):
+    """
+    Pushes a voucher to Tally and records the outcome on its queue row. A delete whose voucher is already gone
+    from the app is addressed from the identifiers kept on the queue row. Returns (ok, status, message).
+    """
+    try:
+        sync_item = None
+        if sync_id and sync_id > 0:
+            sync_item = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_id))).scalars().first()
+        ident = dict((sync_item.snapshot_data if sync_item else None) or {}).get("tally_voucher") or {}
+        if sync_item:
+            ident.setdefault("company_id", sync_item.company_id)
+        result = await send_voucher(db, voucher_id, action, ident)
+        if result["status"] == "NOT_CONFIGURED":
+            return (False, "NOT_CONFIGURED", result["reason"])
+        await record_voucher_push(db, voucher_id, sync_id, action, result)
+        if result["status"] in ("SUCCESS", "ALREADY_ABSENT"):
+            logger.info(f"Real-time Tally Push Success for Voucher #{voucher_id} ({action}): {result['status']}")
+            return (True, result["status"], result["reason"] if result["status"] == "ALREADY_ABSENT" else None)
+        logger.error(f"Real-time Tally Push Failed for Voucher #{voucher_id} ({action}): {result['status']}: {result['reason']}")
+        return (False, result["status"], result["reason"])
     except Exception as e:
         logger.error(f"Error in try_push_voucher_realtime: {str(e)}", exc_info=True)
         return (False, "EXCEPTION", str(e))
 
 
-async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: AsyncSession):
-    try:
-        tally_url = settings.TALLY_URL
-        if not tally_url:
-            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
-
-        g_stmt = select(MstGroup).options(
-            selectinload(MstGroup.parent),
-            selectinload(MstGroup.gst_details)
-        ).where(MstGroup.group_id == group_id)
-        g_res = await db.execute(g_stmt)
-        group = g_res.scalars().first()
-        if not group:
-            return (False, "FAILED", f"Group #{group_id} not found")
-
-        parent_name = group.parent.name if group.parent else ""
-        
-        c_stmt = select(Company).where(Company.company_id == group.company_id)
-        c_res = await db.execute(c_stmt)
-        comp_obj = c_res.scalars().first()
-        comp_name = comp_obj.name if comp_obj else ""
-
-        json_payload = build_group_json_payload(group, parent_name, comp_name, action)
-
-        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY JSON PUSH (group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{json.dumps(json_payload, indent=2)}\n=======================================================\n")
-
-        resp_str = await asyncio.to_thread(_post_json_to_tally_sync, tally_url, json_payload, 5)
-
-        if check_tally_json_success(resp_str):
-            sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(is_processed=True)
-            await db.execute(sq_stmt)
-            await db.commit()
-            return (True, "SUCCESS", None)
-            
-    except Exception as e:
-        logger.warning(f"Real-time Tally JSON push exception for group_id={group_id}: {str(e)}", exc_info=True)
-        return (False, "EXCEPTION", str(e))
-    return (False, "FAILED", "Group sync failed")
-
-async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: str, db: AsyncSession):
+def build_group_xml_envelope(group, parent_name: str, company_name: str, action: str, tally_name: Optional[str] = None) -> str:
     """
-    Attempts real-time push to Tally Prime on the fly using standard XML envelope.
-    Records structured traffic logs and updates DeletedRecordAudit when deleting.
+    The group as an XML import. XML is used for groups because Tally's XML reply says why it refused
+    (<LINEERROR>); its JSON reply only counts errors.
+    tally_name: the name Tally currently knows the group by when it differs from group.name (a rename);
+    for a delete it may be all that is known (group None).
+    "&#4; Primary" and "&#4; Not Applicable" are Tally's own spellings, control character included.
     """
-    import time
-    start_time = time.time()
-    try:
-        tally_url = settings.TALLY_URL
-        if not tally_url:
-            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
+    target_name = tally_name or group.name
+    if action.lower() == "delete":
+        body = f"""<GROUP NAME="{x(target_name)}" Action="Delete">
+          <NAME>{x(target_name)}</NAME>
+        </GROUP>"""
+    else:
+        yes_no = lambda value: "Yes" if value else "No"
+        method = (getattr(group, 'method_to_allocate', None) or "").strip()
+        alloc = x(method) if method and method != "Not Applicable" else "&#4; Not Applicable"
+        parent = x(parent_name) if parent_name else "&#4; Primary"
 
-        l_stmt = select(MstLedger).options(selectinload(MstLedger.group), selectinload(MstLedger.bank_details)).where(MstLedger.ledger_id == ledger_id)
-        l_res = await db.execute(l_stmt)
-        ledger = l_res.scalars().first()
-        if not ledger and action != "Delete":
-            logger.warning(f"Real-time Tally push skipped: ledger_id={ledger_id} not found.")
-            return (False, "FAILED", f"Ledger #{ledger_id} not found")
+        alias_xml = ""
+        if getattr(group, 'alias_name', None):
+            alias_xml = f"""
+          <LANGUAGENAME.LIST>
+            <NAME.LIST TYPE="String">
+              <NAME>{x(group.name)}</NAME>
+              <NAME>{x(group.alias_name)}</NAME>
+            </NAME.LIST>
+            <LANGUAGEID>{int(getattr(group, 'language_id', None) or 1033)}</LANGUAGEID>
+          </LANGUAGENAME.LIST>"""
 
-        company_id = ledger.company_id if ledger else 1
-        ledger_name = ledger.name if ledger else f"Ledger #{ledger_id}"
-        group_name = ledger.group.name if (ledger and ledger.group) else "Sundry Debtors"
-        
-        c_stmt = select(Company).where(Company.company_id == company_id)
-        c_res = await db.execute(c_stmt)
-        comp_obj = c_res.scalars().first()
-        comp_name = comp_obj.name if comp_obj else ""
+        gst_xml = ""
+        for gst in sorted(getattr(group, 'gst_details', None) or [], key=lambda g: g.applicable_from):
+            app_from = gst.applicable_from.strftime("%Y%m%d")
+            rate = Decimal(str(gst.gst_rate or 0))
+            half = rate / 2
+            fmt = lambda d: format(d.normalize(), "f") if d else "0"
+            gst_xml += f"""
+          <HSNDETAILS.LIST>
+            <APPLICABLEFROM>{app_from}</APPLICABLEFROM>
+            <HSNCODE>{x(gst.hsn_sac or '')}</HSNCODE>
+            <SRCOFHSNDETAILS>{x(gst.hsn_sac_details or 'As per Company/Group')}</SRCOFHSNDETAILS>
+          </HSNDETAILS.LIST>
+          <GSTDETAILS.LIST>
+            <APPLICABLEFROM>{app_from}</APPLICABLEFROM>
+            <TAXABILITY>{x(gst.taxability_type or 'Unknown')}</TAXABILITY>
+            <SRCOFGSTDETAILS>{x(gst.gst_rate_details or 'As per Company/Group')}</SRCOFGSTDETAILS>
+            <STATEWISEDETAILS.LIST>
+              <STATENAME>&#4; Any</STATENAME>
+              <RATEDETAILS.LIST><GSTRATEDUTYHEAD>IGST</GSTRATEDUTYHEAD><GSTRATE>{fmt(rate)}</GSTRATE></RATEDETAILS.LIST>
+              <RATEDETAILS.LIST><GSTRATEDUTYHEAD>CGST</GSTRATEDUTYHEAD><GSTRATE>{fmt(half)}</GSTRATE></RATEDETAILS.LIST>
+              <RATEDETAILS.LIST><GSTRATEDUTYHEAD>SGST/UTGST</GSTRATEDUTYHEAD><GSTRATE>{fmt(half)}</GSTRATE></RATEDETAILS.LIST>
+            </STATEWISEDETAILS.LIST>
+          </GSTDETAILS.LIST>"""
 
-        if action == "Delete":
-            ledger_inner_xml = f"""<LEDGER NAME="{ledger_name}" Action="Delete">
-          <NAME>{ledger_name}</NAME>
-        </LEDGER>"""
-        else:
-            is_billwise = "Yes" if getattr(ledger, 'is_billwise_on', False) else "No"
-            op_balance = f"{ledger.opening_balance:.2f}" if ledger.opening_balance is not None else "0.00"
-            ledger_inner_xml = f"""<LEDGER NAME="{ledger_name}" Action="{action}">
-          <NAME>{ledger_name}</NAME>
-          <PARENT>{group_name}</PARENT>
-          <OPENINGBALANCE>{op_balance}</OPENINGBALANCE>
-          <ISBILLWISEON>{is_billwise}</ISBILLWISEON>
-        </LEDGER>"""
+        body = f"""<GROUP NAME="{x(target_name)}" Action="{x(action)}">
+          <NAME>{x(group.name)}</NAME>
+          <PARENT>{parent}</PARENT>
+          <ISADDABLE>{yes_no(getattr(group, 'is_addable', True))}</ISADDABLE>
+          <ISREVENUE>{yes_no(getattr(group, 'is_revenue', False))}</ISREVENUE>
+          <ISDEEMEDPOSITIVE>{yes_no(getattr(group, 'is_deemed_positive', False))}</ISDEEMEDPOSITIVE>
+          <AFFECTSGROSSPROFIT>{yes_no(getattr(group, 'affects_gross_profit', False))}</AFFECTSGROSSPROFIT>
+          <ISSUBLEDGER>{yes_no(getattr(group, 'is_subledger', False))}</ISSUBLEDGER>
+          <ISBILLWISEON>{yes_no(getattr(group, 'is_billwise_on', False))}</ISBILLWISEON>
+          <BASICGROUPISCALCULABLE>{yes_no(getattr(group, 'used_for_calculation', False))}</BASICGROUPISCALCULABLE>
+          <ADDLALLOCTYPE>{alloc}</ADDLALLOCTYPE>
+          <SORTPOSITION>{int(getattr(group, 'sort_position', None) or 1000)}</SORTPOSITION>{alias_xml}{gst_xml}
+        </GROUP>"""
 
-        xml_envelope = f"""<ENVELOPE>
+    return f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Import</TALLYREQUEST>
@@ -2106,16 +2513,177 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(company_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
-    </DESC>
-    <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        {ledger_inner_xml}
+        {body}
       </TALLYMESSAGE>
-    </DATA>
+    </DESC>
   </BODY>
 </ENVELOPE>"""
+
+
+async def remove_tally_ghost(tally_url: str, comp_name: str, subtype: str, name: str) -> bool:
+    """
+    A create Tally rejects can still leave a ghost: an object that answers to its name with ALTERID 0, is in
+    no list, and can block other masters for good. Deletes it if there is one; True when one was removed.
+    """
+    state = await fetch_tally_master_state(tally_url, comp_name, subtype, name)
+    if not (state and state["exists"] and state["ghost"]):
+        return False
+    tag = subtype.upper().replace(" ", "")
+    xml = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        <{tag} NAME="{x(name)}" Action="Delete"><NAME>{x(name)}</NAME></{tag}>
+      </TALLYMESSAGE>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+    resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml, 10)
+    return check_tally_success(resp)
+
+
+async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: AsyncSession, tally_name: Optional[str] = None):
+    """
+    Pushes a group to Tally and records the outcome on its SyncQueue row.
+    Returns (ok, status, message); status is SUCCESS, NOT_CONFIGURED, REJECTED (Tally answered and
+    refused; message is Tally's reason), NO_RESPONSE (Tally unreachable or timed out), FAILED or EXCEPTION.
+    """
+    async def record(status_code: str, message: Optional[str], payload: Optional[str] = None, response: Optional[str] = None):
+        await db.execute(
+            update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
+                is_processed=(status_code == "SUCCESS"),
+                attempts=func.coalesce(SyncQueue.attempts, 0) + 1,
+                status=status_code,
+                error_message=message[:500] if message else None,
+                last_payload=payload,
+                last_response=response[:5000] if response else None,
+                last_attempt_at=func.now(),
+            )
+        )
+        await db.commit()
+
+    try:
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
+
+        sq_res = await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_id))
+        sync_item = sq_res.scalars().first()
+        snapshot = (sync_item.snapshot_data if sync_item else None) or {}
+        if not tally_name:
+            tally_name = snapshot.get("tally_name")
+
+        g_stmt = select(MstGroup).options(
+            selectinload(MstGroup.parent),
+            selectinload(MstGroup.gst_details)
+        ).where(MstGroup.group_id == group_id).execution_options(populate_existing=True)
+        g_res = await db.execute(g_stmt)
+        group = g_res.scalars().first()
+        # A delete that could not reach Tally is retried after the group is gone here; its name is on the queue row
+        is_delete_replay = group is None and action.lower() == "delete" and bool(tally_name) and sync_item is not None
+        if not group and not is_delete_replay:
+            await record("FAILED", f"Group #{group_id} not found")
+            return (False, "FAILED", f"Group #{group_id} not found")
+
+        company_id = group.company_id if group else sync_item.company_id
+        group_name = group.name if group else tally_name
+        parent_name = group.parent.name if group and group.parent else ""
+        
+        c_stmt = select(Company).where(Company.company_id == company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        xml_envelope = build_group_xml_envelope(group, parent_name, comp_name, action, tally_name)
+
+        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY GROUP PUSH (group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
+
+        import time
+        start_time = time.time()
+        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
+        await record_sync_traffic_log(
+            db, company_id, sync_id, "Group", group_id, group_name, action, "XML",
+            xml_envelope, resp_str, int((time.time() - start_time) * 1000), tally_url
+        )
+
+        if check_tally_success(resp_str):
+            await record("SUCCESS", None, xml_envelope, resp_str)
+            return (True, "SUCCESS", None)
+        if not resp_str or not resp_str.strip():
+            logger.warning(f"Real-time Tally push got no answer for group_id={group_id} ({action})")
+            await record("NO_RESPONSE", "No response from Tally", xml_envelope, resp_str)
+            return (False, "NO_RESPONSE", "No response from Tally")
+
+        reason = parse_tally_response_metrics(resp_str)["error_summary"] or "Tally rejected the request"
+        if action.lower() == "delete" and "does not exist" in reason.lower():
+            # Tally no longer has it, which is where a delete is headed
+            await record("SUCCESS", None, xml_envelope, resp_str)
+            return (True, "SUCCESS", None)
+        if action.lower() == "create":
+            await remove_tally_ghost(tally_url, comp_name, "Group", group_name)
+        logger.warning(f"Real-time Tally push rejected for group_id={group_id} ({action}): {reason}")
+        await record("REJECTED", reason, xml_envelope, resp_str)
+        return (False, "REJECTED", reason)
+
+    except Exception as e:
+        logger.warning(f"Real-time Tally push exception for group_id={group_id}: {str(e)}", exc_info=True)
+        try:
+            await db.rollback()
+            await record("EXCEPTION", str(e))
+        except Exception:
+            logger.warning(f"Could not record the push failure for sync_id={sync_id}", exc_info=True)
+        return (False, "EXCEPTION", str(e))
+
+async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: str, db: AsyncSession, tally_name: Optional[str] = None):
+    """
+    Attempts real-time push to Tally Prime on the fly, with the same full ledger XML the Desktop Sync Agent sends.
+    Records structured traffic logs and updates DeletedRecordAudit when deleting.
+    tally_name: the name Tally knows the ledger by when it differs from the current one (a rename); read
+    from the queue row when not given, which is also where a delete finds the name once the ledger is gone.
+    """
+    import time
+    start_time = time.time()
+    try:
+        tally_url = settings.TALLY_URL
+        if not tally_url:
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
+
+        sync_item = None
+        if sync_item_id and sync_item_id > 0:
+            sync_item = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_item_id))).scalars().first()
+        if not tally_name:
+            tally_name = ((sync_item.snapshot_data if sync_item else None) or {}).get("tally_name")
+
+        l_stmt = select(MstLedger).options(
+            selectinload(MstLedger.group), selectinload(MstLedger.bank_details), selectinload(MstLedger.addresses),
+            selectinload(MstLedger.gst_registrations), selectinload(MstLedger.msme_details),
+            selectinload(MstLedger.lower_deductions)
+        ).where(MstLedger.ledger_id == ledger_id).execution_options(populate_existing=True)
+        l_res = await db.execute(l_stmt)
+        ledger = l_res.scalars().first()
+        if not ledger and not (action == "Delete" and tally_name):
+            logger.warning(f"Real-time Tally push skipped: ledger_id={ledger_id} not found.")
+            return (False, "FAILED", f"Ledger #{ledger_id} not found")
+
+        company_id = ledger.company_id if ledger else (sync_item.company_id if sync_item else 1)
+        ledger_name = ledger.name if ledger else tally_name
+        group_name = ledger.group.name if (ledger and ledger.group) else "Sundry Debtors"
+        
+        c_stmt = select(Company).where(Company.company_id == company_id)
+        c_res = await db.execute(c_stmt)
+        comp_obj = c_res.scalars().first()
+        comp_name = comp_obj.name if comp_obj else ""
+
+        if action == "Delete":
+            xml_envelope = build_ledger_delete_envelope(tally_name or ledger_name, comp_name)
+        else:
+            xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, action, tally_name)
 
         logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY LEDGER PUSH (ledger_id={ledger_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
@@ -2139,10 +2707,14 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
         )
 
         metrics = parse_tally_response_metrics(resp_str)
-        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+        is_success = check_tally_success(resp_str)
+        # A delete of something Tally no longer has is already where it should be: settle it instead of
+        # leaving the row to be retried for ever
+        already_absent = (not is_success and action == "Delete"
+                          and "does not exist" in (metrics["error_summary"] or "").lower())
 
         if sync_item_id and sync_item_id > 0:
-            if is_success:
+            if is_success or already_absent:
                 sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
             else:
                 sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
@@ -2158,165 +2730,237 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
                     DeletedRecordAudit.record_id == ledger_id
                 )
                 .values(
-                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "NOT_DELETED_IN_TALLY",
-                    tally_error_message=None if is_success else (metrics["error_summary"] or "Cannot be deleted in Tally Prime (referenced in transactions)")
+                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "ALREADY_DELETED_IN_TALLY" if already_absent else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if (is_success or already_absent) else (metrics["error_summary"] or "Cannot be deleted in Tally Prime (referenced in transactions)")
                 )
             )
             await db.commit()
 
+        if already_absent:
+            logger.info(f"Ledger delete for ledger_id={ledger_id}: Tally no longer has it, nothing to do")
+            return (True, "ALREADY_ABSENT", None)
         if is_success:
             logger.info(f"Real-time Tally push successful for ledger_id={ledger_id}, action={action}")
             return (True, "SUCCESS", None)
-        else:
-            logger.error(f"Real-time Tally push failed for ledger_id={ledger_id}: {resp_str}")
-            return (False, metrics["status"], metrics["error_summary"])
+        if not resp_str or not resp_str.strip():
+            logger.error(f"Real-time Tally push got no answer for ledger_id={ledger_id}")
+            return (False, "NO_RESPONSE", "No response from Tally")
+        # Tally answered and refused; a create it refuses can leave a ghost ledger behind
+        if action == "Create":
+            await remove_tally_ghost(tally_url, comp_name, "Ledger", ledger_name)
+        logger.error(f"Real-time Tally push rejected for ledger_id={ledger_id}: {resp_str}")
+        return (False, "REJECTED", metrics["error_summary"] or "Tally rejected the ledger")
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for ledger_id={ledger_id}: {str(e)}", exc_info=True)
         return (False, "EXCEPTION", str(e))
 
 
-async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, action: str, db: AsyncSession):
+def _qty(value) -> str:
+    """A quantity or rate as Tally reads it: plain digits, no exponent, no trailing zeros."""
+    d = Decimal(str(value or 0))
+    return format(d.normalize(), "f") if d else "0"
+
+
+def build_stock_item_xml(item, action: str, tally_name: Optional[str] = None, include_gst: bool = True) -> str:
     """
-    Attempts real-time push of a Stock Item to Tally Prime XML Server on the fly
-    using official TallyPrime API Explorer standard envelope.
+    The <STOCKITEM> element. The relationships it reads (unit, alt_unit, group, category, aliases,
+    opening_balances with their godown) must be loaded by the caller.
+    tally_name: the name Tally currently knows the item by when it differs from item.name (a rename).
+    include_gst: send the HSN code and GST rate. Tally keeps these as dated entries with more in them than
+    is held here (cess, valuation type), so they are sent for a new item or when the HSN code or rate was
+    actually changed, and left alone otherwise: an unrelated edit must not rewrite an item's tax history.
+
+    Opening stock is always sent as a batch list, and an empty list when there is none: Tally keeps opening
+    stock on the batch allocation, ignores a change made at item level alone, and replaces the whole list
+    with the one sent, so sending it every time is what makes a repeated push harmless.
     """
-    import time
-    start_time = time.time()
-    try:
-        from app.models.tally_core import MstStockItem, StockItemOpeningBalance
-        from app.models.portal_core import SyncQueue, Company
+    target = tally_name or item.name
+    if action == "Delete":
+        return f"""<STOCKITEM NAME="{x(target)}" Action="Delete">
+          <NAME>{x(target)}</NAME>
+        </STOCKITEM>"""
 
-        tally_url = settings.TALLY_URL
-        if not tally_url:
-            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
-            return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
+    uom_symbol = (item.unit.symbol or item.unit.name) if item.unit else "nos"
+    # An item Tally holds without a unit is kept here under a placeholder unit of that name
+    has_unit = uom_symbol.strip().lower() != "not applicable"
+    raw_group_name = item.group.name.strip() if item.group and item.group.name else ""
+    if not raw_group_name or raw_group_name.lower() in ("primary", "not applicable"):
+        parent_tag = "<PARENT>&#4; Primary</PARENT>"
+    else:
+        parent_tag = f"<PARENT>{x(raw_group_name)}</PARENT>"
 
-        item_stmt = select(MstStockItem).options(
-            selectinload(MstStockItem.unit),
-            selectinload(MstStockItem.group),
-            selectinload(MstStockItem.category),
-            selectinload(MstStockItem.opening_balances).selectinload(StockItemOpeningBalance.godown)
-        ).where(MstStockItem.stock_item_id == stock_item_id)
-        item_res = await db.execute(item_stmt)
-        item = item_res.scalars().first()
-        if not item and action != "Delete":
-            logger.warning(f"Real-time Tally push skipped: stock_item_id={stock_item_id} not found.")
-            return (False, "FAILED", f"Stock Item #{stock_item_id} not found")
+    category_name = (item.category.name or "").strip() if item.category else ""
+    if category_name.lower() == "not applicable":
+        category_name = ""
+    category_tag = f"<CATEGORY>{x(category_name)}</CATEGORY>" if category_name else "<CATEGORY>&#4; Not Applicable</CATEGORY>"
+    # is_batch_wise is what an import from Tally sets; tracking_type what the item form sets
+    is_batchwise = "Yes" if (getattr(item, 'tracking_type', None) in ("Batches", "Serial", "Batch")
+                             or getattr(item, 'is_batch_wise', False)) else "No"
+    supply_type = "Services" if (item.unit and item.unit.name and item.unit.name.lower() in ['hrs', 'srv', 'serv', 'service']) else "Goods"
 
-        company_id = item.company_id if item else 1
-        item_name = item.name if item else f"Item #{stock_item_id}"
+    # "<conversion> alternate units = <denominator> base units", as Tally keeps it: CONVERSION counts
+    # alternate units and DENOMINATOR base units
+    alt_unit = getattr(item, 'alt_unit', None)
+    alt_conversion = Decimal(str(getattr(item, 'alt_unit_conversion', None) or 0))
+    alt_denominator = Decimal(str(getattr(item, 'alt_unit_denominator', None) or 1))
+    if alt_unit is not None and alt_conversion > 0:
+        alt_block = f"""<ADDITIONALUNITS>{x(alt_unit.symbol or alt_unit.name)}</ADDITIONALUNITS>
+          <CONVERSION>{_qty(alt_conversion)}</CONVERSION>
+          <DENOMINATOR>{_qty(alt_denominator if alt_denominator > 0 else 1)}</DENOMINATOR>"""
+    else:
+        alt_block = "<ADDITIONALUNITS>&#4; Not Applicable</ADDITIONALUNITS>"
 
-        c_stmt = select(Company).where(Company.company_id == company_id)
-        c_res = await db.execute(c_stmt)
-        comp_obj = c_res.scalars().first()
-        comp_name = comp_obj.name if comp_obj else ""
+    aliases = [a.alias.strip() for a in (getattr(item, 'aliases', None) or [])
+               if a.alias and a.alias.strip() and a.alias.strip().lower() != item.name.strip().lower()]
+    alias_nodes = "".join(f"\n              <NAME>{x(a)}</NAME>" for a in aliases)
 
-        # Handle Delete action
-        if action == "Delete":
-            xml_envelope = f"""<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import</TALLYREQUEST>
-    <TYPE>Data</TYPE>
-    <ID>All Masters</ID>
-  </HEADER>
-  <BODY>
-    <DESC>
-      <STATICVARIABLES>
-        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-      </STATICVARIABLES>
-    </DESC>
-    <DATA>
-      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{item_name}" Action="Delete">
-          <NAME>{item_name}</NAME>
-        </STOCKITEM>
-      </TALLYMESSAGE>
-    </DATA>
-  </BODY>
-</ENVELOPE>"""
-        else:
-            uom_symbol = item.unit.symbol if item.unit else "nos"
-            raw_group_name = item.group.name.strip() if item.group and item.group.name else ""
-            if not raw_group_name or raw_group_name.lower() in ("primary", " primary", "not applicable"):
-                parent_tag = "<PARENT>&#4; Primary</PARENT>"
-            else:
-                parent_tag = f"<PARENT>{raw_group_name}</PARENT>"
-
-            category_name = item.category.name if item.category else ""
-            category_tag = f"\n          <CATEGORY>{category_name}</CATEGORY>" if category_name else ""
-            desc_tag = f"\n          <DESCRIPTION>{item.description}</DESCRIPTION>" if item.description else ""
-            
-            is_batchwise = "Yes" if getattr(item, 'tracking_type', None) in ("Batches", "Serial", "Batch") else "No"
-            supply_type = "Services" if (item.unit and item.unit.name and item.unit.name.lower() in ['hrs', 'srv', 'serv', 'service']) else "Goods"
-
-            gst_rate = float(item.gst_rate_percent) if item.gst_rate_percent else 0.0
-            hsn_str = item.hsn_code or ""
-            cgst_rate = gst_rate / 2.0
-            sgst_rate = gst_rate / 2.0
-            igst_rate = gst_rate
-
-            gst_block = f"""
-          <GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>
+    gst_rate = Decimal(str(item.gst_rate_percent or 0))
+    hsn_str = (item.hsn_code or "").strip()
+    # GST tags only for an item that carries GST details here; sending them for every item would switch
+    # GST on in Tally for items that have none
+    gst_block = ""
+    if not include_gst:
+        hsn_str, gst_rate = "", Decimal("0")
+    if hsn_str or gst_rate > 0:
+        gst_block = f"""<GSTAPPLICABLE>&#4; Applicable</GSTAPPLICABLE>
           <GSTTYPEOFSUPPLY>{supply_type}</GSTTYPEOFSUPPLY>"""
-            if gst_rate > 0 or hsn_str:
-                gst_block += f"""
+    if hsn_str:
+        gst_block += f"""
+          <HSNDETAILS.LIST>
+            <APPLICABLEFROM>20170701</APPLICABLEFROM>
+            <HSNCODE>{x(hsn_str)}</HSNCODE>
+            <SRCOFHSNDETAILS>Specify Details Here</SRCOFHSNDETAILS>
+          </HSNDETAILS.LIST>"""
+    if gst_rate > 0:
+        half = gst_rate / 2
+        gst_block += f"""
           <GSTDETAILS.LIST>
             <APPLICABLEFROM>20170701</APPLICABLEFROM>
-            <HSNCODE>{hsn_str}</HSNCODE>
             <TAXABILITY>Taxable</TAXABILITY>
+            <SRCOFGSTDETAILS>Specify Details Here</SRCOFGSTDETAILS>
             <STATEWISEDETAILS.LIST>
-              <RATEDETAILS.LIST>
-                <GSTRATE>{gst_rate:g}</GSTRATE>
-                <CGSTRATE>{cgst_rate:g}</CGSTRATE>
-                <SGSTRATE>{sgst_rate:g}</SGSTRATE>
-                <IGSTRATE>{igst_rate:g}</IGSTRATE>
-              </RATEDETAILS.LIST>
+              <STATENAME>&#4; Any</STATENAME>
+              <RATEDETAILS.LIST><GSTRATEDUTYHEAD>IGST</GSTRATEDUTYHEAD><GSTRATE>{_qty(gst_rate)}</GSTRATE></RATEDETAILS.LIST>
+              <RATEDETAILS.LIST><GSTRATEDUTYHEAD>CGST</GSTRATEDUTYHEAD><GSTRATE>{_qty(half)}</GSTRATE></RATEDETAILS.LIST>
+              <RATEDETAILS.LIST><GSTRATEDUTYHEAD>SGST/UTGST</GSTRATEDUTYHEAD><GSTRATE>{_qty(half)}</GSTRATE></RATEDETAILS.LIST>
             </STATEWISEDETAILS.LIST>
           </GSTDETAILS.LIST>"""
 
-            ob_block = ""
-            if getattr(item, 'opening_balances', None) and len(item.opening_balances) > 0:
-                tot_qty = sum(float(ob.quantity) for ob in item.opening_balances)
-                tot_val = sum(float(ob.amount) for ob in item.opening_balances)
-                avg_rate = tot_val / tot_qty if tot_qty > 0 else 0.0
-                batches_xml = ""
-                for ob in item.opening_balances:
-                    gname = ob.godown.name if getattr(ob, 'godown', None) and ob.godown else "Main Location"
-                    bname = ob.batch_name or "Primary Batch"
-                    q_val = float(ob.quantity)
-                    r_val = float(ob.rate)
-                    a_val = float(ob.amount)
-                    batches_xml += f"""
-            <BATCHALLOCATIONS.LIST>
-              <GODOWNNAME>{gname}</GODOWNNAME>
-              <BATCHNAME>{bname}</BATCHNAME>
-              <OPENINGBALANCE>{q_val:g} {uom_symbol}</OPENINGBALANCE>
-              <OPENINGRATE>{r_val:.2f}/{uom_symbol}</OPENINGRATE>
-              <OPENINGVALUE>-{a_val:.2f}</OPENINGVALUE>
-            </BATCHALLOCATIONS.LIST>"""
-                ob_block = f"""
-          <OPENINGBALANCE>{tot_qty:g} {uom_symbol}</OPENINGBALANCE>
-          <OPENINGRATE>{avg_rate:.2f}/{uom_symbol}</OPENINGRATE>
-          <OPENINGVALUE>-{tot_val:.2f}</OPENINGVALUE>{batches_xml}"""
-            elif item.opening_qty and float(item.opening_qty) > 0:
-                op_qty = float(item.opening_qty)
-                op_rate = float(item.opening_rate) if item.opening_rate else 0.0
-                op_val = op_qty * op_rate
-                ob_block = f"""
-          <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
-          <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
-          <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
+    # Opening stock, one batch per godown row; the item's own quantity and rate when no rows are kept
+    batches = []
+    for ob in (getattr(item, 'opening_balances', None) or []):
+        if Decimal(str(ob.quantity or 0)) <= 0:
+            continue
+        godown = ob.godown.name if getattr(ob, 'godown', None) else "Main Location"
+        batches.append((godown, ob.batch_name or "Primary Batch", Decimal(str(ob.quantity)), Decimal(str(ob.rate or 0)), Decimal(str(ob.amount or 0))))
+    if not batches and item.opening_qty and Decimal(str(item.opening_qty)) > 0:
+        qty, rate = Decimal(str(item.opening_qty)), Decimal(str(item.opening_rate or 0))
+        batches.append(("Main Location", "Primary Batch", qty, rate, qty * rate))
+
+    if batches:
+        total_qty = sum(b[2] for b in batches)
+        total_value = sum(b[4] for b in batches)
+        average = total_value / total_qty if total_qty else Decimal("0")
+        # A debit: Tally keeps the value of stock held as a negative amount
+        ob_block = f"""<OPENINGBALANCE>{_qty(total_qty)} {x(uom_symbol)}</OPENINGBALANCE>
+          <OPENINGRATE>{average:.2f}/{x(uom_symbol)}</OPENINGRATE>
+          <OPENINGVALUE>-{total_value:.2f}</OPENINGVALUE>"""
+        for godown, batch_name, qty, rate, amount in batches:
+            ob_block += f"""
           <BATCHALLOCATIONS.LIST>
-            <GODOWNNAME>Main Location</GODOWNNAME>
-            <BATCHNAME>Primary Batch</BATCHNAME>
-            <OPENINGBALANCE>{op_qty:g} {uom_symbol}</OPENINGBALANCE>
-            <OPENINGRATE>{op_rate:.2f}/{uom_symbol}</OPENINGRATE>
-            <OPENINGVALUE>-{op_val:.2f}</OPENINGVALUE>
+            <GODOWNNAME>{x(godown)}</GODOWNNAME>
+            <BATCHNAME>{x(batch_name)}</BATCHNAME>
+            <OPENINGBALANCE>{_qty(qty)} {x(uom_symbol)}</OPENINGBALANCE>
+            <OPENINGRATE>{rate:.2f}/{x(uom_symbol)}</OPENINGRATE>
+            <OPENINGVALUE>-{amount:.2f}</OPENINGVALUE>
+          </BATCHALLOCATIONS.LIST>"""
+    else:
+        ob_block = """<OPENINGBALANCE></OPENINGBALANCE>
+          <OPENINGRATE></OPENINGRATE>
+          <OPENINGVALUE></OPENINGVALUE>
+          <BATCHALLOCATIONS.LIST>
           </BATCHALLOCATIONS.LIST>"""
 
-            xml_envelope = f"""<ENVELOPE>
+    return f"""<STOCKITEM NAME="{x(target)}" Action="{x(action)}">
+          <NAME>{x(item.name)}</NAME>
+          {parent_tag}
+          {category_tag}
+          <BASEUNITS>{x(uom_symbol) if has_unit else "&#4; Not Applicable"}</BASEUNITS>
+          {alt_block}
+          <DESCRIPTION>{x(item.description or '')}</DESCRIPTION>
+          <ISCOSTCENTRESON>No</ISCOSTCENTRESON>
+          <ISBATCHWISEON>{is_batchwise}</ISBATCHWISEON>
+          {gst_block}
+          <LANGUAGENAME.LIST>
+            <NAME.LIST TYPE="String">
+              <NAME>{x(item.name)}</NAME>{alias_nodes}
+            </NAME.LIST>
+          </LANGUAGENAME.LIST>
+          {ob_block}
+        </STOCKITEM>"""
+
+
+async def send_stock_item(db: AsyncSession, stock_item_id: int, action: str, tally_name: Optional[str] = None,
+                          company_id: Optional[int] = None, include_gst: Optional[bool] = None) -> dict:
+    """
+    Sends a stock item to Tally and reports what happened, without committing anything: the caller decides
+    whether its own changes stand. Reads the item as it is in the caller's transaction.
+    Returns {"status", "reason", "envelope", "response", "name", "company_id", "duration_ms"}; status is
+    SUCCESS, NOT_CONFIGURED, REJECTED (Tally answered and refused), NO_RESPONSE or FAILED.
+    """
+    import time
+    from app.models.tally_core import MstStockItem, StockItemOpeningBalance
+
+    result = {"status": "FAILED", "reason": None, "envelope": None, "response": None, "name": tally_name,
+              "company_id": company_id, "duration_ms": 0}
+    tally_url = settings.TALLY_URL
+    if not tally_url:
+        result.update(status="NOT_CONFIGURED", reason="TALLY_URL is not configured")
+        return result
+
+    # populate_existing: the caller may hold this item with related rows it has since replaced
+    item_stmt = select(MstStockItem).options(
+        selectinload(MstStockItem.unit),
+        selectinload(MstStockItem.alt_unit),
+        selectinload(MstStockItem.group),
+        selectinload(MstStockItem.category),
+        selectinload(MstStockItem.aliases),
+        selectinload(MstStockItem.opening_balances).selectinload(StockItemOpeningBalance.godown)
+    ).where(MstStockItem.stock_item_id == stock_item_id).execution_options(populate_existing=True)
+    item = (await db.execute(item_stmt)).scalars().first()
+    if not item and not (action == "Delete" and tally_name):
+        result["reason"] = f"Stock Item #{stock_item_id} not found"
+        return result
+
+    company_id = item.company_id if item else company_id
+    item_name = item.name if item else tally_name
+    comp_obj = (await db.execute(select(Company).where(Company.company_id == company_id))).scalars().first()
+    comp_name = comp_obj.name if comp_obj else ""
+
+    if include_gst is None:
+        include_gst = action == "Create"
+    if item and action in ("Create", "Alter"):
+        # Sent as what it really is for Tally: an item Tally does not have yet is a create, tax details
+        # included, whatever the queue row says (an item saved here while Tally was unreachable, for one)
+        state = await fetch_tally_master_state(tally_url, comp_name, "Stock Item", tally_name or item.name)
+        if state is not None and not state["exists"] and tally_name and tally_name != item.name:
+            # The old name is gone; it may already be under the new one
+            tally_name = None
+            state = await fetch_tally_master_state(tally_url, comp_name, "Stock Item", item.name)
+        if state is None:
+            result.update(status="NO_RESPONSE", reason="No response from Tally", name=item_name, company_id=company_id)
+            return result
+        if state["exists"] and state["ghost"]:
+            await remove_tally_ghost(tally_url, comp_name, "Stock Item", tally_name or item.name)
+            state = {"exists": False}
+        if state["exists"]:
+            action = "Alter"
+        else:
+            action, tally_name, include_gst = "Create", None, True
+    item_xml = build_stock_item_xml(item, action, tally_name, include_gst) if item else f"""<STOCKITEM NAME="{x(tally_name)}" Action="Delete">
+          <NAME>{x(tally_name)}</NAME>
+        </STOCKITEM>"""
+    envelope = f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
     <TALLYREQUEST>Import</TALLYREQUEST>
@@ -2327,84 +2971,201 @@ async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, ac
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
     </DESC>
     <DATA>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{item_name}" Action="{action}">
-          <NAME>{item_name}</NAME>
-          {parent_tag}{category_tag}
-          <BASEUNITS>{uom_symbol}</BASEUNITS>{desc_tag}
-          <ISCOSTCENTRESON>No</ISCOSTCENTRESON>
-          <ISBATCHWISEON>{is_batchwise}</ISBATCHWISEON>{gst_block}{ob_block}
-        </STOCKITEM>
+        {item_xml}
       </TALLYMESSAGE>
     </DATA>
   </BODY>
 </ENVELOPE>"""
+    logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM PUSH (stock_item_id={stock_item_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{envelope}\n=======================================================\n")
+    started = time.time()
+    resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, envelope, 5)
+    result.update(envelope=envelope, response=resp, name=item_name, company_id=company_id,
+                  duration_ms=int((time.time() - started) * 1000))
 
-        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKITEM PUSH (stock_item_id={stock_item_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
-        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
-        duration_ms = int((time.time() - start_time) * 1000)
-        logger.debug(f"\n=======================================================\nTALLY STOCKITEM PUSH RESPONSE (stock_item_id={stock_item_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
+    if check_tally_success(resp):
+        result["status"] = "SUCCESS"
+    elif not resp or not resp.strip():
+        result.update(status="NO_RESPONSE", reason="No response from Tally")
+    else:
+        reason = parse_tally_response_metrics(resp)["error_summary"] or "Tally rejected the stock item"
+        if action == "Delete" and "does not exist" in reason.lower():
+            # Tally no longer has it, which is where a delete is headed
+            result["status"] = "SUCCESS"
+        else:
+            if action == "Create":
+                # A create Tally refuses can leave a ghost item behind
+                await remove_tally_ghost(tally_url, comp_name, "Stock Item", item_name)
+            result.update(status="REJECTED", reason=reason)
+    return result
 
+
+async def record_stock_item_push(db: AsyncSession, stock_item_id: int, sync_item_id: Optional[int], action: str, result: dict):
+    """Writes a send_stock_item() outcome to the traffic log, the queue row and, for a delete, the delete audit."""
+    if result.get("envelope") is not None:
         await record_sync_traffic_log(
-            db=db,
-            company_id=company_id,
-            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
-            entity_type="StockItem",
-            entity_id=stock_item_id,
-            entity_name=item_name,
-            action=action,
-            outbound_format="XML",
-            outbound_payload=xml_envelope,
-            inbound_response=resp_str,
-            duration_ms=duration_ms,
-            tally_url=tally_url
-        )
+            db=db, company_id=result["company_id"], sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
+            entity_type="StockItem", entity_id=stock_item_id, entity_name=result["name"], action=action,
+            outbound_format="XML", outbound_payload=result["envelope"], inbound_response=result["response"],
+            duration_ms=result["duration_ms"], tally_url=settings.TALLY_URL)
+    ok = result["status"] == "SUCCESS"
+    if sync_item_id and sync_item_id > 0 and result["status"] != "NOT_CONFIGURED":
+        await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(
+            is_processed=ok, status=result["status"], attempts=func.coalesce(SyncQueue.attempts, 0) + 1,
+            last_payload=result["envelope"], last_response=result["response"], last_attempt_at=func.now(),
+            error_message=(result["reason"] or "")[:500] or None))
+    if action == "Delete" and result["status"] in ("SUCCESS", "REJECTED"):
+        await db.execute(
+            update(DeletedRecordAudit)
+            .where(DeletedRecordAudit.company_id == result["company_id"], DeletedRecordAudit.entity_type == "StockItem",
+                   DeletedRecordAudit.record_id == stock_item_id)
+            .values(tally_sync_status="SYNCED_TO_TALLY" if ok else "NOT_DELETED_IN_TALLY",
+                    tally_error_message=None if ok else (result["reason"] or "Cannot be deleted in Tally Prime")))
+    await db.commit()
+    if ok and action != "Delete":
+        await store_tally_master_identity(db, "Stock Item", MstStockItem, stock_item_id)
 
-        metrics = parse_tally_response_metrics(resp_str)
-        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
 
+async def try_push_stock_item_realtime(stock_item_id: int, sync_item_id: int, action: str, db: AsyncSession, tally_name: Optional[str] = None):
+    """
+    Pushes a Stock Item to Tally and records the outcome on its queue row.
+    tally_name: the name Tally knows the item by when it differs from the current one (a rename); read from
+    the queue row when not given, which is also where a delete finds the name once the item is gone.
+    Returns (ok, status, message).
+    """
+    try:
+        sync_item = None
         if sync_item_id and sync_item_id > 0:
-            if is_success:
-                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
-            else:
-                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
-            await db.execute(sq_stmt)
-            await db.commit()
-
-        if action == "Delete":
-            await db.execute(
-                update(DeletedRecordAudit)
-                .where(
-                    DeletedRecordAudit.company_id == company_id,
-                    DeletedRecordAudit.entity_type == "StockItem",
-                    DeletedRecordAudit.record_id == stock_item_id
-                )
-                .values(
-                    tally_sync_status="SYNCED_TO_TALLY" if is_success else "NOT_DELETED_IN_TALLY",
-                    tally_error_message=None if is_success else (metrics["error_summary"] or "Cannot be deleted in Tally Prime")
-                )
-            )
-            await db.commit()
-
-        if is_success:
+            sync_item = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_item_id))).scalars().first()
+        snapshot = (sync_item.snapshot_data if sync_item else None) or {}
+        if not tally_name:
+            tally_name = snapshot.get("tally_name")
+        result = await send_stock_item(db, stock_item_id, action, tally_name, sync_item.company_id if sync_item else None,
+                                       snapshot.get("include_gst"))
+        if result["status"] == "NOT_CONFIGURED":
+            logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
+            return (False, "NOT_CONFIGURED", result["reason"])
+        await record_stock_item_push(db, stock_item_id, sync_item_id, action, result)
+        if result["status"] == "SUCCESS":
             logger.info(f"Real-time Tally push successful for stock_item_id={stock_item_id}, action={action}")
             return (True, "SUCCESS", None)
-        else:
-            logger.error(f"Real-time Tally push failed for stock_item_id={stock_item_id}: {resp_str}")
-            return (False, metrics["status"], metrics["error_summary"])
+        logger.error(f"Real-time Tally push failed for stock_item_id={stock_item_id}: {result['status']}: {result['reason']}")
+        return (False, result["status"], result["reason"])
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for stock_item_id={stock_item_id}: {str(e)}", exc_info=True)
         return (False, "EXCEPTION", str(e))
 
 
-async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db: AsyncSession):
+def compound_unit_name(base_symbol: str, conversion, additional_symbol: str) -> str:
     """
-    Attempts real-time push of a Unit of Measure (UOM) to Tally Prime XML Server on the fly
-    using official TallyPrime API Explorer standard envelope.
+    The name Tally gives a compound unit. Tally ignores whatever name is sent for one and derives it from
+    its parts, and re-derives it whenever the conversion or either part changes.
+    """
+    conv = Decimal(str(conversion or 1))
+    conv_str = str(int(conv)) if conv == conv.to_integral_value() else str(conv.normalize())
+    return f"{base_symbol} of {conv_str} {additional_symbol}"
+
+
+async def fetch_tally_master_state(tally_url: str, comp_name: str, subtype: str, name: str) -> Optional[dict]:
+    """
+    Whether Tally has a master of this type and name: {"exists": False}, or {"exists": True, "ghost": bool}.
+    A ghost is what a rejected create leaves behind: it answers to its name with ALTERID 0 but is in no list,
+    and it can hold references that nothing visible explains. None when Tally gave no usable answer.
+    The fetch list is mandatory: an object export without one crashes TallyPrime.
+    """
+    xml = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Object</TYPE><SUBTYPE>{x(subtype)}</SUBTYPE><ID TYPE="Name">{x(name)}</ID></HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <FETCHLIST><FETCH>Name</FETCH><FETCH>AlterID</FETCH></FETCHLIST>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+    resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml, 10)
+    if not resp or not resp.strip():
+        return None
+    if "could not find" in resp.lower():
+        return {"exists": False}
+    m = re.search(r"<ALTERID[^>]*>\s*(\d+)\s*</ALTERID>", resp)
+    if "<ERRORMSG>" in resp or "<LINEERROR>" in resp or not m:
+        return None
+    return {"exists": True, "ghost": int(m.group(1)) == 0}
+
+
+def _unit_import_envelope(comp_name: str, unit_xml: str) -> str:
+    return f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Import</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>All Masters</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
+      </STATICVARIABLES>
+    </DESC>
+    <DATA>
+      <TALLYMESSAGE xmlns:UDF="TallyUDF">
+        {unit_xml}
+      </TALLYMESSAGE>
+    </DATA>
+  </BODY>
+</ENVELOPE>"""
+
+
+def build_unit_xml(symbol: str, action: str, target_name: Optional[str] = None, formal_name: Optional[str] = None,
+                   decimal_places: int = 0, base_symbol: Optional[str] = None, additional_symbol: Optional[str] = None,
+                   conversion=None) -> str:
+    """
+    The <UNIT> element for a simple unit, or for a compound one when base_symbol is given.
+    target_name is the name Tally currently has it under (differs from symbol on a rename).
+    The formal name is left out when it is empty or equal to the symbol: Tally keeps both in one namespace,
+    rejects the pair as DUPLICATE ORIGINAL NAME on a create, and on an alter stores a unit that duplicates
+    itself and then stops responding behind an internal-error dialog.
+    """
+    target = target_name or symbol
+    if action == "Delete":
+        return f"""<UNIT NAME="{x(target)}" Action="Delete">
+          <NAME>{x(target)}</NAME>
+        </UNIT>"""
+    if base_symbol:
+        conv = Decimal(str(conversion or 1))
+        conv_str = str(int(conv)) if conv == conv.to_integral_value() else str(conv.normalize())
+        return f"""<UNIT NAME="{x(target)}" Action="{x(action)}">
+          <NAME>{x(symbol)}</NAME>
+          <ISSIMPLEUNIT>No</ISSIMPLEUNIT>
+          <BASEUNITS>{x(base_symbol)}</BASEUNITS>
+          <ADDITIONALUNITS>{x(additional_symbol or '')}</ADDITIONALUNITS>
+          <CONVERSION>{conv_str}</CONVERSION>
+        </UNIT>"""
+    formal = (formal_name or "").strip()
+    formal_xml = f"\n          <ORIGINALNAME>{x(formal)}</ORIGINALNAME>" if formal and formal.lower() != symbol.strip().lower() else ""
+    return f"""<UNIT NAME="{x(target)}" Action="{x(action)}">
+          <NAME>{x(symbol)}</NAME>{formal_xml}
+          <ISSIMPLEUNIT>Yes</ISSIMPLEUNIT>
+          <DECIMALPLACES>{int(decimal_places or 0)}</DECIMALPLACES>
+        </UNIT>"""
+
+
+async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db: AsyncSession, tally_name: Optional[str] = None):
+    """
+    Pushes a Unit of Measure to Tally and records the outcome on its queue row.
+
+    Tally is asked first whether it has the unit, and the request is sent as the action that matches:
+    an Alter for a unit Tally does not have would create one from partial data, and a Create for a compound
+    unit it already has is rejected. A ghost left by an earlier rejected create is removed first.
+    tally_name: the name Tally knows the unit by when it differs from the current one (a rename, or a
+    compound unit whose parts changed); read from the queue row when not given, which is also where a
+    delete finds the name once the unit is gone.
+    Returns (ok, status, message).
     """
     import time
     start_time = time.time()
@@ -2417,127 +3178,159 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
+        sync_item = None
+        if sync_item_id and sync_item_id > 0:
+            sync_item = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_item_id))).scalars().first()
+        if not tally_name:
+            tally_name = ((sync_item.snapshot_data if sync_item else None) or {}).get("tally_name")
+
         u_stmt = select(MstUom).where(MstUom.unit_id == unit_id)
         u_res = await db.execute(u_stmt)
         uom = u_res.scalars().first()
-        if not uom and action != "Delete":
+        if not uom and not (action == "Delete" and tally_name):
             logger.warning(f"Real-time Tally push skipped: unit_id={unit_id} not found.")
             return (False, "FAILED", f"Unit #{unit_id} not found")
 
-        company_id = uom.company_id if uom else 1
+        company_id = uom.company_id if uom else (sync_item.company_id if sync_item else 1)
         c_stmt = select(Company).where(Company.company_id == company_id)
         c_res = await db.execute(c_stmt)
         comp_obj = c_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
-        symbol = (uom.symbol or uom.name or f"UOM #{unit_id}") if uom else f"UOM #{unit_id}"
-        formal_name = (uom.original_name or uom.name or "") if uom else ""
-        dec_places = uom.decimal_places if (uom and uom.decimal_places is not None) else 0
-
-        if action == "Delete":
-            unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="Delete">
-          <NAME>{symbol}</NAME>
-        </UNIT>"""
-        elif uom and uom.is_simple_unit:
-            unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="{action}">
-          <NAME>{symbol}</NAME>
-          <ORIGINALNAME>{formal_name}</ORIGINALNAME>
-          <ISSIMPLEUNIT>Yes</ISSIMPLEUNIT>
-          <DECIMALPLACES>{dec_places}</DECIMALPLACES>
-        </UNIT>"""
-        else:
-            base_unit_sym = ""
-            add_unit_sym = ""
-            if uom and uom.base_unit_id:
-                b_res = await db.execute(select(MstUom).where(MstUom.unit_id == uom.base_unit_id))
-                b_obj = b_res.scalars().first()
-                if b_obj:
-                    base_unit_sym = b_obj.symbol or b_obj.name or ""
-            if uom and uom.additional_unit_id:
-                a_res = await db.execute(select(MstUom).where(MstUom.unit_id == uom.additional_unit_id))
-                a_obj = a_res.scalars().first()
-                if a_obj:
-                    add_unit_sym = a_obj.symbol or a_obj.name or ""
-            
-            conv_val = (uom.conversion_factor or 1) if uom else 1
-            conv_str = str(int(conv_val)) if conv_val % 1 == 0 else str(conv_val)
-
-            unit_inner_xml = f"""<UNIT NAME="{symbol}" Action="{action}">
-          <NAME>{symbol}</NAME>
-          <BASEUNITS>{base_unit_sym}</BASEUNITS>
-          <ADDITIONALUNITS>{add_unit_sym}</ADDITIONALUNITS>
-          <CONVERSION>{conv_str}</CONVERSION>
-          <ISSIMPLEUNIT>No</ISSIMPLEUNIT>
-          <DECIMALPLACES>{dec_places}</DECIMALPLACES>
-        </UNIT>"""
-
-        xml_envelope = f"""<ENVELOPE>
-  <HEADER>
-    <VERSION>1</VERSION>
-    <TALLYREQUEST>Import</TALLYREQUEST>
-    <TYPE>Data</TYPE>
-    <ID>All Masters</ID>
-  </HEADER>
-  <BODY>
-    <DESC>
-      <STATICVARIABLES>
-        <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
-      </STATICVARIABLES>
-    </DESC>
-    <DATA>
-      <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        {unit_inner_xml}
-      </TALLYMESSAGE>
-    </DATA>
-  </BODY>
-</ENVELOPE>"""
-
-        logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY UOM PUSH (unit_id={unit_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
-        resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
-        duration_ms = int((time.time() - start_time) * 1000)
-        logger.debug(f"\n=======================================================\nTALLY UOM PUSH RESPONSE (unit_id={unit_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
-
-        await record_sync_traffic_log(
-            db=db,
-            company_id=company_id,
-            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
-            entity_type="UOM",
-            entity_id=unit_id,
-            entity_name=symbol,
-            action=action,
-            outbound_format="XML",
-            outbound_payload=xml_envelope,
-            inbound_response=resp_str,
-            duration_ms=duration_ms,
-            tally_url=tally_url
-        )
-
-        metrics = parse_tally_response_metrics(resp_str)
-        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
-
-        if sync_item_id and sync_item_id > 0:
-            if is_success:
-                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
-            else:
-                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
-            await db.execute(sq_stmt)
+        async def record(status_code: str, message: Optional[str], payload: Optional[str] = None, response: Optional[str] = None):
+            if not sync_item:
+                return
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(
+                is_processed=(status_code == "SUCCESS"), status=status_code,
+                attempts=func.coalesce(SyncQueue.attempts, 0) + 1, last_payload=payload, last_response=response,
+                last_attempt_at=func.now(), error_message=message[:500] if message else None))
             await db.commit()
 
-        if is_success:
-            logger.info(f"Real-time Tally push successful for unit_id={unit_id}, action={action}")
-            return (True, "SUCCESS", None)
+        async def send(unit_xml: str, sent_action: str, name: str) -> str:
+            envelope = _unit_import_envelope(comp_name, unit_xml)
+            started = time.time()
+            logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY UOM PUSH (unit_id={unit_id}, action={sent_action})\nURL: {tally_url}\nPAYLOAD:\n{envelope}\n=======================================================\n")
+            resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, envelope, 5)
+            await record_sync_traffic_log(
+                db=db, company_id=company_id, sync_id=sync_item_id if sync_item else None, entity_type="UOM",
+                entity_id=unit_id, entity_name=name, action=sent_action, outbound_format="XML",
+                outbound_payload=envelope, inbound_response=resp, duration_ms=int((time.time() - started) * 1000),
+                tally_url=tally_url)
+            return resp
+
+        def outcome(resp: str):
+            if not resp or not resp.strip():
+                return "NO_RESPONSE", "Tally did not answer"
+            if check_tally_success(resp):
+                return "SUCCESS", None
+            return "REJECTED", parse_tally_response_metrics(resp)["error_summary"] or "Tally rejected the unit"
+
+        if uom:
+            symbol = uom.symbol or uom.name
+            base_symbol = additional_symbol = None
+            if not uom.is_simple_unit:
+                base = (await db.execute(select(MstUom).where(MstUom.unit_id == uom.base_unit_id))).scalars().first() if uom.base_unit_id else None
+                additional = (await db.execute(select(MstUom).where(MstUom.unit_id == uom.additional_unit_id))).scalars().first() if uom.additional_unit_id else None
+                if not base or not additional:
+                    await record("FAILED", "Compound unit has no base or additional unit")
+                    return (False, "FAILED", "Compound unit has no base or additional unit")
+                base_symbol, additional_symbol = base.symbol or base.name, additional.symbol or additional.name
+                # Whatever is stored as its symbol, this is the name Tally will give it
+                symbol = compound_unit_name(base_symbol, uom.conversion_factor, additional_symbol)
         else:
-            logger.error(f"Real-time Tally push failed for unit_id={unit_id}: {resp_str}")
-            return (False, metrics["status"], metrics["error_summary"])
+            symbol = tally_name
+        target = tally_name or symbol
+
+        if action == "Delete":
+            unit_xml = build_unit_xml(target, "Delete")
+            resp = await send(unit_xml, "Delete", target)
+            status_code, reason = outcome(resp)
+            if status_code == "REJECTED" and "does not exist" in (reason or "").lower():
+                # Tally no longer has it, which is where a delete is headed
+                status_code, reason = "SUCCESS", None
+            await record(status_code, reason, unit_xml, resp)
+            return (status_code == "SUCCESS", status_code, reason)
+
+        # Create or Alter: decided by what Tally actually has, not by what was asked
+        state = await fetch_tally_master_state(tally_url, comp_name, "Unit", target)
+        if state is None:
+            await record("NO_RESPONSE", "Tally did not answer")
+            return (False, "NO_RESPONSE", "Tally did not answer")
+        if state["exists"] and state["ghost"]:
+            await send(build_unit_xml(target, "Delete"), "Delete", target)
+            state = {"exists": False}
+        if not state["exists"] and target != symbol:
+            # The old name is gone; it may already be under the new one (an earlier push that was not recorded)
+            target = symbol
+            state = await fetch_tally_master_state(tally_url, comp_name, "Unit", target)
+            if state is None:
+                await record("NO_RESPONSE", "Tally did not answer")
+                return (False, "NO_RESPONSE", "Tally did not answer")
+            if state["exists"] and state["ghost"]:
+                await send(build_unit_xml(target, "Delete"), "Delete", target)
+                state = {"exists": False}
+
+        sent_action = "Alter" if state["exists"] else "Create"
+        unit_xml = build_unit_xml(symbol, sent_action, target_name=target, formal_name=uom.original_name,
+                                  decimal_places=uom.decimal_places, base_symbol=base_symbol,
+                                  additional_symbol=additional_symbol, conversion=uom.conversion_factor)
+        resp = await send(unit_xml, sent_action, symbol)
+        status_code, reason = outcome(resp)
+
+        if status_code == "REJECTED" and sent_action == "Create":
+            # A rejected create can leave a ghost that blocks other units for good: take it away again
+            after = await fetch_tally_master_state(tally_url, comp_name, "Unit", symbol)
+            if after and after["exists"] and after["ghost"]:
+                await send(build_unit_xml(symbol, "Delete"), "Delete", symbol)
+
+        await record(status_code, reason, unit_xml, resp)
+        if status_code == "SUCCESS":
+            logger.info(f"Real-time Tally push successful for unit_id={unit_id}, action={sent_action}")
+            return (True, "SUCCESS", None)
+        logger.error(f"Real-time Tally push failed for unit_id={unit_id}: {status_code}: {reason}")
+        return (False, status_code, reason)
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for unit_id={unit_id}: {str(e)}", exc_info=True)
         return (False, "EXCEPTION", str(e))
 
 
-async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action: str, db: AsyncSession):
+def build_stock_group_xml(name: str, action: str, target_name: Optional[str] = None, parent_name: Optional[str] = None,
+                          aliases: Optional[List[str]] = None) -> str:
     """
-    Attempts real-time push of a Stock Group to Tally Prime XML Server on the fly.
+    The <STOCKGROUP> element. target_name is the name Tally currently has it under (differs from name on a
+    rename). A top-level group is sent with Tally's own marker "&#4; Primary", control character included;
+    leaving PARENT out would leave an existing group where it is.
+    ISADDABLE is always sent: without it Tally creates the group with quantities not addable.
+    """
+    target = target_name or name
+    if action == "Delete":
+        return f"""<STOCKGROUP NAME="{x(target)}" Action="Delete">
+          <NAME>{x(target)}</NAME>
+        </STOCKGROUP>"""
+    parent = (parent_name or "").strip()
+    parent_tag = "<PARENT>&#4; Primary</PARENT>" if not parent or parent.lower() == "primary" else f"<PARENT>{x(parent)}</PARENT>"
+    alias_names = [a.strip() for a in (aliases or []) if a and a.strip() and a.strip().lower() != name.strip().lower()]
+    # The name list is sent whole, so an alias removed here is removed in Tally too
+    alias_nodes = "".join(f"\n              <NAME>{x(a)}</NAME>" for a in alias_names)
+    return f"""<STOCKGROUP NAME="{x(target)}" Action="{x(action)}">
+          <NAME>{x(name)}</NAME>
+          {parent_tag}
+          <ISADDABLE>Yes</ISADDABLE>
+          <LANGUAGENAME.LIST>
+            <NAME.LIST TYPE="String">
+              <NAME>{x(name)}</NAME>{alias_nodes}
+            </NAME.LIST>
+          </LANGUAGENAME.LIST>
+        </STOCKGROUP>"""
+
+
+async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action: str, db: AsyncSession, tally_name: Optional[str] = None):
+    """
+    Pushes a Stock Group to Tally and records the outcome on its queue row.
+    tally_name: the name Tally knows the group by when it differs from the current one (a rename); read
+    from the queue row when not given, which is also where a delete finds the name once the group is gone.
+    Returns (ok, status, message); status is SUCCESS, NOT_CONFIGURED, REJECTED (Tally answered and refused;
+    message is Tally's reason), NO_RESPONSE, FAILED or EXCEPTION.
     """
     import time
     start_time = time.time()
@@ -2550,37 +3343,46 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
-        g_stmt = select(MstStockGroup).options(selectinload(MstStockGroup.parent)).where(MstStockGroup.stock_group_id == group_id)
+        sync_item = None
+        if sync_item_id and sync_item_id > 0:
+            sync_item = (await db.execute(select(SyncQueue).where(SyncQueue.sync_id == sync_item_id))).scalars().first()
+        if not tally_name:
+            tally_name = ((sync_item.snapshot_data if sync_item else None) or {}).get("tally_name")
+
+        # populate_existing: the caller may hold this group with its old aliases already loaded
+        g_stmt = select(MstStockGroup).options(
+            selectinload(MstStockGroup.parent), selectinload(MstStockGroup.aliases)
+        ).where(MstStockGroup.stock_group_id == group_id).execution_options(populate_existing=True)
         g_res = await db.execute(g_stmt)
         group = g_res.scalars().first()
-        if not group and action != "Delete":
+        if not group and not (action == "Delete" and tally_name):
             logger.warning(f"Real-time Tally push skipped: stock_group_id={group_id} not found.")
             return (False, "FAILED", f"Stock Group #{group_id} not found")
 
-        company_id = group.company_id if group else 1
-        group_name = group.name if group else f"StockGroup #{group_id}"
+        company_id = group.company_id if group else (sync_item.company_id if sync_item else 1)
+        group_name = group.name if group else tally_name
 
         c_stmt = select(Company).where(Company.company_id == company_id)
         c_res = await db.execute(c_stmt)
         comp_obj = c_res.scalars().first()
         comp_name = comp_obj.name if comp_obj else ""
 
-        if action == "Delete":
-            group_inner_xml = f"""<STOCKGROUP NAME="{group_name}" Action="Delete">
-          <NAME>{group_name}</NAME>
-        </STOCKGROUP>"""
-        else:
-            parent_name = group.parent.name if (group.parent and group.parent.name) else ""
-            if not parent_name or parent_name.lower() in ("primary", " primary"):
-                parent_tag = "<PARENT>&#4; Primary</PARENT>"
-            else:
-                parent_tag = f"<PARENT>{parent_name}</PARENT>"
+        async def record(status_code: str, message: Optional[str], payload: Optional[str] = None, response: Optional[str] = None):
+            if not sync_item:
+                return
+            await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(
+                is_processed=(status_code == "SUCCESS"), status=status_code,
+                attempts=func.coalesce(SyncQueue.attempts, 0) + 1, last_payload=payload, last_response=response,
+                last_attempt_at=func.now(), error_message=message[:500] if message else None))
+            await db.commit()
 
-            group_inner_xml = f"""<STOCKGROUP NAME="{group_name}" Action="{action}">
-          <NAME>{group_name}</NAME>
-          {parent_tag}
-          <ISADDABLE>Yes</ISADDABLE>
-        </STOCKGROUP>"""
+        if action == "Delete":
+            group_inner_xml = build_stock_group_xml(tally_name or group_name, "Delete")
+        else:
+            group_inner_xml = build_stock_group_xml(
+                group_name, action, target_name=tally_name,
+                parent_name=group.parent.name if group.parent else None,
+                aliases=[a.alias for a in group.aliases])
 
         xml_envelope = f"""<ENVELOPE>
   <HEADER>
@@ -2593,7 +3395,7 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
     </DESC>
     <DATA>
@@ -2607,43 +3409,111 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
         logger.debug(f"\n=======================================================\nOUTBOUND REALTIME TALLY STOCKGROUP PUSH (stock_group_id={group_id}, action={action})\nURL: {tally_url}\nPAYLOAD:\n{xml_envelope}\n=======================================================\n")
         resp_str = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml_envelope, 5)
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.debug(f"\n=======================================================\nTALLY STOCKGROUP PUSH RESPONSE (stock_group_id={group_id})\nRESPONSE:\n{resp_str}\n=======================================================\n")
 
         await record_sync_traffic_log(
-            db=db,
-            company_id=company_id,
-            sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
-            entity_type="StockGroup",
-            entity_id=group_id,
-            entity_name=group_name,
-            action=action,
-            outbound_format="XML",
-            outbound_payload=xml_envelope,
-            inbound_response=resp_str,
-            duration_ms=duration_ms,
-            tally_url=tally_url
-        )
+            db=db, company_id=company_id, sync_id=sync_item_id if sync_item else None, entity_type="StockGroup",
+            entity_id=group_id, entity_name=group_name, action=action, outbound_format="XML",
+            outbound_payload=xml_envelope, inbound_response=resp_str, duration_ms=duration_ms, tally_url=tally_url)
 
-        metrics = parse_tally_response_metrics(resp_str)
-        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
-
-        if sync_item_id and sync_item_id > 0:
-            if is_success:
-                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
-            else:
-                sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
-            await db.execute(sq_stmt)
-            await db.commit()
-
-        if is_success:
+        if check_tally_success(resp_str):
+            await record("SUCCESS", None, xml_envelope, resp_str)
             logger.info(f"Real-time Tally push successful for stock_group_id={group_id}, action={action}")
             return (True, "SUCCESS", None)
-        else:
-            logger.error(f"Real-time Tally push failed for stock_group_id={group_id}: {resp_str}")
-            return (False, metrics["status"], metrics["error_summary"])
+        if not resp_str or not resp_str.strip():
+            await record("NO_RESPONSE", "No response from Tally", xml_envelope, resp_str)
+            return (False, "NO_RESPONSE", "No response from Tally")
+
+        reason = parse_tally_response_metrics(resp_str)["error_summary"] or "Tally rejected the stock group"
+        if action == "Delete" and "does not exist" in reason.lower():
+            # Tally no longer has it, which is where a delete is headed
+            await record("SUCCESS", None, xml_envelope, resp_str)
+            return (True, "SUCCESS", None)
+        if action == "Create":
+            # A create Tally refuses can leave a ghost stock group behind
+            await remove_tally_ghost(tally_url, comp_name, "Stock Group", group_name)
+        logger.error(f"Real-time Tally push rejected for stock_group_id={group_id}: {reason}")
+        await record("REJECTED", reason, xml_envelope, resp_str)
+        return (False, "REJECTED", reason)
     except Exception as e:
         logger.warning(f"Real-time Tally push exception for stock_group_id={group_id}: {str(e)}", exc_info=True)
         return (False, "EXCEPTION", str(e))
+
+
+async def fetch_tally_master_identity(tally_url: str, comp_name: str, subtype: str, name: str) -> Optional[dict]:
+    """
+    The GUID and master id Tally gave a master, read by its name: {"guid", "master_id"}, or None if Tally did
+    not return it. The fetch list is mandatory: an object export without one crashes TallyPrime.
+    """
+    xml = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Object</TYPE><SUBTYPE>{x(subtype)}</SUBTYPE><ID TYPE="Name">{x(name)}</ID></HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
+      <FETCHLIST><FETCH>Name</FETCH><FETCH>GUID</FETCH><FETCH>MasterID</FETCH></FETCHLIST>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+    resp = await asyncio.to_thread(_post_to_tally_sync, tally_url, xml, 10)
+    guid = re.search(r"<GUID[^>]*>\s*([^<\s]+)\s*</GUID>", resp or "")
+    master_id = re.search(r"<MASTERID[^>]*>\s*(\d+)\s*</MASTERID>", resp or "")
+    if not guid or not master_id or "<ERRORMSG>" in resp or "<LINEERROR>" in resp:
+        return None
+    return {"guid": guid.group(1), "master_id": int(master_id.group(1))}
+
+
+async def store_tally_master_identity(db: AsyncSession, subtype: str, model, record_id: int, name_attr: str = "name") -> None:
+    """
+    After a master created or changed here has reached Tally: writes the GUID and master id Tally gave it onto
+    the app's row, so the record is tied to Tally's own identifier from then on (the inbound sync follows a
+    rename made in Tally by it). The alter id is left to the inbound sync, whose watermark it is. Commits.
+    """
+    try:
+        from sqlalchemy.orm.attributes import set_committed_value
+        if not settings.TALLY_URL:
+            return
+        pk = list(model.__table__.primary_key.columns)[0]
+        # Read and written as plain columns: the caller is about to serialise this record, and reloading
+        # the object here would unload the related rows it has fetched for that
+        found = (await db.execute(select(getattr(model, name_attr), model.company_id, model.tally_guid, model.tally_master_id)
+                                  .where(pk == record_id))).first()
+        if found is None:
+            return
+        name, company_id, guid, master_id = found
+        comp = (await db.execute(select(Company.name).where(Company.company_id == company_id))).scalar()
+        ident = await fetch_tally_master_identity(settings.TALLY_URL, comp or "", subtype, name)
+        if ident and (guid != ident["guid"] or master_id != ident["master_id"]):
+            await db.execute(update(model).where(pk == record_id).values(tally_guid=ident["guid"], tally_master_id=ident["master_id"])
+                             .execution_options(synchronize_session=False))
+            await db.commit()
+            loaded = db.sync_session.identity_map.get(db.sync_session.identity_key(model, record_id))
+            if loaded is not None:
+                set_committed_value(loaded, "tally_guid", ident["guid"])
+                set_committed_value(loaded, "tally_master_id", ident["master_id"])
+    except Exception as e:
+        logger.warning(f"Could not read back the Tally identity of {subtype} #{record_id}: {e}")
+
+
+def _storing_identity(push, subtype: str, model, name_attr: str = "name"):
+    """Wraps a master push so a successful create or change is followed by store_tally_master_identity()."""
+    async def pushed(record_id: int, sync_id: int, action: str, db: AsyncSession, tally_name: Optional[str] = None):
+        result = await push(record_id, sync_id, action, db, tally_name)
+        if result and result[0] and result[1] == "SUCCESS" and action != "Delete":
+            await store_tally_master_identity(db, subtype, model, record_id, name_attr)
+        return result
+    pushed.__name__, pushed.__doc__ = push.__name__, push.__doc__
+    return pushed
+
+
+def _wrap_master_pushes():
+    from app.models.tally_core import MstStockGroup, MstUom
+    g = globals()
+    g["try_push_group_realtime"] = _storing_identity(try_push_group_realtime, "Group", MstGroup)
+    g["try_push_ledger_realtime"] = _storing_identity(try_push_ledger_realtime, "Ledger", MstLedger)
+    g["try_push_uom_realtime"] = _storing_identity(try_push_uom_realtime, "Unit", MstUom, "symbol")
+    g["try_push_stock_group_realtime"] = _storing_identity(try_push_stock_group_realtime, "Stock Group", MstStockGroup)
+
+
+_wrap_master_pushes()
 
 
 async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, action: str, db: AsyncSession):
@@ -2677,18 +3547,18 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
         comp_name = comp_obj.name if comp_obj else ""
 
         if action == "Delete":
-            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat_name}" Action="Delete">
-          <NAME>{cat_name}</NAME>
+            cat_inner_xml = f"""<STOCKCATEGORY NAME="{x(cat_name)}" Action="Delete">
+          <NAME>{x(cat_name)}</NAME>
         </STOCKCATEGORY>"""
         else:
             parent_name = cat.parent.name if (cat.parent and cat.parent.name) else ""
             if not parent_name or parent_name.lower() in ("primary", " primary"):
                 parent_tag = "<PARENT>&#4; Primary</PARENT>"
             else:
-                parent_tag = f"<PARENT>{parent_name}</PARENT>"
+                parent_tag = f"<PARENT>{x(parent_name)}</PARENT>"
 
-            cat_inner_xml = f"""<STOCKCATEGORY NAME="{cat_name}" Action="{action}">
-          <NAME>{cat_name}</NAME>
+            cat_inner_xml = f"""<STOCKCATEGORY NAME="{x(cat_name)}" Action="{x(action)}">
+          <NAME>{x(cat_name)}</NAME>
           {parent_tag}
         </STOCKCATEGORY>"""
 
@@ -2703,7 +3573,7 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
     </DESC>
     <DATA>
@@ -2735,10 +3605,14 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
         )
 
         metrics = parse_tally_response_metrics(resp_str)
-        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+        is_success = check_tally_success(resp_str)
+        # A delete of something Tally no longer has is already where it should be: settle it instead of
+        # leaving the row to be retried for ever
+        already_absent = (not is_success and action == "Delete"
+                          and "does not exist" in (metrics["error_summary"] or "").lower())
 
         if sync_item_id and sync_item_id > 0:
-            if is_success:
+            if is_success or already_absent:
                 sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
             else:
                 sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
@@ -2787,20 +3661,20 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
         comp_name = comp_obj.name if comp_obj else ""
 
         if action == "Delete":
-            godown_inner_xml = f"""<GODOWN NAME="{godown_name}" Action="Delete">
-          <NAME>{godown_name}</NAME>
+            godown_inner_xml = f"""<GODOWN NAME="{x(godown_name)}" Action="Delete">
+          <NAME>{x(godown_name)}</NAME>
         </GODOWN>"""
         else:
             parent_name = godown.parent.name if (godown.parent and godown.parent.name) else ""
             if not parent_name or parent_name.lower() in ("primary", " primary"):
                 parent_tag = "<PARENT>&#4; Primary</PARENT>"
             else:
-                parent_tag = f"<PARENT>{parent_name}</PARENT>"
+                parent_tag = f"<PARENT>{x(parent_name)}</PARENT>"
 
-            addr_tag = f"\n          <ADDRESS>{godown.address}</ADDRESS>" if godown.address else ""
+            addr_tag = f"\n          <ADDRESS>{x(godown.address)}</ADDRESS>" if godown.address else ""
 
-            godown_inner_xml = f"""<GODOWN NAME="{godown_name}" Action="{action}">
-          <NAME>{godown_name}</NAME>
+            godown_inner_xml = f"""<GODOWN NAME="{x(godown_name)}" Action="{x(action)}">
+          <NAME>{x(godown_name)}</NAME>
           {parent_tag}{addr_tag}
         </GODOWN>"""
 
@@ -2815,7 +3689,7 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
     </DESC>
     <DATA>
@@ -2847,10 +3721,14 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
         )
 
         metrics = parse_tally_response_metrics(resp_str)
-        is_success = check_tally_success(resp_str) or "<CREATED>1</CREATED>" in (resp_str or "") or "<ALTERED>1</ALTERED>" in (resp_str or "") or "<DELETED>1</DELETED>" in (resp_str or "")
+        is_success = check_tally_success(resp_str)
+        # A delete of something Tally no longer has is already where it should be: settle it instead of
+        # leaving the row to be retried for ever
+        already_absent = (not is_success and action == "Delete"
+                          and "does not exist" in (metrics["error_summary"] or "").lower())
 
         if sync_item_id and sync_item_id > 0:
-            if is_success:
+            if is_success or already_absent:
                 sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(is_processed=True, status="SUCCESS", last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), attempts=SyncQueue.attempts + 1)
             else:
                 sq_stmt = update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(status="FAILED", attempts=SyncQueue.attempts + 1, last_payload=xml_envelope, last_response=resp_str, last_attempt_at=func.now(), error_message=metrics["error_summary"] or str(resp_str)[:500])
@@ -2929,7 +3807,8 @@ async def run_once_sync_background(user_id: int):
                         comp_name = comp_obj.name if comp_obj else ""
 
                         # Build Tally XML Envelope
-                        xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create')
+                        xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create',
+                                                                 (item.snapshot_data or {}).get("tally_name"))
                         
                 # 2. Map Voucher Creation
                 elif item.record_type == "Voucher":
@@ -2944,9 +3823,9 @@ async def run_once_sync_background(user_id: int):
                     if company:
                         addr_list = ""
                         if company.address_line1:
-                            addr_list += f"<ADDRESS>{company.address_line1}</ADDRESS>"
+                            addr_list += f"<ADDRESS>{x(company.address_line1)}</ADDRESS>"
                         if company.address_line2:
-                            addr_list += f"<ADDRESS>{company.address_line2}</ADDRESS>"
+                            addr_list += f"<ADDRESS>{x(company.address_line2)}</ADDRESS>"
 
                         # Build books/FY date strings for XML
                         books_from_xml = company.books_begin_date.strftime('%Y%m%d') if company.books_begin_date else ''
@@ -2962,27 +3841,27 @@ async def run_once_sync_background(user_id: int):
 <REQUESTDESC>
 <REPORTNAME>All Masters</REPORTNAME>
 <STATICVARIABLES>
-<SVCURRENTCOMPANY>{company.name}</SVCURRENTCOMPANY>
+<SVCURRENTCOMPANY>{x(company.name)}</SVCURRENTCOMPANY>
 </STATICVARIABLES>
 </REQUESTDESC>
 <REQUESTDATA>
 <TALLYMESSAGE xmlns:UDF="TallyUDF">
-<COMPANY NAME="{company.name}" ACTION="Alter">
-<NAME>{company.name}</NAME>
-<STATENAME>{company.state or ''}</STATENAME>
-<COUNTRYNAME>{company.country or ''}</COUNTRYNAME>
-<PINCODE>{company.pincode or ''}</PINCODE>
-<PHONENUMBER>{company.telephone or ''}</PHONENUMBER>
-<MOBILENUMBERS.LIST><MOBILENUMBERS>{company.mobile or ''}</MOBILENUMBERS></MOBILENUMBERS.LIST>
-<EMAIL>{company.email or ''}</EMAIL>
-<WEBSITE>{company.website or ''}</WEBSITE>
-<INCOMETAXNUMBER>{company.pan or ''}</INCOMETAXNUMBER>
-<GSTREGISTRATIONNUMBER>{company.gstin or ''}</GSTREGISTRATIONNUMBER>
+<COMPANY NAME="{x(company.name)}" ACTION="Alter">
+<NAME>{x(company.name)}</NAME>
+<STATENAME>{x(company.state or '')}</STATENAME>
+<COUNTRYNAME>{x(company.country or '')}</COUNTRYNAME>
+<PINCODE>{x(company.pincode or '')}</PINCODE>
+<PHONENUMBER>{x(company.telephone or '')}</PHONENUMBER>
+<MOBILENUMBERS.LIST><MOBILENUMBERS>{x(company.mobile or '')}</MOBILENUMBERS></MOBILENUMBERS.LIST>
+<EMAIL>{x(company.email or '')}</EMAIL>
+<WEBSITE>{x(company.website or '')}</WEBSITE>
+<INCOMETAXNUMBER>{x(company.pan or '')}</INCOMETAXNUMBER>
+<GSTREGISTRATIONNUMBER>{x(company.gstin or '')}</GSTREGISTRATIONNUMBER>
 <BOOKSFROM>{books_from_xml}</BOOKSFROM>
 <STARTINGFROM>{fy_start_xml}</STARTINGFROM>
 <ENDINGAT>{fy_end_xml}</ENDINGAT>
-<CURRENCYNAME>{company.base_currency or 'INR'}</CURRENCYNAME>
-<GUID>{company.tally_guid or ''}</GUID>
+<CURRENCYNAME>{x(company.base_currency or 'INR')}</CURRENCYNAME>
+<GUID>{x(company.tally_guid or '')}</GUID>
 <ADDRESS.LIST>
 {addr_list}
 </ADDRESS.LIST>
@@ -3004,6 +3883,10 @@ async def run_once_sync_background(user_id: int):
 
                 elif item.record_type == "CostCentreClass":
                     await try_push_cost_centre_class_realtime(item.record_id, item.sync_id, item.action, db)
+                    continue
+                elif item.record_type in ("AttendanceType", "PayHead", "Employee"):
+                    from app.services.payroll_masters import replay_queued
+                    await replay_queued(db, item)
                     continue
                 elif item.record_type == "Currency":
                     await try_push_currency_realtime(item.record_id, item.sync_id, item.action, db)
@@ -3184,7 +4067,7 @@ async def run_once_sync_background(user_id: int):
         <TDLMESSAGE>
           <COLLECTION NAME="IncrementalLedgers">
             <TYPE>Ledger</TYPE>
-            <FETCH>GUID,ALTERID,NAME,PARENT,OPENINGBALANCE,GSTIN,PARTYGSTIN,INCOMETAXNUMBER,LWLEDADHARNOSTORE,LEDGERCONTACT,LEDGERPHONE,LEDGERMOBILE,EMAIL,EMAILCC,WEBSITE,DESCRIPTION,LEDGERFAX,CREDITLIMIT,BILLCREDITPERIOD,ISBILLWISEON,COUNTRYOFRESIDENCE,COUNTRYNAME,PRIORSTATENAME,STATENAME,PINCODE,LEDGSTREGDETAILS.LIST,LEDMAILINGDETAILS.LIST,LANGUAGENAME.LIST,ADDRESS.LIST,ADDRESS</FETCH>
+            <FETCH>GUID,ALTERID,NAME,PARENT,PAYTYPE,PAYSLIPNAME,CALCULATIONTYPE,OPENINGBALANCE,GSTIN,PARTYGSTIN,INCOMETAXNUMBER,LWLEDADHARNOSTORE,LEDGERCONTACT,LEDGERPHONE,LEDGERMOBILE,EMAIL,EMAILCC,WEBSITE,DESCRIPTION,LEDGERFAX,CREDITLIMIT,BILLCREDITPERIOD,ISBILLWISEON,COUNTRYOFRESIDENCE,COUNTRYNAME,PRIORSTATENAME,STATENAME,PINCODE,LEDGSTREGDETAILS.LIST,LEDMAILINGDETAILS.LIST,LANGUAGENAME.LIST,ADDRESS.LIST,ADDRESS</FETCH>
             <FILTERS>AlteredFilter</FILTERS>
           </COLLECTION>
           <SYSTEM TYPE="Formulae" NAME="AlteredFilter">
@@ -3214,7 +4097,7 @@ async def run_once_sync_background(user_id: int):
         <TDLMESSAGE>
           <COLLECTION NAME="IncrementalVouchers">
             <TYPE>Voucher</TYPE>
-            <FETCH>GUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST</FETCH>
+            <FETCH>GUID,MASTERID,REMOTEALTGUID,ALTERID,VOUCHERTYPENAME,VOUCHERNUMBER,DATE,NARRATION,PARTYLEDGERNAME,AMOUNT,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST,INVENTORYENTRIESIN.LIST,INVENTORYENTRIESOUT.LIST,ATTENDANCEENTRIES.*,CATEGORYENTRY.LIST</FETCH>
             <FILTERS>AlteredVoucherFilter</FILTERS>
           </COLLECTION>
           <SYSTEM TYPE="Formulae" NAME="AlteredVoucherFilter">
@@ -3314,7 +4197,31 @@ async def run_once_sync_background(user_id: int):
         <TDLMESSAGE>
           <COLLECTION NAME="AllCostCentres">
             <TYPE>CostCentre</TYPE>
-            <FETCH>NAME,CATEGORY,PARENT,LANGUAGENAME.LIST</FETCH>
+            <FETCH>NAME,GUID,MASTERID,CATEGORY,PARENT,FORPAYROLL,ISEMPLOYEEGROUP,DATEOFJOIN,DESIGNATION,GENDER,MAILINGNAME.LIST,EMPLOYEEPERIOD.LIST,LANGUAGENAME.LIST</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>""",
+                        "AttendanceTypes": f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>AllAttendanceTypes</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="AllAttendanceTypes">
+            <TYPE>AttendanceType</TYPE>
+            <FETCH>NAME,GUID,MASTERID,PARENT,ATTENDANCEPRODUCTIONTYPE,ATTENDANCEPERIOD,BASEUNITS</FETCH>
           </COLLECTION>
         </TDLMESSAGE>
       </TDL>
@@ -3877,12 +4784,15 @@ async def retry_voucher_push(
     if not v:
         raise HTTPException(status_code=404, detail="Voucher not found")
 
-    # Look up existing sync item or create new
+    # The latest row still waiting for this voucher, if any. A processed row is not reused: row ids get
+    # reused, and an old row may belong to a voucher that had this id before.
     sq_stmt = select(SyncQueue).where(
         SyncQueue.company_id == user.company_id,
         SyncQueue.record_type == "Voucher",
-        SyncQueue.record_id == voucher_id
-    )
+        SyncQueue.record_id == voucher_id,
+        SyncQueue.is_processed == False,
+        SyncQueue.action != "Delete"
+    ).order_by(SyncQueue.sync_id.desc())
     sq_res = await db.execute(sq_stmt)
     sq = sq_res.scalars().first()
     sq_id = sq.sync_id if sq else 0
@@ -4155,19 +5065,40 @@ async def retry_deleted_audit_sync(
         raise HTTPException(status_code=400, detail="Tally URL is not configured")
 
     entity_name = audit.entity_identifier or (audit.snapshot_data or {}).get("name") or (audit.snapshot_data or {}).get("voucher_number") or ""
-    
+
+    if audit.entity_type == "Voucher":
+        # By the identifiers kept when it was deleted, never by voucher number: Tally matches a number
+        # across voucher types and would delete some other voucher that happens to carry it
+        snap = audit.snapshot_data or {}
+        ident = dict(snap.get("tally_voucher") or {})
+        if not ident:
+            ident = {"guid": audit.tally_guid if is_tally_guid(audit.tally_guid) else None,
+                     "remote_id": None if is_tally_guid(audit.tally_guid) else audit.tally_guid,
+                     "date": (snap.get("voucher_date") or "").replace("-", "")}
+        ident["company_id"] = audit.company_id
+        result = await send_voucher(db, audit.record_id, "Delete", ident)
+        if result["status"] == "FAILED":
+            raise HTTPException(status_code=400, detail="Nothing identifies this voucher in Tally any more; delete it in Tally by hand.")
+        await record_voucher_push(db, audit.record_id, None, "Delete", result)
+        await db.refresh(audit)
+        if result["status"] in ("NO_RESPONSE", "NOT_CONFIGURED"):
+            audit.tally_error_message = result["reason"]
+            await db.commit()
+        return {
+            "audit_id": audit.audit_id,
+            "tally_sync_status": audit.tally_sync_status,
+            "tally_error_message": audit.tally_error_message,
+            "tally_response": result["response"]
+        }
+
     if audit.entity_type == "Ledger":
-        inner_xml = f'<LEDGER NAME="{entity_name}" Action="Delete"><NAME>{entity_name}</NAME></LEDGER>'
+        inner_xml = f'<LEDGER NAME="{x(entity_name)}" Action="Delete"><NAME>{x(entity_name)}</NAME></LEDGER>'
         master_id = "All Masters"
     elif audit.entity_type == "StockItem":
-        inner_xml = f'<STOCKITEM NAME="{entity_name}" Action="Delete"><NAME>{entity_name}</NAME></STOCKITEM>'
+        inner_xml = f'<STOCKITEM NAME="{x(entity_name)}" Action="Delete"><NAME>{x(entity_name)}</NAME></STOCKITEM>'
         master_id = "All Masters"
-    elif audit.entity_type == "Voucher":
-        guid_tag = f"<GUID>{audit.tally_guid}</GUID>" if audit.tally_guid else f"<VOUCHERNUMBER>{entity_name.replace('Voucher #', '')}</VOUCHERNUMBER>"
-        inner_xml = f'<VOUCHER Action="Delete">{guid_tag}</VOUCHER>'
-        master_id = "Vouchers"
     else:
-        inner_xml = f'<{audit.entity_type.upper()} NAME="{entity_name}" Action="Delete"><NAME>{entity_name}</NAME></{audit.entity_type.upper()}>'
+        inner_xml = f'<{audit.entity_type.upper()} NAME="{x(entity_name)}" Action="Delete"><NAME>{x(entity_name)}</NAME></{audit.entity_type.upper()}>'
         master_id = "All Masters"
 
     xml_envelope = f"""<ENVELOPE>
@@ -4181,7 +5112,7 @@ async def retry_deleted_audit_sync(
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
     </DESC>
     <DATA>
@@ -4198,7 +5129,7 @@ async def retry_deleted_audit_sync(
     duration_ms = int((time.time() - start_t) * 1000)
 
     metrics = parse_tally_response_metrics(resp_str)
-    is_success = check_tally_success(resp_str) or metrics["deleted"] > 0
+    is_success = check_tally_success(resp_str)
 
     await record_sync_traffic_log(
         db=db,
@@ -4362,16 +5293,16 @@ async def deactivate_deleted_master_in_tally(
     entity_name = audit.entity_identifier or (audit.snapshot_data or {}).get("name") or ""
     
     if audit.entity_type == "Ledger":
-        inner_xml = f'''<LEDGER NAME="{entity_name}" Action="Alter">
-          <NAME>{entity_name}</NAME>
+        inner_xml = f'''<LEDGER NAME="{x(entity_name)}" Action="Alter">
+          <NAME>{x(entity_name)}</NAME>
           <ISBILLWISEON>No</ISBILLWISEON>
         </LEDGER>'''
     elif audit.entity_type == "StockItem":
-        inner_xml = f'''<STOCKITEM NAME="{entity_name}" Action="Alter">
-          <NAME>{entity_name}</NAME>
+        inner_xml = f'''<STOCKITEM NAME="{x(entity_name)}" Action="Alter">
+          <NAME>{x(entity_name)}</NAME>
         </STOCKITEM>'''
     else:
-        inner_xml = f'<{audit.entity_type.upper()} NAME="{entity_name}" Action="Alter"><NAME>{entity_name}</NAME></{audit.entity_type.upper()}>'
+        inner_xml = f'<{audit.entity_type.upper()} NAME="{x(entity_name)}" Action="Alter"><NAME>{x(entity_name)}</NAME></{audit.entity_type.upper()}>'
 
     xml_envelope = f"""<ENVELOPE>
   <HEADER>
@@ -4384,7 +5315,7 @@ async def deactivate_deleted_master_in_tally(
     <DESC>
       <STATICVARIABLES>
         <SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT>
-        <SVCURRENTCOMPANY>{comp_name}</SVCURRENTCOMPANY>
+        <SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY>
       </STATICVARIABLES>
     </DESC>
     <DATA>
@@ -4401,7 +5332,7 @@ async def deactivate_deleted_master_in_tally(
     duration_ms = int((time.time() - start_t) * 1000)
 
     metrics = parse_tally_response_metrics(resp_str)
-    is_success = check_tally_success(resp_str) or metrics["altered"] > 0
+    is_success = check_tally_success(resp_str)
 
     await record_sync_traffic_log(
         db=db,
