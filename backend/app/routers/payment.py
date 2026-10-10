@@ -6,12 +6,14 @@ from typing import List, Optional, Any
 from datetime import date, datetime
 
 from app.core.database import get_db
+
 from app.core.permissions import require_permission
 from app.core.datetime_utils import get_ist_now, to_ist_iso
 from app.models.portal_core import User
 from app.models.tally_core import MstLedger
 from app.models.tally_core import TrnBill, BillAllocation
 from app.models.portal_core import ShopPayment
+from app.core.tenancy import rows_of_company_by_ledger
 from app.models.tally_core import TrnVoucher, TrnAccounting
 from app.schemas.payment import (
     BillResponse, BillAllocationCreate, BillAllocationResponse,
@@ -584,6 +586,7 @@ async def collect_payment(
 
     payment = ShopPayment(
         user_id=user.user_id,
+        company_id=user.company_id,
         ledger_id=req.ledger_id,
         amount=req.amount,
         payment_mode=req.payment_mode,
@@ -640,6 +643,8 @@ async def get_all_payments(
     from sqlalchemy.orm import selectinload
     result = await db.execute(
         select(ShopPayment)
+        # Only this company's collections: the list used to show every company's on the server
+        .where(rows_of_company_by_ledger(ShopPayment, current_user))
         .options(selectinload(ShopPayment.ledger), selectinload(ShopPayment.user), selectinload(ShopPayment.reviewed_by))
         .order_by(ShopPayment.created_at.desc())
         .limit(500)
@@ -679,7 +684,8 @@ async def update_payment_status(
     user: User = Depends(require_permission("admin", "update")),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(ShopPayment).where(ShopPayment.id == payment_id))
+    result = await db.execute(select(ShopPayment).where(
+        ShopPayment.id == payment_id, rows_of_company_by_ledger(ShopPayment, user)))
     payment = result.scalars().first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")

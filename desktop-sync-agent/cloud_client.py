@@ -175,6 +175,12 @@ class CloudClient:
         status, body, headers = self._call("POST", "/agent/companies/link", {**company, "take_over": take_over})
         return status == 200, body, headers.get("X-Sync-Reason") or headers.get("x-sync-reason") or ""
 
+    def report_state(self, reports: List[Dict[str, Any]]) -> bool:
+        """Tell the cloud how each linked company stands after a cycle. A server from before this exists
+        answers 404, which is fine."""
+        status, _, _ = self._call("POST", "/sync/state", reports)
+        return status == 200
+
     def unlink_company(self, tally_guid: str) -> bool:
         status, _, _ = self._call("POST", "/agent/companies/unlink", {"tally_guid": tally_guid})
         return status == 200

@@ -1,6 +1,6 @@
 # Multi-Tenant Rollout Runbook
 
-Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 3)
+Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 4)
 
 The steps to run by hand, in order, once development is complete. The design and the reasons are in `Multi-Tenant Working Plan.md`; this file is only what to do. Each development step that adds a manual action adds it here.
 
@@ -12,7 +12,7 @@ Status of each part:
 | Step 1: schema expansion | No: startup creates it | Section 3 |
 | Step 2: move existing data into one account | Yes: one script | Section 4 |
 | Step 3: agent sign-up and device tokens | Yes: two settings, and signing the PC in | Sections 3, 5 and 6 |
-| Step 4: multi-company agent | Not built yet | To be added |
+| Step 4: multi-company agent | Only when you add a second company | Section 7 |
 | Step 5: app switcher and last synced | Not built yet | To be added |
 | Step 6: enforce and harden | Not built yet | To be added |
 
@@ -94,7 +94,20 @@ To give the account a different name than the company's: add `--name "Your Busin
 
 For a new customer later, nothing here is needed: they install the agent, press "New here? Create an account for your business" on the Setup screen, and enter the code emailed to them.
 
-## 7. If something goes wrong
+## 7. Adding a second company (any time after section 6)
+
+Nothing needs doing until you want a second Tally company in the app.
+
+- [ ] Make sure section 4 has been run: field-sales rows (orders, visits, payments, expenses) need their company filled in before a second company exists, or old rows will appear under whichever company their owner has open.
+- [ ] Open both companies in TallyPrime on the PC running the agent.
+- [ ] In the agent, press Companies. The new company is listed as "Open in Tally · not synced". Press Link.
+- [ ] The first sync of the new company starts at once. For a large company this can take a while and holds up the other company until it finishes; do it outside working hours.
+- [ ] In the web app, the new company appears in the company switcher for admins. Give other users access from Admin → Users.
+- [ ] If two companies with the same name are open in Tally, the agent syncs neither and says so. Close the one that should not be synced.
+
+To stop syncing a company from this PC, press Unlink beside it in the same window. Its data in the app stays.
+
+## 8. If something goes wrong
 
 | Problem | What to do |
 | --- | --- |
@@ -104,5 +117,7 @@ For a new customer later, nothing here is needed: they install the agent, press 
 | Users cannot see their company after section 4 | Run the script again without `--apply` and check every user shows the same account as the company. |
 | Agent stops syncing after section 5 | Put the previous `.exe` back. The new backend still accepts the old agent. |
 | Agent says "This PC is signed out of the sync agent" | Someone signed it out in Admin → Sync agent & team, or the person who signed it in was deactivated. Sign in again from Setup. |
+| Agent says a company "is not open in Tally" | Open it in TallyPrime. The other linked companies keep syncing meanwhile. |
+| Agent says "Two companies named ... are open" | Close the copy that should not be synced. |
 | Sign-up or invitation email never arrives | Check `SMTP_USER` / `SMTP_PASS` and the backend log line "could not be emailed". The admin can copy the invitation link from the screen instead. |
 | You need to undo section 4 completely | Restore `tally_portal` from the backup taken in section 1. |

@@ -115,6 +115,9 @@ class DesktopSyncAgent:
         self.cloud.company_guid = self.active_company_guid
         self.company_paused = False
         self.open_companies_count = 0
+        # Each linked company as last resolved against Tally: name, GUID and open / closed / ambiguous
+        self.company_states: List[Dict[str, str]] = []
+        self._last_skip_note = ""
 
         # State tracking for GUI
         self.tally_connected = False
@@ -192,6 +195,7 @@ class DesktopSyncAgent:
             "cloud_message": self.cloud_message,
             "active_company_name": self.active_company_name,
             "open_companies_count": self.open_companies_count,
+            "linked_companies_count": len(self.linked_companies()),
             "tally_release": self.tally_release,
             "total_vouchers": self.total_vouchers,
             "total_ledgers": self.total_ledgers,
@@ -249,16 +253,40 @@ class DesktopSyncAgent:
         company = self.tally_company_to_link()
         if company is None:
             return False, f"'{self.active_company_name}' is not open in Tally. Open it and try again.", "not_open"
+        return self.link_company(company, take_over=take_over)
+
+    def link_company(self, company: Dict[str, Any], take_over: bool = False) -> Tuple[bool, str, str]:
+        """Make this PC the one that syncs a company open in Tally ({"tally_guid", "name", ...}), and keep
+        syncing it from now on. Returns (ok, message, reason)."""
         ok, body, reason = self.cloud.link_company(company, take_over=take_over)
         if not ok:
             return False, str(body), reason
-        self.active_company_guid = company["tally_guid"]
-        self.active_company_name = company["name"]
+        guid, name = company["tally_guid"], company["name"]
+        linked = [dict(c) for c in self.linked_companies() if c.get("guid")]
+        if guid not in [c["guid"] for c in linked]:
+            linked.append({"guid": guid, "name": name})
+        self.config.companies = linked
+        self.config.company_guid, self.config.company_name = linked[0]["guid"], linked[0]["name"]
+        self.active_company_guid, self.active_company_name = linked[0]["guid"], linked[0]["name"]
         self.cloud.company_guid = self.active_company_guid
-        self.config.company_guid, self.config.company_name = self.active_company_guid, self.active_company_name
         save_config(self.config, self.config_path)
-        logger.info(f"🔗 '{company['name']}' is now synced from this PC.")
+        logger.info(f"🔗 '{name}' is now synced from this PC.")
         return True, "", ""
+
+    def unlink_company(self, guid: str) -> bool:
+        """Stop syncing a company from this PC. Its data in the cloud stays, and another PC can link it."""
+        if not self.cloud.unlink_company(guid):
+            return False
+        remaining = [dict(c) for c in self.linked_companies() if c.get("guid") != guid]
+        self.config.companies = remaining
+        first = remaining[0] if remaining else {"guid": "", "name": ""}
+        self.config.company_guid, self.config.company_name = first["guid"], first["name"]
+        self.active_company_guid, self.active_company_name = first["guid"], first["name"]
+        self.cloud.company_guid = self.active_company_guid
+        (self.config.inbound_retry_floors or {}).pop(guid, None)
+        save_config(self.config, self.config_path)
+        logger.info("🔗 A company was unlinked from this PC.")
+        return True
 
     def _on_token_refreshed(self, new_token: str):
         self.config.auth_token = new_token
@@ -338,51 +366,87 @@ class DesktopSyncAgent:
         
         return tally_info.get("connected", False) and cloud_ok
 
-    def check_and_handle_company_switch(self):
+    def linked_companies(self) -> List[Dict[str, str]]:
+        """The Tally companies this PC syncs. Before any company was linked from this agent there is the one
+        company it has always been tied to."""
+        linked = [c for c in (getattr(self.config, "companies", None) or []) if c.get("guid") or c.get("name")]
+        if linked:
+            return linked
+        if self.active_company_guid or self.active_company_name:
+            return [{"guid": self.active_company_guid, "name": self.active_company_name}]
+        return []
+
+    def resolve_companies(self) -> List[Dict[str, str]]:
         """
-        Detects if user opened, closed, or switched companies in TallyPrime.
-        Dynamically adapts synchronization target, pinning strictly by GUID if configured.
+        Each linked company as it stands in Tally right now: "open", "closed", or "ambiguous" when two open
+        companies carry its name. A company is followed by its GUID; its name is only what Tally shows today,
+        and is all Tally accepts to address it, so two open companies with one name cannot be told apart safely.
         """
         open_cmps = self.tally.get_open_companies()
         self.open_companies_count = len(open_cmps)
-
+        same_name: Dict[str, int] = {}
+        for c in open_cmps:
+            same_name[c.get("name", "")] = same_name.get(c.get("name", ""), 0) + 1
+        legacy_single = not (getattr(self.config, "companies", None) or [])
         if not open_cmps:
-            return
+            # Tally did not say what is open (not running, or not answering). As before, the cycle goes on:
+            # nothing can be written to a Tally that is not there, and the cloud is still asked, which is how
+            # a PC learns it was signed out.
+            return [{"guid": c.get("guid") or "", "name": c.get("name") or "", "state": "open"} for c in self.linked_companies()]
 
-        # If company GUID is pinned, strictly match against GUID
-        if self.active_company_guid:
-            match = next((c for c in open_cmps if c.get("guid") == self.active_company_guid), None)
+        resolved, changed = [], False
+        for entry in self.linked_companies():
+            guid, name = entry.get("guid") or "", entry.get("name") or ""
+            if guid:
+                match = next((c for c in open_cmps if c.get("guid") == guid), None)
+            else:
+                # Not pinned yet: found by name once, then followed by GUID (a same-name restore is another company)
+                match = next((c for c in open_cmps if c.get("name") == name), None)
             if match is None:
-                # Same name but different GUID is a different company (a restore, or copy)
-                if not self.company_paused:
-                    logger.warning(
-                        f"⏸️ '{self.active_company_name}' (GUID {self.active_company_guid}) isn't open in Tally; "
-                        f"sync paused. Open companies: {', '.join(c.get('name', '') for c in open_cmps)}"
-                    )
-                self.company_paused = True
-                return
-            self.company_paused = False
-            self.active_company_name = match["name"]  # A rename in Tally is fine; GUID is what identifies it
-            return
+                resolved.append({"guid": guid, "name": name, "state": "closed"})
+                continue
+            if (not guid and match.get("guid")) or match["name"] != name:
+                guid, name, changed = guid or match.get("guid", ""), match["name"], True   # a rename in Tally is fine
+                entry["guid"], entry["name"] = guid, name
+            state = "ambiguous" if same_name.get(name, 0) > 1 else "open"
+            resolved.append({"guid": guid, "name": name, "state": state, "starting_from": match.get("starting_from", "")})
 
-        # Fallback when no GUID was previously stored: match by company name
-        match = next((c for c in open_cmps if c.get("name") == self.active_company_name), None)
-        if match:
-            self.company_paused = False
-            self.active_company_guid = match.get("guid", "")
-            self.cloud.company_guid = self.active_company_guid
-            if self.active_company_guid:
-                self.config.company_guid = self.active_company_guid
-                save_config(self.config, self.config_path)
-            return
+        if resolved and (legacy_single or changed):
+            first = resolved[0]
+            if (first["guid"], first["name"]) != (self.config.company_guid, self.config.company_name) and first["state"] != "closed":
+                self.config.company_guid, self.config.company_name = first["guid"], first["name"]
+                changed = True
+        if changed:
+            save_config(self.config, self.config_path)
+        return resolved
 
-        # Target company is not open in Tally; pause sync rather than switching to another company!
-        if not self.company_paused:
-            logger.warning(
-                f"⏸️ '{self.active_company_name}' isn't open in Tally; sync paused. "
-                f"Open companies: {', '.join(c.get('name', '') for c in open_cmps)}"
-            )
-        self.company_paused = True
+    def _activate(self, company: Dict[str, str]) -> None:
+        """Point the agent and its cloud calls at one company for the work that follows."""
+        self.active_company_name, self.active_company_guid = company["name"], company["guid"]
+        self.cloud.company_guid = self.active_company_guid
+
+    def _companies_to_work_on(self) -> List[Dict[str, str]]:
+        """Resolve the linked companies, note what is stopping the others, and return the ones that can be synced."""
+        companies = self.resolve_companies()
+        self.company_states = companies
+        workable = [c for c in companies if c["state"] == "open"]
+        skipped = [c for c in companies if c["state"] != "open"]
+        note = "; ".join(self._why_skipped(c) for c in skipped)
+        if note != self._last_skip_note:
+            self._last_skip_note = note
+            if note:
+                logger.warning(f"⏸️ {note}")
+        self.company_paused = not workable
+        if companies:
+            # What the rest of the agent and the window call "the company" is the first linked one
+            self._activate(workable[0] if workable else companies[0])
+        return workable
+
+    @staticmethod
+    def _why_skipped(company: Dict[str, str]) -> str:
+        if company["state"] == "ambiguous":
+            return f"Two companies named '{company['name']}' are open in Tally; close one to sync it"
+        return f"'{company['name']}' is not open in Tally"
 
     def _address_to_active_company(self, xml_payload: str, task_company_guid: Optional[str]) -> Tuple[str, Optional[str]]:
         """
@@ -407,19 +471,32 @@ class DesktopSyncAgent:
         return xml_payload, None
 
     def _paused_status(self) -> str:
-        return f"Paused: '{self.active_company_name}' is not open in Tally"
+        states = getattr(self, "company_states", None) or []
+        if not states:
+            return "Paused: no company is linked to this PC"
+        return "Paused: " + "; ".join(self._why_skipped(c) for c in states if c["state"] != "open")
 
     def sync_outbound_cycle(self) -> int:
         """Pulls pending voucher/ledger creation requests from Cloud and pushes them to Tally."""
         if self.cloud.auth_halt_reason:
             return 0
-        self.check_and_handle_company_switch()
-        self.cloud.company_guid = self.active_company_guid
-        if self.company_paused:
-            # Shown in the GUI: nothing is sent to Tally until the company this agent is tied to is open again
+        workable = self._companies_to_work_on()
+        if not workable:
+            # Shown in the GUI: nothing is sent to Tally until a linked company is open again
             self.last_sync_status = self._paused_status()
             return 0
+        done = 0
+        for company in workable:   # one company at a time: Tally answers one request at a time
+            self._activate(company)
+            try:
+                done += self._sync_outbound_company()
+            except Exception as e:   # one company's trouble never stops the others
+                logger.error(f"Outbound sync for '{company['name']}' failed: {e}", exc_info=True)
+        self._activate(workable[0])
+        return done
 
+    def _sync_outbound_company(self) -> int:
+        """Outbound work for the company the agent is pointed at."""
         tasks, err = self.cloud.fetch_outbound_queue()
         if err:
             logger.warning(f"⚠️ Could not fetch outbound tasks from Cloud Backend: {err}")
@@ -517,13 +594,12 @@ class DesktopSyncAgent:
 
     def sync_inbound_cycle(self, is_incremental: bool = False):
         """Pulls masters and vouchers from Tally and pushes them into MyTally Cloud database with deep diagnostics."""
-        if not self.active_company_name or self.cloud.auth_halt_reason:
+        if self.cloud.auth_halt_reason:
             return
-
-        self.check_and_handle_company_switch()
-        self.cloud.company_guid = self.active_company_guid
-        if self.company_paused:
+        workable = self._companies_to_work_on()
+        if not workable:
             self.last_sync_status = self._paused_status()
+            self._report_company_states({})
             return
 
         # Pre-flight check: if Tally was offline, quickly test before attempting 9 collection exports
@@ -536,16 +612,57 @@ class DesktopSyncAgent:
                 self.tally_connected = True
                 logger.info("🎉 TallyPrime connection restored! Resuming synchronization.")
 
+        # A requested full sync (Sync All, or force_full_sync) applies to every company in this pass
+        force_all = getattr(self.config, "force_full_sync", False) or self.force_full_sync_next
+        self.force_full_sync_next = False
+        outcomes: Dict[str, Tuple[bool, str]] = {}
+        statuses = []
+        for company in workable:   # one company at a time: Tally answers one request at a time
+            self._activate(company)
+            try:
+                ok = self._sync_inbound_company(is_incremental, force_all)
+                outcomes[company["guid"]] = (ok, "" if ok else self.last_sync_status)
+            except Exception as e:   # one company's trouble never stops the others
+                logger.error(f"Inbound sync for '{company['name']}' failed: {e}", exc_info=True)
+                outcomes[company["guid"]] = (False, str(e))
+                self.last_sync_status = f"Sync failed: {e}"
+            statuses.append(self.last_sync_status if len(workable) == 1 else f"{company['name']}: {self.last_sync_status}")
+        self._activate(workable[0])
+        skipped = [self._why_skipped(c) for c in self.company_states if c["state"] != "open"]
+        self.last_sync_status = " | ".join(statuses + skipped)
+        self._report_company_states(outcomes)
+
+    def _report_company_states(self, outcomes: Dict[str, Tuple[bool, str]]) -> None:
+        """Tell the cloud how each linked company stands, closed ones included: the app's "Last synced"."""
+        reports = []
+        for company in getattr(self, "company_states", None) or []:
+            if not company.get("guid"):
+                continue
+            ok, error = outcomes.get(company["guid"], (False, ""))
+            state = {"closed": "closed", "ambiguous": "ambiguous"}.get(company["state"], "live" if ok else "error")
+            reports.append({"tally_guid": company["guid"], "state": state, "ok": ok and company["state"] == "open",
+                            "error": error or None})
+        if reports:
+            try:
+                self.cloud.report_state(reports)
+            except Exception as e:
+                logger.debug(f"Could not report sync state: {e}")
+
+    def _sync_inbound_company(self, is_incremental: bool, force_all: bool = False) -> bool:
+        """Inbound work for the company the agent is pointed at. True when the whole pass was clean."""
+        self._last_company_ok = False
         self.is_syncing = True
         try:
-            # Check if user requested a full sync (Sync All) or configured force_full_sync
-            force_all = getattr(self.config, "force_full_sync", False) or self.force_full_sync_next
             if force_all:
-                self.force_full_sync_next = False
                 is_incremental = False
 
-            company_key = self.active_company_name
-            retry_floor = (self.config.inbound_retry_floors or {}).get(company_key)
+            # Per company and by GUID: a failure in one company never moves another's retry point
+            company_key = self.active_company_guid or self.active_company_name
+            floors = self.config.inbound_retry_floors or {}
+            if self.active_company_guid and self.active_company_name in floors and company_key not in floors:
+                floors[company_key] = floors.pop(self.active_company_name)   # kept by name before GUIDs were used
+                self.config.inbound_retry_floors = floors
+            retry_floor = floors.get(company_key)
 
             min_alter = 0
             min_voucher_alter = 0
@@ -574,6 +691,7 @@ class DesktopSyncAgent:
 
             if not collections:
                 self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures))
+                self._last_company_ok = not export_failures
                 self.last_inbound_time = time.time()
                 self.last_sync_time = time.time()
                 self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
@@ -582,7 +700,7 @@ class DesktopSyncAgent:
                 else:
                     logger.info("   ✨ 0 changes detected in Tally. Database is 100% up-to-date.")
                     self.last_sync_status = "Up-to-date (0 changes)"
-                return
+                return self._last_company_ok
 
             total_vouchers = 0
             total_ledgers = 0
@@ -639,6 +757,7 @@ class DesktopSyncAgent:
             self.total_items += total_items
             self.total_errors += total_errors
             self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures) or total_errors > 0)
+            self._last_company_ok = not (export_failures or total_errors > 0)
             self.last_sync_time = time.time()
             self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
 
@@ -654,6 +773,7 @@ class DesktopSyncAgent:
             self.last_inbound_time = time.time()
         finally:
             self.is_syncing = False
+        return self._last_company_ok
 
     def _update_inbound_retry_floor(self, company_key: str, cycle_min_alter: int, failed: bool):
         """Remember (persistently) where a failed inbound cycle started, and forget it once a cycle is clean."""

@@ -53,6 +53,11 @@ class OutboundTally:
 
 class OutboundCloud:
     auth_halt_reason = ""
+    company_guid = ""
+
+    def report_state(self, reports):
+        self.reports = reports
+        return True
 
     def __init__(self, action="Create"):
         self.task = {"sync_id": 1, "record_type": "Voucher", "record_id": 7, "action": action, "xml_payload": VOUCHER_XML}

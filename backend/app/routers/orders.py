@@ -12,6 +12,7 @@ from typing import Optional, List
 from datetime import datetime, timezone
 
 from app.core.database import get_db, Base
+from app.core.tenancy import rows_of_company
 from app.core.permissions import require_permission, get_effective_permission
 from app.models.portal_core import User
 from app.core.config import settings
@@ -260,6 +261,7 @@ async def create_order(
 
     order = TempOrder(
         user_id=user.user_id,
+        company_id=user.company_id,
         ledger_id=req.ledger_id,
         custom_customer_name=req.custom_customer_name[:256] if req.custom_customer_name else None,
         custom_customer_gstin=clean_gstin if not req.ledger_id else None,
@@ -352,7 +354,7 @@ async def list_all_orders(
     result = await db.execute(
         select(TempOrder)
         .join(User, TempOrder.user_id == User.user_id)
-        .where(User.company_id == current_user.company_id)
+        .where(rows_of_company(TempOrder, current_user))
         .options(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),
@@ -415,7 +417,7 @@ async def get_dispatch_summary(
         select(TempOrder)
         .join(User, TempOrder.user_id == User.user_id)
         .where(
-            User.company_id == user.company_id,
+            rows_of_company(TempOrder, user),
             TempOrder.created_at >= start_dt,
             TempOrder.created_at <= end_dt,
         )
@@ -589,7 +591,7 @@ async def get_order(
     result = await db.execute(
         select(TempOrder)
         .join(User, TempOrder.user_id == User.user_id)
-        .where(TempOrder.id == order_id, User.company_id == user.company_id)
+        .where(TempOrder.id == order_id, rows_of_company(TempOrder, user))
         .options(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),
@@ -629,7 +631,7 @@ async def edit_order(
     result = await db.execute(
         select(TempOrder)
         .join(User, TempOrder.user_id == User.user_id)
-        .where(TempOrder.id == order_id, User.company_id == user.company_id)
+        .where(TempOrder.id == order_id, rows_of_company(TempOrder, user))
         .options(selectinload(TempOrder.items))
     )
     order = result.scalars().first()
@@ -719,7 +721,7 @@ async def update_order_status(
     result = await db.execute(
         select(TempOrder)
         .join(User, TempOrder.user_id == User.user_id)
-        .where(TempOrder.id == order_id, User.company_id == user.company_id)
+        .where(TempOrder.id == order_id, rows_of_company(TempOrder, user))
         .options(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),
@@ -804,7 +806,7 @@ async def update_order_item_dispatch(
     result = await db.execute(
         select(TempOrder)
         .join(User, TempOrder.user_id == User.user_id)
-        .where(TempOrder.id == order_id, User.company_id == user.company_id)
+        .where(TempOrder.id == order_id, rows_of_company(TempOrder, user))
         .options(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),
@@ -870,7 +872,7 @@ async def update_order_items_dispatch_batch(
     result = await db.execute(
         select(TempOrder)
         .join(User, TempOrder.user_id == User.user_id)
-        .where(TempOrder.id == order_id, User.company_id == user.company_id)
+        .where(TempOrder.id == order_id, rows_of_company(TempOrder, user))
         .options(
             selectinload(TempOrder.items).selectinload(TempOrderItem.stock_item).selectinload(MstStockItem.group),
             selectinload(TempOrder.ledger),

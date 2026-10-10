@@ -32,6 +32,11 @@ class FakeTally:
 class FakeCloud:
     """Server whose watermark is the highest AlterID it holds, like /sync/last-alter-id."""
     auth_halt_reason = ""
+    company_guid = ""
+
+    def report_state(self, reports):
+        self.reports = reports
+        return True
 
     def __init__(self, have):
         self.have = set(have)
@@ -84,7 +89,7 @@ def test_retry_point_survives_restart_and_clears(tmp_path):
     tally = FakeTally(LEDGERS_FAIL)
     cloud.reject = {"Ledgers"}
     make_agent(cfg, tally, cloud).sync_inbound_cycle(is_incremental=True)
-    assert json.load(open(cfg))["inbound_retry_floors"] == {"Alpha": 100}
+    assert json.load(open(cfg))["inbound_retry_floors"] == {"guid-alpha": 100}
     cloud.reject = set()
     make_agent(cfg, tally, cloud).sync_inbound_cycle(is_incremental=True)
     assert {101, 102, 103, 104, 105} <= cloud.have

@@ -3,7 +3,7 @@ import sys
 import json
 import hashlib
 from dataclasses import dataclass, asdict, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from security import store_secret, load_secret, needs_storage_upgrade
 
@@ -51,6 +51,9 @@ class AgentConfig:
     password: str = ""
     company_name: str = "Bhrama Enterprises"
     company_guid: str = ""
+    # Every Tally company this PC syncs, as {"guid", "name"}. company_name / company_guid above mirror the
+    # first one. Empty on an agent that has only ever been tied to that one company.
+    companies: List[Dict[str, str]] = field(default_factory=list)
     sync_interval_seconds: int = 5
     inbound_interval_seconds: int = 60
     tally_app_path: Optional[str] = None
@@ -58,7 +61,7 @@ class AgentConfig:
     auto_discover_paths: bool = True
     autostart_enabled: bool = False
     force_full_sync: bool = False
-    # Company name -> AlterID to re-pull from after a failed inbound cycle. Without it, a later
+    # Company GUID (its name, before GUIDs were used) -> AlterID to re-pull from after a failed inbound cycle. Without it, a later
     # collection's higher AlterIDs advance the server watermark past records that never arrived.
     inbound_retry_floors: Dict[str, int] = field(default_factory=dict)
     # Set when the server signed this PC out on purpose or blocked it (see cloud_client.AUTO_RELOGIN_REASONS).

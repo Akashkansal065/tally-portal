@@ -24,6 +24,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from app.core.database import get_db, Base
+from app.core.tenancy import rows_of_account, users_of_account
 from app.core.permissions import require_permission
 from app.services.notifications import TEAM_ATTENDANCE_LINK, attendance_approval_link, my_attendance_link
 from app.models.portal_core import User, Role, Company
@@ -614,6 +615,7 @@ async def ping_location(
         db.add(AttendanceLocationLog(
             attendance_id=rec.id,
             user_id=user.user_id,
+            account_id=user.account_id,
             latitude=str(req.latitude),
             longitude=str(req.longitude),
             accuracy_meters=req.accuracyMeters,
@@ -686,6 +688,7 @@ async def punch_attendance(
         
         attendance = Attendance(
             user_id=user.user_id,
+            account_id=user.account_id,
             check_in_time=now_ist,
             check_in_latitude=str(req.latitude),
             check_in_longitude=str(req.longitude),
@@ -722,6 +725,7 @@ async def punch_attendance(
             init_log = AttendanceLocationLog(
                 attendance_id=attendance.id,
                 user_id=user.user_id,
+                account_id=user.account_id,
                 latitude=str(req.latitude),
                 longitude=str(req.longitude),
                 accuracy_meters=req.accuracyMeters,
@@ -818,6 +822,7 @@ async def punch_attendance(
         checkout_log = AttendanceLocationLog(
             attendance_id=latest.id,
             user_id=user.user_id,
+            account_id=user.account_id,
             latitude=str(req.latitude),
             longitude=str(req.longitude),
             accuracy_meters=req.accuracyMeters,
@@ -953,7 +958,7 @@ async def get_team_attendance_for_admin(
     target_date = datetime.strptime(dateStr, "%Y-%m-%d").date() if dateStr else get_ist_date()
     
     # Get all users in the company
-    users_stmt = select(User).where(User.company_id == user.company_id).order_by(User.username)
+    users_stmt = select(User).where(users_of_account(user)).order_by(User.username)
     res_users = await db.execute(users_stmt)
     all_users = res_users.scalars().all()
     
@@ -1050,7 +1055,7 @@ async def get_full_team_attendance_history(
         .join(User, Attendance.user_id == User.user_id)
         .where(
             and_(
-                User.company_id == user.company_id,
+                rows_of_account(Attendance, user),
                 Attendance.check_in_time >= start_date,
                 Attendance.check_in_time < end_date
             )
@@ -1233,7 +1238,7 @@ async def get_attendance_approvals(
         select(Attendance)
         .options(selectinload(Attendance.user), selectinload(Attendance.approved_by))
         .join(User, Attendance.user_id == User.user_id)
-        .where(User.company_id == user.company_id)
+        .where(rows_of_account(Attendance, user))
     )
 
     if status_filter and status_filter != "all":
@@ -1254,7 +1259,7 @@ async def get_attendance_approvals(
         select(func.count(Attendance.id))
         .join(User, Attendance.user_id == User.user_id)
         .where(
-            User.company_id == user.company_id,
+            rows_of_account(Attendance, user),
             Attendance.approval_status == "pending"
         )
     )
@@ -1320,7 +1325,7 @@ async def approve_attendance(
         .join(User, Attendance.user_id == User.user_id)
         .where(
             Attendance.id == attendance_id,
-            User.company_id == user.company_id
+            rows_of_account(Attendance, user)
         )
     )
     res = await db.execute(stmt)
@@ -1377,7 +1382,7 @@ async def reject_attendance(
         .join(User, Attendance.user_id == User.user_id)
         .where(
             Attendance.id == attendance_id,
-            User.company_id == user.company_id
+            rows_of_account(Attendance, user)
         )
     )
     res = await db.execute(stmt)
@@ -1437,7 +1442,7 @@ async def bulk_approve_attendance(
         .join(User, Attendance.user_id == User.user_id)
         .where(
             Attendance.id.in_(req.attendance_ids),
-            User.company_id == user.company_id
+            rows_of_account(Attendance, user)
         )
     )
     res = await db.execute(stmt)
@@ -1511,7 +1516,7 @@ async def get_monthly_muster_roll(
         })
 
     # Fetch active company users
-    users_stmt = select(User).where(User.company_id == user.company_id, User.is_active == True).order_by(User.username.asc())
+    users_stmt = select(User).where(users_of_account(user), User.is_active == True).order_by(User.username.asc())
     res_users = await db.execute(users_stmt)
     all_users = res_users.scalars().all()
 
@@ -1522,7 +1527,7 @@ async def get_monthly_muster_roll(
         select(Attendance)
         .join(User, Attendance.user_id == User.user_id)
         .where(
-            User.company_id == user.company_id,
+            rows_of_account(Attendance, user),
             Attendance.check_in_time >= start_dt,
             Attendance.check_in_time <= end_dt
         )

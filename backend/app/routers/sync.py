@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import update, delete, text
 from sqlalchemy.sql import func
 from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
 import json
 import re
 from decimal import Decimal
@@ -1063,6 +1064,62 @@ async def report_voucher_identities(
     if updated:
         clear_company_cache(user.company_id)
     return {"status": "success", "updated": updated}
+
+class CompanySyncReport(BaseModel):
+    tally_guid: str
+    state: str = Field(max_length=30)          # live / closed / ambiguous / error
+    ok: bool = False                           # a whole cycle for this company finished with no errors
+    error: Optional[str] = None
+    master_alter_id: Optional[int] = None
+    voucher_alter_id: Optional[int] = None
+    pending_count: Optional[int] = None
+
+
+@router.post("/state")
+async def report_sync_state(
+    request: Request,
+    reports: List[CompanySyncReport],
+    user: User = Depends(require_permission("sync", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    What the Desktop Sync Agent found for each of its companies this cycle, including ones that are closed in
+    Tally. This is where the app's "Last synced" comes from: last_success_at moves only when ok is true.
+    A company the caller is not the one syncing is skipped, not an error, so one stale entry cannot lose the rest.
+    """
+    from app.core.agent_auth import device_company, now_utc
+    from app.core.permissions import company_for_tally_guid
+    from app.models.portal_core import CompanySyncState
+    device = agent_device(request)
+    recorded, skipped = 0, []
+    now = now_utc()
+    for report in reports:
+        guid = report.tally_guid.strip()
+        try:
+            company = await device_company(db, device, guid) if device is not None else await company_for_tally_guid(db, user, guid)
+        except HTTPException:
+            company = None
+        if company is None:
+            skipped.append(guid)
+            continue
+        row = (await db.execute(select(CompanySyncState).where(CompanySyncState.company_id == company.company_id))).scalars().first()
+        if row is None:
+            row = CompanySyncState(company_id=company.company_id)
+            db.add(row)
+        row.device_id = device.device_id if device is not None else row.device_id
+        row.state = report.state
+        row.last_attempt_at = now
+        row.last_error = None if report.ok else (report.error or row.last_error)
+        if report.ok:
+            row.last_success_at = now
+        for field in ("master_alter_id", "voucher_alter_id", "pending_count"):
+            value = getattr(report, field)
+            if value is not None:
+                setattr(row, field, value)
+        recorded += 1
+    await db.commit()
+    return {"recorded": recorded, "skipped": skipped}
+
 
 @router.get("/last-alter-id", dependencies=[Depends(bind_sync_company)])
 async def get_last_alter_id(

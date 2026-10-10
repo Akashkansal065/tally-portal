@@ -17,6 +17,7 @@ Where the two disagreed or a later decision changed them, this document is right
 | Step 1: expand the schema | Code complete, in the same pull request (tally-portal#67). Not run against MySQL. |
 | Step 2: migrate production into one account | Script written and tested on the test database (`scripts/migrate_to_account.py`), in the same pull request. Not run against MySQL or production. |
 | Step 3: agent sign-up, device tokens, invitations | Code complete, in the same pull request. Backend 228 and agent 27 tests pass; screens not clicked through. |
+| Step 4: multi-company agent, company-owned sales rows | Code complete except chunked full sync, in the same pull request. Backend 232 and agent 34 tests pass; Companies window not clicked through. |
 | Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
 | Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
 | Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
@@ -337,14 +338,30 @@ How it differs from the design in section 3:
 
 ### Step 4: Multi-company agent
 
-- [ ] Replace `company_name` / `company_guid` in `config.py` with a `companies` list; migrate the existing pin on first start
-- [ ] Key retry floors and watermarks by GUID
-- [ ] Sales-side routers (`orders.py`, `visits.py`, `expenses.py`, `attendance.py`, shop payments) write `company_id` on create and filter on the row's own `company_id` (attendance: `account_id`). This must ship before a second company is linked in any account.
-- [ ] Per-cycle resolver: each linked company is open, closed or ambiguous
-- [ ] Cycle: discover, push each, pull each, report state; one lock around all Tally calls
-- [ ] Full sync chunked by voucher date range with a resumable cursor and a time slice
-- [ ] `POST /sync/state` and the `company_sync_state` writes
-- [ ] Agent tests: two open companies, same-name companies, close mid-cycle, timeout in one company
+Code complete except one item, in the Phase 0 pull request. Backend and agent logic are tested; the new Companies window has not been opened and clicked through.
+
+- [x] Agent config holds a `companies` list; an agent that has only ever had one company keeps working from its existing pin, and the list starts when a company is linked
+- [x] Retry floors keyed by GUID (an existing name-keyed floor is moved to its GUID on first use)
+- [x] Per-cycle resolver: each linked company is open, closed or ambiguous; followed by GUID, so a rename in Tally is picked up
+- [x] Cycle: resolve, push each open company, pull each open company, report state. One company at a time; one company failing does not stop the others
+- [x] `POST /sync/state` writes `company_sync_state`; `last_success_at` moves only on a clean cycle
+- [x] Agent: Companies window on the dashboard: linked companies with their state, open Tally companies to link, unlink, and "move sync to this PC"
+- [x] Field-sales rows record their company when created (orders, visits, shop payments, expenses), attendance its account; lists filter on the row's own company or account
+- [x] Agent tests: two open companies, a closed one, two with the same name, all closed, independent watermarks and retry points, a rename, link and unlink
+- [ ] **Not done: full sync cut into voucher date ranges with a resumable cursor.** See below.
+- [ ] Click through the Companies window on a Windows PC with two companies open in Tally
+
+Found and fixed on the way:
+
+- **The admin list of shop payments showed every company's payments on the server,** and its approve/reject endpoint accepted any payment id. Both are now limited to the caller's company.
+
+Decisions made while building:
+
+- **Rows from before the new columns keep the old rule.** A field-sales row with no company yet is still listed by its owner's active company, so nothing changes for existing data until Step 2 fills the column.
+- **When Tally does not say what is open, the cycle still runs,** as it did before. Nothing can be written to a Tally that is not answering, and the cloud is still asked, which is how a PC learns it was signed out.
+- **Two open companies with the same name stop both from syncing.** Tally can only be addressed by name, so the agent cannot be sure which one a write would reach.
+
+Why chunked full sync is not done: it depends on Tally applying the `SVFROMDATE` / `SVTODATE` range to a voucher collection export. The agent sends one range today (2000 to 2099) and nothing in the code or the audit log shows a narrower range being honoured. If Tally ignores it, cutting a full sync into 20 ranges would export every voucher 20 times. It needs one check against real Tally first: export vouchers for a single month and confirm only that month comes back. Until then a first sync of a large company still runs as one export, and the other companies wait for it.
 
 **Gate:** two companies open in Tally sync for a day with independent watermarks; closing one pauses only that one; a voucher pushed for A never appears in B.
 

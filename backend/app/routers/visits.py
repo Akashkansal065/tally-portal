@@ -13,6 +13,7 @@ from typing import Optional, List
 from datetime import datetime
 
 from app.core.database import get_db, Base
+from app.core.tenancy import rows_of_company
 from app.core.config import settings
 from app.models.portal_core import User, CustomerProfile
 from app.core.permissions import get_current_user, require_permission
@@ -107,6 +108,7 @@ async def check_in(
 
     visit = SalesVisit(
         user_id=user.user_id,
+        company_id=user.company_id,
         ledger_id=req.ledger_id,
         custom_shop_name=req.custom_shop_name[:256] if req.custom_shop_name else None,
         latitude=req.latitude,
@@ -174,6 +176,7 @@ async def check_in(
 
             attendance = Attendance(
                 user_id=user.user_id,
+                account_id=user.account_id,
                 check_in_time=now_ist,
                 check_in_latitude=str(req.latitude),
                 check_in_longitude=str(req.longitude),
@@ -201,6 +204,7 @@ async def check_in(
             init_log = AttendanceLocationLog(
                 attendance_id=attendance.id,
                 user_id=user.user_id,
+                account_id=user.account_id,
                 latitude=str(req.latitude),
                 longitude=str(req.longitude),
                 accuracy_meters=None,
@@ -666,7 +670,7 @@ async def get_visit_logs(
         select(SalesVisit)
         .options(selectinload(SalesVisit.user))
         .join(User, SalesVisit.user_id == User.user_id)
-        .where(User.company_id == current_user.company_id)
+        .where(rows_of_company(SalesVisit, current_user))
     )
     if date:
         from datetime import date as dt

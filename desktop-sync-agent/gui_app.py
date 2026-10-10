@@ -864,6 +864,113 @@ class CreateAccountDialog(ctk.CTkToplevel):
         self.setup._on_account_created(self.backend_url, email, self.tally_url, body)
 
 
+class CompaniesDialog(ctk.CTkToplevel):
+    """The companies this PC syncs, and the ones open in Tally that it could. Linking is always a choice made
+    here: the agent never starts syncing a company just because it is open."""
+
+    def __init__(self, parent, app: "SnehDistribuorsApp"):
+        super().__init__(parent)
+        self.app = app
+        self.title("Companies synced from this PC")
+        self.geometry("560x520")
+        self.configure(fg_color=BG_COLOR)
+        self.transient(parent.winfo_toplevel())
+
+        ctk.CTkLabel(self, text="Companies synced from this PC", font=ctk.CTkFont(size=17, weight="bold"),
+                     text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(18, 2))
+        ctk.CTkLabel(self, text="Open a company in TallyPrime to link it. A company is synced from one PC at a time.",
+                     font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, wraplength=520, justify="left").pack(anchor="w", padx=20, pady=(0, 8))
+        self.rows = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.rows.pack(fill="both", expand=True, padx=12)
+        self.status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED, wraplength=520, justify="left")
+        self.status.pack(anchor="w", padx=20, pady=(6, 4))
+        ctk.CTkButton(self, text="Refresh", fg_color=CARD_BORDER, hover_color=CARD_BG, height=34, command=self.refresh).pack(
+            fill="x", padx=20, pady=(0, 14))
+        self.refresh()
+
+    def _say(self, text: str, color: str = TEXT_MUTED):
+        self.status.configure(text=text, text_color=color)
+
+    def refresh(self):
+        agent = self.app.agent
+        if not agent.cloud.device_mode:
+            self._draw([], [])
+            self._say("Sign this PC in from Setup first: press Connect & Start Sync with an admin's email and password.", WARNING_AMBER)
+            return
+        self._say("Checking TallyPrime...")
+
+        def worker():
+            open_cmps = agent.tally.get_open_companies()
+            linked = [dict(c) for c in agent.linked_companies() if c.get("guid")]
+            self.after(0, lambda: (self._draw(linked, open_cmps), self._say("" if open_cmps else "No company is open in TallyPrime.")))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _draw(self, linked, open_cmps):
+        for child in self.rows.winfo_children():
+            child.destroy()
+        open_by_guid = {c.get("guid"): c for c in open_cmps if c.get("guid")}
+        linked_guids = {c["guid"] for c in linked}
+        names_open = [c.get("name") for c in open_cmps]
+        for company in linked:
+            now = open_by_guid.get(company["guid"])
+            if now is None:
+                note, color = "Linked · closed in Tally", TEXT_MUTED
+            elif names_open.count(now["name"]) > 1:
+                note, color = "Linked · two open companies share this name, so it is not syncing", WARNING_AMBER
+            else:
+                note, color = "Linked · syncing", SUCCESS_GREEN
+            self._row((now or company)["name"], note, color, "Unlink", lambda c=company: self._unlink(c))
+        for company in open_cmps:
+            if company.get("guid") and company["guid"] not in linked_guids:
+                self._row(company["name"], "Open in Tally · not synced", TEXT_MUTED, "Link", lambda c=company: self._link(c))
+
+    def _row(self, name: str, note: str, color: str, action: str, command):
+        row = ctk.CTkFrame(self.rows, fg_color=CARD_BG, corner_radius=10, border_width=1, border_color=CARD_BORDER)
+        row.pack(fill="x", pady=4, padx=4)
+        text = ctk.CTkFrame(row, fg_color="transparent")
+        text.pack(side="left", fill="x", expand=True, padx=12, pady=8)
+        ctk.CTkLabel(text, text=name, font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w")
+        ctk.CTkLabel(text, text=note, font=ctk.CTkFont(size=11), text_color=color).pack(anchor="w")
+        ctk.CTkButton(row, text=action, width=84, height=32, fg_color=ACCENT_BLUE if action == "Link" else CARD_BORDER,
+                      hover_color=ACCENT_HOVER if action == "Link" else INPUT_BG, command=command).pack(side="right", padx=12)
+
+    def _link(self, company, take_over: bool = False):
+        self._say(f"Linking '{company['name']}'...")
+        details = {"tally_guid": company["guid"], "name": company["name"],
+                   "books_from": company.get("starting_from") or None, "tally_url": self.app.config.tally_url}
+
+        def worker():
+            ok, message, reason = self.app.agent.link_company(details, take_over=take_over)
+            self.after(0, lambda: self._linked(company, ok, message, reason))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _linked(self, company, ok: bool, message: str, reason: str):
+        if ok:
+            self.app.agent.trigger_immediate_sync()
+            self.refresh()
+            return
+        if reason == "linked_to_another_device":
+            from tkinter import messagebox
+            if messagebox.askyesno("Move sync to this PC?", f"{message}\n\nThe other PC will stop syncing this company.", parent=self):
+                self._link(company, take_over=True)
+                return
+        self._say(message, ERROR_RED)
+
+    def _unlink(self, company):
+        from tkinter import messagebox
+        if not messagebox.askyesno("Stop syncing this company?",
+                                   f"'{company['name']}' will no longer be synced from this PC. Its data in the app stays.", parent=self):
+            return
+
+        def worker():
+            ok = self.app.agent.unlink_company(company["guid"])
+            self.after(0, lambda: (self.refresh() if ok else self._say("Could not unlink. Check the connection and try again.", ERROR_RED)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
 # ---------------------------------------------------------------------------
 # VIEW 2: Dashboard Screen (Live Synchronization Dashboard)
 # ---------------------------------------------------------------------------
@@ -1098,6 +1205,19 @@ class DashboardView(ctk.CTkFrame):
         )
         self.pause_btn.pack(side="left", fill="x", expand=True, padx=4)
 
+        # Companies synced from this PC
+        self.companies_btn = ctk.CTkButton(
+            toolbar,
+            text="🏢 Companies",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=CARD_BORDER,
+            hover_color=CARD_BG,
+            height=38,
+            corner_radius=8,
+            command=lambda: CompaniesDialog(self, self.app)
+        )
+        self.companies_btn.pack(side="left", fill="x", expand=True, padx=4)
+
         # 3. Settings
         self.settings_btn = ctk.CTkButton(
             toolbar,
@@ -1205,7 +1325,10 @@ class DashboardView(ctk.CTkFrame):
             self.tally_badge.configure(text="● Connected", text_color=SUCCESS_GREEN)
             cmp_str = status.get("active_company_name") or "No company open"
             open_cnt = status.get("open_companies_count", 0)
-            if open_cnt > 1:
+            linked_cnt = status.get("linked_companies_count", 1)
+            if linked_cnt > 1:
+                self.tally_company_lbl.configure(text=f"Companies: {cmp_str} +{linked_cnt - 1} more synced")
+            elif open_cnt > 1:
                 self.tally_company_lbl.configure(text=f"Company: {cmp_str} (+{open_cnt - 1} open)")
             else:
                 self.tally_company_lbl.configure(text=f"Company: {cmp_str}")

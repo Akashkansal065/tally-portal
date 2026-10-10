@@ -12,6 +12,7 @@ from typing import Optional, List
 from datetime import datetime, date
 
 from app.core.database import get_db, Base
+from app.core.tenancy import rows_of_company
 from app.core.permissions import require_permission
 from app.models.portal_core import User
 from app.core.config import settings
@@ -162,6 +163,7 @@ async def create_expense(
 
     expense = Expense(
         user_id=user.user_id,
+        company_id=user.company_id,
         salesperson_user_id=assigned_salesperson_id,
         amount=req.amount,
         expense_date=exp_date,
@@ -247,7 +249,7 @@ async def list_expenses(
             select(Expense)
             .options(selectinload(Expense.user), selectinload(Expense.salesperson), selectinload(Expense.acted_by))
             .join(User, Expense.user_id == User.user_id)
-            .where(User.company_id == user.company_id)
+            .where(rows_of_company(Expense, user))
         )
         if salesperson_id:
             from sqlalchemy import or_
@@ -278,7 +280,7 @@ async def list_all_expenses(
         select(Expense)
         .options(selectinload(Expense.user), selectinload(Expense.salesperson), selectinload(Expense.acted_by))
         .join(User, Expense.user_id == User.user_id)
-        .where(User.company_id == current_user.company_id)
+        .where(rows_of_company(Expense, current_user))
         .order_by(desc(Expense.created_at))
         .limit(500)
     )
@@ -297,7 +299,7 @@ async def approve_expense(
     result = await db.execute(
         select(Expense)
         .join(User, Expense.user_id == User.user_id)
-        .where(Expense.id == expense_id, User.company_id == current_user.company_id)
+        .where(Expense.id == expense_id, rows_of_company(Expense, current_user))
     )
     expense = result.scalars().first()
     if not expense:
