@@ -8,6 +8,7 @@ import threading
 from logging.handlers import RotatingFileHandler
 from typing import List, Optional, Dict, Any, Tuple
 
+import re
 from config import (
     load_config,
     save_config,
@@ -17,7 +18,7 @@ from config import (
     install_startup as cfg_install_startup,
     uninstall_startup as cfg_uninstall_startup
 )
-from tally_client import TallyClient
+from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
 from cloud_client import CloudClient, halt_message
 
 # Configure Logging with both Console and Rotating File Handler in safe logs directory
@@ -111,7 +112,8 @@ class DesktopSyncAgent:
         )
         self.last_inbound_time = 0
         self.active_company_name = self.config.company_name
-        self.active_company_guid = ""
+        self.active_company_guid = getattr(self.config, "company_guid", "") or ""
+        self.company_paused = False
         self.open_companies_count = 0
 
         # State tracking for GUI
@@ -220,6 +222,8 @@ class DesktopSyncAgent:
             on_auth_halted=self._on_auth_halted
         )
         self.active_company_name = self.config.company_name
+        self.active_company_guid = getattr(self.config, "company_guid", "") or ""
+        self.company_paused = False
         logger.info("🔄 Agent configuration reloaded.")
 
     def _on_token_refreshed(self, new_token: str):
@@ -248,7 +252,9 @@ class DesktopSyncAgent:
             logger.info(f"💾 Data Path:         {tally_info['data_path']}")
             logger.info(f"🏷️ Tally Release:     {tally_info['release']}")
 
-            if tally_info["company_name"]:
+            # The first open company only names the target while none is pinned by GUID; once pinned,
+            # check_and_handle_company_switch() keeps following that GUID
+            if tally_info["company_name"] and not self.active_company_guid:
                 self.active_company_name = tally_info["company_name"]
             
             # Save discovered paths to config if enabled
@@ -298,7 +304,7 @@ class DesktopSyncAgent:
     def check_and_handle_company_switch(self):
         """
         Detects if user opened, closed, or switched companies in TallyPrime.
-        Dynamically adapts synchronization target.
+        Dynamically adapts synchronization target, pinning strictly by GUID if configured.
         """
         open_cmps = self.tally.get_open_companies()
         self.open_companies_count = len(open_cmps)
@@ -306,40 +312,52 @@ class DesktopSyncAgent:
         if not open_cmps:
             return
 
-        # Check if currently active company is still open in Tally
-        open_names = [c["name"] for c in open_cmps]
-        matching_current = next((c for c in open_cmps if c["name"] == self.active_company_name), None)
-
-        if matching_current:
-            # Current company is still open and valid; update GUID if needed
-            self.active_company_guid = matching_current.get("guid", self.active_company_guid)
+        # If company GUID is pinned, strictly match against GUID
+        if self.active_company_guid:
+            match = next((c for c in open_cmps if c.get("guid") == self.active_company_guid), None)
+            if match is None:
+                # Same name but different GUID is a different company (a restore, or copy)
+                if not self.company_paused:
+                    logger.warning(
+                        f"⏸️ '{self.active_company_name}' (GUID {self.active_company_guid}) isn't open in Tally; "
+                        f"sync paused. Open companies: {', '.join(c.get('name', '') for c in open_cmps)}"
+                    )
+                self.company_paused = True
+                return
+            self.company_paused = False
+            self.active_company_name = match["name"]  # A rename in Tally is fine; GUID is what identifies it
             return
 
-        # Otherwise, the previous company was closed; switch to the first open company
-        current_active = open_cmps[0]["name"]
-        current_guid = open_cmps[0].get("guid", "")
+        # Fallback when no GUID was previously stored: match by company name
+        match = next((c for c in open_cmps if c.get("name") == self.active_company_name), None)
+        if match:
+            self.company_paused = False
+            self.active_company_guid = match.get("guid", "")
+            if self.active_company_guid:
+                self.config.company_guid = self.active_company_guid
+                save_config(self.config, self.config_path)
+            return
 
-        if self.active_company_name != current_active:
-            other_info = f" (Total Open: {len(open_cmps)} - {', '.join(open_names)})" if len(open_cmps) > 1 else ""
-            logger.info(
-                f"\n{'=' * 75}\n"
-                f"🏢 [COMPANY SWITCH DETECTED IN TALLY]\n"
-                f"   Previous Company: '{self.active_company_name}'\n"
-                f"   Active Company:   '{current_active}' (GUID: {current_guid}){other_info}\n"
-                f"   ⚡ Auto-switching Cloud Sync Target to '{current_active}'...\n"
-                f"{'=' * 75}\n"
+        # Target company is not open in Tally; pause sync rather than switching to another company!
+        if not self.company_paused:
+            logger.warning(
+                f"⏸️ '{self.active_company_name}' isn't open in Tally; sync paused. "
+                f"Open companies: {', '.join(c.get('name', '') for c in open_cmps)}"
             )
+        self.company_paused = True
 
-            self.active_company_name = current_active
-            self.active_company_guid = current_guid
-            self.config.company_name = current_active
-            save_config(self.config, self.config_path)
+    def _paused_status(self) -> str:
+        return f"Paused: '{self.active_company_name}' is not open in Tally"
 
     def sync_outbound_cycle(self) -> int:
         """Pulls pending voucher/ledger creation requests from Cloud and pushes them to Tally."""
         if self.cloud.auth_halt_reason:
             return 0
         self.check_and_handle_company_switch()
+        if self.company_paused:
+            # Shown in the GUI: nothing is sent to Tally until the company this agent is tied to is open again
+            self.last_sync_status = self._paused_status()
+            return 0
 
         tasks, err = self.cloud.fetch_outbound_queue()
         if err:
@@ -351,6 +369,7 @@ class DesktopSyncAgent:
 
         logger.info(f"📥 Received {len(tasks)} outbound task(s) from MyTally Cloud Queue.")
         successful_ids: List[int] = []
+        voucher_identities: List[Dict[str, Any]] = []
 
         for task in tasks:
             sync_id = task.get("sync_id")
@@ -365,11 +384,21 @@ class DesktopSyncAgent:
 
             # Ensure SVCURRENTCOMPANY is explicitly set in STATICVARIABLES to avoid multi-company cross-talk
             if "<SVCURRENTCOMPANY>" not in xml_payload and self.active_company_name:
-                sv_tag = f"<STATICVARIABLES><SVCURRENTCOMPANY>{self.active_company_name}</SVCURRENTCOMPANY>"
+                esc_cmp = escape_xml(self.active_company_name)
+                sv_tag = f"<STATICVARIABLES><SVCURRENTCOMPANY>{esc_cmp}</SVCURRENTCOMPANY>"
                 if "<STATICVARIABLES>" in xml_payload:
                     xml_payload = xml_payload.replace("<STATICVARIABLES>", sv_tag)
                 elif "<DESC>" in xml_payload:
-                    xml_payload = xml_payload.replace("<DESC>", f"<DESC><STATICVARIABLES><SVCURRENTCOMPANY>{self.active_company_name}</SVCURRENTCOMPANY></STATICVARIABLES>")
+                    xml_payload = xml_payload.replace("<DESC>", f"<DESC><STATICVARIABLES><SVCURRENTCOMPANY>{esc_cmp}</SVCURRENTCOMPANY></STATICVARIABLES>")
+
+            # A voucher addressed by master id is only found under the date it has in Tally right now. If
+            # someone moved it in Tally since the backend last heard, the old date would make a second voucher.
+            m_addr = re.search(r'<VOUCHER DATE="(\d{8})" TAGNAME="MASTERID" TAGVALUE="(\d+)"', xml_payload)
+            if m_addr:
+                held = self.tally.find_voucher_by_master_id(self.active_company_name, int(m_addr.group(2)))
+                if held and held.get("date") and held["date"] != m_addr.group(1):
+                    logger.info(f"Voucher #{rec_id} is dated {held['date']} in Tally, not {m_addr.group(1)}; addressing it there.")
+                    xml_payload = xml_payload.replace(m_addr.group(0), f'<VOUCHER DATE="{held["date"]}" TAGNAME="MASTERID" TAGVALUE="{m_addr.group(2)}"', 1)
 
             logger.info(f"⏳ Pushing {rec_type} #{rec_id} ({action}) to Tally for company '{self.active_company_name}'...")
             success, resp_str = self.tally.send_xml(xml_payload)
@@ -377,19 +406,52 @@ class DesktopSyncAgent:
             if success:
                 logger.info(f"✅ Tally Ingested: {rec_type} #{rec_id} successfully.")
                 successful_ids.append(sync_id)
+                if str(rec_type or "").lower() == "voucher" and str(action or "").lower() != "delete":
+                    # Tally numbers the voucher itself; read back what it made of it for the app
+                    m_last = re.search(r"<LASTVCHID>\s*(\d+)\s*</LASTVCHID>", resp_str)
+                    found_vch = self.tally.find_voucher_by_master_id(self.active_company_name, int(m_last.group(1))) if m_last and int(m_last.group(1)) else None
+                    if found_vch:
+                        voucher_identities.append({"voucher_id": rec_id, **found_vch})
             else:
-                logger.error(f"❌ Tally Rejected {rec_type} #{rec_id}. Response: {resp_str[:300]}")
+                # A Create that timed out or lost its connection may still have been saved by Tally. Look it up by
+                # REMOTEID before resending: a resend would alter it again and could undo a cancel made in Tally
+                # meanwhile. Only for a network failure on a Create; when Tally answered and rejected the request,
+                # or for an Alter/Delete/Cancel (the voucher exists either way), finding it proves nothing.
+                recovered = False
+                is_network_failure = resp_str.startswith(NETWORK_ERROR_PREFIX)
+                if is_network_failure and str(rec_type or "").lower() == "voucher" and str(action or "").lower() == "create":
+                    m_remote = re.search(r'REMOTEID="([^"]+)"', xml_payload)
+                    remote_id = m_remote.group(1) if m_remote else f"MYTALLY-VCH-{rec_id}"
+                    m_date = re.search(r"<DATE>(\d{8})</DATE>", xml_payload)
+                    found_vch = self.tally.find_voucher_by_remote_id(
+                        self.active_company_name, remote_id, m_date.group(1) if m_date else None)
+                    if found_vch:
+                        logger.info(
+                            f"✨ Voucher #{rec_id} was saved in Tally despite the {resp_str[:80]} "
+                            f"(RemoteID: {remote_id}, GUID: {found_vch.get('guid')}). Acknowledging."
+                        )
+                        successful_ids.append(sync_id)
+                        recovered = True
+                if not recovered:
+                    logger.error(f"❌ Tally Rejected {rec_type} #{rec_id}. Response: {resp_str[:300]}")
 
         if successful_ids:
             ack_ok = self.cloud.acknowledge_queue(successful_ids)
             if ack_ok:
                 logger.info(f"🎉 Successfully acknowledged {len(successful_ids)} task(s) to Cloud Backend.\n")
+        if voucher_identities:
+            self.cloud.report_voucher_identities(voucher_identities)
 
         return len(successful_ids)
 
     def sync_inbound_cycle(self, is_incremental: bool = False):
         """Pulls masters and vouchers from Tally and pushes them into MyTally Cloud database with deep diagnostics."""
         if not self.active_company_name or self.cloud.auth_halt_reason:
+            return
+
+        self.check_and_handle_company_switch()
+        if self.company_paused:
+            self.last_sync_status = self._paused_status()
             return
 
         # Pre-flight check: if Tally was offline, quickly test before attempting 9 collection exports
@@ -414,13 +476,16 @@ class DesktopSyncAgent:
             retry_floor = (self.config.inbound_retry_floors or {}).get(company_key)
 
             min_alter = 0
+            min_voucher_alter = 0
             if is_incremental:
-                alt1, alt2 = self.cloud.get_last_alter_id()
-                server_watermark = max(alt1, alt2)
+                # Masters and vouchers have separate change counters in Tally, hence separate watermarks
+                master_watermark, voucher_watermark = self.cloud.get_last_alter_id()
+                server_watermark = max(master_watermark, voucher_watermark)
                 # After a failed cycle, re-pull from where that cycle started: the server's watermark is
                 # the highest AlterID it holds, which can be past records that never arrived.
-                min_alter = server_watermark if retry_floor is None else min(retry_floor, server_watermark)
-                prefix = f"⚡ [INBOUND DELTA SYNC] Checking Tally changes (ALTERID > {min_alter})..."
+                min_alter = master_watermark if retry_floor is None else min(retry_floor, master_watermark)
+                min_voucher_alter = voucher_watermark if retry_floor is None else min(retry_floor, voucher_watermark)
+                prefix = f"⚡ [INBOUND DELTA SYNC] Checking Tally changes (masters ALTERID > {min_alter}, vouchers ALTERID > {min_voucher_alter})..."
                 if retry_floor is not None and retry_floor < server_watermark:
                     prefix += f" [re-pulling from {retry_floor} after an earlier failed cycle]"
             elif force_all:
@@ -429,13 +494,14 @@ class DesktopSyncAgent:
                 prefix = f"📥 [INITIAL INBOUND SYNC] Pulling full baseline data from Tally..."
 
             logger.info(f"{prefix}")
-            collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=min_alter)
+            collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=min_alter,
+                                                             min_voucher_alter_id=min_voucher_alter if is_incremental else None)
             export_failures = list(getattr(self.tally, "last_export_failures", []) or [])
             if export_failures:
                 logger.error(f"   ❌ Could not export from Tally: {', '.join(export_failures)}")
 
             if not collections:
-                self._update_inbound_retry_floor(company_key, min_alter, failed=bool(export_failures))
+                self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures))
                 self.last_inbound_time = time.time()
                 self.last_sync_time = time.time()
                 self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
@@ -500,7 +566,7 @@ class DesktopSyncAgent:
             self.total_ledgers += total_ledgers
             self.total_items += total_items
             self.total_errors += total_errors
-            self._update_inbound_retry_floor(company_key, min_alter, failed=bool(export_failures) or total_errors > 0)
+            self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures) or total_errors > 0)
             self.last_sync_time = time.time()
             self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
 

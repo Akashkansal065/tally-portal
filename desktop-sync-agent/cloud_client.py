@@ -247,6 +247,30 @@ class CloudClient:
                 logger.debug(f"Acknowledge on {endpoint} failed: {e}")
         return False
 
+    def report_voucher_identities(self, identities: List[Dict[str, Any]]) -> bool:
+        """
+        Tells MyTally what Tally made of the vouchers just pushed: the number Tally gave each one, its master id,
+        GUID and date. Without this the app keeps its provisional number and cannot address the voucher later.
+        """
+        if not identities:
+            return True
+        url = f"{self.backend_url}/sync/voucher-identities"
+        payload = json.dumps(identities).encode("utf-8")
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(url, data=payload, headers=self._get_headers())
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return resp.status == 200
+            except urllib.error.HTTPError as e:
+                if attempt == 0 and e.code == 401 and self.reauthenticate(_auth_reason(e)):
+                    continue
+                logger.warning(f"Reporting voucher numbers to MyTally failed: HTTP {e.code}")
+                return False
+            except Exception as e:
+                logger.warning(f"Reporting voucher numbers to MyTally failed: {e}")
+                return False
+        return False
+
     def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None, force: bool = False) -> Tuple[bool, Dict[str, Any]]:
         """Uploads exported Tally XML to MyTally backend to update the database with comprehensive diagnostics."""
         headers = {
@@ -413,7 +437,10 @@ class CloudClient:
         return False, last_diag
 
     def get_last_alter_id(self) -> Tuple[int, int]:
-        """Fetches the latest alter IDs from the cloud backend (max_alter_id across ledgers, vouchers, items)."""
+        """
+        The highest alter ids the backend holds: (masters, vouchers). Tally counts changes to masters and to
+        vouchers separately, so the two are separate watermarks.
+        """
         for endpoint in ["/sync/last-alter-id", "/api/v1/sync/last-alter-id"]:
             url = f"{self.backend_url}{endpoint}"
             try:
@@ -424,7 +451,7 @@ class CloudClient:
                     led_alt = int(data.get("last_ledger_alter_id", 0))
                     vch_alt = int(data.get("last_voucher_alter_id", 0))
                     stk_alt = int(data.get("last_stock_item_alter_id", 0))
-                    return max(max_alt, led_alt, vch_alt, stk_alt), vch_alt
+                    return (int(data["last_master_alter_id"]) if "last_master_alter_id" in data else max(max_alt, led_alt, stk_alt)), vch_alt
             except urllib.error.HTTPError as e:
                 if e.code == 401 and self.reauthenticate(_auth_reason(e)):
                     try:
@@ -435,7 +462,7 @@ class CloudClient:
                             led_alt = int(data.get("last_ledger_alter_id", 0))
                             vch_alt = int(data.get("last_voucher_alter_id", 0))
                             stk_alt = int(data.get("last_stock_item_alter_id", 0))
-                            return max(max_alt, led_alt, vch_alt, stk_alt), vch_alt
+                            return (int(data["last_master_alter_id"]) if "last_master_alter_id" in data else max(max_alt, led_alt, stk_alt)), vch_alt
                     except Exception:
                         pass
                 if e.code != 404:

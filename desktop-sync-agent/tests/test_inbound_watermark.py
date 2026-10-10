@@ -13,7 +13,10 @@ class FakeTally:
     def check_health(self):
         return True, "ok"
 
-    def export_full_collections(self, company, min_alter_id=0):
+    def get_open_companies(self):
+        return [{"name": "Alpha", "guid": "guid-alpha"}]
+
+    def export_full_collections(self, company, min_alter_id=0, min_voucher_alter_id=None):
         self.last_export_failures = []
         out = []
         for label, ids in self.records.items():

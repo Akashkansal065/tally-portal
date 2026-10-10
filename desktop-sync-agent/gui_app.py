@@ -651,6 +651,10 @@ class SetupView(ctk.CTkFrame):
             self.app.config.auth_halt_reason = ""
             self.app.config.tally_url = tally_url
             if company_name:
+                if company_name != self.app.config.company_name:
+                    # A different company: drop the old pin, or the agent keeps waiting for the previous one.
+                    # The new company's GUID is pinned the first time it's seen open in Tally.
+                    self.app.config.company_guid = ""
                 self.app.config.company_name = company_name
             self.app.config.autostart_enabled = autostart
 

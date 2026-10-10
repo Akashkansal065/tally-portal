@@ -47,6 +47,7 @@ class AgentConfig:
     username: str = ""
     password: str = ""
     company_name: str = "Bhrama Enterprises"
+    company_guid: str = ""
     sync_interval_seconds: int = 5
     inbound_interval_seconds: int = 60
     tally_app_path: Optional[str] = None
@@ -170,6 +171,7 @@ def load_config(config_path: Optional[str] = None) -> AgentConfig:
     cfg.tally_url = os.environ.get("TALLY_URL", cfg.tally_url)
     cfg.auth_token = os.environ.get("MYTALLY_AUTH_TOKEN", cfg.auth_token)
     cfg.company_name = os.environ.get("TALLY_COMPANY_NAME", cfg.company_name)
+    cfg.company_guid = os.environ.get("TALLY_COMPANY_GUID", cfg.company_guid)
     if os.environ.get("MYTALLY_FORCE_FULL_SYNC"):
         cfg.force_full_sync = os.environ.get("MYTALLY_FORCE_FULL_SYNC", "").lower() in ("1", "true", "yes")
 
