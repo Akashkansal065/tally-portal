@@ -1,7 +1,23 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, List
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import date, datetime
+
+
+def _to_paise(v) -> Decimal:
+    """An amount rounded to paise. Bad input raises ValueError, so the API answers 422 instead of 500."""
+    if v is None or v == "":
+        return Decimal("0.00")
+    try:
+        amount = Decimal(str(v))
+    except InvalidOperation:
+        raise ValueError("must be a number") from None
+    if not amount.is_finite():
+        raise ValueError("must be a finite number")
+    try:
+        return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ValueError("is too large") from None
 
 class BankAllocationCreate(BaseModel):
     instrument_date: Optional[date] = None
@@ -66,7 +82,10 @@ class VoucherEntryCreate(BaseModel):
     bill_allocations: Optional[List[BillAllocationCreate]] = None
     cost_centre_allocations: Optional[List[CostCentreAllocationCreate]] = None
 
-from pydantic import model_validator
+    @field_validator("debit_amount", "credit_amount", mode="before")
+    @classmethod
+    def to_paise(cls, v):
+        return _to_paise(v)
 
 class VoucherEntryResponse(VoucherEntryCreate):
     entry_id: int
@@ -95,6 +114,7 @@ class VoucherListResponse(BaseModel):
     voucher_number: str
     reference_number: Optional[str] = None
     narration: Optional[str] = None
+    number_is_provisional: Optional[bool] = None   # the app's own number, not yet confirmed by Tally
     party_name: str                       # Resolved from entries via group scoring
     amount: float                         # Primary party entry amount (abs)
     total_amount: float                   # voucher.total_amount
@@ -122,6 +142,11 @@ class InventoryEntryCreate(BaseModel):
     flow_type: Optional[str] = None
     accounting_allocations: Optional[List[AccountingAllocationCreate]] = []
 
+    @field_validator("amount", mode="before")
+    @classmethod
+    def amount_to_paise(cls, v):
+        return _to_paise(v)
+
 class AccountingAllocationResponse(AccountingAllocationCreate):
     id: int
     
@@ -136,6 +161,21 @@ class InventoryEntryResponse(InventoryEntryCreate):
     class Config:
         from_attributes = True
 
+class AttendanceEntryCreate(BaseModel):
+    """One line of an Attendance voucher: how much of an attendance type an employee has."""
+    employee_name: str
+    attendance_type: str
+    value: Decimal
+
+
+class PayrollEntryCreate(BaseModel):
+    """One line of a Payroll voucher: a pay head amount for an employee. The pay head is a ledger."""
+    employee_name: str
+    pay_head_name: str
+    amount: Decimal
+    category: Optional[str] = None  # the employee's cost category; Tally's "Primary Cost Category" when left out
+
+
 class VoucherCreate(BaseModel):
     voucher_type_id: int
     voucher_date: str  # YYYY-MM-DD
@@ -148,6 +188,8 @@ class VoucherCreate(BaseModel):
     gst_registration_id: Optional[int] = None
     entries: Optional[List[VoucherEntryCreate]] = []
     inventory_entries: Optional[List[InventoryEntryCreate]] = []
+    attendance_entries: Optional[List[AttendanceEntryCreate]] = []
+    payroll_entries: Optional[List[PayrollEntryCreate]] = []
 
 class VoucherResponse(BaseModel):
     voucher_id: int
@@ -167,6 +209,13 @@ class VoucherResponse(BaseModel):
     created_at: datetime
     tally_guid: Optional[str] = None
     tally_alter_id: Optional[int] = None
+    tally_master_id: Optional[int] = None
+    # True while the number is the app's own: Tally numbers the voucher when it receives it
+    number_is_provisional: Optional[bool] = None
+    # Outcome of the push to Tally made by this request
+    tally_synced: Optional[bool] = None
+    tally_status: Optional[str] = None
+    tally_message: Optional[str] = None
     entries: List[VoucherEntryResponse]
     inventory_entries: Optional[List[InventoryEntryResponse]] = []
     
@@ -253,6 +302,8 @@ class VoucherResponse(BaseModel):
             for col in data.__table__.columns:
                 obj_dict[col.name] = getattr(data, col.name)
             
+            for field in ("tally_synced", "tally_status", "tally_message"):
+                obj_dict[field] = getattr(data, field, None)
             obj_dict["date"] = data.voucher_date
             obj_dict["type"] = data.voucher_type.name if data.voucher_type else "Unknown"
             obj_dict["items"] = items

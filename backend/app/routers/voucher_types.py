@@ -19,6 +19,7 @@ from app.schemas.voucher import (
     VoucherConfigurationResponse, VoucherConfigurationUpdate
 )
 from app.routers.sync import try_push_voucher_type_realtime
+from app.services.voucher_config import default_configuration
 import logging
 
 logger = logging.getLogger(__name__)
@@ -340,50 +341,11 @@ async def get_voucher_type_configuration(
     if cfg:
         return cfg
 
-    # Generate smart defaults based on voucher type
-    parent_type = (vt.parent_type or vt.name or "").lower()
-    is_purchase = "purchase" in parent_type or "receipt note" in parent_type
-    is_sales = "sales" in parent_type or "delivery note" in parent_type
-    is_payment_receipt = "payment" in parent_type or "receipt" in parent_type or "contra" in parent_type
-
     return VoucherConfigurationResponse(
         config_id=None,
         company_id=user.company_id,
         voucher_type_id=vt_id,
-        use_cr_dr=True,
-        provide_supplier_ref=is_purchase,
-        warn_negative_cash=True,
-        preallocate_bills=False,
-        show_bill_wise_details=True,
-        show_bill_wise_multiple_lines=True,
-        show_list_of_bills=True,
-        show_final_bill_balances=True,
-        skip_date_field=False,
-        show_inventory_details=(is_sales or is_purchase),
-        show_ledger_current_balance=True,
-        warn_voucher_number_length=True,
-        enable_stripe_view=False,
-        use_default_bank_allocations=is_payment_receipt,
-        auto_cheque_numbering=True,
-        select_cheque_range=True,
-        set_ledger_bank_allocations=False,
-        print_cheque_after_saving=False,
-        show_cheque_details_before_printing=True,
-        provide_cash_denominations=("contra" in parent_type),
-        provide_buyer_details=is_sales,
-        provide_dispatch_order_export=is_sales,
-        provide_order_details=is_sales,
-        select_common_sales_ledger=is_sales,
-        use_vch_no_as_bill_ref=is_sales,
-        warn_negative_stock=(is_sales or is_purchase),
-        provide_trade_discount=False,
-        rate_inclusive_of_tax=False,
-        show_party_turnover=False,
-        use_default_pg_allocations=False,
-        set_ledger_pg_allocations=False,
-        provide_party_gst_details=False,
-        modify_gst_hsn_details=False,
-        send_eway_bill_details=is_sales,
+        **default_configuration(vt.parent_type or vt.name),
     )
 
 @router.put("/{vt_id}/configuration", response_model=VoucherConfigurationResponse)
@@ -421,36 +383,10 @@ async def update_voucher_type_configuration(
         )
         db.add(cfg)
 
-    # 1. Enqueue SyncQueue item for VoucherType Master synchronization
-    sq = SyncQueue(
-        company_id=user.company_id,
-        record_type="VoucherType",
-        record_id=vt_id,
-        action="Alter",
-        is_processed=False
-    )
-    db.add(sq)
+    # These settings exist in the app only (Tally keeps its entry settings outside the company data),
+    # so saving them sends nothing to Tally.
     await db.commit()
     await db.refresh(cfg)
-    await db.refresh(sq)
-
-    logger.info(
-        f"\n=======================================================\n"
-        f"⚙️ [VOUCHER CONFIGURATION UPDATED]\n"
-        f"• Voucher Type: '{vt.name}' (ID: {vt_id}, Parent: {vt.parent_type})\n"
-        f"• Accounting: use_cr_dr={cfg.use_cr_dr}, warn_cash={cfg.warn_negative_cash}\n"
-        f"• Invoicing: supplier_ref={cfg.provide_supplier_ref}, buyer_details={cfg.provide_buyer_details}\n"
-        f"• Inventory & Tax: stock_warn={cfg.warn_negative_stock}, inclusive_tax={cfg.rate_inclusive_of_tax}\n"
-        f"• Banking: default_bank={cfg.use_default_bank_allocations}, cash_denominations={cfg.provide_cash_denominations}\n"
-        f"• Statutory: eway_bill={cfg.send_eway_bill_details}, party_gst={cfg.provide_party_gst_details}\n"
-        f"🔄 Triggering Real-Time Tally Master Sync (sync_id={sq.sync_id})...\n"
-        f"=======================================================\n"
-    )
-
-    # 2. Attempt Real-time Master Push to Tally
-    try:
-        await try_push_voucher_type_realtime(vt_id, sq.sync_id, "Alter", db)
-    except Exception as e:
-        logger.warning(f"Real-time Tally push for VoucherType {vt_id} encountered exception: {e}")
+    logger.info(f"Voucher configuration saved for '{vt.name}' (voucher type {vt_id})")
 
     return cfg

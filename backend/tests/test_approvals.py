@@ -20,6 +20,17 @@ def world(harness, monkeypatch):
         return (True, "OK", "")
     monkeypatch.setattr(sync, "try_push_voucher_realtime", fake_push)
 
+    # Entering a voucher sends it before committing (a refusal by Tally undoes the entry), through these two
+    async def fake_send(db, voucher_id, action, ident=None):
+        pushed.append((voucher_id, action))
+        return {"status": "SUCCESS", "reason": None, "envelope": None, "response": None, "name": None,
+                "company_id": None, "duration_ms": 0, "renumbered_from": None}
+
+    async def fake_record(db, voucher_id, sync_id, action, result):
+        await db.commit()
+    monkeypatch.setattr(sync, "send_voucher", fake_send)
+    monkeypatch.setattr(sync, "record_voucher_push", fake_record)
+
     h = harness
     alpha = h.company("Alpha")
     admin_role, sales_role, accounts_role = h.role("Admin"), h.role("Sales"), h.role("Accountant")

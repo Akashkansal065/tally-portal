@@ -15,7 +15,7 @@ from app.core.permissions import require_permission, get_current_user, require_v
 from app.core.cache import get_cached_response, set_cached_response, clear_company_cache
 from app.core.pagination import PaginationParams, apply_pagination_headers
 from app.models.portal_core import User, Module, ApprovalRule, ApprovalRequest, AuditLog, SyncQueue, Company, EinvoiceMetadata, DeletedRecordAudit
-from app.models.tally_core import MstGodown, Batch
+from app.models.tally_core import MstGodown, Batch, TrnAttendance, TrnPayHead, MstPayHead, MstAttendanceType, MstCostCentre
 from app.models.tally_core import (
     MstVoucherType, TrnVoucher, TrnAccounting, TrnBankAllocation, TrnBill, BillAllocation, MstLedger, MstGroup, TrnInventory, MstStockItem, VoucherAccountingAllocation, GstRegistration, TrnCostCentreAllocation
 )
@@ -26,6 +26,8 @@ from app.schemas.voucher import (
     ApprovalRequestResponse
 )
 from app.services.gst_service import compute_gst_allocations
+from app.services.voucher_config import auto_bill_reference, configuration_setting
+from app.services.voucher_kinds import stock_leaves, is_sales_side, is_physical_stock, is_attendance, is_payroll
 
 router = APIRouter(prefix="/vouchers", tags=["Vouchers & Posting"])
 
@@ -65,11 +67,43 @@ async def get_voucher_types(
     set_cached_response(user.company_id, cache_key, result, ttl_seconds=7200) # 2 hours
     return result
 
+@router.get("/payroll-masters")
+async def get_payroll_masters(
+    user: User = Depends(require_voucher_read_permission),
+    db: AsyncSession = Depends(get_db)
+):
+    """What an Attendance or Payroll voucher is built from, as read from Tally: employees (cost centres marked
+    for payroll), attendance types, and pay heads (ledgers with a pay type)."""
+    employees = (await db.execute(select(MstCostCentre.name).where(
+        MstCostCentre.company_id == user.company_id, MstCostCentre.for_payroll == True).order_by(MstCostCentre.name))).scalars().all()  # noqa: E712
+    attendance_types = (await db.execute(select(MstAttendanceType.name, MstAttendanceType.type_of_attendance).where(
+        MstAttendanceType.company_id == user.company_id).order_by(MstAttendanceType.name))).all()
+    pay_heads = (await db.execute(select(MstPayHead.name, MstPayHead.pay_head_type).where(
+        MstPayHead.company_id == user.company_id).order_by(MstPayHead.name))).all()
+    return {
+        "employees": list(employees),
+        "attendance_types": [{"name": n, "kind": k} for n, k in attendance_types],
+        "pay_heads": [{"name": n, "pay_type": t, "is_deduction": "deduction" in (t or "").lower()} for n, t in pay_heads],
+    }
+
+
 # --- Voucher Posting Logic ---
 
-async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=False):
+async def _voucher_item_ids(db, voucher_id) -> set:
+    return set((await db.execute(select(TrnInventory.stock_item_id).where(TrnInventory.voucher_id == voucher_id))).scalars().all())
+
+
+async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=False, previous_reference=None):
+    from app.services.stock_counts import rebalance_counted_items
+    # Items whose stock this posting touches; any of them covered by a Physical Stock count is re-derived below
+    touched_items = await _voucher_item_ids(db, voucher.voucher_id) if is_update else set()
+    touched_items |= {ie.stock_item_id for ie in (req.inventory_entries or [])}
+    # The bill this voucher already raised for its party: an edit keeps its name
+    previous_bill = None
     # Reverse existing stock if update
     if is_update:
+        previous_bill = (await db.execute(select(TrnBill.bill_reference).where(
+            TrnBill.voucher_id == voucher.voucher_id, TrnBill.party_ledger_id == voucher.party_ledger_id))).scalars().first()
         # Stock quantities are updated when voucher status is 'confirmed'
         # We need to reverse them before deleting if the old status was 'confirmed'
         if voucher.status == 'confirmed':
@@ -97,7 +131,7 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
         # GST auto-calc
         auto_gst = []
         if req.is_invoice and vtype.parent_type in ['Sales', 'Purchase', 'Credit Note', 'Debit Note']:
-            is_sales_type = vtype.parent_type in ['Sales', 'Debit Note'] or vtype.name in ['Sales', 'Debit Note']
+            is_sales_type = stock_leaves(vtype)
             auto_gst = await compute_gst_allocations(
                 company_id=user.company_id,
                 party_ledger_id=req.party_ledger_id,
@@ -108,9 +142,10 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
             )
             
         for idx, inv_req in enumerate(req.inventory_entries):
-            is_inward = True
-            if vtype.parent_type in ['Sales', 'Debit Note']:
-                is_inward = False
+            is_inward = not stock_leaves(vtype)
+            if inv_req.flow_type:
+                # Stock Journal: what is produced arrives, what is consumed leaves
+                is_inward = inv_req.flow_type == 'destination'
 
             # A godown / batch must be this company's (and the batch this item's)
             if inv_req.godown_id is not None:
@@ -125,12 +160,25 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                 if not ok:
                     raise HTTPException(status_code=400, detail="That batch isn't for this item.")
 
+            counted_qty = None
+            if is_physical_stock(vtype):
+                # A stock count: the line becomes the movement that brings the books to the counted figure
+                counted_item = (await db.execute(select(MstStockItem).where(
+                    MstStockItem.stock_item_id == inv_req.stock_item_id, MstStockItem.company_id == user.company_id))).scalars().first()
+                if not counted_item:
+                    raise HTTPException(status_code=400, detail="Stock item not found.")
+                counted_qty = Decimal(str(inv_req.quantity))
+                difference = counted_qty - Decimal(str(counted_item.closing_qty or 0))
+                is_inward = difference >= 0
+                inv_req.quantity = abs(difference)
+
             inv = TrnInventory(
                 voucher_id=voucher.voucher_id,
                 stock_item_id=inv_req.stock_item_id,
                 godown_id=inv_req.godown_id,
                 batch_id=inv_req.batch_id,
                 quantity=inv_req.quantity,
+                actual_quantity=counted_qty,
                 billed_qty=inv_req.billed_qty or inv_req.quantity,
                 rate=inv_req.rate,
                 rate_unit_id=inv_req.rate_unit_id,
@@ -138,7 +186,7 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                 discount_percent=getattr(inv_req, 'discount_percent', Decimal('0.00')),
                 discount_amount=getattr(inv_req, 'discount_amount', Decimal('0.00')),
                 is_inward=is_inward,
-                is_deemed_positive=inv_req.is_deemed_positive,
+                is_deemed_positive=is_inward if (inv_req.flow_type or counted_qty is not None) else inv_req.is_deemed_positive,
                 flow_type=inv_req.flow_type
             )
             db.add(inv)
@@ -178,6 +226,9 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                         item.closing_qty = float(item.closing_qty or 0) + qty
                     else:
                         item.closing_qty = float(item.closing_qty or 0) - qty
+
+    await db.flush()
+    await rebalance_counted_items(db, user.company_id, touched_items)
 
     # Post accounting entries
     for e in req.entries:
@@ -277,7 +328,9 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
         gross_total = items_total + tax_total
         voucher.total_amount = Decimal(str(gross_total))
         
-        is_sales = vtype.parent_type in ['Sales', 'Debit Note'] or vtype.name in ['Sales', 'Debit Note']
+        # The party is debited when stock leaves; the item lines post to a sales or a purchase ledger by
+        # which side the voucher is on (see voucher_kinds)
+        is_sales = stock_leaves(vtype)
         
         # 1. Party ledger entry
         if req.party_ledger_id:
@@ -289,7 +342,7 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
             ))
             
         # 2. Sales / Purchase account entry
-        acct_group_name = 'Sales' if is_sales else 'Purchase'
+        acct_group_name = 'Sales' if is_sales_side(vtype) else 'Purchase'
         acct_res = await db.execute(
             select(MstLedger).join(MstGroup, MstLedger.group_id == MstGroup.group_id)
             .where(MstLedger.company_id == user.company_id, MstGroup.name.ilike(f'%{acct_group_name}%'))
@@ -338,13 +391,138 @@ async def handle_inventory_posting(db, user, voucher, vtype, req, is_update=Fals
                     company_id=user.company_id,
                     party_ledger_id=ledger.ledger_id,
                     voucher_id=voucher.voucher_id,
-                    bill_reference=req.reference_number or voucher.voucher_number,
+                    bill_reference=auto_bill_reference(
+                        voucher.voucher_number, req.reference_number,
+                        await configuration_setting(db, vtype, "use_vch_no_as_bill_ref"),
+                        previous_bill, previous_reference)[:50],
                     bill_date=vdate,
                     due_date=due,
                     bill_amount=amount,
                     settled_amount=0.00,
                     status="Open"
                 ))
+
+def _inventory_total(inventory_entries) -> Decimal:
+    """Value of the item lines. A Stock Journal counts what it produces (or, with nothing produced, what it
+    consumes), not both sides added together."""
+    lines = inventory_entries or []
+    for flow in ("destination", "source"):  # (a Physical Stock count carries no amounts and totals 0)
+        side = [ie.amount for ie in lines if ie.flow_type == flow]
+        if side:
+            return sum(side, Decimal('0.00'))
+    return sum((ie.amount for ie in lines), Decimal('0.00'))
+
+
+async def post_payroll_lines(db: AsyncSession, user: User, voucher: TrnVoucher, vtype, req) -> None:
+    """
+    Stores the lines of an Attendance or Payroll voucher, replacing any it had.
+    A Payroll voucher sent without ledger lines gets them here: each pay head ledger is debited for its
+    earnings (or credited for its deductions) and the payable ledger named as the party takes the net.
+    Pay head amounts are kept signed the way Tally keeps them: an earning negative, a deduction positive.
+    """
+    await db.execute(delete(TrnAttendance).where(TrnAttendance.voucher_id == voucher.voucher_id))
+    await db.execute(delete(TrnPayHead).where(TrnPayHead.voucher_id == voucher.voucher_id))
+
+    if req.attendance_entries:
+        if not is_attendance(vtype):
+            raise HTTPException(status_code=400, detail="Attendance lines belong on an Attendance voucher.")
+        for line in req.attendance_entries:
+            if not line.employee_name.strip() or not line.attendance_type.strip():
+                raise HTTPException(status_code=400, detail="Each attendance line needs an employee and an attendance type.")
+            db.add(TrnAttendance(voucher_id=voucher.voucher_id, employee_name=line.employee_name.strip(),
+                                 attendancetype_name=line.attendance_type.strip(), time_value=line.value, type_value=line.value))
+
+    if req.payroll_entries:
+        if not is_payroll(vtype):
+            raise HTTPException(status_code=400, detail="Pay head lines belong on a Payroll voucher.")
+        if not req.entries and not req.party_ledger_id:
+            raise HTTPException(status_code=400, detail="Choose the ledger the salary is payable to (for example Salary Payable).")
+        head_types = dict((await db.execute(select(MstPayHead.name, MstPayHead.pay_head_type).where(MstPayHead.company_id == user.company_id))).all())
+        by_ledger: dict = {}
+        for line in req.payroll_entries:
+            head_name = line.pay_head_name.strip()
+            ledger = (await db.execute(select(MstLedger).where(MstLedger.company_id == user.company_id, MstLedger.name == head_name))).scalars().first()
+            if not ledger:
+                raise HTTPException(status_code=400, detail=f"Pay head '{head_name}' has no ledger of that name.")
+            is_deduction = "deduction" in (head_types.get(head_name) or "").lower()
+            signed = abs(line.amount) if is_deduction else -abs(line.amount)
+            db.add(TrnPayHead(voucher_id=voucher.voucher_id, category=(line.category or "Primary Cost Category").strip(),
+                              employee_name=line.employee_name.strip(), payhead_name=head_name, amount=signed))
+            by_ledger[ledger.ledger_id] = by_ledger.get(ledger.ledger_id, Decimal("0")) + signed
+        if not req.entries:
+            net = Decimal("0")
+            for ledger_id, signed in by_ledger.items():
+                db.add(TrnAccounting(voucher_id=voucher.voucher_id, ledger_id=ledger_id,
+                                     debit_amount=-signed if signed < 0 else 0, credit_amount=signed if signed > 0 else 0))
+                net += -signed
+            db.add(TrnAccounting(voucher_id=voucher.voucher_id, ledger_id=req.party_ledger_id,
+                                 debit_amount=-net if net < 0 else 0, credit_amount=net if net > 0 else 0))
+            voucher.total_amount = sum((-v for v in by_ledger.values() if v < 0), Decimal("0"))
+    await db.flush()
+
+
+async def payroll_lines_of(db: AsyncSession, voucher_id: int) -> dict:
+    """The attendance and pay head lines of a voucher, in the shape they are sent in (amounts positive)."""
+    attendance = (await db.execute(select(TrnAttendance).where(TrnAttendance.voucher_id == voucher_id).order_by(TrnAttendance.id))).scalars().all()
+    pay = (await db.execute(select(TrnPayHead).where(TrnPayHead.voucher_id == voucher_id).order_by(TrnPayHead.id))).scalars().all()
+    return {
+        "attendance_entries": [{"employee_name": a.employee_name, "attendance_type": a.attendancetype_name,
+                                "value": float(a.time_value or 0)} for a in attendance],
+        "payroll_entries": [{"employee_name": p.employee_name, "pay_head_name": p.payhead_name, "category": p.category,
+                             "amount": float(abs(p.amount or 0)), "is_deduction": (p.amount or 0) > 0} for p in pay],
+    }
+
+
+# --- Tally push ---
+
+def tally_voucher_ident(voucher: TrnVoucher, vtype_name: str) -> dict:
+    """What addresses this voucher in Tally, kept on a queued delete for when the app's copy is gone."""
+    from app.routers.sync import voucher_remote_id
+    return {
+        "company_id": voucher.company_id,
+        "remote_id": voucher_remote_id(voucher),
+        "master_id": voucher.tally_master_id,
+        "guid": voucher.tally_guid,
+        "vtype": vtype_name,
+        "date": (voucher.tally_date or voucher.voucher_date).strftime("%Y%m%d") if voucher.voucher_date else "",
+        "name": f"{vtype_name} #{voucher.voucher_number}",
+    }
+
+
+async def _push_voucher_change(db: AsyncSession, user: User, voucher_id: int, action: str, snapshot: dict = None):
+    """
+    Sends the change, still uncommitted, to Tally and keeps it only if Tally does not refuse it.
+    A refusal rolls the whole request back (the voucher, its lines, stock, bills, the number it took) and
+    raises with Tally's reason; when Tally cannot be reached the change is kept and stays queued, and a new
+    voucher keeps a provisional number until Tally has numbered it.
+    Returns the (synced, status, message) to put on the response.
+    """
+    from app.routers.sync import send_voucher, record_voucher_push
+    from app.services.group_deletion import queue_sync_event
+
+    sync_item = await queue_sync_event(db, user.company_id, "Voucher", voucher_id, action, snapshot)
+    sync_id = sync_item.sync_id
+    result = await send_voucher(db, voucher_id, action)
+    if result["status"] == "REJECTED":
+        await db.rollback()
+        await record_voucher_push(db, voucher_id, None, action, result)
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this voucher: {result['reason']}")
+    await db.commit()
+    clear_company_cache(user.company_id)
+    await record_voucher_push(db, voucher_id, sync_id, action, result)
+    ok = result["status"] == "SUCCESS"
+    message = result["reason"]
+    if ok and result.get("renumbered_from"):
+        message = f"Tally numbered this voucher {result['name'].split('#')[-1]} (it was provisionally {result['renumbered_from']})."
+    elif result["status"] == "NO_RESPONSE" and action == "Create":
+        message = "Tally could not be reached. The voucher is saved with a provisional number and will take Tally's number once it is sent."
+    return (ok, result["status"], message)
+
+
+def attach_tally_result(voucher: TrnVoucher, result):
+    if voucher is not None and result:
+        voucher.tally_synced, voucher.tally_status, voucher.tally_message = result
+
 
 # --- Voucher Endpoints ---
 
@@ -355,7 +533,7 @@ async def create_voucher(
     user: User = Depends(require_permission("vouchers", "create")),
     db: AsyncSession = Depends(get_db)
 ):
-    if not req.entries and not req.inventory_entries:
+    if not req.entries and not req.inventory_entries and not req.attendance_entries and not req.payroll_entries:
         raise HTTPException(status_code=400, detail="Voucher must have at least one entry.")
         
     allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
@@ -371,7 +549,7 @@ async def create_voucher(
     if req.entries and total_debits != total_credits:
         raise HTTPException(status_code=400, detail=f"Voucher is unbalanced. Debits: {total_debits}, Credits: {total_credits}")
         
-    v_total = total_debits if (req.entries and total_debits > 0) else sum((ie.amount for ie in req.inventory_entries or []), Decimal('0.00'))
+    v_total = total_debits if (req.entries and total_debits > 0) else _inventory_total(req.inventory_entries)
 
     # Row lock serializes number allocation per voucher type until commit; populate_existing
     # refreshes next_number even if this voucher type is already in the session's identity map.
@@ -414,28 +592,27 @@ async def create_voucher(
         is_invoice=req.is_invoice,
         original_voucher_id=req.original_voucher_id,
         gst_registration_id=req.gst_registration_id,
+        # The number is the app's guess until Tally has numbered the voucher
+        number_is_provisional=True,
         created_by=user.user_id
     )
     db.add(voucher)
     await db.flush()
     
     await handle_inventory_posting(db, user, voucher, vtype, req)
+    await post_payroll_lines(db, user, voucher, vtype, req)
         
     if matching_rule:
         await approvals_svc.request_approval(db, user, voucher, matching_rule, vtype.name if vtype else "Voucher")
         
     await log_audit(db, user.company_id, user.user_id, "CREATE", "Voucher", voucher.voucher_id)
     
+    tally_result = None
+    voucher_id = voucher.voucher_id
     if final_status == 'confirmed':
-        sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher.voucher_id, action="Create")
-        db.add(sync_item)
-        
-    await db.commit()
-    
-    if final_status == 'confirmed':
-        await db.refresh(sync_item)
-        from app.routers.sync import try_push_voucher_realtime
-        await try_push_voucher_realtime(voucher.voucher_id, sync_item.sync_id, "Create", db)
+        tally_result = await _push_voucher_change(db, user, voucher_id, "Create")
+    else:
+        await db.commit()
     
     final_query = await db.execute(
         select(TrnVoucher)
@@ -448,14 +625,17 @@ async def create_voucher(
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.cost_centre_allocations),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
-        .where(TrnVoucher.voucher_id == voucher.voucher_id)
+        .where(TrnVoucher.voucher_id == voucher_id)
+        .execution_options(populate_existing=True)
     )
     
     if matching_rule:
         response.status_code = status.HTTP_202_ACCEPTED
         
     clear_company_cache(user.company_id)
-    return final_query.scalars().first()
+    created = final_query.scalars().first()
+    attach_tally_result(created, tally_result)
+    return created
 
 from sqlalchemy import delete, text
 
@@ -603,32 +783,26 @@ async def update_voucher(
     # Capture pre-alter snapshot BEFORE applying any updates
     snapshot = await build_voucher_snapshot(voucher, db)
     
+    previous_reference = voucher.reference_number
     voucher.voucher_date = datetime.strptime(req.voucher_date, "%Y-%m-%d").date()
     voucher.reference_number = req.reference_number
+    voucher.narration = req.narration
     total_debits = sum((e.debit_amount for e in req.entries), Decimal('0.00')) if req.entries else Decimal('0.00')
-    voucher.total_amount = total_debits if (req.entries and total_debits > 0) else sum((ie.amount for ie in req.inventory_entries or []), Decimal('0.00'))
+    voucher.total_amount = total_debits if (req.entries and total_debits > 0) else _inventory_total(req.inventory_entries)
     voucher.party_ledger_id = req.party_ledger_id
     voucher.is_invoice = req.is_invoice
     voucher.original_voucher_id = req.original_voucher_id
     voucher.gst_registration_id = req.gst_registration_id
     
-    await handle_inventory_posting(db, user, voucher, vtype, req, is_update=True)
+    await handle_inventory_posting(db, user, voucher, vtype, req, is_update=True, previous_reference=previous_reference)
+    await post_payroll_lines(db, user, voucher, vtype, req)
     
     await log_audit(db, user.company_id, user.user_id, "UPDATE", "Voucher", voucher.voucher_id)
     
+    tally_result = None
     if voucher.status == 'confirmed':
-        sync_item = SyncQueue(
-            company_id=user.company_id,
-            record_type="Voucher",
-            record_id=voucher.voucher_id,
-            action="Alter",
-            snapshot_data=snapshot
-        )
-        db.add(sync_item)
-        await db.commit()
-        await db.refresh(sync_item)
-        from app.routers.sync import try_push_voucher_realtime
-        await try_push_voucher_realtime(voucher.voucher_id, sync_item.sync_id, "Alter", db)
+        await db.flush()
+        tally_result = await _push_voucher_change(db, user, voucher_id, "Alter", snapshot)
     else:
         await db.commit()
     
@@ -644,9 +818,12 @@ async def update_voucher(
             selectinload(TrnVoucher.entries).selectinload(TrnAccounting.cost_centre_allocations),
             selectinload(TrnVoucher.inventory_entries).selectinload(TrnInventory.accounting_allocations)
         )
-        .where(TrnVoucher.voucher_id == voucher.voucher_id)
+        .where(TrnVoucher.voucher_id == voucher_id)
+        .execution_options(populate_existing=True)
     )
-    return final_query.scalars().first()
+    updated = final_query.scalars().first()
+    attach_tally_result(updated, tally_result)
+    return updated
 
 @router.post("/{voucher_id}/rollback")
 async def rollback_voucher_alter(
@@ -845,24 +1022,25 @@ async def retry_voucher_sync(
     if allowed_ids is not None and voucher.voucher_type_id not in allowed_ids:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to modify vouchers of this type.")
         
-    sq_query = (
-        select(SyncQueue)
-        .where(
-            SyncQueue.company_id == user.company_id,
-            SyncQueue.record_type == "Voucher",
-            SyncQueue.record_id == voucher_id
-        )
+    # The row still waiting for this voucher, else a fresh one for the voucher as it is now. A processed row
+    # or a delete is never replayed: row ids get reused, and the last row for this id may be the delete of a
+    # voucher that had the id before.
+    from app.services.group_deletion import queue_sync_event
+    sync_item = (await db.execute(
+        select(SyncQueue).where(
+            SyncQueue.company_id == user.company_id, SyncQueue.record_type == "Voucher", SyncQueue.record_id == voucher_id,
+            SyncQueue.is_processed == False, SyncQueue.action != "Delete")
         .order_by(SyncQueue.sync_id.desc())
-    )
-    sync_item = (await db.execute(sq_query)).scalars().first()
+    )).scalars().first()
     if not sync_item:
-        sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action="Alter")
-        db.add(sync_item)
+        sync_item = await queue_sync_event(db, user.company_id, "Voucher", voucher_id,
+                                           "Cancel" if (voucher.is_cancelled or voucher.status == "cancelled") else "Alter")
         await db.commit()
-        await db.refresh(sync_item)
-        
+    action = sync_item.action
+
     from app.routers.sync import try_push_voucher_realtime
-    tally_ok, tally_status, tally_err = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, sync_item.action, db)
+    tally_ok, tally_status, tally_err = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, action, db)
+    clear_company_cache(user.company_id)
     return {
         "voucher_id": voucher_id,
         "sync_id": sync_item.sync_id,
@@ -889,6 +1067,12 @@ async def delete_voucher(
             detail="You do not have permission to delete vouchers of this type."
         )
         
+    from app.routers.sync import send_voucher, record_voucher_push
+    from app.services.group_deletion import queue_sync_event
+
+    vtype = (await db.execute(select(MstVoucherType).where(MstVoucherType.voucher_type_id == voucher.voucher_type_id))).scalars().first()
+    ident = tally_voucher_ident(voucher, vtype.name if vtype else "Journal")
+
     # Reverse stock if confirmed
     if voucher.status == 'confirmed':
         old_inv_stmt = select(TrnInventory).where(TrnInventory.voucher_id == voucher.voucher_id)
@@ -915,37 +1099,62 @@ async def delete_voucher(
         "total_amount": float(voucher.total_amount or 0),
         "status": voucher.status,
         "tally_guid": voucher.tally_guid,
-        "tally_alter_id": voucher.tally_alter_id
+        "tally_alter_id": voucher.tally_alter_id,
+        "tally_voucher": ident
     }
     
     del_audit = DeletedRecordAudit(
         company_id=user.company_id,
         entity_type="Voucher",
         record_id=voucher_id,
-        tally_guid=voucher.tally_guid or f"MYTALLY-VCH-{voucher_id}",
+        tally_guid=voucher.tally_guid or ident["remote_id"],
         entity_identifier=f"Voucher #{voucher.voucher_number}",
         deleted_by_user_id=user.user_id,
         tally_sync_status="PENDING",
         snapshot_data=snapshot
     )
     db.add(del_audit)
-    
-    sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action="Delete")
-    db.add(sync_item)
-    await db.flush()
 
-    from app.routers.sync import try_push_voucher_realtime
-    tally_ok, tally_status, tally_err = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Delete", db)
+    # Only vouchers that were sent, or are waiting to be sent, have anything to remove in Tally
+    tally_result = (True, "NOT_SENT", None)
+    sync_id = None
+    result = None
+    if voucher.status in ('confirmed', 'cancelled') or voucher.tally_master_id or voucher.tally_guid or voucher.tally_remote_id:
+        # The identifiers go on the queue row: a delete retried later no longer has the voucher to read them from
+        sync_item = await queue_sync_event(db, user.company_id, "Voucher", voucher_id, "Delete", {"tally_voucher": ident})
+        sync_id = sync_item.sync_id
+        result = await send_voucher(db, voucher_id, "Delete", ident)
+        if result["status"] == "REJECTED":
+            # Tally still has the voucher, so the app keeps it too
+            await db.rollback()
+            await record_voucher_push(db, voucher_id, None, "Delete", result)
+            raise HTTPException(status_code=409, detail=f"Tally did not delete this voucher: {result['reason']}")
+        ok = result["status"] in ("SUCCESS", "ALREADY_ABSENT")
+        message = result["reason"]
+        if result["status"] == "NO_RESPONSE":
+            message = "Tally could not be reached. The voucher is deleted here and will be deleted in Tally when it is back."
+        tally_result = (ok, result["status"], message)
+    else:
+        del_audit.tally_sync_status = "SYNCED_TO_TALLY"
 
+    from app.services.stock_counts import rebalance_counted_items
+    deleted_items = await _voucher_item_ids(db, voucher_id)
+    # Attendance and payroll lines hang off the voucher by id only
+    await db.execute(delete(TrnAttendance).where(TrnAttendance.voucher_id == voucher_id))
+    await db.execute(delete(TrnPayHead).where(TrnPayHead.voucher_id == voucher_id))
     await db.delete(voucher)
+    await db.flush()
+    await rebalance_counted_items(db, user.company_id, deleted_items)
     await log_audit(db, user.company_id, user.user_id, "DELETE", "Voucher", voucher_id)
     await db.commit()
     clear_company_cache(user.company_id)
+    if result is not None:
+        await record_voucher_push(db, voucher_id, sync_id, "Delete", result)
     return {
         "detail": "Voucher deleted successfully in MyTally.",
-        "tally_synced": tally_ok,
-        "tally_status": tally_status,
-        "tally_message": tally_err
+        "tally_synced": tally_result[0],
+        "tally_status": tally_result[1],
+        "tally_message": tally_result[2]
     }
 
 @router.post("/{voucher_id}/cancel")
@@ -988,14 +1197,12 @@ async def cancel_voucher(
     voucher.status = 'cancelled'
     voucher.is_cancelled = True
     
-    sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action="Cancel")
-    db.add(sync_item)
     await log_audit(db, user.company_id, user.user_id, "CANCEL", "Voucher", voucher_id)
-    await db.commit()
-    await db.refresh(sync_item)
-    
-    from app.routers.sync import try_push_voucher_realtime
-    tally_ok, tally_status, tally_err = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Cancel", db)
+    await db.flush()
+    from app.services.stock_counts import rebalance_counted_items
+    await rebalance_counted_items(db, user.company_id, await _voucher_item_ids(db, voucher_id))
+    # A cancel Tally refuses is undone here (raises); one Tally cannot be reached for stays queued
+    tally_ok, tally_status, tally_err = await _push_voucher_change(db, user, voucher_id, "Cancel")
     clear_company_cache(user.company_id)
     return {
         "detail": "Voucher cancelled successfully in MyTally.",
@@ -1049,16 +1256,13 @@ async def update_voucher_status(
     voucher.is_cancelled = (status_val == 'cancelled')
     
     action_type = "Cancel" if status_val == 'cancelled' else "Alter"
-    sync_item = SyncQueue(company_id=user.company_id, record_type="Voucher", record_id=voucher_id, action=action_type)
-    db.add(sync_item)
     await log_audit(db, user.company_id, user.user_id, "STATUS_UPDATE", "Voucher", voucher_id)
-    await db.commit()
-    await db.refresh(sync_item)
-    
-    from app.routers.sync import try_push_voucher_realtime
-    await try_push_voucher_realtime(voucher_id, sync_item.sync_id, action_type, db)
+    await db.flush()
+    from app.services.stock_counts import rebalance_counted_items
+    await rebalance_counted_items(db, user.company_id, await _voucher_item_ids(db, voucher_id))
+    tally_ok, tally_status, tally_err = await _push_voucher_change(db, user, voucher_id, action_type)
     clear_company_cache(user.company_id)
-    return {"detail": f"Status updated to {status_val}"}
+    return {"detail": f"Status updated to {status_val}", "tally_synced": tally_ok, "tally_status": tally_status, "tally_message": tally_err}
 
 def _resolve_party_and_amount(entries):
     if not entries: return "Cash Account", 0.0, None
@@ -1161,6 +1365,7 @@ async def get_vouchers(
             "date": str(v.voucher_date),
             "voucher_type": v.voucher_type.name if v.voucher_type else "Unknown",
             "voucher_number": v.voucher_number,
+            "number_is_provisional": bool(v.number_is_provisional),
             "reference_number": v.reference_number,
             "narration": v.narration,
             "party_name": resolved_party,
@@ -1188,7 +1393,7 @@ async def get_voucher_detail(
     user: User = Depends(require_voucher_read_permission),
     db: AsyncSession = Depends(get_db)
 ):
-    cache_key = f"voucher_detail_v2_{voucher_id}"  # v2: party_gstin and party_details
+    cache_key = f"voucher_detail_v3_{voucher_id}"  # v3: number_is_provisional and tally_master_id
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         allowed_ids = await get_user_allowed_voucher_type_ids(user.user_id, db)
@@ -1322,6 +1527,11 @@ async def get_voucher_detail(
             "amount": amt,
             "godown_id": inv.godown_id,
             "batch_id": inv.batch_id,
+            # Stock Journal: 'source' (consumed) or 'destination' (produced)
+            "flow_type": inv.flow_type,
+            "is_inward": inv.is_inward,
+            # Physical Stock: the quantity counted (quantity is then the adjustment it made)
+            "counted_quantity": float(inv.actual_quantity) if inv.actual_quantity is not None else None,
         }
         inventory.append(inv_dict)
         inventory_entries.append(inv_dict)
@@ -1397,6 +1607,8 @@ async def get_voucher_detail(
         "voucher_type": voucher.voucher_type.name if voucher.voucher_type else "Unknown",
         "voucher_type_id": voucher.voucher_type_id,
         "voucher_number": voucher.voucher_number,
+        "number_is_provisional": bool(voucher.number_is_provisional),
+        "tally_master_id": voucher.tally_master_id,
         "reference_number": voucher.reference_number,
         "narration": voucher.narration,
         "status": voucher.status,
@@ -1415,6 +1627,7 @@ async def get_voucher_detail(
         "accounts": entries,
         "inventory": inventory,
         "inventory_entries": inventory_entries,
+        **(await payroll_lines_of(db, voucher.voucher_id)),
         "is_inventory_voucher": len(inventory) > 0,
         "sync_status": sync_status,
         "tally_error_message": sync_error,
