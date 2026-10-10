@@ -11,39 +11,48 @@ The **SnehDistribuors Desktop Sync Agent** is a modern Windows desktop applicati
    - Live status indicators for both **TallyPrime** and **Cloud ERP**.
    - Metric cards displaying synced **Vouchers**, **Ledgers**, **Stock Items**, and **Errors**.
    - Real-time scrolling activity log console with color-coded events.
-   - Quick action controls: **🔄 Sync Delta**, **⚡ Sync All (Full Baseline)**, **⏸ Pause / Resume**, **⚙ Settings**, and **📥 Minimize to System Tray**.
+   - Quick action controls: **🔄 Sync Delta**, **⚡ Sync All (Full Baseline)**, **⏸ Pause / Resume**, **🏢 Companies**, **⚙ Settings**, and **📥 Minimize to System Tray**.
 
-2. **Single-Page Setup & Login**:
-   - Simple, unified setup view: enter Cloud Server URL, Email, Password, and Tally host.
-   - **🔍 Auto-Detect Company**: 1-click discovery that queries Tally XML server and automatically detects open company names and release version.
+2. **Single-Page Setup: Sign Up or Sign This PC In**:
+   - Enter the Cloud Server URL and the Tally host, with the company open in TallyPrime.
+   - **New business**: press **New here? Create an account for your business**, fill in your details, press **Email me a code**, and enter the code. This creates the account, its first admin, this PC's device and the first company (the one open in Tally) in one step.
+   - **Existing account**: enter the email and password of someone who holds the **Manage sync agent** permission (admins do by default) and press **🚀 Connect & Start Sync**. Everyone else joins the business by invitation from the web app, not from the agent.
+   - Either way the PC is signed in **as a device**: it gets its own token and stores no password afterwards. The PC is listed in the web app under Admin → Sync agent & team, where an admin can sign it out.
+   - **🔍 Auto-Detect**: 1-click discovery that queries Tally XML server and automatically detects open company names and release version.
    - **🧪 Test Connection**: Live diagnostic test verifying connectivity to both Tally and Cloud before saving.
 
 3. **LiveKeeping-Style Connection Settings**:
    - Customize Tally host, port, cloud backend URL, and sync intervals.
    - Auto-discover Tally application and data paths.
    - Toggle **"Always Sync All Records (Bypass Tally Alter ID Filter)"** for complete baseline synchronizations.
-   - Switch user / re-login with ease.
+   - **🔐 Re-login / Switch User** returns to Setup to sign the PC in again.
 
 4. **System Tray & Windows Boot Auto-Start**:
    - Minimizes cleanly to the Windows system tray (`pystray`) for uninterrupted background syncing.
    - System tray right-click menu: **Open**, **Sync Delta Now**, **Sync All (Full Refresh)**, **Pause / Resume**, and **Exit**.
    - Toggle switch in Settings or 1-click batch script to automatically start with Windows boot.
 
-5. **Automatic Company Switch Detection**:
-   - Dynamically detects when users open, close, or switch companies inside TallyPrime and adapts the sync target automatically without restarting.
+5. **Several Companies, Each Bound to Its Tally Identity**:
+   - One agent syncs every company linked to this PC. **🏢 Companies** lists them; a company open in Tally but not yet linked shows as "Open in Tally · not synced" with a **Link** button, and **Unlink** stops syncing one from this PC (its data in the app stays).
+   - Each company is tied to its Tally GUID, not its name, and every request names that GUID. Opening, closing or switching companies in TallyPrime never redirects a sync to a different company: a linked company that is not open is skipped ("is not open in Tally") while the others keep syncing.
+   - A company is synced from one PC at a time. Linking one that another PC holds asks **"Move sync to this PC?"** first.
+   - A copy or restored backup of a synced company is refused as "a different copy of the books". If two companies with the same name are open, neither is synced until one is closed.
 
 6. **Bidirectional Synchronization & Incremental Optimization**:
    - **Outbound (Cloud $\to$ Tally)**: Pulls pending creations and edits (Ledgers, Vouchers, Stock Items) from the cloud queue and injects them directly into Tally.
    - **Inbound Delta (Tally $\to$ Cloud)**: Periodically pulls incremental changes (`ALTERID > min_alter_id`) across Ledgers, Vouchers, and Stock Items.
    - **Empty Payload Filtering**: Unchanged collections returning empty `<DATA><COLLECTION></COLLECTION></DATA>` are automatically discarded, preventing redundant network calls to `/sync/inbound`.
    - **Sync All Option**: Users can trigger an instant full baseline sync anytime from the Dashboard, Settings, Tray Menu, or CLI (`--sync-all`).
+   - **Full Sync in Date Ranges**: A company with 1,000 vouchers or more does its full sync in date ranges, a part each cycle (log: `Full sync of N vouchers planned in M date ranges`). Progress is saved, so a restart or a failed range carries on from where it stopped. If Tally does not return vouchers by date range, the agent falls back to one export.
 
-7. **Secure Credential Storage & Autonomous Token Refresh**:
+7. **Secure Credential Storage & Sign-In State**:
+   - Once the PC is signed in as a device, the agent uses its device token and needs no password. An older install keeps syncing on its saved per-person login until the PC is signed in from Setup; a server with `REQUIRE_AGENT_DEVICE_SIGNIN` on refuses that older login.
+   - If the server signs this PC out on purpose (an admin did it, or the person who signed it in was deactivated), the agent stops and says "This PC is signed out of the sync agent". It does not sign itself back in, also after a restart: sign in again from Setup.
    - Passwords and tokens are stored in the **OS credential vault** via `keyring` (Windows Credential Manager / DPAPI, macOS Keychain). `agent_config.json` only holds `keyring:<account>` references, so the file contains no secrets.
    - If no vault is available, secrets are encrypted on disk with Fernet (AES-128-CBC + HMAC-SHA256) using a machine-bound PBKDF2 key. If `cryptography` is missing too, secrets are **not saved at all**. There is no plaintext fallback.
    - Older configs with plaintext or file-encrypted secrets are migrated into the vault automatically the next time the agent starts.
    - The config defaults to `agent_config.json` next to the script or `.exe` (not the current directory). It is gitignored, and the `.exe` build no longer bundles the build machine's copy. See `agent_config.example.json` for the shape.
-   - If an access token expires (HTTP 401), the agent re-authenticates in memory and saves the fresh token back to secure storage.
+   - On the older per-person login, an expired access token (HTTP 401) makes the agent re-authenticate in memory and save the fresh token back to secure storage.
 
 8. **Automated Log Rotation**:
    - System logs (`agent.log` and `tally_traffic.log`) automatically rotate at 5 MB (retaining up to 3 backup archives) to prevent unbounded disk usage.
@@ -56,9 +65,12 @@ The **SnehDistribuors Desktop Sync Agent** is a modern Windows desktop applicati
 ```bash
 python gui_app.py
 ```
-*(On first launch, enter your Cloud URL and login credentials. Once connected, settings are saved to `agent_config.json` and the dashboard appears automatically.)*
+*(On first launch, open the company in TallyPrime, enter your Cloud URL, then either create an account or sign the PC in with an admin's email and password. Once connected, settings are saved to `agent_config.json` and the dashboard appears automatically.)*
+
+The company's name in Tally must match its name in the app the first time an existing company is linked, otherwise a second company is added.
 
 ### 2. Run in Headless CLI Mode (Optional)
+Sign the PC in from the GUI first; the headless agent reuses that sign-in.
 ```bash
 # Run continuous background daemon in terminal
 python agent.py
