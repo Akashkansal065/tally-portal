@@ -17,11 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.agent_auth import (
-    agent_device, can_manage_sync_agent, grant_sync_agent, new_device_token, now_utc,
-)
+    agent_device, can_manage_sync_agent, grant_sync_agent, new_device_token, )
 from app.core.account_roles import create_default_roles
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.datetime_utils import get_ist_now
 from app.core.permissions import get_current_user, invalidate_auth_cache
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash, verify_password
@@ -113,7 +113,7 @@ async def _register_device(db: AsyncSession, account: Account, user: User, devic
     device.name = device_in.device_name or device.name
     device.registered_by_user_id = user.user_id
     device.revoked_at = None
-    device.last_seen_at = now_utc()
+    device.last_seen_at = get_ist_now()
     await db.flush()
     return device, token
 
@@ -167,7 +167,7 @@ async def _link_company(db: AsyncSession, account: Account, device: AgentDevice,
                 status_code=status.HTTP_409_CONFLICT, headers={"X-Sync-Reason": "linked_to_another_device"},
                 detail=f"'{company.name}' is already synced from another PC ({other or 'unnamed'}). Move it to this PC?")
         current.is_active = None
-        current.unlinked_at = now_utc()
+        current.unlinked_at = get_ist_now()
         await db.flush()
         current = None
     if current is None:
@@ -221,14 +221,14 @@ async def signup(request: Request, response: Response, req: SignupRequest, db: A
     code = f"{secrets.randbelow(1_000_000):06d}"
     pending = (await db.execute(select(SignupVerification).where(SignupVerification.email == email))).scalars().first()
     if pending is None:
-        pending = SignupVerification(email=email, code_hash="", payload={}, expires_at=now_utc())
+        pending = SignupVerification(email=email, code_hash="", payload={}, expires_at=get_ist_now())
         db.add(pending)
     pending.code_hash = _code_hash(email, code)
     pending.attempts = 0
-    pending.expires_at = now_utc() + timedelta(minutes=CODE_TTL_MINUTES)
+    pending.expires_at = get_ist_now() + timedelta(minutes=CODE_TTL_MINUTES)
     pending.payload = {
         "full_name": req.full_name.strip(), "phone": req.phone.strip(), "business_name": req.business_name.strip(),
-        "password_hash": get_password_hash(req.password), "terms_accepted_at": now_utc().isoformat(),
+        "password_hash": get_password_hash(req.password), "terms_accepted_at": get_ist_now().isoformat(),
     }
     sent = await messaging.send_email(
         email, f"{code} is your MyTally verification code",
@@ -252,7 +252,7 @@ async def signup_verify(request: Request, response: Response, req: SignupVerifyR
     pending = (await db.execute(
         select(SignupVerification).where(SignupVerification.email == email).with_for_update())).scalars().first()
     wrong = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That code is wrong or has expired. Ask for a new one.")
-    if pending is None or pending.expires_at < now_utc() or pending.attempts >= MAX_CODE_ATTEMPTS:
+    if pending is None or pending.expires_at < get_ist_now() or pending.attempts >= MAX_CODE_ATTEMPTS:
         raise wrong
     if not secrets.compare_digest(pending.code_hash, _code_hash(email, req.code)):
         pending.attempts += 1
@@ -284,7 +284,7 @@ async def signup_verify(request: Request, response: Response, req: SignupVerifyR
     await db.flush()
     user = User(account_id=account.account_id, company_id=company.company_id, username=details["full_name"][:50],
                 email=email, phone=details["phone"], password_hash=details["password_hash"], role_id=admin_role.role_id,
-                is_active=True, email_verified_at=now_utc(), ledger_scope="full", stock_scope="full")
+                is_active=True, email_verified_at=get_ist_now(), ledger_scope="full", stock_scope="full")
     db.add(user)
     await db.flush()
     account.created_by_user_id = user.user_id
@@ -375,6 +375,6 @@ async def unlink_company(request: Request, req: UnlinkRequest, user: User = Depe
                AgentCompanyLink.device_id == device.device_id, AgentCompanyLink.is_active == True))).scalars().first()  # noqa: E712
     if link is not None:
         link.is_active = None
-        link.unlinked_at = now_utc()
+        link.unlinked_at = get_ist_now()
         await db.commit()
     return {"unlinked": link is not None}

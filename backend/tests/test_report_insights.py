@@ -140,12 +140,12 @@ def test_outstanding_screen_uses_the_shared_ageing(world):
     assert data["default_credit_days"] == 30
 
 
-def test_monthly_target_across_companies(world):
+def test_monthly_target_is_for_the_current_company_only(world):
     a, z = world["books"], world["beta_books"]
     amar, beta_shop = a.customer("Amar"), z.customer("Beta Shop")
     a.sale(amar, days_ago=10, amount=118_000, net=100_000)       # Oct 5: 1 L before GST
     a.credit_note(amar, days_ago=5, amount=10_000)                # returns reduce net sales
-    z.sale(beta_shop, days_ago=2, amount=59_000, net=50_000)      # other company counts too
+    z.sale(beta_shop, days_ago=2, amount=59_000, net=50_000)      # another company: never added in
     a.sale(amar, days_ago=20, amount=1_000_000)                   # September: not this month
 
     client = world["client"]
@@ -155,12 +155,20 @@ def test_monthly_target_across_companies(world):
     assert client.put("/reports/settings", json={"monthly_sales_target": 1_000_000}, headers=bearer(owner)).status_code == 200
 
     t = client.get("/reports/sales-target", headers=bearer(owner)).json()
-    assert t["month"] == "2026-10" and t["sales"] == 140_000
+    assert t["month"] == "2026-10" and t["sales"] == 90_000 and t["target"] == 1_000_000
     assert t["days_elapsed"] == 15 and t["days_left"] == 17           # all 7 days count; today included
-    assert t["needed_per_day"] == round(860_000 / 17, 2)
-    assert t["projected"] == round(140_000 / 15 * 31, 2) and t["on_track"] is False
-    assert {c["name"]: c["sales"] for c in t["companies"]} == {"Alpha": 90_000, "Beta": 50_000}
-    assert t["daily"][-1]["cumulative"] == 140_000 and len(t["daily"]) == 15
+    assert t["needed_per_day"] == round(910_000 / 17, 2)
+    assert t["projected"] == round(90_000 / 15 * 31, 2) and t["on_track"] is False
+    assert "companies" not in t
+    assert t["daily"][-1]["cumulative"] == 90_000 and len(t["daily"]) == 15
+
+    # The other company has its own sales and its own target; setting one never moves the other
+    in_beta = bearer(owner, {"X-Company-ID": str(world["beta"].company_id)})
+    other = client.get("/reports/sales-target", headers=in_beta).json()
+    assert other["sales"] == 50_000 and other["target"] == 2_000_000      # the default: Alpha's target is not Beta's
+    assert client.put("/reports/settings", json={"monthly_sales_target": 300_000}, headers=in_beta).status_code == 200
+    assert client.get("/reports/sales-target", headers=in_beta).json()["target"] == 300_000
+    assert client.get("/reports/sales-target", headers=bearer(owner)).json()["target"] == 1_000_000
 
 
 def test_watchlist_flags_customers_buying_less_or_later(world):

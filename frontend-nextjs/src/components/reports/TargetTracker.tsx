@@ -26,7 +26,7 @@ const monthName = (month: string) =>
   new Date(`${month}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'long' })
 
 /**
- * Home's first card: this month's net sales (before GST, all companies) against the monthly target, what's
+ * Home's first card: this month's net sales (before GST, this company) against its monthly target, what's
  * needed per remaining day, and where the month ends at the current pace. Admins can change the target here.
  */
 export function TargetTracker() {
@@ -79,7 +79,6 @@ export function TargetTracker() {
 
   const pct = data.achieved_pct ?? 0
   const short = data.on_track === false
-  const multiCompany = data.companies.length > 1
 
   return (
     <section aria-labelledby="target-title" className="rounded-2xl border border-border bg-card p-4 shadow-sm">
@@ -88,7 +87,6 @@ export function TargetTracker() {
           <h2 id="target-title" className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-muted-foreground">
             <Target className="h-3.5 w-3.5" aria-hidden="true" />
             {monthName(data.month)} target
-            {multiCompany && <span className="normal-case tracking-normal font-semibold">· all companies</span>}
           </h2>
           <p className="mt-1 text-2xl font-black tracking-tight tabular-nums">
             {rupees(data.sales)}
@@ -161,18 +159,13 @@ export function TargetTracker() {
         </div>
       )}
 
-      {multiCompany && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {data.companies.map(c => `${c.name} ${rupeesShort(c.sales)}`).join(' · ')}
-        </p>
-      )}
       <p className="mt-1 text-xs text-muted-foreground">Net sales before GST, after returns.</p>
 
       <BottomSheet
         open={editing}
         onOpenChange={setEditing}
         title="Monthly sales target"
-        description="Net sales before GST, across all companies. Applies to every month."
+        description="Net sales before GST for this company. Applies to every month."
         footer={
           <button
             type="button"

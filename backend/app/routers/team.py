@@ -12,11 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.agent_auth import (
-    can_manage_sync_agent, grant_sync_agent, hash_token, now_utc, revoke_sync_agent, sync_agent_holders,
+    can_manage_sync_agent, grant_sync_agent, hash_token, revoke_sync_agent, sync_agent_holders,
 )
 from app.core.account_roles import role_in_account
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.datetime_utils import get_ist_now, to_ist_iso
 from app.core.permissions import ADMIN_ROLE_NAMES
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash
@@ -77,8 +78,8 @@ async def _check_user_limit(db: AsyncSession, account: Account) -> None:
 def _invite_dict(invite: UserInvite) -> dict:
     return {
         "invite_id": invite.invite_id, "email": invite.email, "phone": invite.phone, "role_id": invite.role_id,
-        "company_ids": invite.company_ids or [], "expires_at": invite.expires_at.isoformat(),
-        "status": "accepted" if invite.accepted_at else "open" if invite.is_open and invite.expires_at > now_utc() else "closed",
+        "company_ids": invite.company_ids or [], "expires_at": to_ist_iso(invite.expires_at),
+        "status": "accepted" if invite.accepted_at else "open" if invite.is_open and invite.expires_at > get_ist_now() else "closed",
     }
 
 
@@ -109,7 +110,7 @@ async def create_invite(payload: InviteCreate, db: AsyncSession = Depends(get_db
     token = secrets.token_urlsafe(32)
     invite = UserInvite(account_id=account.account_id, email=email, phone=payload.phone, role_id=payload.role_id,
                         company_ids=sorted(own), token_hash=hash_token(token), is_open=True,
-                        expires_at=now_utc() + timedelta(days=INVITE_TTL_DAYS), invited_by_user_id=admin.user_id)
+                        expires_at=get_ist_now() + timedelta(days=INVITE_TTL_DAYS), invited_by_user_id=admin.user_id)
     db.add(invite)
     await db.commit()
 
@@ -144,7 +145,7 @@ async def cancel_invite(invite_id: int, db: AsyncSession = Depends(get_db), admi
 
 async def _open_invite(db: AsyncSession, token: str) -> UserInvite:
     invite = (await db.execute(select(UserInvite).where(UserInvite.token_hash == hash_token(token or "")).with_for_update())).scalars().first()
-    if invite is None or not invite.is_open or invite.accepted_at is not None or invite.expires_at < now_utc():
+    if invite is None or not invite.is_open or invite.accepted_at is not None or invite.expires_at < get_ist_now():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="This invitation is not valid any more. Ask your admin for a new one.")
     return invite
@@ -178,12 +179,12 @@ async def accept_invite(request: Request, response: Response, payload: InviteAcc
     is_admin = bool(role and role.name.lower() in ADMIN_ROLE_NAMES)
     user = User(account_id=invite.account_id, company_id=companies[0], username=payload.username.strip(), email=invite.email,
                 phone=invite.phone, password_hash=get_password_hash(payload.password), role_id=invite.role_id, is_active=True,
-                email_verified_at=now_utc(), ledger_scope="full" if is_admin else "none", stock_scope="full" if is_admin else "none")
+                email_verified_at=get_ist_now(), ledger_scope="full" if is_admin else "none", stock_scope="full" if is_admin else "none")
     db.add(user)
     await db.flush()
     for company_id in companies:
         db.add(UserCompanyAccess(user_id=user.user_id, company_id=company_id))
-    invite.accepted_at = now_utc()
+    invite.accepted_at = get_ist_now()
     invite.is_open = None
     await db.commit()
     return {"detail": "Your account is ready. Sign in with your email and password.", "email": user.email}
@@ -244,8 +245,8 @@ async def list_agent_devices(db: AsyncSession = Depends(get_db), admin: User = D
         linked.setdefault(device_id, []).append({"company_id": company_id, "name": name})
     return [
         {"device_id": d.device_id, "name": d.name, "signed_in": d.revoked_at is None,
-         "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
-         "revoked_at": d.revoked_at.isoformat() if d.revoked_at else None, "companies": linked.get(d.device_id, [])}
+         "last_seen_at": to_ist_iso(d.last_seen_at),
+         "revoked_at": to_ist_iso(d.revoked_at), "companies": linked.get(d.device_id, [])}
         for d in devices
     ]
 
@@ -261,10 +262,10 @@ async def revoke_agent_device(device_id: int, db: AsyncSession = Depends(get_db)
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PC not found.")
     if device.revoked_at is None:
-        device.revoked_at = now_utc()   # the token hash is kept, so the PC is told it was signed out, not that it is unknown
+        device.revoked_at = get_ist_now()   # the token hash is kept, so the PC is told it was signed out, not that it is unknown
     for link in (await db.execute(select(AgentCompanyLink).where(
             AgentCompanyLink.device_id == device.device_id, AgentCompanyLink.is_active == True))).scalars():  # noqa: E712
         link.is_active = None
-        link.unlinked_at = now_utc()
+        link.unlinked_at = get_ist_now()
     await db.commit()
     return {"device_id": device.device_id, "revoked": True}

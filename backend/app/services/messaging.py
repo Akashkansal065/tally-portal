@@ -50,6 +50,10 @@ def whatsapp_number(value: Optional[str]) -> Optional[str]:
 Attachment = Tuple[str, bytes, str]
 
 
+BAD_LOGIN = ("Gmail rejected the login. SMTP_PASS must be a 16-letter app password made for SMTP_USER at "
+             "myaccount.google.com/apppasswords (2-Step Verification must be on); the normal Gmail password does not work.")
+
+
 def _send_email_blocking(to: str, subject: str, text: str, html: Optional[str], from_name: str,
                          attachments: Sequence[Attachment] = ()) -> SendResult:
     message = EmailMessage()
@@ -67,13 +71,17 @@ def _send_email_blocking(to: str, subject: str, text: str, html: Optional[str], 
     try:
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30) as smtp:
             smtp.starttls()
-            smtp.login(settings.SMTP_USER, settings.SMTP_PASS)
+            try:
+                smtp.login(settings.SMTP_USER, settings.SMTP_PASS)
+            except smtplib.SMTPServerDisconnected:
+                # Gmail hangs up instead of answering when it will not accept the password at all
+                return SendResult(False, error=BAD_LOGIN)
             refused = smtp.send_message(message)
         if refused:
             return SendResult(False, error=f"Refused by Gmail: {', '.join(refused)}")
         return SendResult(True, provider_message_id=message_id.strip("<>"))
     except smtplib.SMTPAuthenticationError:
-        return SendResult(False, error="Gmail rejected the login. SMTP_PASS must be an app password for SMTP_USER.")
+        return SendResult(False, error=BAD_LOGIN)
     except (smtplib.SMTPException, OSError) as e:
         return SendResult(False, error=f"Email not sent: {type(e).__name__}: {str(e)[:200]}")
 

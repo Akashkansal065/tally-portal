@@ -140,6 +140,6 @@ def test_sync_status_lists_only_the_callers_companies_with_pending_pushes(harnes
 
     assert set(status) == {"Alpha", "Beta"}                              # never another account's company
     assert (status["Alpha"]["freshness"], status["Alpha"]["agent_online"], status["Alpha"]["pending_to_tally"]) == ("live", True, 1)
-    assert status["Alpha"]["last_synced_at"].endswith("Z") and status["Alpha"]["is_current"] is True
+    assert status["Alpha"]["last_synced_at"].endswith("+05:30") and status["Alpha"]["is_current"] is True
     assert (status["Beta"]["freshness"], status["Beta"]["last_synced_at"], status["Beta"]["pending_to_tally"]) == ("never", None, 0)
     assert client.get("/sync/health", headers=headers).json()["freshness"] == "live"

@@ -1104,12 +1104,13 @@ async def report_sync_state(
     Tally. This is where the app's "Last synced" comes from: last_success_at moves only when ok is true.
     A company the caller is not the one syncing is skipped, not an error, so one stale entry cannot lose the rest.
     """
-    from app.core.agent_auth import device_company, now_utc
+    from app.core.agent_auth import device_company
+    from app.core.datetime_utils import get_ist_now
     from app.core.permissions import company_for_tally_guid
     from app.models.portal_core import CompanySyncState
     device = agent_device(request)
     recorded, skipped = 0, []
-    now = now_utc()
+    now = get_ist_now()
     for report in reports:
         guid = report.tally_guid.strip()
         try:

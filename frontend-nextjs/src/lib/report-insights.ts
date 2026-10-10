@@ -16,7 +16,6 @@ export interface SalesTarget {
   projected: number
   on_track: boolean | null
   daily: { date: string; sales: number; cumulative: number; target_cumulative: number }[]
-  companies: { company_id: number; name: string; sales: number }[]
 }
 
 export interface ReportSettings {

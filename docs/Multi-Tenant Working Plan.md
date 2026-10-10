@@ -494,6 +494,7 @@ Bugs found and fixed in this round:
 | 6 | "The email could not be sent. You can also pass this link on yourself." | Wording only | Reworded |
 | 7 | Windows build: Python without tkinter, ARM64 Python, Python without pip, the wrong Python first on PATH | The `.exe` could not be built, or was built but could not open | `build_windows_exe.bat` picks a suitable Python, offers to install one, and explains each failure |
 | 8 | `tzdata` missing from the backend requirements | The backend and its scripts did not start on Windows | Added. Both requirements files now list only what is imported. |
+| 9 | Sign-up email failed with "Connection unexpectedly closed" | No verification code could be sent, so no account could be created from the agent | Not a code fault: Gmail refuses the `SMTP_PASS` in the development `.env` (it answers "Username and Password not accepted"). The value is 23 characters with symbols; a Gmail app password is 16 letters. The error now says this instead of the bare disconnect. Owner: Akash, to put an app password in `.env`. |
 
 Checked and found correct (no change needed): a device token is refused outside the sync endpoints; a second PC is refused for a company synced elsewhere until it takes over; the same Tally GUID and company name in two accounts stay two companies; one customer cannot list, open, re-target into, or administer another's companies, roles, PCs or admins; an import repeated makes no duplicate; an old agent on a person's login is refused once `REQUIRE_AGENT_DEVICE_SIGNIN` is on (it is recognised by the `X-Client-Type: sync-agent` header it sends).
 
@@ -510,6 +511,7 @@ Ordered by what blocks what. Each line says who has to act.
 
 - [ ] Review and merge the pull request
 - [ ] Back up both production databases
+- [ ] **Development `backend/.env`: replace `SMTP_PASS` with a Gmail app password.** Until then sign-up from the agent and invitation emails cannot be sent (invitations can still be passed on as a link).
 - [ ] Production `backend/.env`: `SMTP_USER` / `SMTP_PASS`, `APP_PUBLIC_URL`, and `TALLY_URL_COMPANY_GUID` if `TALLY_URL` stays set. The development `.env` has `TALLY_URL` set and no `TALLY_URL_COMPANY_GUID`: harmless with one customer, wrong with two.
 - [ ] Deploy backend, run the migration script, deploy the web app, deploy the agent, sign the PC in
 - [ ] A week or more later: `--enforce --apply`, then `ACCOUNTS_ENFORCED=true` and `REQUIRE_AGENT_DEVICE_SIGNIN=true`
@@ -538,11 +540,11 @@ Ordered by what blocks what. Each line says who has to act.
 ### Found in this round, not part of the multi-tenant work
 
 - [ ] **The Tally database name is written into 101 queries** in `backend/app/routers/reports.py` and `ledgers.py` as `tally_sync.`. A server whose `TALLY_DATABASE_NAME` is anything else gets errors on the dashboard and ledger reports. Development and production both use `tally_sync`, so nothing is broken today.
-- [ ] **Times are stored two ways.** The sync columns (`last_seen_at`, `last_success_at`) are UTC; database-default columns (`linked_at`, `updated_at`) are the database server's local time. Everything shown to users reads the UTC ones. Worth making uniform before anything displays the others.
+- [x] **Times are stored one way now: IST** (10 Oct 2026), the rule the rest of the app already follows (`app/core/datetime_utils.py`; the database session runs at +05:30). The multi-tenant code had been writing UTC for PC last-seen, sync state, invitations, sign-up codes and sign-outs. It now writes IST, and the API sends these times with their `+05:30` offset so the web app does not have to guess. Checked on the development database: last seen, last success and the database's own updated-at now agree. Device sessions (`app/core/sessions.py`, from before this work) still store UTC and were left alone.
 
-### To decide
+### Decided on 10 Oct 2026
 
-- [ ] **The home page's monthly sales target adds up every company of the account** ("· all companies"), which is the combined view D3 says not to have. It was built before D3 and stays inside the account, so nothing leaks. Keep it as the one exception, or make it per company? Owner: Akash.
+- [x] **No report adds up across companies** (D3, with no exception). The home page's monthly sales target now covers the company you are in, and each company has its own target; a company that has never set one starts from the target the business had before. The city report, the pincode-to-city list and setting a customer's city were also reading every company of the account, and are now the current company only.
 
 Closed on 10 Oct 2026: admin and agent access (D9, D10, D21), SMS OTP (D18), the audit log (D19), attendance (D20), the leftover screens' code.
 

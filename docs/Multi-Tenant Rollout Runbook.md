@@ -38,7 +38,7 @@ mysqldump -u <user> -p --single-transaction --routines tally_sync > tally_sync_b
 
 ## 3. Deploy the backend (before the agent)
 
-- [ ] In `backend/.env`, check the email settings are there: `SMTP_USER` and `SMTP_PASS` (a Gmail app password). Sign-up codes and invitations are sent with them. Without them, creating an account fails with "The verification email could not be sent".
+- [ ] In `backend/.env`, check the email settings are there: `SMTP_USER` and `SMTP_PASS` (a Gmail app password: 16 letters, made at myaccount.google.com/apppasswords; the normal Gmail password is refused). Sign-up codes and invitations are sent with them. Without them, creating an account fails with "The verification email could not be sent".
 - [ ] In `backend/.env`, add `APP_PUBLIC_URL=` with the address people open the app at (for example `https://app.yourdomain.com`). Invitation emails link to it. Without it the email carries a code to paste instead.
 - [ ] If `TALLY_URL` is set in `backend/.env` (the server reaches Tally directly, for example through a tunnel), decide now: on a server that will hold more than one customer, also set `TALLY_URL_COMPANY_GUID=` to the Tally GUID of the company that Tally belongs to. The migration script in section 4 prints each company's GUID. Without it, a second customer's vouchers would be sent to this Tally.
 - [ ] Deploy the backend from `master` and start it once.
@@ -162,5 +162,5 @@ Do this only when sections 1 to 6 are done and everything has run normally for a
 | After `ACCOUNTS_ENFORCED=true` someone cannot see a company | That person or company has no account. Remove the setting, restart, run the script in section 4 again, then put it back. |
 | An agent says "This sync agent must be updated and signed in again" | `REQUIRE_AGENT_DEVICE_SIGNIN` is on and that PC is still on the old login. Update it and sign in from Setup, or remove the setting for now. |
 | "Accounts are created from the Desktop Sync Agent" when registering | Web registration is removed on purpose. New businesses sign up in the agent; people join by invitation. |
-| Sign-up or invitation email never arrives | Check `SMTP_USER` / `SMTP_PASS` and the backend log line "could not be emailed". The admin can copy the invitation link from the screen instead. |
+| Sign-up or invitation email never arrives | Look for the backend log line "could not be emailed". "Gmail rejected the login" or "Connection unexpectedly closed" means `SMTP_PASS` is not an app password: make one at myaccount.google.com/apppasswords for the `SMTP_USER` account (2-Step Verification must be on), put its 16 letters in `backend/.env` without spaces, and restart. The admin can copy the invitation link from the screen meanwhile. |
 | You need to undo section 4 completely | Restore `tally_portal` from the backup taken in section 1. |

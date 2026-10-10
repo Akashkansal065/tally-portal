@@ -11,7 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.core.agent_auth import now_utc
+from app.core.datetime_utils import get_ist_now, to_ist_iso
 from app.models.portal_core import AgentDevice, CompanySyncState, SyncQueue
 
 # The agent reports every inbound interval (a minute by default). No report for this long means it is not running.
@@ -21,7 +21,8 @@ BEHIND_AFTER = timedelta(minutes=15)
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
-    return value.isoformat() + "Z" if value else None
+    """Stored times are IST with no zone attached; they go out with +05:30 so no reader has to guess."""
+    return to_ist_iso(value)
 
 
 def freshness(state: Optional[str], last_success_at: Optional[datetime], last_attempt_at: Optional[datetime],
@@ -34,7 +35,7 @@ def freshness(state: Optional[str], last_success_at: Optional[datetime], last_at
     behind     the agent is running but the last clean cycle is old
     live       synced recently
     """
-    now = now or now_utc()
+    now = now or get_ist_now()
     if last_attempt_at is None:
         return "never"
     if now - last_attempt_at > AGENT_OFFLINE_AFTER:
@@ -53,7 +54,7 @@ async def company_sync_status(db: AsyncSession, company_ids: Iterable[int]) -> D
     ids = sorted(set(company_ids))
     if not ids:
         return {}
-    now = now_utc()
+    now = get_ist_now()
     pending = dict((await db.execute(
         select(SyncQueue.company_id, func.count(SyncQueue.sync_id))
         .where(SyncQueue.company_id.in_(ids), SyncQueue.is_processed == False)  # noqa: E712

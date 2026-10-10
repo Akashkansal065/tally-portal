@@ -104,7 +104,7 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
                   <span className="text-muted-foreground"> · {d.signed_in ? 'signed in' : 'signed out'}</span>
                   <span className="block text-xs text-muted-foreground">
                     {d.companies.length ? `Syncs ${d.companies.map(c => c.name).join(', ')}` : 'No company linked'}
-                    {d.last_seen_at ? ` · last seen ${new Date(`${d.last_seen_at}Z`).toLocaleString('en-IN')}` : ''}
+                    {d.last_seen_at ? ` · last seen ${new Date(d.last_seen_at).toLocaleString('en-IN')}` : ''}
                   </span>
                 </span>
                 {d.signed_in && (
@@ -192,7 +192,7 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
               <li key={i.invite_id} className="flex items-center justify-between gap-3 py-2 text-sm">
                 <span>
                   <span className="font-semibold">{i.email}</span>
-                  <span className="text-muted-foreground"> · waiting · expires {new Date(`${i.expires_at}Z`).toLocaleDateString('en-IN')}</span>
+                  <span className="text-muted-foreground"> · waiting · expires {new Date(i.expires_at).toLocaleDateString('en-IN')}</span>
                 </span>
                 <button type="button" aria-label={`Cancel the invitation for ${i.email}`}
                   onClick={() => run(() => call(token, `/admin/invites/${i.invite_id}`, { method: 'DELETE' }), 'Invitation cancelled')}

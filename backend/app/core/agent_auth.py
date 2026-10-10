@@ -7,7 +7,6 @@ companies linked to it, and nothing else.
 import hashlib
 import secrets
 import time
-from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 
 from fastapi import HTTPException, Request, status
@@ -16,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
+from app.core.datetime_utils import get_ist_now
 from app.models.portal_core import (
     Account, AgentCompanyLink, AgentDevice, Company, Module, User, UserPermissionOverride,
 )
@@ -31,10 +31,6 @@ DEVICE_PATH_SUFFIXES = (
 )
 DEVICE_LAST_SEEN_INTERVAL_SECONDS = 60
 _device_last_seen_written: Dict[int, float] = {}
-
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def hash_token(token: str) -> str:
@@ -95,7 +91,7 @@ async def authenticate_device(request: Request, token: str, db: AsyncSession) ->
         try:  # in its own short transaction: activity tracking never commits or fails the request's work
             async with AsyncSession(db.bind, expire_on_commit=False) as touch_db:
                 await touch_db.execute(update(AgentDevice).where(AgentDevice.device_id == device.device_id)
-                                       .values(last_seen_at=now_utc()))
+                                       .values(last_seen_at=get_ist_now()))
                 await touch_db.commit()
         except Exception:
             pass
@@ -140,7 +136,7 @@ def _holds_sync_agent(module_id: int):
     return (
         UserPermissionOverride.module_id == module_id,
         UserPermissionOverride.can_read == True,  # noqa: E712
-        or_(UserPermissionOverride.expires_at.is_(None), UserPermissionOverride.expires_at > now_utc()),
+        or_(UserPermissionOverride.expires_at.is_(None), UserPermissionOverride.expires_at > get_ist_now()),
     )
 
 

@@ -15,8 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.cache import clear_all_cache
 from app.core.database import get_db
 from app.core.datetime_utils import get_ist_date
-from app.core.permissions import accessible_company_ids, require_permission
-from app.models.portal_core import Company, CustomerProfile, Role, User
+from app.core.permissions import require_permission
+from app.models.portal_core import Company, CustomerProfile, User
 from app.models.tally_core import (
     MstLedger, MstStockGroup, MstStockItem, MstUom, MstVoucherType, TrnAccounting, TrnInventory, TrnVoucher,
 )
@@ -39,8 +39,8 @@ async def get_report_settings(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Monthly sales target and default credit days."""
-    return await app_settings.get_settings(db, user.account_id)
+    """The current company's monthly sales target and the account's default credit days."""
+    return await app_settings.get_settings(db, user.account_id, user.company_id)
 
 
 @router.put("/settings")
@@ -49,25 +49,25 @@ async def update_report_settings(
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Change the monthly sales target and/or default credit days. Admin only."""
+    """Change the current company's monthly sales target and/or the account's default credit days. Admin only."""
     try:
         for key, value in req.model_dump(exclude_none=True).items():
-            await app_settings.set_setting(db, key, value, user.user_id, user.account_id)
+            await app_settings.set_setting(db, key, value, user.user_id, user.account_id, user.company_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await db.commit()
     # Default credit days change every company's ageing
     clear_all_cache()
-    return await app_settings.get_settings(db, user.account_id)
+    return await app_settings.get_settings(db, user.account_id, user.company_id)
 
 
 # ─── Monthly sales target ────────────────────────────────────────────────────
 
 async def _companies_for(db: AsyncSession, user: User) -> Dict[int, str]:
-    role_name = (await db.execute(select(Role.name).where(Role.role_id == user.role_id))).scalar()
-    ids = await accessible_company_ids(db, user.user_id, user.company_id, role_name)
-    rows = await db.execute(select(Company.company_id, Company.name).where(Company.company_id.in_(ids)))
-    return dict(rows.all())
+    """The company these reports cover: the one the caller is working in, and no other. Companies never share
+    a view, so nothing here adds up or lists across them."""
+    name = (await db.execute(select(Company.name).where(Company.company_id == user.company_id))).scalar()
+    return {user.company_id: name or ""}
 
 
 async def net_sales_by_day(db: AsyncSession, company_ids: List[int], start: date, end: date) -> Dict[int, Dict[date, float]]:
@@ -99,8 +99,9 @@ async def sales_target_progress(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Net sales before GST across all the user's companies against the monthly target, with what's needed per
-    remaining day and where the month will end at the current pace. Every day of the week counts."""
+    """The current company's net sales before GST against its monthly target, with what's needed per remaining
+    day and where the month will end at the current pace. Every day of the week counts. One company only:
+    companies never share a view."""
     today = get_ist_date()
     year, mon = (int(month[:4]), int(month[5:])) if month else (today.year, today.month)
     if not 1 <= mon <= 12:
@@ -115,14 +116,9 @@ async def sales_target_progress(
         days_elapsed = today.day
     days_left = days_in_month - days_elapsed + (1 if start <= today <= end else 0)  # today still counts
 
-    target = float(await app_settings.get_setting(db, "monthly_sales_target", user.account_id))
-    companies = await _companies_for(db, user)
-    by_company = await net_sales_by_day(db, list(companies), start, min(end, today))
-
-    daily_totals: Dict[date, float] = defaultdict(float)
-    for days in by_company.values():
-        for day, amount in days.items():
-            daily_totals[day] += amount
+    target = float(await app_settings.get_setting(db, "monthly_sales_target", user.account_id, user.company_id))
+    by_company = await net_sales_by_day(db, [user.company_id], start, min(end, today))
+    daily_totals: Dict[date, float] = by_company.get(user.company_id, {})
     sales = round(sum(daily_totals.values()), 2)
 
     daily, running = [], 0.0
@@ -152,11 +148,6 @@ async def sales_target_progress(
         "projected": projected,
         "on_track": projected >= target if days_elapsed else None,
         "daily": daily,
-        "companies": sorted(
-            ({"company_id": cid, "name": name, "sales": round(sum(by_company.get(cid, {}).values()), 2)}
-             for cid, name in companies.items()),
-            key=lambda c: c["sales"], reverse=True,
-        ),
     }
 
 
@@ -326,7 +317,7 @@ async def city_performance(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Sales, customers and money owed per city across the user's companies. This month (to date) is compared
+    """Sales, customers and money owed per city for the current company. This month (to date) is compared
     with the same days of last month. Leads are directory customers not yet in Tally."""
     from app.services.cities import NOT_SET, cities_for_ledgers, clean_pincode, normalise_city, pincode_cities
     from app.services.sales import net_sales_by_customer
