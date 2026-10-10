@@ -26,7 +26,7 @@ const select = 'h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs dar
 
 export function ItemExtras({ token, item, entry, godowns, units, onChange }: {
   token: string | null
-  item: { stock_item_id: number; unit_id?: number | null; alt_unit_id?: number | null; alt_unit_conversion?: number | string | null } | undefined
+  item: { stock_item_id: number; unit_id?: number | null; alt_unit_id?: number | null; alt_unit_conversion?: number | string | null; alt_unit_denominator?: number | string | null } | undefined
   entry: { stock_item_id: string; godown_id?: string; batch_id?: string; quantity?: string }
   godowns: { godown_id: number; name: string }[]
   units: { unit_id: number; symbol?: string; name?: string }[]
@@ -44,7 +44,8 @@ export function ItemExtras({ token, item, entry, godowns, units, onChange }: {
   if (!item || !entry.stock_item_id) return null
   const list = batches.item === entry.stock_item_id ? batches.list : []
   const unitName = (id?: number | null) => units.find(u => u.unit_id === id)?.symbol || units.find(u => u.unit_id === id)?.name || ''
-  const conversion = Number(item.alt_unit_conversion || 0)
+  // Alternate units per base unit: "<conversion> alternate = <denominator> base", denominator 1 when not kept
+  const conversion = Number(item.alt_unit_conversion || 0) / (Number(item.alt_unit_denominator || 0) || 1)
   const qty = Number(entry.quantity || 0)
   const showAlt = !!item.alt_unit_id && conversion > 0
   if (list.length === 0 && godowns.length <= 1 && !showAlt) return null

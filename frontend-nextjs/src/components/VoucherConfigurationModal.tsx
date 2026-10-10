@@ -1,7 +1,8 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { X, Settings2, Sliders, ShieldAlert, CheckCircle2, RotateCcw, Save, Loader2, Landmark, Receipt, Sparkles } from 'lucide-react'
+import { X, Settings2, Sliders, Save, Loader2, Info } from 'lucide-react'
+import { voucherConfigSwitches } from '@/lib/voucher-config'
 import { toast } from 'sonner'
 
 export type VoucherConfiguration = {
@@ -99,36 +100,13 @@ export default function VoucherConfigurationModal({
 
   const [isSaving, setIsSaving] = useState(false)
 
-  const parentTypeStr = (voucherType?.parent_type || voucherType?.name || '').toLowerCase()
-  const isContra = parentTypeStr.includes('contra')
-  const isReceipt = parentTypeStr.includes('receipt') && !parentTypeStr.includes('receipt note')
-  const isSales = parentTypeStr.includes('sales') || parentTypeStr.includes('delivery note')
-  const isPurchase = parentTypeStr.includes('purchase') || parentTypeStr.includes('receipt note')
+  const switches = voucherConfigSwitches(voucherType?.parent_type || voucherType?.name || '')
 
   useEffect(() => {
     if (initialConfig) {
       setConfig(initialConfig)
     } else if (voucherType) {
-      const pType = (voucherType.parent_type || voucherType.name || '').toLowerCase()
-      const isPur = pType.includes('purchase') || pType.includes('receipt note')
-      const isSalesType = pType.includes('sales') || pType.includes('delivery note')
-      const isPmtRcpt = pType.includes('payment') || pType.includes('receipt') || pType.includes('contra')
-      const isContraType = pType.includes('contra')
-
-      setConfig(prev => ({
-        ...prev,
-        voucher_type_id: voucherType.voucher_type_id,
-        provide_supplier_ref: isPur,
-        show_inventory_details: isSalesType || isPur,
-        use_default_bank_allocations: isPmtRcpt || isPur,
-        provide_cash_denominations: isContraType,
-        provide_buyer_details: isSalesType || isPur,
-        provide_dispatch_order_export: isSalesType || isPur,
-        provide_order_details: isSalesType || isPur,
-        use_vch_no_as_bill_ref: isSalesType,
-        warn_negative_stock: isSalesType || isPur,
-        send_eway_bill_details: isSalesType,
-      }))
+      setConfig(prev => ({ ...prev, voucher_type_id: voucherType.voucher_type_id }))
     }
   }, [initialConfig, voucherType, isOpen])
 
@@ -159,19 +137,19 @@ export default function VoucherConfigurationModal({
       <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col bg-slate-900/95 border border-emerald-500/25 rounded-2xl shadow-2xl shadow-emerald-950/40 overflow-hidden text-slate-100 font-sans">
         
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/80 bg-slate-950/70">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-sm shadow-emerald-500/10">
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b border-slate-800/80 bg-slate-950/70">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 shrink-0 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-sm shadow-emerald-500/10">
               <Settings2 className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold text-white tracking-wide">Voucher Configuration</h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-base sm:text-lg font-semibold text-white tracking-wide whitespace-nowrap">Voucher Configuration</h2>
                 <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
                   {voucherType.name}
                 </span>
               </div>
-              <p className="text-xs text-slate-400">Configure entry parameters, behavioral prompts, and sub-allocations</p>
+              <p className="text-xs text-slate-400">Entry settings for this app only</p>
             </div>
           </div>
           <button
@@ -183,321 +161,55 @@ export default function VoucherConfigurationModal({
         </div>
 
         {/* Scrollable Content Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
-          
-          {/* Section 1: General Details */}
-          <div className="rounded-xl border border-slate-800/90 bg-slate-950/40 p-4 space-y-3 shadow-inner shadow-black/20">
-            <div className="flex items-center gap-2 pb-2 border-b border-emerald-500/20 text-emerald-400 font-semibold text-sm">
-              <Sliders className="w-4 h-4" />
-              <span>General Details</span>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-              
-              <ToggleRow
-                label="Use Cr/Dr instead of To/By during voucher entry"
-                description="Display rows as Debit/Credit rather than traditional To/By prefixes"
-                checked={config.use_cr_dr}
-                onChange={() => handleToggle('use_cr_dr')}
-              />
-
-              <ToggleRow
-                label="Provide Supplier Inv/Ref No. and Date"
-                description="Prompts for supplier invoice reference number and original invoice date"
-                checked={config.provide_supplier_ref}
-                onChange={() => handleToggle('provide_supplier_ref')}
-              />
-
-              <ToggleRow
-                label="Warn on negative Cash Balance"
-                description="Triggers validation alert when cash account balance drops below zero"
-                checked={config.warn_negative_cash}
-                onChange={() => handleToggle('warn_negative_cash')}
-              />
-
-              <ToggleRow
-                label="Preallocate bills for Payment/Receipt/Journal"
-                description="Automatically assigns unsettled bill balances using FIFO methodology"
-                checked={config.preallocate_bills}
-                onChange={() => handleToggle('preallocate_bills')}
-              />
-
-              <ToggleRow
-                label="Show list of Bills for selection"
-                description="Opens the pending bills table when adjusting Debtor/Creditor ledgers"
-                checked={config.show_list_of_bills}
-                onChange={() => handleToggle('show_list_of_bills')}
-              />
-
-              <ToggleRow
-                label="Show Final Balances for each Bill"
-                description="Calculates and shows the remaining post-settlement balance per invoice"
-                checked={config.show_final_bill_balances}
-                onChange={() => handleToggle('show_final_bill_balances')}
-              />
-
-              <ToggleRow
-                label="Skip the Date field during voucher creation"
-                description="Directs initial cursor focus directly into Party / Account selector"
-                checked={config.skip_date_field}
-                onChange={() => handleToggle('skip_date_field')}
-              />
-
-              <ToggleRow
-                label="Show Inventory details"
-                description="Enables item quantity and rate rows on Payment/Receipt/Journal vouchers"
-                checked={config.show_inventory_details}
-                onChange={() => handleToggle('show_inventory_details')}
-              />
-
-              <ToggleRow
-                label="Show Current Balance of Ledgers"
-                description="Displays live closing balance beneath ledger search selectors"
-                checked={config.show_ledger_current_balance}
-                onChange={() => handleToggle('show_ledger_current_balance')}
-              />
-
-              <ToggleRow
-                label="Show Bill-wise Details in multiple lines"
-                description="Allows multi-bill reference allocations for a single ledger entry line"
-                checked={config.show_bill_wise_multiple_lines}
-                onChange={() => handleToggle('show_bill_wise_multiple_lines')}
-              />
-
-              <ToggleRow
-                label="Warn when Voucher No. exceeds 16 characters"
-                description="Alerts user if numbering exceeds recommended Tally character limits"
-                checked={config.warn_voucher_number_length}
-                onChange={() => handleToggle('warn_voucher_number_length')}
-              />
-
-              {/* Sales & Purchase Specific Toggles */}
-              {(isSales || isPurchase) && (
-                <>
-                  <ToggleRow
-                    label={isPurchase ? "Provide Supplier details" : "Provide Buyer details"}
-                    description={isPurchase 
-                      ? "Prompts for Supplier Mailing Name, Address, GSTIN, and State in purchase header" 
-                      : "Prompts for Consignee / Buyer Name, Address, GSTIN, and State in invoice header"}
-                    checked={config.provide_buyer_details}
-                    onChange={() => handleToggle('provide_buyer_details')}
-                  />
-
-                  <ToggleRow
-                    label={isPurchase ? "Provide Receipt Note, Order, and Import details" : "Provide Dispatch, Order, and Export details"}
-                    description={isPurchase 
-                      ? "Enables Receipt Doc No, Despatched through, Destination, Order No, and Import details" 
-                      : "Enables Dispatch Doc No, Despatched through, Destination, Order No, and Export details"}
-                    checked={config.provide_dispatch_order_export}
-                    onChange={() => handleToggle('provide_dispatch_order_export')}
-                  />
-
-                  <ToggleRow
-                    label="Provide Order details"
-                    description={isPurchase ? "Prompts for Purchase Order reference number and date" : "Prompts for Buyer's PO / Order reference number and date"}
-                    checked={config.provide_order_details}
-                    onChange={() => handleToggle('provide_order_details')}
-                  />
-
-                  <ToggleRow
-                    label="Select common Ledger Account for Item Allocation"
-                    description={isPurchase 
-                      ? "Applies a single primary Purchase expense ledger across all inventory lines" 
-                      : "Applies a single primary Sales/Income ledger across all inventory lines"}
-                    checked={config.select_common_sales_ledger}
-                    onChange={() => handleToggle('select_common_sales_ledger')}
-                  />
-
-                  {isSales && (
-                    <ToggleRow
-                      label="Use Voucher No. as Bill Reference for Bill Allocation"
-                      description="Automatically creates a 'New Ref' bill allocation matching the invoice number"
-                      checked={config.use_vch_no_as_bill_ref}
-                      onChange={() => handleToggle('use_vch_no_as_bill_ref')}
-                    />
-                  )}
-
-                  {isPurchase && (
-                    <ToggleRow
-                      label="Provide Supplier Invoice details"
-                      description="Prompts for Supplier Invoice / Reference No. and Original Invoice Date at top of entry"
-                      checked={config.provide_supplier_ref}
-                      onChange={() => handleToggle('provide_supplier_ref')}
-                    />
-                  )}
-
-                  <ToggleRow
-                    label="Warn on negative Stock Balance"
-                    description="Triggers immediate warning if item quantity exceeds available godown stock"
-                    checked={config.warn_negative_stock}
-                    onChange={() => handleToggle('warn_negative_stock')}
-                  />
-
-                  <ToggleRow
-                    label="Provide Cash/Trade Discount"
-                    description="Enables column for Line Item Trade Discount % calculation"
-                    checked={config.provide_trade_discount}
-                    onChange={() => handleToggle('provide_trade_discount')}
-                  />
-
-                  <ToggleRow
-                    label="Show Turnover from selected Party A/c"
-                    description={isPurchase 
-                      ? "Displays cumulative financial year purchase turnover for chosen supplier" 
-                      : "Displays cumulative financial year sales turnover for chosen customer"}
-                    checked={config.show_party_turnover}
-                    onChange={() => handleToggle('show_party_turnover')}
-                  />
-                </>
-              )}
-
-            </div>
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar">
+          <div className="flex items-start gap-2 rounded-xl border border-slate-700/70 bg-slate-950/50 px-4 py-3 text-xs text-slate-300">
+            <Info className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+            <span>These settings change how this app's voucher form behaves. They are not sent to Tally and are not read from it: Tally keeps its own entry settings (F12) on the Tally computer.</span>
           </div>
 
-          {/* Section 2: Tax & Price Details (Sales / Invoice) */}
-          {isSales && (
-            <div className="rounded-xl border border-slate-800/90 bg-slate-950/40 p-4 space-y-3 shadow-inner shadow-black/20">
-              <div className="flex items-center gap-2 pb-2 border-b border-teal-500/20 text-teal-400 font-semibold text-sm">
-                <Receipt className="w-4 h-4" />
-                <span>Tax & Price Details</span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                
-                <ToggleRow
-                  label="Provide Rate Inclusive of Tax for Stock Items"
-                  description="Enables entering MRP/Inclusive selling rate and auto-calculates basic taxable rate"
-                  checked={config.rate_inclusive_of_tax}
-                  onChange={() => handleToggle('rate_inclusive_of_tax')}
-                />
-
-              </div>
+          {switches.length === 0 ? (
+            <div className="rounded-xl border border-slate-800/90 bg-slate-950/40 p-6 text-sm text-slate-400 text-center">
+              There are no entry settings for {voucherType.name} vouchers.
             </div>
-          )}
-
-          {/* Section 3: Bank Details (Payment, Receipt, Contra, Purchase) */}
-          {!isSales && (
-            <div className="rounded-xl border border-slate-800/90 bg-slate-950/40 p-4 space-y-3 shadow-inner shadow-black/20">
-              <div className="flex items-center gap-2 pb-2 border-b border-cyan-500/20 text-cyan-400 font-semibold text-sm">
-                <Landmark className="w-4 h-4" />
-                <span>Bank Details</span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                
-                <ToggleRow
-                  label="Use default Bank Allocations"
-                  description="Auto-opens Banking transaction details drawer on bank accounts"
-                  checked={config.use_default_bank_allocations}
-                  onChange={() => handleToggle('use_default_bank_allocations')}
-                />
-
-                <ToggleRow
-                  label="Set Ledger-wise Bank Allocations during creation"
-                  description="Prompts for separate banking allocation per individual bank line"
-                  checked={config.set_ledger_bank_allocations}
-                  onChange={() => handleToggle('set_ledger_bank_allocations')}
-                />
-
-                {!isReceipt && (
-                  <>
-                    <ToggleRow
-                      label="Use Auto Cheque Numbering"
-                      description="Auto-increments and selects consecutive instrument numbers from company cheque book"
-                      checked={config.auto_cheque_numbering}
-                      onChange={() => handleToggle('auto_cheque_numbering')}
-                    />
-
-                    <ToggleRow
-                      label="Select Cheque Range"
-                      description="Prompts for registered Cheque Book range selection on Bank ledgers"
-                      checked={config.select_cheque_range}
-                      onChange={() => handleToggle('select_cheque_range')}
-                    />
-
-                    <ToggleRow
-                      label="Print Cheque after saving Voucher"
-                      description="Triggers the Cheque PDF printing dialog automatically on save"
-                      checked={config.print_cheque_after_saving}
-                      onChange={() => handleToggle('print_cheque_after_saving')}
-                    />
-
-                    <ToggleRow
-                      label="Show Cheque details before printing"
-                      description="Previews favouring name, date, and crossed amount prior to print"
-                      checked={config.show_cheque_details_before_printing}
-                      onChange={() => handleToggle('show_cheque_details_before_printing')}
-                    />
-                  </>
-                )}
-
-                {isContra && (
-                  <ToggleRow
-                    label="Provide Cash Denomination details"
-                    description="Prompts for physical currency notes breakdown (2000, 500, 200, 100, etc.) on cash transfers"
-                    checked={config.provide_cash_denominations}
-                    onChange={() => handleToggle('provide_cash_denominations')}
-                  />
-                )}
-
-              </div>
-            </div>
-          )}
-
-          {/* Section 4: GST & Statutory Details */}
-          {!isContra && (
+          ) : (
             <div className="rounded-xl border border-slate-800/90 bg-slate-950/40 p-4 space-y-3 shadow-inner shadow-black/20">
               <div className="flex items-center gap-2 pb-2 border-b border-emerald-500/20 text-emerald-400 font-semibold text-sm">
-                <Receipt className="w-4 h-4" />
-                <span>GST & Statutory Details</span>
+                <Sliders className="w-4 h-4" />
+                <span>Entry Settings</span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                
-                {isSales && (
+                {switches.map(sw => (
                   <ToggleRow
-                    label="Send e-Way Bill details after saving Voucher"
-                    description="Prompts for e-Way Bill vehicle no, transporter ID, distance, and dispatch details on save"
-                    checked={config.send_eway_bill_details}
-                    onChange={() => handleToggle('send_eway_bill_details')}
+                    key={sw.key}
+                    label={sw.label}
+                    description={sw.description}
+                    checked={Boolean(config[sw.key])}
+                    onChange={() => handleToggle(sw.key)}
                   />
-                )}
-
-                <ToggleRow
-                  label="Provide Party details for GST"
-                  description="Enables Buyer/Consignee/Supplier mailing name, state, and GSTIN override popup"
-                  checked={config.provide_party_gst_details}
-                  onChange={() => handleToggle('provide_party_gst_details')}
-                />
-
-                <ToggleRow
-                  label="Modify GST & HSN/SAC related details"
-                  description="Allows item-level or voucher-level tax classification modifications"
-                  checked={config.modify_gst_hsn_details}
-                  onChange={() => handleToggle('modify_gst_hsn_details')}
-                />
-
+                ))}
               </div>
             </div>
           )}
-
         </div>
 
         {/* Modal Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-800/80 bg-slate-950/70">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <Sparkles className="w-4 h-4 text-emerald-400" />
-            <span>Settings apply to all new vouchers of type <strong className="text-emerald-300">{voucherType.name}</strong></span>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-6 py-4 border-t border-slate-800/80 bg-slate-950/70">
+          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400">
+            <span>Applies to <strong className="text-emerald-300">{voucherType.name}</strong> vouchers in this app</span>
           </div>
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-800 rounded-lg border border-slate-700/60 transition-colors"
+              className="flex-1 sm:flex-none px-4 py-2.5 sm:py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-800 rounded-lg border border-slate-700/60 transition-colors"
             >
               Cancel
             </button>
             <button
               type="button"
               onClick={handleSave}
-              disabled={isSaving}
-              className="inline-flex items-center gap-2 px-5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 rounded-lg shadow-lg shadow-emerald-500/25 transition-all disabled:opacity-50 active:scale-[0.98]"
+              disabled={isSaving || switches.length === 0}
+              className="flex-[2] sm:flex-none inline-flex items-center justify-center gap-2 px-5 py-2.5 sm:py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 rounded-lg shadow-lg shadow-emerald-500/25 transition-all disabled:opacity-50 active:scale-[0.98]"
             >
               {isSaving ? (
                 <>

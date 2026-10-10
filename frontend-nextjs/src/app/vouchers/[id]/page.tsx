@@ -38,6 +38,8 @@ type VoucherDetail = {
   voucher_type: string
   voucher_type_id?: number
   voucher_number: string
+  // The app's own number until Tally has numbered the voucher
+  number_is_provisional?: boolean
   reference_number: string | null
   narration: string | null
   party_name: string
@@ -813,6 +815,14 @@ export default function VoucherDetailPage() {
             </div>
             <p className="text-muted-foreground text-sm">
               No. <span className="font-bold text-foreground">{voucher.voucher_number}</span>
+              {voucher.number_is_provisional && (
+                <span
+                  title="Not yet sent to Tally. Tally gives the voucher its final number when it receives it, so this number can change."
+                  className="ml-2 text-[10px] px-1.5 py-0.5 bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 rounded-md font-semibold"
+                >
+                  Provisional, awaiting Tally
+                </span>
+              )}
             </p>
           </div>
           <div className="text-right">

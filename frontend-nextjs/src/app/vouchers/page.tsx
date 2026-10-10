@@ -16,6 +16,8 @@ type Voucher = {
   date: string
   voucher_type: string
   voucher_number: string
+  // The app's own number until Tally has numbered the voucher
+  number_is_provisional?: boolean
   reference_number: string | null
   narration: string | null
   party_name: string
@@ -443,10 +445,15 @@ export default function VouchersPage() {
         throw new Error(resData.detail || (isEdit ? 'Failed to update voucher' : 'Failed to create voucher'))
       }
 
-      if (resData.tally_synced === false) {
+      if (resData.tally_status === 'NO_RESPONSE') {
+        // Kept and queued: the number shown is provisional until Tally numbers the voucher
+        toast.warning(resData.tally_message || 'Tally could not be reached. The voucher is saved and will be sent when Tally is back.')
+      } else if (resData.tally_synced === false) {
         toast.warning(`⚠️ Saved in MyTally, but Tally Prime sync failed: ${resData.tally_message || 'Check Admin Sync Hub'}`)
       } else {
-        toast.success(isEdit ? 'Voucher altered & synced to Tally Prime ✅' : 'Voucher created & synced to Tally Prime ✅')
+        toast.success(isEdit ? 'Voucher altered & synced to Tally Prime ✅' : `Voucher ${resData.voucher_number ? `#${resData.voucher_number} ` : ''}created & synced to Tally Prime ✅`)
+        // Tally gave the voucher a different number from the provisional one
+        if (resData.tally_message) toast.info(resData.tally_message)
       }
 
       setCreateModalOpen(false)
@@ -478,7 +485,9 @@ export default function VouchersPage() {
         throw new Error(resData.detail || 'Failed to cancel voucher')
       }
 
-      if (resData.tally_synced === false) {
+      if (resData.tally_status === 'NO_RESPONSE') {
+        toast.warning('Tally could not be reached. The voucher is cancelled here and will be cancelled in Tally when it is back.')
+      } else if (resData.tally_synced === false) {
         toast.warning(`⚠️ Cancelled locally, but Tally sync failed: ${resData.tally_message || 'Tally rejected request'}`)
       } else {
         toast.success('Voucher marked as Cancelled (<ISCANCELLED>Yes</ISCANCELLED>) & synced to Tally ✅')
@@ -506,8 +515,12 @@ export default function VouchersPage() {
         throw new Error(resData.detail || 'Failed to delete voucher')
       }
 
-      if (resData.tally_synced === false) {
+      if (resData.tally_status === 'NO_RESPONSE') {
+        toast.warning(resData.tally_message || 'Tally could not be reached. The voucher is deleted here and will be deleted in Tally when it is back.')
+      } else if (resData.tally_synced === false) {
         toast.warning(`⚠️ Deleted locally, but Tally Prime delete failed: ${resData.tally_message || 'Check Admin Sync Hub'}`)
+      } else if (resData.tally_status === 'ALREADY_ABSENT' || resData.tally_status === 'NOT_SENT') {
+        toast.success('Voucher deleted. Tally did not have it.')
       } else {
         toast.success('Voucher permanently deleted & removed from Tally Prime ✅')
       }
@@ -785,6 +798,14 @@ export default function VouchersPage() {
                         <span className="text-[10px] font-bold text-muted-foreground font-mono">
                           {voucher.voucher_number}
                         </span>
+                        {voucher.number_is_provisional && (
+                          <span
+                            title="Not yet sent to Tally. Tally gives the voucher its final number when it receives it."
+                            className="text-[9px] px-1.5 py-0 bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 rounded-md font-semibold border-none shrink-0 scale-95"
+                          >
+                            Provisional no.
+                          </span>
+                        )}
                         <span className="text-[9px] px-1.5 py-0 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-md font-medium border-none shrink-0 scale-95">
                           Not Shared
                         </span>

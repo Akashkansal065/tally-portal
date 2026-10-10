@@ -5,6 +5,7 @@ import { X, Search, ChevronDown, Plus, Trash2, Calendar, FileText, IndianRupee, 
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { ItemExtras } from '@/components/vouchers/ItemExtras'
+import { voucherKind, voucherConfigSwitches } from '@/lib/voucher-config'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { toast } from 'sonner'
 import VoucherConfigurationModal, { VoucherConfiguration } from './VoucherConfigurationModal'
@@ -68,6 +69,7 @@ export default function VoucherFormModal({
 
   // Fetch F12 Configuration when voucher type is selected
   useEffect(() => {
+    setVoucherConfig(null)
     if (selectedType?.voucher_type_id && token) {
       fetch(`${API_BASE}/voucher-type/${selectedType.voucher_type_id}/configuration`, {
         headers: authHeaders(token),
@@ -146,6 +148,10 @@ export default function VoucherFormModal({
   const [showDispatchDetails, setShowDispatchDetails] = useState(false)
   
   // 5. Stock Journal View States
+  // Attendance and Payroll: lines per employee, built from the masters read from Tally
+  const [payrollMasters, setPayrollMasters] = useState<{ employees: string[], attendance_types: { name: string }[], pay_heads: { name: string, is_deduction: boolean }[] }>({ employees: [], attendance_types: [], pay_heads: [] })
+  const [attendanceRows, setAttendanceRows] = useState<any[]>([{ id: 1, employee_name: '', attendance_type: '', value: '' }])
+  const [payrollRows, setPayrollRows] = useState<any[]>([{ id: 1, employee_name: '', pay_head_name: '', amount: '' }])
   const [sourceEntries, setSourceEntries] = useState<any[]>([])
   const [destEntries, setDestEntries] = useState<any[]>([])
   
@@ -413,6 +419,31 @@ export default function VoucherFormModal({
           ])
           setNextInvId(2)
         }
+
+        // Attendance and Payroll lines
+        const attLines = (editVoucher.attendance_entries || []).map((a: any, idx: number) => ({ id: idx + 1, employee_name: a.employee_name || '', attendance_type: a.attendance_type || '', value: String(a.value ?? '') }))
+        setAttendanceRows(attLines.length > 0 ? attLines : [{ id: 1, employee_name: '', attendance_type: '', value: '' }])
+        const payLines = (editVoucher.payroll_entries || []).map((p: any, idx: number) => ({ id: idx + 1, employee_name: p.employee_name || '', pay_head_name: p.pay_head_name || '', amount: String(p.amount ?? '') }))
+        setPayrollRows(payLines.length > 0 ? payLines : [{ id: 1, employee_name: '', pay_head_name: '', amount: '' }])
+
+        // Stock Journal: lines consumed (source) and produced (destination) go to their own tables
+        const journalLine = (inv: any, idx: number) => ({
+          id: idx + 1,
+          stock_item_id: String(inv.stock_item_id || ''),
+          godown_id: inv.godown_id ? String(inv.godown_id) : '',
+          quantity: String(inv.quantity || '1'),
+          rate: String(inv.rate || ''),
+          amount: String(inv.amount || '0.00')
+        })
+        const blankLine = [{ id: rawInv.length + 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }]
+        const srcLines = rawInv.filter((inv: any) => inv.flow_type === 'source').map(journalLine)
+        const dstLines = rawInv.filter((inv: any) => inv.flow_type === 'destination').map((inv: any, idx: number) => journalLine(inv, srcLines.length + idx))
+        // Physical Stock: every line is a count; it is shown with the quantity that was counted
+        const countLines = rawInv.filter((inv: any) => inv.counted_quantity !== null && inv.counted_quantity !== undefined)
+          .map((inv: any, idx: number) => ({ ...journalLine(inv, idx), quantity: String(inv.counted_quantity) }))
+        setSourceEntries(srcLines.length > 0 ? srcLines : blankLine)
+        setDestEntries(countLines.length > 0 ? countLines : dstLines.length > 0 ? dstLines : [{ ...blankLine[0], id: rawInv.length + 2 }])
+        if (srcLines.length + dstLines.length + countLines.length > 0) setNextInvId(rawInv.length + 3)
       } else {
         // Create mode
         const typeSales = activeVoucherTypes.find(t => t.name.toLowerCase() === 'sales')
@@ -447,6 +478,8 @@ export default function VoucherFormModal({
           { id: 1, stock_item_id: '', quantity: '1', rate: '', discount_percent: '0', amount: '0.00' }
         ])
         setNextInvId(2)
+        setAttendanceRows([{ id: 1, employee_name: '', attendance_type: '', value: '' }])
+        setPayrollRows([{ id: 1, employee_name: '', pay_head_name: '', amount: '' }])
         setSourceEntries([
           { id: 1, stock_item_id: '', godown_id: '', quantity: '1', rate: '', amount: '0.00' }
         ])
@@ -474,6 +507,10 @@ export default function VoucherFormModal({
           }
         })
         .catch(console.error)
+      fetch(`${API_BASE}/vouchers/payroll-masters`, { headers: authHeaders(token) })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setPayrollMasters({ employees: data.employees || [], attendance_types: data.attendance_types || [], pay_heads: data.pay_heads || [] }) })
+        .catch(console.error)
       fetch(`${API_BASE}/inventory/godowns`, { headers: authHeaders(token) })
         .then(r => r.json())
         .then(data => setGodowns(Array.isArray(data) ? data : []))
@@ -498,12 +535,79 @@ export default function VoucherFormModal({
   const parentType = selectedType?.parent_type || selectedType?.name || ''
   const isInvoiceView = ['Sales', 'Purchase', 'Credit Note', 'Debit Note', 'Delivery Note', 'Receipt Note', 'Sales Order', 'Purchase Order'].some(t => parentType.toLowerCase().includes(t.toLowerCase()))
   const isStockJournal = parentType.toLowerCase().includes('stock journal')
-  const isAccountingView = !isInvoiceView && !isStockJournal
+  // A stock count: items and the quantity counted, nothing else
+  const isPhysicalStock = parentType.toLowerCase().includes('physical stock')
+  const isAttendance = parentType.toLowerCase().includes('attendance')
+  const isPayroll = parentType.toLowerCase().includes('payroll')
+  const isAccountingView = !isInvoiceView && !isStockJournal && !isPhysicalStock && !isAttendance && !isPayroll
 
   // Compute active non-empty accounting entries
   const activeEntries = useMemo(() => {
     return entries.filter(e => e.ledger_id || e.amount)
   }, [entries])
+
+  // Entry settings of this voucher type (the Configuration screen). They act on this form only.
+  const kind = voucherKind(parentType)
+  // The supplier's invoice number and date are asked for unless switched off; values already on the voucher stay visible
+  const hideSupplierRef = kind.isPurchaseSide && voucherConfig?.provide_supplier_ref === false
+    && !editVoucher?.reference_number && !editVoucher?.reference_date
+  const money = (n: number) => `₹${Math.abs(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const ledgerBalanceLabel = (l: any) => {
+    if (!voucherConfig || voucherConfig.show_ledger_current_balance === false) return ''
+    const bal = Number(l?.closing_balance)
+    if (l?.closing_balance == null || !Number.isFinite(bal)) return ''
+    return ` — ${money(bal)}${bal === 0 ? '' : bal < 0 ? ' Cr' : ' Dr'}`
+  }
+
+  const entryWarnings = useMemo(() => {
+    const warnings: string[] = []
+    if (!voucherConfig) return warnings
+    const editingPosted = editVoucher && (editVoucher.status || 'confirmed') === 'confirmed'
+
+    if (voucherConfig.warn_negative_cash !== false && (isAccountingView || kind.cashLeavesOnInvoice)) {
+      const groupById = new Map(groupsList.map((g: any) => [g.group_id, g]))
+      const isCash = (l: any) => {
+        let g: any = groupById.get(l?.group_id)
+        for (let hops = 0; g && hops < 20; hops++) {
+          if ((g.name || '').toLowerCase() === 'cash-in-hand') return true
+          g = groupById.get(g.parent_group_id)
+        }
+        return (l?.group_name || '').toLowerCase() === 'cash-in-hand'
+      }
+      // Net movement per cash ledger: money in is positive
+      const change = new Map<string, number>()
+      const add = (id: any, amt: number) => { if (id && amt) change.set(String(id), (change.get(String(id)) || 0) + amt) }
+      if (isAccountingView) {
+        activeEntries.forEach(e => add(e.ledger_id, (e.type === 'Debit' ? 1 : -1) * (parseFloat(e.amount) || 0)))
+      } else if (partyLedgerId) {
+        add(partyLedgerId, -inventoryEntries.reduce((sum, i) => sum + (parseFloat(i.amount) || 0), 0))
+      }
+      // The voucher being edited is already in the balance; take its own effect back out
+      if (editingPosted) (editVoucher.entries || []).forEach((e: any) => add(e.ledger_id, (Number(e.credit_amount) || 0) - (Number(e.debit_amount) || 0)))
+      change.forEach((delta, id) => {
+        const l = localLedgers.find(x => String(x.ledger_id) === id)
+        if (!l || !isCash(l) || l.closing_balance == null) return
+        const after = Number(l.closing_balance) + delta
+        if (after < -0.005) warnings.push(`${l.name} would go below zero: ${money(after)} Cr after this voucher (now ${money(Number(l.closing_balance))}${Number(l.closing_balance) < 0 ? ' Cr' : ''}).`)
+      })
+    }
+
+    if (voucherConfig.warn_negative_stock !== false && kind.stockLeaves) {
+      const wanted = new Map<string, number>()
+      inventoryEntries.forEach(i => { if (i.stock_item_id) wanted.set(String(i.stock_item_id), (wanted.get(String(i.stock_item_id)) || 0) + (parseFloat(i.quantity) || 0)) })
+      const already = new Map<string, number>()
+      if (editingPosted) (editVoucher.inventory_entries || editVoucher.inventory || []).forEach((i: any) => {
+        if (!i.is_inward) already.set(String(i.stock_item_id), (already.get(String(i.stock_item_id)) || 0) + (Number(i.quantity) || 0))
+      })
+      wanted.forEach((qty, id) => {
+        const item = stockItems.find(x => String(x.stock_item_id) === id)
+        if (!item || item.closing_balance == null) return
+        const inHand = Number(item.closing_balance) + (already.get(id) || 0)
+        if (qty > inHand + 0.0005) warnings.push(`${item.name}: ${qty} asked for, ${inHand} in stock.`)
+      })
+    }
+    return warnings
+  }, [voucherConfig, editVoucher, isAccountingView, kind.cashLeavesOnInvoice, kind.stockLeaves, groupsList, activeEntries, partyLedgerId, inventoryEntries, localLedgers, stockItems])
 
   const totals = useMemo(() => {
     const debits = activeEntries.filter(e => e.type === 'Debit').reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0)
@@ -1015,12 +1119,49 @@ export default function VoucherFormModal({
         }
       })
       payload.inventory_entries = invPayload
+    } else if (isAttendance) {
+      const lines = attendanceRows.filter(r => r.employee_name && r.attendance_type && r.value !== '').map(r => ({
+        employee_name: r.employee_name, attendance_type: r.attendance_type, value: parseFloat(r.value || '0')
+      }))
+      if (lines.length === 0) {
+        setValidationError("Please add at least one employee with an attendance type and a value.")
+        return
+      }
+      payload.attendance_entries = lines
+    } else if (isPayroll) {
+      if (!partyLedgerId) {
+        setValidationError("Please select the ledger the salary is payable to.")
+        return
+      }
+      const lines = payrollRows.filter(r => r.employee_name && r.pay_head_name && parseFloat(r.amount || '0') > 0).map(r => ({
+        employee_name: r.employee_name, pay_head_name: r.pay_head_name, amount: parseFloat(r.amount)
+      }))
+      if (lines.length === 0) {
+        setValidationError("Please add at least one employee with a pay head and an amount.")
+        return
+      }
+      payload.party_ledger_id = parseInt(partyLedgerId)
+      payload.payroll_entries = lines
+    } else if (isPhysicalStock) {
+      const counted = destEntries.filter(e => e.stock_item_id).map(e => ({
+        stock_item_id: parseInt(e.stock_item_id),
+        quantity: parseFloat(e.quantity || '0'),
+        rate: 0,
+        amount: 0,
+        godown_id: e.godown_id ? parseInt(e.godown_id) : undefined,
+      }))
+      if (counted.length === 0) {
+        setValidationError("Please add at least one item and the quantity counted.")
+        return
+      }
+      payload.inventory_entries = counted
     } else if (isStockJournal) {
       const src = sourceEntries.filter(e => e.stock_item_id).map(e => ({
         stock_item_id: parseInt(e.stock_item_id),
         quantity: parseFloat(e.quantity || '0'),
         rate: parseFloat(e.rate || '0'),
         amount: parseFloat(e.amount || '0'),
+        godown_id: e.godown_id ? parseInt(e.godown_id) : undefined,
         flow_type: 'source'
       }))
       const dst = destEntries.filter(e => e.stock_item_id).map(e => ({
@@ -1028,6 +1169,7 @@ export default function VoucherFormModal({
         quantity: parseFloat(e.quantity || '0'),
         rate: parseFloat(e.rate || '0'),
         amount: parseFloat(e.amount || '0'),
+        godown_id: e.godown_id ? parseInt(e.godown_id) : undefined,
         flow_type: 'destination'
       }))
       if (src.length === 0 && dst.length === 0) {
@@ -1064,7 +1206,7 @@ export default function VoucherFormModal({
               </h2>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              <button
+              {voucherConfigSwitches(parentType).length > 0 && <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
@@ -1075,7 +1217,7 @@ export default function VoucherFormModal({
               >
                 <Settings2 className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Configuration</span>
-              </button>
+              </button>}
               <button 
                 type="button"
                 onClick={(e) => {
@@ -1119,6 +1261,16 @@ export default function VoucherFormModal({
             </div>
           )}
 
+          {entryWarnings.length > 0 && (
+            <div className="flex items-start gap-3 p-4 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 rounded-xl text-amber-800 dark:text-amber-200 text-sm font-medium">
+              <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                {entryWarnings.map(w => <div key={w}>{w}</div>)}
+                <div className="text-xs font-normal text-amber-700 dark:text-amber-300">This is a warning only: the voucher can still be saved.</div>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-6">
             <div>
               <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Voucher Type</label>
@@ -1137,9 +1289,10 @@ export default function VoucherFormModal({
               <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Date</label>
               <input type="date" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" value={voucherDate} onChange={e => setVoucherDate(e.target.value)} />
             </div>
+            {!hideSupplierRef && (
             <div className="relative">
               <div className="flex items-center gap-1.5 mb-1">
-                <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300">Reference No.</label>
+                <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300">{kind.isPurchaseSide ? 'Supplier Invoice No.' : 'Reference No.'}</label>
                 <div className="relative inline-block">
                   <button
                     type="button"
@@ -1221,7 +1374,14 @@ export default function VoucherFormModal({
                   ? "Customer's PO / Order reference number"
                   : "External transaction / bank UTR reference"}
               </p>
+              {kind.isPurchaseSide && (
+                <div className="mt-2">
+                  <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Supplier Invoice Date</label>
+                  <input type="date" className="w-full h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" value={referenceDate} onChange={e => setReferenceDate(e.target.value)} />
+                </div>
+              )}
             </div>
+            )}
           </div>
 
           {isInvoiceView && (
@@ -1240,7 +1400,7 @@ export default function VoucherFormModal({
                   </div>
                   <div className="flex gap-2">
                     <select 
-                      className="flex-1 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium" 
+                      className="flex-1 min-w-0 h-10 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm font-medium" 
                       value={partyLedgerId} 
                       onChange={e => {
                         if (e.target.value === '__create_new__') {
@@ -1253,10 +1413,16 @@ export default function VoucherFormModal({
                       <option value="">Select Party...</option>
                       <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
                       {sortedLedgers.map(l => (
-                        <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>
+                        <option key={l.ledger_id} value={l.ledger_id}>{l.name}{ledgerBalanceLabel(l)}</option>
                       ))}
                     </select>
                   </div>
+                  {(() => {
+                    // The chosen party's balance in full: the picker cuts long names short on a phone
+                    const party = localLedgers.find(l => String(l.ledger_id) === String(partyLedgerId))
+                    const label = party ? ledgerBalanceLabel(party) : ''
+                    return label ? <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">Current balance: <span className="font-semibold text-slate-700 dark:text-slate-200">{label.replace(' — ', '')}</span></p> : null
+                  })()}
                 </div>
                 {['Credit Note', 'Debit Note'].includes(parentType) && (
                   <div>
@@ -1332,8 +1498,9 @@ export default function VoucherFormModal({
                         onChange={e => setConsigneeName(e.target.value)} 
                       />
                     </div>
+                    {!kind.isPurchaseSide && (
                     <div>
-                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Supplier Ref Date</label>
+                      <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">Reference Date</label>
                       <input 
                         type="date" 
                         className="w-full h-9 px-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs" 
@@ -1341,6 +1508,7 @@ export default function VoucherFormModal({
                         onChange={e => setReferenceDate(e.target.value)} 
                       />
                     </div>
+                    )}
                     <div>
                       <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">e-Way Bill Number (12 Digits)</label>
                       <input 
@@ -1440,7 +1608,7 @@ export default function VoucherFormModal({
                     
                     <div className="flex-1 flex gap-2">
                       <select 
-                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
                         value={e.ledger_id} 
                         onChange={evt => {
                           setValidationError(null)
@@ -1453,7 +1621,7 @@ export default function VoucherFormModal({
                       >
                         <option value="">Select Ledger...</option>
                         <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
-                        {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>)}
+                        {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}{ledgerBalanceLabel(l)}</option>)}
                       </select>
                       
                       <button 
@@ -1517,7 +1685,7 @@ export default function VoucherFormModal({
                   <div className="sm:hidden space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <select 
-                        className="w-28 h-9 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold bg-white dark:bg-slate-900" 
+                        className="w-32 h-9 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold bg-white dark:bg-slate-900" 
                         value={e.type} 
                         onChange={evt => {
                           setValidationError(null)
@@ -1537,7 +1705,7 @@ export default function VoucherFormModal({
 
                     <div className="flex gap-1.5">
                       <select 
-                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
                         value={e.ledger_id} 
                         onChange={evt => {
                           setValidationError(null)
@@ -1550,7 +1718,7 @@ export default function VoucherFormModal({
                       >
                         <option value="">Select Ledger...</option>
                         <option value="__create_new__" className="font-bold text-emerald-600 dark:text-emerald-400">+ Create New Ledger...</option>
-                        {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>)}
+                        {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}{ledgerBalanceLabel(l)}</option>)}
                       </select>
                       <button 
                         type="button" 
@@ -1560,6 +1728,11 @@ export default function VoucherFormModal({
                         + New
                       </button>
                     </div>
+                    {(() => {
+                      const picked = localLedgers.find(l => String(l.ledger_id) === String(e.ledger_id))
+                      const label = picked ? ledgerBalanceLabel(picked) : ''
+                      return label ? <p className="text-[11px] text-slate-500 dark:text-slate-400 -mt-1">Current balance: <span className="font-semibold text-slate-700 dark:text-slate-200">{label.replace(' — ', '')}</span></p> : null
+                    })()}
 
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">₹ Amount</span>
@@ -1637,7 +1810,7 @@ export default function VoucherFormModal({
                   <div className="hidden sm:flex gap-3 items-center">
                     <div className="flex-1 flex gap-2">
                       <select 
-                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
                         value={e.stock_item_id} 
                         onChange={evt => {
                           if (evt.target.value === '__create_new__') {
@@ -1725,7 +1898,7 @@ export default function VoucherFormModal({
 
                     <div className="flex gap-1.5">
                       <select 
-                        className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                        className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
                         value={e.stock_item_id} 
                         onChange={evt => {
                           if (evt.target.value === '__create_new__') {
@@ -1842,7 +2015,7 @@ export default function VoucherFormModal({
                 {sourceEntries.map((e, idx) => (
                   <div key={e.id} className="flex gap-2 items-center">
                     <select 
-                      className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
                       value={e.stock_item_id} 
                       onChange={evt => {
                         if (evt.target.value === '__create_new__') {
@@ -1880,7 +2053,7 @@ export default function VoucherFormModal({
                 {destEntries.map((e, idx) => (
                   <div key={e.id} className="flex gap-2 items-center">
                     <select 
-                      className="flex-1 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
+                      className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" 
                       value={e.stock_item_id} 
                       onChange={evt => {
                         if (evt.target.value === '__create_new__') {
@@ -1899,6 +2072,101 @@ export default function VoucherFormModal({
                 ))}
                 <button onClick={addDestEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Destination</button>
               </div>
+            </div>
+          )}
+
+          {isAttendance && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-bold text-sm sm:text-base text-slate-800 dark:text-slate-200">Attendance</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Employees and attendance types come from Tally. {payrollMasters.employees.length === 0 && 'No employees have been read from Tally yet.'}</p>
+              </div>
+              <div className="flex gap-2 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+                <div className="flex-1">Employee</div>
+                <div className="flex-1">Attendance Type</div>
+                <div className="w-24 text-center">Value</div>
+              </div>
+              {attendanceRows.map(r => (
+                <div key={r.id} className="flex gap-2 items-center">
+                  <select className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" value={r.employee_name} onChange={evt => setAttendanceRows(attendanceRows.map(x => x.id === r.id ? { ...x, employee_name: evt.target.value } : x))}>
+                    <option value="">Employee...</option>
+                    {Array.from(new Set([...payrollMasters.employees, r.employee_name].filter(Boolean))).map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  <select className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" value={r.attendance_type} onChange={evt => setAttendanceRows(attendanceRows.map(x => x.id === r.id ? { ...x, attendance_type: evt.target.value } : x))}>
+                    <option value="">Type...</option>
+                    {Array.from(new Set([...payrollMasters.attendance_types.map(a => a.name), r.attendance_type].filter(Boolean))).map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  <input type="number" className="w-24 h-10 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Days" value={r.value} onChange={evt => setAttendanceRows(attendanceRows.map(x => x.id === r.id ? { ...x, value: evt.target.value } : x))} />
+                </div>
+              ))}
+              <button onClick={() => setAttendanceRows([...attendanceRows, { id: Math.max(0, ...attendanceRows.map(x => x.id)) + 1, employee_name: '', attendance_type: '', value: '' }])} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Employee</button>
+            </div>
+          )}
+
+          {isPayroll && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs sm:text-sm font-bold sm:font-medium text-slate-700 dark:text-slate-300 mb-1">Salary payable to (ledger)</label>
+                <select className="w-full h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" value={partyLedgerId} onChange={evt => setPartyLedgerId(evt.target.value)}>
+                  <option value="">Select ledger...</option>
+                  {sortedLedgers.map(l => <option key={l.ledger_id} value={l.ledger_id}>{l.name}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+                <div className="flex-1">Employee</div>
+                <div className="flex-1">Pay Head</div>
+                <div className="w-28 text-center">Amount</div>
+              </div>
+              {payrollRows.map(r => (
+                <div key={r.id} className="flex gap-2 items-center">
+                  <select className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" value={r.employee_name} onChange={evt => setPayrollRows(payrollRows.map(x => x.id === r.id ? { ...x, employee_name: evt.target.value } : x))}>
+                    <option value="">Employee...</option>
+                    {Array.from(new Set([...payrollMasters.employees, r.employee_name].filter(Boolean))).map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  <select className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900" value={r.pay_head_name} onChange={evt => setPayrollRows(payrollRows.map(x => x.id === r.id ? { ...x, pay_head_name: evt.target.value } : x))}>
+                    <option value="">Pay head...</option>
+                    {Array.from(new Set([...payrollMasters.pay_heads.map(h => h.name), r.pay_head_name].filter(Boolean))).map(n => {
+                      const head = payrollMasters.pay_heads.find(h => h.name === n)
+                      return <option key={n} value={n}>{n}{head?.is_deduction ? ' (deduction)' : ''}</option>
+                    })}
+                  </select>
+                  <input type="number" className="w-28 h-10 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Amount" value={r.amount} onChange={evt => setPayrollRows(payrollRows.map(x => x.id === r.id ? { ...x, amount: evt.target.value } : x))} />
+                </div>
+              ))}
+              <button onClick={() => setPayrollRows([...payrollRows, { id: Math.max(0, ...payrollRows.map(x => x.id)) + 1, employee_name: '', pay_head_name: '', amount: '' }])} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Pay Head</button>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Net payable: <strong className="text-slate-900 dark:text-white">₹{payrollRows.reduce((sum, r) => {
+                  const amt = parseFloat(r.amount || '0') || 0
+                  return sum + (payrollMasters.pay_heads.find(h => h.name === r.pay_head_name)?.is_deduction ? -amt : amt)
+                }, 0).toFixed(2)}</strong>. Each pay head posts to its own ledger; the net goes to the ledger above.
+              </p>
+            </div>
+          )}
+
+          {isPhysicalStock && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-bold text-sm sm:text-base text-slate-800 dark:text-slate-200">Counted stock</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Enter the quantity actually counted. Stock for each item is set to this figure as of the voucher date.</p>
+              </div>
+              <div className="flex gap-2 items-center text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
+                <div className="flex-1">Item</div>
+                <div className="w-28 text-center">Counted Qty</div>
+              </div>
+              {destEntries.map(e => (
+                <div key={e.id} className="flex gap-2 items-center">
+                  <select
+                    className="flex-1 min-w-0 h-10 px-3 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-900"
+                    value={e.stock_item_id}
+                    onChange={evt => setDestEntries(destEntries.map(x => x.id === e.id ? { ...x, stock_item_id: evt.target.value } : x))}
+                  >
+                    <option value="">Item...</option>
+                    {sortedStockItems.map(si => <option key={si.stock_item_id} value={si.stock_item_id}>{si.name}</option>)}
+                  </select>
+                  <input type="number" className="w-28 h-10 px-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm" placeholder="Qty" value={e.quantity} onChange={evt => setDestEntries(destEntries.map(x => x.id === e.id ? { ...x, quantity: evt.target.value } : x))} />
+                </div>
+              ))}
+              <button onClick={addDestEntry} className="inline-flex items-center gap-1.5 text-emerald-600 text-sm font-semibold hover:underline cursor-pointer"><Plus className="w-4 h-4" /> Add Item</button>
             </div>
           )}
 
