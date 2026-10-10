@@ -2,6 +2,7 @@ import {
   BarChart3,
   Bell,
   BookOpen,
+  Building,
   Calendar,
   Clock,
   CloudOff,
@@ -127,6 +128,9 @@ export const NAV_MODULES: NavModule[] = [
     visible: ({ permissions: p }) => p.showReports },
   { id: 'gst', href: '/gst', label: 'GST returns', tabLabel: 'GST', icon: FileSpreadsheet, group: 'reports', keywords: 'gstr einvoice tax',
     visible: ({ permissions: p }) => p.showGst },
+
+  { id: 'companies', href: '/companies', label: 'Companies', icon: Building, group: 'masters', keywords: 'switch company sync status last synced',
+    visible: () => true },
 
   // Accounting masters
   { id: 'ledger-groups', href: '/ledgers/groups', label: 'Account groups', icon: Layers, group: 'masters',

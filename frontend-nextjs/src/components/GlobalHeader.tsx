@@ -30,6 +30,7 @@ import {
 import { forgetBranding } from '@/lib/branding'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useOfflinePending } from '@/hooks/useOfflinePending'
+import { describeFreshness, pendingText, useCompanySyncStatus } from '@/lib/sync-status'
 import { useState, useEffect, useRef } from 'react'
 import { NotificationList } from '@/components/notifications/NotificationList'
 import { PushAlertsBanner } from '@/components/notifications/PushAlertsBanner'
@@ -55,6 +56,8 @@ export function GlobalHeader() {
   const pathname = usePathname()
   const router = useRouter()
   const [showCompanySheet, setShowCompanySheet] = useState(false)
+  const [companySearch, setCompanySearch] = useState('')
+  const syncStatus = useCompanySyncStatus(token)
   const [showCompanyModal, setShowCompanyModal] = useState(false)
   const [isEditingCompany, setIsEditingCompany] = useState(false)
   const [savingCompany, setSavingCompany] = useState(false)
@@ -231,6 +234,13 @@ export function GlobalHeader() {
 
   const isHome = pathname === '/'
   const activeCompany = user.allowedCompanies?.find(c => c.company_id === user.company_id)
+  const statusOf = (companyId: number) => syncStatus?.find(s => s.company_id === companyId)
+  const activeStatus = statusOf(user.company_id)
+  const allCompanies = user.allowedCompanies ?? []
+  const searchWords = companySearch.trim().toLowerCase()
+  const listedCompanies = searchWords
+    ? allCompanies.filter(c => `${c.name} ${c.gstin ?? ''} ${c.city ?? ''}`.toLowerCase().includes(searchWords))
+    : allCompanies
 
   const handleOpenCompanyModal = () => {
     if (activeCompany) {
@@ -349,6 +359,10 @@ export function GlobalHeader() {
                 aria-haspopup="dialog"
                 className="ml-1 flex min-h-11 min-w-0 items-center gap-1 rounded-lg px-1.5 text-left hover:bg-emerald-600/60 cursor-pointer"
               >
+                {activeStatus && (
+                  <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-white/70', describeFreshness(activeStatus).dot)}
+                    role="img" aria-label={describeFreshness(activeStatus).text} title={describeFreshness(activeStatus).text} />
+                )}
                 <span className="truncate text-base sm:text-lg font-extrabold">{activeCompany?.name || 'Select company'}</span>
                 <ChevronDown className="h-4 w-4 shrink-0 opacity-80" aria-hidden="true" />
               </button>
@@ -507,9 +521,23 @@ export function GlobalHeader() {
         title="Company"
         description={user.allowedCompanies && user.allowedCompanies.length > 1 ? 'Switch the company you are working in' : undefined}
       >
+        {allCompanies.length > 5 && (
+          <input
+            type="search"
+            value={companySearch}
+            onChange={e => setCompanySearch(e.target.value)}
+            placeholder="Search by name, GSTIN or city"
+            aria-label="Search companies"
+            className="mb-2 h-11 w-full rounded-xl border border-border bg-background px-3 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        )}
         <ul className="space-y-1.5" role="list">
-          {(user.allowedCompanies ?? []).map(c => {
+          {listedCompanies.map(c => {
             const current = c.company_id === user.company_id
+            const status = statusOf(c.company_id)
+            const fresh = status ? describeFreshness(status) : null
+            // What tells two look-alike companies apart
+            const identity = [c.gstin, c.city || c.state, c.financial_year_start ? `FY from ${c.financial_year_start}` : ''].filter(Boolean).join(' · ')
             return (
               <li key={c.company_id}>
                 <button
@@ -520,17 +548,27 @@ export function GlobalHeader() {
                   }}
                   aria-current={current ? 'true' : undefined}
                   className={cn(
-                    'flex min-h-12 w-full items-center gap-3 rounded-xl border px-4 py-2.5 text-left text-sm font-semibold transition-colors cursor-pointer',
-                    current ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/70 hover:bg-muted',
+                    'flex min-h-12 w-full items-center gap-3 rounded-xl border px-4 py-2.5 text-left text-sm transition-colors cursor-pointer',
+                    current ? 'border-primary/40 bg-primary/10' : 'border-border/70 hover:bg-muted',
                   )}
                 >
-                  <Building className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate">{c.name}</span>
-                  {current && <Check className="h-4 w-4 shrink-0" aria-label="Current company" />}
+                  <Building className={cn('h-4 w-4 shrink-0', current && 'text-primary')} aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    <span className={cn('block truncate font-semibold', current && 'text-primary')}>{c.name}</span>
+                    {identity && <span className="block truncate text-xs text-muted-foreground">{identity}</span>}
+                    {fresh && (
+                      <span className="mt-0.5 flex items-start gap-1.5 text-xs text-muted-foreground">
+                        <span className={cn('mt-1 h-2 w-2 shrink-0 rounded-full', fresh.dot)} aria-hidden="true" />
+                        <span>{fresh.text}{status && pendingText(status) ? ` · ${pendingText(status)}` : ''}</span>
+                      </span>
+                    )}
+                  </span>
+                  {current && <Check className="h-4 w-4 shrink-0 text-primary" aria-label="Current company" />}
                 </button>
               </li>
             )
           })}
+          {listedCompanies.length === 0 && <li className="px-1 py-3 text-sm text-muted-foreground">No company matches.</li>}
         </ul>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {activeCompany && (
@@ -544,11 +582,12 @@ export function GlobalHeader() {
             </button>
           )}
           <Link
-            href="/companies/new"
+            href="/companies"
             onClick={() => setShowCompanySheet(false)}
-            className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-border px-3 text-sm font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-muted"
+            className="flex min-h-12 items-center justify-center gap-2 rounded-xl border border-border px-3 text-sm font-semibold hover:bg-muted"
           >
-            + New company
+            <Building className="h-4 w-4" aria-hidden="true" />
+            All companies
           </Link>
         </div>
       </BottomSheet>

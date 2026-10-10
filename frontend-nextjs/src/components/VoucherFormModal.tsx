@@ -33,7 +33,8 @@ export default function VoucherFormModal({
   onLedgerCreated,
   onItemCreated
 }: VoucherFormModalProps) {
-  const { token } = useAuth()
+  const { token, user } = useAuth()
+  const companyName = user?.allowedCompanies?.find(c => c.company_id === user.company_id)?.name
   // 1. Basic Form States
   const [selectedType, setSelectedType] = useState<any>(null)
   const [voucherDate, setVoucherDate] = useState(new Date().toISOString().slice(0, 10))
@@ -1204,6 +1205,8 @@ export default function VoucherFormModal({
               <h2 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white truncate">
                 {editVoucher ? `Alter Voucher #${editVoucher.voucher_number || editVoucher.voucher_id}` : 'Create Voucher'}
               </h2>
+              {/* Which company's books this goes into: where people with two similar companies slip */}
+              {companyName && <p className="truncate text-xs font-semibold text-slate-500 dark:text-slate-400">in {companyName}</p>}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               {voucherConfigSwitches(parentType).length > 0 && <button

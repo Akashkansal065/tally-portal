@@ -14,6 +14,22 @@ import { stopHeadlessNativeTracking } from '@/lib/capacitor-native-tracking'
 let activeToken = ''
 // The company this device is working in. Sent on every API request so the server never has to assume one.
 let activeCompanyId: number | null = null
+// The company is chosen per device: picking one on a phone must not move a laptop, or the sync agent
+const COMPANY_KEY = 'mytally_company_id'
+
+function rememberedCompanyId(): number | null {
+  try {
+    const stored = Number(localStorage.getItem(COMPANY_KEY))
+    return Number.isInteger(stored) && stored > 0 ? stored : null
+  } catch {
+    return null
+  }
+}
+
+function rememberCompany(companyId: number) {
+  activeCompanyId = companyId
+  try { localStorage.setItem(COMPANY_KEY, String(companyId)) } catch { /* private mode: lasts for this page only */ }
+}
 let onSessionEnded: ((reason: string | null) => void) | null = null
 let fetchPatched = false
 
@@ -64,6 +80,7 @@ function withIdempotencyKey(input: RequestInfo | URL, init?: RequestInit): Reque
 }
 
 function withCompanyHeader(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
+  if (activeCompanyId == null) activeCompanyId = rememberedCompanyId()
   if (activeCompanyId == null || !activeToken) return init
   const url = requestUrl(input)
   if (!url.startsWith(API_BASE) || url.includes('/auth/login')) return init
@@ -96,6 +113,7 @@ function installSessionEndedInterceptor() {
 function clearLocalSession() {
   activeToken = ''
   activeCompanyId = null
+  localStorage.removeItem(COMPANY_KEY)
   localStorage.removeItem('mytally_token')
   localStorage.removeItem('mytally_email')
   // Don't let the next person on a shared phone inherit an "active shift"
@@ -246,7 +264,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error(`Invalid response format from server (${contentType || 'empty'})`)
       }
       const data = await res.json()
-      if (typeof data.company_id === 'number') activeCompanyId = data.company_id
+      // The server answers with the company this device asked for when it may open it, else the person's own
+      if (typeof data.company_id === 'number') rememberCompany(data.company_id)
 
       let allowedCompanies = []
       try {
@@ -372,25 +391,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const switchCompany = async (company_id: number) => {
-    if (!token) return
-    const res = await fetch(`${API_BASE}/auth/me/active-company`, {
-      method: 'PUT',
-      headers: authHeaders(token),
-      body: JSON.stringify({ company_id })
-    })
-    if (res.ok) {
-      // Before reloading the profile: that request must already ask for the new company
-      activeCompanyId = company_id
-      await fetchMe(token)
-    } else {
-      let msg = "Failed to switch company"
-      try {
-        const err = await res.json()
-        if (typeof err.detail === 'string') msg = err.detail
-        else if (Array.isArray(err.detail)) msg = err.detail.map((e: any) => e.msg).join(', ')
-      } catch (e) {}
-      alert(msg)
-    }
+    if (!token || !user || company_id === user.company_id) return
+    if (!user.allowedCompanies?.some(c => c.company_id === company_id)) return
+    // A form open in a dialog belongs to the company being left: never carry it across
+    if (document.querySelector('[role="dialog"] form, [data-unsaved="true"]')
+      && !window.confirm('You have a form open. Switch company and discard what you entered?')) return
+    rememberCompany(company_id)
+    // Start again from the home screen with nothing of the previous company left in memory. The server checks
+    // the company against what this person may open on every request.
+    window.location.assign('/')
   }
 
   const SUB_MODULE_PARENT_MAP: Record<string, string> = {

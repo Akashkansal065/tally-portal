@@ -18,6 +18,7 @@ Where the two disagreed or a later decision changed them, this document is right
 | Step 2: migrate production into one account | Script written and tested on the test database (`scripts/migrate_to_account.py`), in the same pull request. Not run against MySQL or production. |
 | Step 3: agent sign-up, device tokens, invitations | Code complete, in the same pull request. Backend 228 and agent 27 tests pass; screens not clicked through. |
 | Step 4: multi-company agent, company-owned sales rows | Code complete except chunked full sync, in the same pull request. Backend 232 and agent 34 tests pass; Companies window not clicked through. |
+| Step 5: company switcher, last synced, Companies page | Code complete, in the same pull request. Backend 234 tests pass; screens not opened in a browser. |
 | Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
 | Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
 | Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
@@ -367,12 +368,38 @@ Why chunked full sync is not done: it depends on Tally applying the `SVFROMDATE`
 
 ### Step 5: App experience
 
-- [ ] Header chip with freshness dot; switcher sheet with search and last synced (`GlobalHeader.tsx`)
-- [ ] Active company stored per device; data layer keyed by `company_id`; unsaved-form guard (`AuthContext.tsx`)
-- [ ] `/auth/me/active-company` becomes the default for a new device only
-- [ ] "My companies" page
-- [ ] "Data as of" line on reports and ledgers; company name on write and delete confirmations
-- [ ] `/sync/health` returns `state`, `last_success_at`, `agent_online`
+Code complete, in the Phase 0 pull request. The backend is tested and the web code type-checks with no new lint errors; none of the screens has been opened in a browser.
+
+- [x] `GET /companies/sync-status`: for each company the caller can open, freshness, last synced, whether the agent is online, the last error, which PC syncs it, and entries waiting to reach Tally
+- [x] `/sync/health` also returns `freshness`, `last_synced_at`, `agent_online`
+- [x] Header chip shows a freshness dot beside the company name
+- [x] Switcher sheet: each company with GSTIN, city and financial year to tell look-alikes apart, its last-synced sentence and pending entries; a search box when there are more than five
+- [x] Company chosen per device: kept on the device and sent as `X-Company-ID`; switching no longer changes the account-wide setting
+- [x] Clean restart on switch: the app reloads at the home screen, so nothing of the previous company stays in memory; it asks first if a form is open
+- [x] "Companies" page (`/companies`), in the menu: a card per company with its status, the last error when it needs attention, and which PC syncs it
+- [x] "Data as of" line on Reports and on a ledger's statement, shown only when the company is not freshly synced
+- [x] Company name under the title of the voucher form
+- [ ] Open each of these in a browser and on a phone and check them
+- [ ] Company name on delete confirmations and share sheets (not done: there are many, each with its own dialog)
+- [ ] Deep links that carry the company and switch to it with a notice (not done)
+
+How freshness is decided (`backend/app/services/sync_status.py`):
+
+| Shown as | When |
+| --- | --- |
+| Live (green) | The agent reported in the last 3 minutes and a clean cycle finished in the last 15 |
+| Behind (amber) | The agent is reporting, but no clean cycle for more than 15 minutes |
+| Company closed (grey) | The agent is reporting and says the company is not open in Tally |
+| Agent offline (grey) | No report from the agent for more than 3 minutes |
+| Needs attention (red) | The last cycle failed, or two open companies share the company's name |
+| Not connected (grey) | No agent has ever reported for the company |
+
+Differences from the design in section 3.6:
+
+- **No "Syncing…" state.** The agent reports once per cycle, after it finishes, so the app cannot tell a cycle is in progress.
+- **"Live" covers up to 15 minutes,** not 5. The design left 5 to 15 minutes undefined; with a one-minute cycle, 15 minutes without a clean one is the first sign of trouble.
+- **`/auth/me/active-company` is unchanged but the app no longer calls it to switch.** It still sets which company a person lands in on a device that has not chosen one.
+- **The "+ New company" button in the switcher is replaced by "All companies".** The old page is still there until Step 6 removes it.
 
 **Gate:** a tester with three companies can say which one they are in and how fresh it is from any screen, and switching never shows the previous company's data.
 

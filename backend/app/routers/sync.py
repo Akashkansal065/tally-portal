@@ -4653,7 +4653,13 @@ async def get_sync_health(
         ).order_by(SyncTrafficLog.created_at.desc()).limit(5)
     )).all()
 
+    from app.services.sync_status import company_sync_status
+    freshness = (await company_sync_status(db, [user.company_id]))[user.company_id]
     output = {
+        # How fresh this company's data is, from the agent's last report (see services/sync_status.py)
+        "freshness": freshness["freshness"],
+        "last_synced_at": freshness["last_synced_at"],
+        "agent_online": freshness["agent_online"],
         "status": "healthy" if total_sync_issues == 0 else "degraded",
         "pending_queue_count": pending_count,
         "synced_queue_count": synced_count,

@@ -1,5 +1,7 @@
 'use client'
 
+import { DataFreshnessNote } from '@/components/DataFreshnessNote'
+
 import { useState, useMemo, useEffect } from 'react'
 import Link from 'next/link'
 import { usePeriod } from '@/context/PeriodContext'
@@ -443,6 +445,7 @@ export default function LedgerDetailsClient({
 
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
+      <DataFreshnessNote />
       {token && <EmailPdfSheet request={emailRequest} token={token} onClose={() => setEmailRequest(null)} />}
       {/* Period Balance Breakdown Strip */}
       <div className="bg-card border border-border rounded-2xl p-3.5 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-sans shadow-sm">

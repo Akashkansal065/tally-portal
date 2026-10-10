@@ -152,6 +152,28 @@ class CompanyUpdate(BaseModel):
     upi_id: Optional[str] = None
     features: Optional[dict] = None
 
+@router.get("/sync-status")
+async def companies_sync_status(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """How fresh each company the caller can open is: what the header dot, the company switcher and the
+    My companies page show. Only the caller's own companies are ever listed."""
+    from app.core.permissions import accessible_company_ids
+    from app.services.sync_status import company_sync_status
+    allowed = await accessible_company_ids(db, user.user_id, user.company_id, user.role.name if user.role else "")
+    companies = (await db.execute(
+        select(Company).where(Company.company_id.in_(allowed), Company.is_active == True).order_by(Company.name)  # noqa: E712
+    )).scalars().all()
+    status = await company_sync_status(db, [c.company_id for c in companies])
+    return [
+        {**status[c.company_id], "name": c.name, "gstin": c.gstin, "city": c.city, "state": c.state,
+         "financial_year_start": c.financial_year_start.isoformat() if c.financial_year_start else None,
+         "is_current": c.company_id == user.company_id}
+        for c in companies
+    ]
+
+
 @router.put("/{company_id}/features", response_model=CompanyResponse)
 async def update_company_features(
     company_id: int,

@@ -1,6 +1,6 @@
 # Multi-Tenant Rollout Runbook
 
-Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 4)
+Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 5)
 
 The steps to run by hand, in order, once development is complete. The design and the reasons are in `Multi-Tenant Working Plan.md`; this file is only what to do. Each development step that adds a manual action adds it here.
 
@@ -13,7 +13,7 @@ Status of each part:
 | Step 2: move existing data into one account | Yes: one script | Section 4 |
 | Step 3: agent sign-up and device tokens | Yes: two settings, and signing the PC in | Sections 3, 5 and 6 |
 | Step 4: multi-company agent | Only when you add a second company | Section 7 |
-| Step 5: app switcher and last synced | Not built yet | To be added |
+| Step 5: app switcher and last synced | Deploy the web app; checks only | Sections 3 and 6 |
 | Step 6: enforce and harden | Not built yet | To be added |
 
 ## 1. Before you start
@@ -44,6 +44,8 @@ mysqldump -u <user> -p --single-transaction --routines tally_sync > tally_sync_b
 - [ ] In the startup log, look for lines beginning `Auto Schema Synchronizer:`. They list each column and index it adds. New tables (`accounts`, `agent_devices`, `agent_company_links`, `company_sync_state`, `user_invites`, `signup_verifications`) are created silently.
 - [ ] Confirm there is no line beginning `Warning during auto schema sync`.
 - [ ] Sign in to the web app and open a ledger and a voucher. Nothing should look different.
+
+- [ ] Deploy the web app (the Vercel project). The Android and iOS apps load the web app from there, so they pick up the change without a new app build.
 
 The old agent keeps working against the new backend. The backend log will show a warning that the agent "names no Tally company"; that is expected until section 5.
 
@@ -92,6 +94,12 @@ To give the account a different name than the company's: add `--name "Your Busin
 - [ ] Untick any admin who should not be able to use the sync agent.
 - [ ] Invite a test user from that tab, open the link in a private browser window, set a password and sign in. Then try that user's email in the agent's Setup screen: it must be refused.
 
+- [ ] The company name in the header should have a green dot within a couple of minutes of the agent syncing. Tap the name: the list shows each company with "Synced … ago".
+- [ ] Stop the agent for four minutes: the dot turns grey and the list says "Sync agent offline since …". Start it again.
+- [ ] Close the company in Tally with the agent running: within a couple of minutes the list says "Open this company in Tally to sync", and Reports shows a "Data as of …" line.
+- [ ] Open Companies from the menu: one card per company with the same status.
+- [ ] If you have two companies: switch from the phone, and confirm the laptop stays in the company it was in.
+
 For a new customer later, nothing here is needed: they install the agent, press "New here? Create an account for your business" on the Setup screen, and enter the code emailed to them.
 
 ## 7. Adding a second company (any time after section 6)
@@ -119,5 +127,7 @@ To stop syncing a company from this PC, press Unlink beside it in the same windo
 | Agent says "This PC is signed out of the sync agent" | Someone signed it out in Admin → Sync agent & team, or the person who signed it in was deactivated. Sign in again from Setup. |
 | Agent says a company "is not open in Tally" | Open it in TallyPrime. The other linked companies keep syncing meanwhile. |
 | Agent says "Two companies named ... are open" | Close the copy that should not be synced. |
+| The header dot stays grey "No sync agent has connected this company yet" | The agent on that PC is older than Step 4, or has not finished a cycle yet. Update it and wait one minute. |
+| After switching company the app shows the old company | The device was not allowed to open the one chosen (access was removed). It falls back to the person's own company. |
 | Sign-up or invitation email never arrives | Check `SMTP_USER` / `SMTP_PASS` and the backend log line "could not be emailed". The admin can copy the invitation link from the screen instead. |
 | You need to undo section 4 completely | Restore `tally_portal` from the backup taken in section 1. |

@@ -1,5 +1,7 @@
 'use client'
 
+import { DataFreshnessNote } from '@/components/DataFreshnessNote'
+
 import { Suspense, useEffect, useState, useCallback, useMemo, useRef, useDeferredValue } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
@@ -1201,6 +1203,7 @@ function ReportsPage() {
 
   return (
     <div className="p-4 space-y-6 max-w-7xl mx-auto pb-28">
+      <DataFreshnessNote />
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">

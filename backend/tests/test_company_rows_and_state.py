@@ -102,3 +102,44 @@ def test_last_synced_moves_only_on_a_clean_cycle(harness):
     assert harness.scalar(select(P.CompanySyncState.last_success_at)) == succeeded_at
     assert client.post("/sync/state", headers=headers, json=[{"tally_guid": "guid-unknown", "state": "live", "ok": True}]).json() == {
         "recorded": 0, "skipped": ["guid-unknown"]}
+
+
+# ── What the app shows for each company ──
+
+def test_freshness_words():
+    from datetime import datetime, timedelta
+    from app.services.sync_status import freshness
+    now = datetime(2026, 10, 10, 12, 0)
+    ago = lambda minutes: now - timedelta(minutes=minutes)  # noqa: E731
+
+    assert freshness(None, None, None, now) == "never"
+    assert freshness("live", ago(1), ago(1), now) == "live"
+    assert freshness("live", ago(40), ago(1), now) == "behind"         # running, but nothing clean for a while
+    assert freshness("closed", ago(40), ago(1), now) == "closed"
+    assert freshness("error", ago(40), ago(1), now) == "attention"
+    assert freshness("ambiguous", None, ago(1), now) == "attention"
+    assert freshness("live", ago(10), ago(10), now) == "offline"       # the agent stopped reporting
+
+
+def test_sync_status_lists_only_the_callers_companies_with_pending_pushes(harness):
+    from app.routers import companies as companies_router
+    account, other_account = harness.add(P.Account(name="One"), P.Account(name="Two"))
+    alpha, beta, foreign = harness.company("Alpha"), harness.company("Beta"), harness.company("Foreign")
+    for company, acc, guid in ((alpha, account, "guid-alpha"), (beta, account, "guid-beta"), (foreign, other_account, "guid-x")):
+        harness.execute(P.Company.__table__.update().where(P.Company.company_id == company.company_id)
+                        .values(account_id=acc.account_id, tally_guid=guid))
+    admin = harness.user(alpha, harness.role("Admin"), "owner")
+    harness.execute(P.User.__table__.update().values(account_id=account.account_id))
+    harness.add(P.SyncQueue(sync_id=1, company_id=alpha.company_id, record_type="Voucher", record_id=1, action="Create", is_processed=False),
+                P.SyncQueue(sync_id=2, company_id=alpha.company_id, record_type="Voucher", record_id=2, action="Create", is_processed=True))
+    client = harness.app(auth.router, sync.router, (companies_router.router, ""))
+    headers = bearer(login(client, admin.email))
+    client.post("/sync/state", headers=headers, json=[{"tally_guid": "guid-alpha", "state": "live", "ok": True}])
+
+    status = {c["name"]: c for c in client.get("/companies/sync-status", headers=headers).json()}
+
+    assert set(status) == {"Alpha", "Beta"}                              # never another account's company
+    assert (status["Alpha"]["freshness"], status["Alpha"]["agent_online"], status["Alpha"]["pending_to_tally"]) == ("live", True, 1)
+    assert status["Alpha"]["last_synced_at"].endswith("Z") and status["Alpha"]["is_current"] is True
+    assert (status["Beta"]["freshness"], status["Beta"]["last_synced_at"], status["Beta"]["pending_to_tally"]) == ("never", None, 0)
+    assert client.get("/sync/health", headers=headers).json()["freshness"] == "live"
