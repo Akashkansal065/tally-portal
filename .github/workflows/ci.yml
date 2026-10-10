@@ -47,7 +47,7 @@ jobs:
           python-version: "3.14"
       # Only what the tests import; the GUI and packaging deps (customtkinter, pystray,
       # pyinstaller) need a desktop session and are Windows-oriented.
-      - run: pip install requests cryptography keyring pytest
+      - run: pip install cryptography keyring pytest
       - run: pytest -q tests
 
   frontend:

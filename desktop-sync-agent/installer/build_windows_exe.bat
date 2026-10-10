@@ -88,7 +88,7 @@ echo.
 echo ===========================================================================
 echo  [2/3] Installing / Updating Dependencies (CustomTkinter, PyInstaller, Pillow)...
 echo ===========================================================================
-%PYTHON_EXE% -m pip install --upgrade pip pyinstaller customtkinter pystray pillow requests cryptography keyring
+%PYTHON_EXE% -m pip install --upgrade pip pyinstaller customtkinter pystray pillow cryptography keyring
 
 echo.
 echo ===========================================================================

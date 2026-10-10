@@ -1,10 +1,16 @@
+# The agent talks to the backend and to Tally with the standard library; these are the rest.
+
+# Stored sign-in: Windows Credential Manager, with an encrypted file as the fallback
+keyring>=25.0.0
+cryptography>=41.0.0
+
+# Window and tray icon
 customtkinter>=5.2.0
 pystray>=0.19.5
 pillow>=9.5.0
+
+# Building the Windows .exe (installer\build_windows_exe.bat)
 pyinstaller>=5.13.0
-requests>=2.31.0
-cryptography>=41.0.0
-keyring>=25.0.0
 
 # Test dependencies (run tests from desktop-sync-agent/ with: pytest tests)
 pytest==9.1.1
