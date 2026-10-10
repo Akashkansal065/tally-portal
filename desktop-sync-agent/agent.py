@@ -108,15 +108,7 @@ class DesktopSyncAgent:
         self.config_path = config_path or get_default_config_path()
         self.config: AgentConfig = load_config(config_path)
         self.tally = TallyClient(tally_url=self.config.tally_url)
-        self.cloud = CloudClient(
-            backend_url=self.config.backend_url,
-            token=self.config.auth_token,
-            email=self.config.email or self.config.username,
-            password=self.config.password,
-            on_token_refreshed=self._on_token_refreshed,
-            auth_halt_reason=self.config.auth_halt_reason,
-            on_auth_halted=self._on_auth_halted
-        )
+        self.cloud = self._new_cloud_client()
         self.last_inbound_time = 0
         self.active_company_name = self.config.company_name
         self.active_company_guid = getattr(self.config, "company_guid", "") or ""
@@ -220,20 +212,53 @@ class DesktopSyncAgent:
         else:
             self.config = load_config(self.config_path)
         self.tally = TallyClient(tally_url=self.config.tally_url)
-        self.cloud = CloudClient(
-            backend_url=self.config.backend_url,
-            token=self.config.auth_token,
-            email=self.config.email or self.config.username,
-            password=self.config.password,
-            on_token_refreshed=self._on_token_refreshed,
-            auth_halt_reason=self.config.auth_halt_reason,
-            on_auth_halted=self._on_auth_halted
-        )
+        self.cloud = self._new_cloud_client()
         self.active_company_name = self.config.company_name
         self.active_company_guid = getattr(self.config, "company_guid", "") or ""
         self.cloud.company_guid = self.active_company_guid
         self.company_paused = False
         logger.info("🔄 Agent configuration reloaded.")
+
+    def _new_cloud_client(self) -> CloudClient:
+        # Signed in as this PC: the device token is the sign-in, and no password is kept or sent
+        device_token = getattr(self.config, "device_token", "") or ""
+        return CloudClient(
+            backend_url=self.config.backend_url,
+            token=device_token or self.config.auth_token,
+            email="" if device_token else (self.config.email or self.config.username),
+            password="" if device_token else self.config.password,
+            on_token_refreshed=self._on_token_refreshed,
+            auth_halt_reason=self.config.auth_halt_reason,
+            on_auth_halted=self._on_auth_halted
+        )
+
+    def tally_company_to_link(self) -> Optional[Dict[str, Any]]:
+        """The Tally company this agent is tied to, as the cloud needs it for linking: found among the companies
+        open in Tally by GUID once pinned, by name before that. None when it is not open."""
+        open_cmps = self.tally.get_open_companies()
+        match = next((c for c in open_cmps if self.active_company_guid and c.get("guid") == self.active_company_guid), None)
+        if match is None and not self.active_company_guid:
+            match = next((c for c in open_cmps if c.get("name") == self.active_company_name), None)
+        if match is None or not match.get("guid"):
+            return None
+        return {"tally_guid": match["guid"], "name": match["name"], "books_from": match.get("starting_from") or None,
+                "tally_url": self.config.tally_url}
+
+    def link_active_company(self, take_over: bool = False) -> Tuple[bool, str, str]:
+        """Make this PC the one that syncs the agent's company. Returns (ok, message, reason)."""
+        company = self.tally_company_to_link()
+        if company is None:
+            return False, f"'{self.active_company_name}' is not open in Tally. Open it and try again.", "not_open"
+        ok, body, reason = self.cloud.link_company(company, take_over=take_over)
+        if not ok:
+            return False, str(body), reason
+        self.active_company_guid = company["tally_guid"]
+        self.active_company_name = company["name"]
+        self.cloud.company_guid = self.active_company_guid
+        self.config.company_guid, self.config.company_name = self.active_company_guid, self.active_company_name
+        save_config(self.config, self.config_path)
+        logger.info(f"🔗 '{company['name']}' is now synced from this PC.")
+        return True, "", ""
 
     def _on_token_refreshed(self, new_token: str):
         self.config.auth_token = new_token
@@ -243,6 +268,7 @@ class DesktopSyncAgent:
         """The server signed this PC out on purpose or blocked it: stop syncing until credentials are re-entered."""
         self.config.auth_halt_reason = reason
         self.config.auth_token = ""
+        self.config.device_token = ""
         save_config(self.config, self.config_path)
         self.cloud_message = halt_message(reason)
         self.last_sync_status = halt_message(reason)
@@ -299,6 +325,8 @@ class DesktopSyncAgent:
         if self.config.auth_halt_reason:
             self.cloud_message = halt_message(self.config.auth_halt_reason)
             logger.warning(f"⛔ Not signing in: {self.cloud_message}")
+        elif self.cloud.device_mode:
+            logger.info("🔑 Signed in as this PC.")
         elif self.config.email and self.config.password:
             auth_ok, auth_res = self.cloud.authenticate(self.config.email, self.config.password)
             if auth_ok:

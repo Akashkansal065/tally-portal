@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import decode_access_token
+from app.core.agent_auth import agent_device, authenticate_device, device_company, is_device_token
 from app.models.portal_core import (
     User, UserSession, UserPermissionOverride, Permission, Module, UserDataScope,
     UserCompanyAccess, Company
@@ -155,7 +156,11 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
+    # A Desktop Sync Agent signed in as a PC: it acts for the person who signed the PC in, on sync endpoints only
+    if is_device_token(token):
+        return await authenticate_device(request, token, db)
+
     payload = decode_access_token(token)
     # Covers malformed and JWT-expired tokens (the JWT expires together with its session)
     credentials_exception.headers["X-Auth-Reason"] = "invalid"
@@ -289,6 +294,16 @@ async def bind_sync_company(
     Like X-Company-ID, this re-targets the one request and writes nothing to users.company_id. An agent
     from before the header existed still gets its account's active company, with a warning in the log."""
     tally_guid = (request.headers.get(SYNC_COMPANY_GUID_HEADER) or "").strip()
+    device = agent_device(request)
+    if device is not None:
+        # A signed-in PC must always say which company, and may only name one that is linked to it
+        if not tally_guid:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="The sync agent did not say which Tally company this is for.")
+        company = await device_company(db, device, tally_guid)
+        if company.company_id != user.company_id:
+            set_committed_value(user, "company_id", company.company_id)
+        return
     if not tally_guid:
         now = time.time()
         if now - _legacy_sync_warned.get(user.user_id, 0) >= LEGACY_SYNC_WARN_INTERVAL_SECONDS:
@@ -308,6 +323,17 @@ async def bind_sync_company(
         )
     if company.company_id != user.company_id:
         set_committed_value(user, "company_id", company.company_id)
+
+
+async def bind_device_sync_company(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """For the import endpoint: a signed-in PC is held to its linked companies like everywhere else, while an
+    agent on a person's login may still name a company that this import is about to link."""
+    if agent_device(request) is not None:
+        await bind_sync_company(request, user, db)
 
 
 MODULE_TOGGLE_MAPPING = {
@@ -674,9 +700,14 @@ def require_permission(module_code: str, action: str):
     action: 'create', 'read', 'update', 'delete'
     """
     async def dependency(
+        request: Request,
         user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db)
     ):
+        # A signed-in sync agent PC syncs whatever its role's permissions are: what it may touch is decided
+        # by which companies are linked to it
+        if module_code == "sync" and agent_device(request) is not None:
+            return user
         perms = await get_effective_permission(user, module_code, db)
         field = f"can_{action}"
         if not perms.get(field, False):

@@ -157,7 +157,7 @@ class SnehDistribuorsApp(ctk.CTk):
         self.current_frame: Optional[ctk.CTkFrame] = None
 
         # Determine start screen
-        has_credentials = bool(self.config.backend_url and (self.config.auth_token or (self.config.email and self.config.password)))
+        has_credentials = bool(self.config.backend_url and (self.config.device_token or self.config.auth_token or (self.config.email and self.config.password)))
         start_minimized = ("--tray" in sys.argv or "--minimized" in sys.argv)
 
         if has_credentials:
@@ -533,6 +533,18 @@ class SetupView(ctk.CTkFrame):
         )
         self.connect_btn.pack(side="left", fill="x", expand=True, padx=(8, 0))
 
+        self.create_account_btn = ctk.CTkButton(
+            self.scroll,
+            text="New here? Create an account for your business",
+            font=ctk.CTkFont(size=12, underline=True),
+            fg_color="transparent",
+            hover_color=CARD_BG,
+            text_color=TEXT_MUTED,
+            height=28,
+            command=self._open_create_account
+        )
+        self.create_account_btn.pack(pady=(0, 12))
+
     def _detect_tally_company(self):
         t_url = self.tally_url_entry.get().strip() or "http://127.0.0.1:9000"
         self.detect_btn.configure(text="Detecting...", state="disabled")
@@ -633,20 +645,31 @@ class SetupView(ctk.CTkFrame):
             cloud_ok, _ = cloud_client.check_health()
             
             token = ""
+            device_token = ""
             if email and password:
-                auth_ok, auth_res = cloud_client.authenticate(email, password)
-                if auth_ok:
-                    token = auth_res
+                # Sign this PC in. A server from before PC sign-in answers 404: use the person's login as before.
+                signed_in, sign_res, sign_status = cloud_client.sign_in_device(email, password)
+                if signed_in:
+                    device_token = sign_res["device_token"]
+                elif sign_status == 404:
+                    auth_ok, auth_res = cloud_client.authenticate(email, password)
+                    if auth_ok:
+                        token = auth_res
+                    else:
+                        self.after(0, lambda: self._on_connect_failed(f"Authentication failed: {auth_res}"))
+                        return
                 else:
-                    self.after(0, lambda: self._on_connect_failed(f"Authentication failed: {auth_res}"))
+                    self.after(0, lambda: self._on_connect_failed(f"Sign-in failed: {sign_res}"))
                     return
 
             # Update Config
             self.app.config.backend_url = backend_url
             self.app.config.email = email
             self.app.config.username = email
-            self.app.config.password = password
+            # A signed-in PC keeps no password: its device token is the sign-in
+            self.app.config.password = "" if device_token else password
             self.app.config.auth_token = token
+            self.app.config.device_token = device_token
             # Re-entering credentials resumes an agent an admin had signed out (a blocked PC still can't sign in)
             self.app.config.auth_halt_reason = ""
             self.app.config.tally_url = tally_url
@@ -669,10 +692,53 @@ class SetupView(ctk.CTkFrame):
             # Reload agent
             self.app.agent.reload_config(self.app.config)
 
-            # Transition to Dashboard
-            self.after(0, self._on_connect_success)
+            if device_token:
+                self._link_company_then_launch()
+            else:
+                self.after(0, self._on_connect_success)
 
         threading.Thread(target=connect_worker, daemon=True).start()
+
+    def _link_company_then_launch(self, take_over: bool = False):
+        """Worker thread: make this PC the one syncing the chosen company, then open the dashboard. If another PC
+        syncs it, ask before moving it here."""
+        ok, message, reason = self.app.agent.link_active_company(take_over=take_over)
+        if ok:
+            self.after(0, self._on_connect_success)
+        elif reason == "linked_to_another_device":
+            self.after(0, lambda: self._ask_to_move_company(message))
+        else:
+            self.after(0, lambda: self._on_connect_failed(f"Signed in, but the company could not be linked: {message}"))
+
+    def _ask_to_move_company(self, message: str):
+        from tkinter import messagebox
+        if messagebox.askyesno("Move sync to this PC?", f"{message}\n\nThe other PC will stop syncing this company."):
+            threading.Thread(target=lambda: self._link_company_then_launch(take_over=True), daemon=True).start()
+        else:
+            self._on_connect_failed("Not linked: the company is still synced from the other PC.")
+
+    def _open_create_account(self):
+        backend_url = self.backend_url_entry.get().strip()
+        if not backend_url:
+            self.status_lbl.configure(text="❌ Please enter your Cloud Server URL.", text_color=ERROR_RED)
+            return
+        CreateAccountDialog(self, backend_url, self.email_entry.get().strip(), self.password_entry.get(),
+                            self.tally_url_entry.get().strip(), self.company_entry.get().strip())
+
+    def _on_account_created(self, backend_url: str, email: str, tally_url: str, signed: Dict[str, Any]):
+        """Main thread: the account exists and this PC is signed in to it with its first company linked."""
+        cfg = self.app.config
+        cfg.backend_url, cfg.email, cfg.username, cfg.tally_url = backend_url, email, email, tally_url
+        cfg.password, cfg.auth_token, cfg.auth_halt_reason = "", "", ""
+        cfg.device_token = signed["device_token"]
+        cfg.company_name = signed["company"]["name"]
+        cfg.company_guid = signed["company"]["tally_guid"]
+        cfg.autostart_enabled = self.autostart_var.get()
+        save_config(cfg, self.app.config_file)
+        if cfg.autostart_enabled:
+            install_startup()
+        self.app.agent.reload_config(cfg)
+        self._on_connect_success()
 
     def _on_connect_failed(self, msg: str):
         self.connect_btn.configure(text="🚀 Connect & Start Sync", state="normal")
@@ -681,6 +747,121 @@ class SetupView(ctk.CTkFrame):
     def _on_connect_success(self):
         self.app.show_dashboard()
         self.app.start_sync_thread()
+
+
+class CreateAccountDialog(ctk.CTkToplevel):
+    """Create a new account from this PC: details, then the code emailed to confirm them. The company open in
+    Tally becomes the account's first company. For joining an existing business there is no form here: an admin
+    of that business sends an invitation from the app."""
+
+    def __init__(self, setup: "SetupView", backend_url: str, email: str, password: str, tally_url: str, company_name: str):
+        super().__init__(setup)
+        self.setup, self.backend_url, self.tally_url, self.company_name = setup, backend_url, tally_url, company_name
+        self.cloud = CloudClient(backend_url=backend_url)
+        self.company: Optional[Dict[str, Any]] = None
+        self.title("Create your account")
+        self.geometry("460x640")
+        self.configure(fg_color=BG_COLOR)
+        self.transient(setup.winfo_toplevel())
+        self.grab_set()
+
+        ctk.CTkLabel(self, text="Create your account", font=ctk.CTkFont(size=18, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(18, 2))
+        ctk.CTkLabel(self, text="Joining a business that already uses this? Ask its admin for an invitation instead.",
+                     font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, wraplength=420, justify="left").pack(anchor="w", padx=20, pady=(0, 10))
+
+        self.entries: Dict[str, ctk.CTkEntry] = {}
+        for key, label, value, secret in (
+            ("full_name", "Your name", "", False),
+            ("business_name", "Business name", company_name, False),
+            ("email", "Email", email, False),
+            ("phone", "Mobile number", "", False),
+            ("password", "Password (8 characters or more)", password, True),
+        ):
+            ctk.CTkLabel(self, text=label, font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=20)
+            entry = ctk.CTkEntry(self, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34, show="•" if secret else "")
+            if value:
+                entry.insert(0, value)
+            entry.pack(fill="x", padx=20, pady=(2, 8))
+            self.entries[key] = entry
+
+        self.terms_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(self, text="I accept the terms of service", variable=self.terms_var,
+                        font=ctk.CTkFont(size=12), text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(2, 10))
+
+        self.send_btn = ctk.CTkButton(self, text="Email me a code", fg_color=ACCENT_BLUE, hover_color=ACCENT_HOVER,
+                                      height=38, command=self._send_code)
+        self.send_btn.pack(fill="x", padx=20, pady=(0, 10))
+
+        ctk.CTkLabel(self, text="Code from the email", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=20)
+        self.code_entry = ctk.CTkEntry(self, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34, state="disabled")
+        self.code_entry.pack(fill="x", padx=20, pady=(2, 8))
+        self.create_btn = ctk.CTkButton(self, text="Create account", fg_color=SUCCESS_GREEN, hover_color=ACCENT_HOVER,
+                                        height=38, state="disabled", command=self._create)
+        self.create_btn.pack(fill="x", padx=20, pady=(0, 8))
+
+        self.status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED, wraplength=420, justify="left")
+        self.status.pack(anchor="w", padx=20, pady=(0, 12))
+
+    def _say(self, text: str, color: str = TEXT_MUTED):
+        self.status.configure(text=text, text_color=color)
+
+    def _send_code(self):
+        details = {key: entry.get().strip() if key != "password" else entry.get() for key, entry in self.entries.items()}
+        if not all(details.values()):
+            self._say("Fill in every field.", ERROR_RED)
+            return
+        if not self.terms_var.get():
+            self._say("Accept the terms to create an account.", ERROR_RED)
+            return
+        details["accept_terms"] = True
+        self.send_btn.configure(state="disabled", text="Sending...")
+
+        def worker():
+            # The account's first company is the one open in Tally: without it there is nothing to sync
+            open_cmps = TallyClient(tally_url=self.tally_url).get_open_companies()
+            match = next((c for c in open_cmps if c.get("name") == self.company_name), None) or (open_cmps[0] if open_cmps else None)
+            if match is None or not match.get("guid"):
+                self.after(0, lambda: self._code_sent(False, "Open your company in TallyPrime first, then try again."))
+                return
+            self.company = {"tally_guid": match["guid"], "name": match["name"],
+                            "books_from": match.get("starting_from") or None, "tally_url": self.tally_url}
+            ok, message = self.cloud.sign_up(details)
+            self.after(0, lambda: self._code_sent(ok, message))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _code_sent(self, ok: bool, message: str):
+        self.send_btn.configure(state="normal", text="Email me a code" if not ok else "Send the code again")
+        if not ok:
+            self._say(message, ERROR_RED)
+            return
+        self.code_entry.configure(state="normal")
+        self.create_btn.configure(state="normal")
+        self._say(f"We emailed a 6-digit code to {self.entries['email'].get().strip()}. It is valid for 10 minutes. "
+                  f"Your first company will be '{self.company['name']}'.", SUCCESS_GREEN)
+
+    def _create(self):
+        code = self.code_entry.get().strip()
+        if not code or self.company is None:
+            self._say("Enter the code from the email.", ERROR_RED)
+            return
+        email = self.entries["email"].get().strip()
+        self.create_btn.configure(state="disabled", text="Creating...")
+
+        def worker():
+            ok, body = self.cloud.verify_sign_up(email, code, self.company)
+            self.after(0, lambda: self._created(ok, body, email))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _created(self, ok: bool, body: Any, email: str):
+        if not ok:
+            self.create_btn.configure(state="normal", text="Create account")
+            self._say(str(body), ERROR_RED)
+            return
+        self.grab_release()
+        self.destroy()
+        self.setup._on_account_created(self.backend_url, email, self.tally_url, body)
 
 
 # ---------------------------------------------------------------------------

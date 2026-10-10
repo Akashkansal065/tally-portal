@@ -30,7 +30,9 @@ HALT_MESSAGES = {
     "device_limit": "Signed out because the account signed in on another device. Re-enter the password in Settings.",
     "self_revoke": "Signed out from another device. Re-enter the password in Settings to resume.",
     "logout": "Signed out. Re-enter the password in Settings to resume.",
+    "device_signed_out": "This PC is signed out of the sync agent. Sign in again in Setup.",
 }
+DEVICE_TOKEN_PREFIX = "mta_"
 
 
 def halt_message(reason: Optional[str]) -> str:
@@ -109,6 +111,74 @@ class CloudClient:
             except Exception as ex:
                 logger.debug(f"Error calling on_auth_halted: {ex}")
 
+    @property
+    def device_mode(self) -> bool:
+        """Signed in as this PC (a device token), not with a person's login."""
+        return bool(self.token) and self.token.startswith(DEVICE_TOKEN_PREFIX)
+
+    @property
+    def machine_id(self) -> str:
+        return self.identity_headers.get("X-Device-Id", "")
+
+    def _device(self) -> Dict[str, str]:
+        return {"machine_id": self.machine_id, "device_name": self.identity_headers.get("X-Device-Name", "")}
+
+    def _call(self, method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Tuple[int, Any, Dict[str, str]]:
+        """One JSON call to the backend. Returns (HTTP status, decoded body or message, response headers);
+        status 0 means the server was not reached."""
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        req = urllib.request.Request(f"{self.backend_url}{path}", data=data, headers=self._get_headers(), method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8") or "null"), dict(resp.headers or {})
+        except urllib.error.HTTPError as e:
+            try:
+                body = json.loads(e.read().decode("utf-8", errors="ignore"))
+                detail = body.get("detail") if isinstance(body, dict) else body
+                if isinstance(detail, list):   # request validation errors
+                    detail = "; ".join(str(item.get("msg", item)) for item in detail)
+            except Exception:
+                detail = f"HTTP {e.code}"
+            return e.code, detail or f"HTTP {e.code}", dict(e.headers or {})
+        except Exception as e:
+            return 0, f"Cannot reach {self.backend_url} ({e})", {}
+
+    # ── Signing this PC in ──
+    def sign_up(self, details: Dict[str, Any]) -> Tuple[bool, str]:
+        """Ask for a new account: the server emails a code to confirm. Nothing is created until verify_sign_up."""
+        status, body, _ = self._call("POST", "/agent/signup", details)
+        return status == 200, "" if status == 200 else str(body)
+
+    def verify_sign_up(self, email: str, code: str, company: Dict[str, Any]) -> Tuple[bool, Any]:
+        """Confirm the emailed code. Creates the account with this PC and the company, and signs this PC in."""
+        status, body, _ = self._call("POST", "/agent/signup/verify", {"email": email, "code": code, "company": company, **self._device()})
+        if status == 200:
+            self.token, self.auth_halt_reason = body["device_token"], ""
+        return status == 200, body
+
+    def sign_in_device(self, email: str, password: str) -> Tuple[bool, Any, int]:
+        """Sign this PC in to an existing account. Returns (ok, body or message, HTTP status); a 404 means the
+        server is older than device sign-in."""
+        status, body, _ = self._call("POST", "/agent/signin", {"email": email, "password": password, **self._device()})
+        if status == 200:
+            self.token, self.auth_halt_reason = body["device_token"], ""
+        return status == 200, body, status
+
+    # ── Companies synced from this PC ──
+    def list_companies(self) -> Tuple[bool, Any]:
+        status, body, _ = self._call("GET", "/agent/companies")
+        return status == 200, body
+
+    def link_company(self, company: Dict[str, Any], take_over: bool = False) -> Tuple[bool, Any, str]:
+        """Make this PC the one that syncs a Tally company. Returns (ok, body or message, reason); reason is
+        "linked_to_another_device" when another PC syncs it and take_over was not asked for."""
+        status, body, headers = self._call("POST", "/agent/companies/link", {**company, "take_over": take_over})
+        return status == 200, body, headers.get("X-Sync-Reason") or headers.get("x-sync-reason") or ""
+
+    def unlink_company(self, tally_guid: str) -> bool:
+        status, _, _ = self._call("POST", "/agent/companies/unlink", {"tally_guid": tally_guid})
+        return status == 200
+
     def _get_headers(self) -> Dict[str, str]:
         headers = {
             **self.identity_headers,
@@ -155,6 +225,10 @@ class CloudClient:
         """Attempts to obtain a fresh access token if credentials are saved, unless the server ended
         the session on purpose (see AUTO_RELOGIN_REASONS) or the agent is already halted."""
         if self.auth_halt_reason:
+            return False
+        if self.device_mode:
+            # A PC's sign-in is not renewed with a password: someone signs the PC in again
+            self._halt(reason if reason in HALT_MESSAGES else "device_signed_out")
             return False
         if reason not in AUTO_RELOGIN_REASONS:
             self._halt(reason)
@@ -216,12 +290,13 @@ class CloudClient:
                             logger.error(f"Retry after reauth failed: {retry_ex}")
                     last_error = halt_message(self.auth_halt_reason) if self.auth_halt_reason else "Authentication Required (HTTP 401). Please check email/password in config."
                     break  # Do not fallback to /api/v1 when auth fails
-                elif e.code == 409:
-                    # The server has no company linked to this agent's Tally company (yet), or more than one
+                elif e.code in (403, 409):
+                    # The server has no company linked to this agent's Tally company (yet), or this PC is not
+                    # the one syncing it
                     try:
                         last_error = json.loads(e.read().decode("utf-8", errors="ignore")).get("detail") or "HTTP 409"
                     except Exception:
-                        last_error = "HTTP 409: the server could not match this Tally company"
+                        last_error = f"HTTP {e.code}: the server could not match this Tally company"
                 else:
                     last_error = f"HTTP {e.code} on {endpoint}: {e.reason}"
                 if e.code != 404:

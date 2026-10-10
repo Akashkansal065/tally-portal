@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     # Rate Limiting Settings
     RATE_LIMIT_ENABLED: bool = True
     LOGIN_RATE_LIMIT: str = "5/minute"
+    # Where people open the app, e.g. https://app.example.com. Used for the link in invitation emails; without
+    # it the email carries the invitation code to paste into the app's "Accept invite" page.
+    APP_PUBLIC_URL: Optional[str] = None
     REGISTER_RATE_LIMIT: str = "5/minute; 20/hour"
 
     # Logging Settings

@@ -16,6 +16,7 @@ Where the two disagreed or a later decision changed them, this document is right
 | Phase 0: explicit sync company, accounts table, account-scoped Admin | Code complete, in PR [Akashkansal065/tally-portal#67](https://github.com/Akashkansal065/tally-portal/pull/67). Not merged, not deployed. |
 | Step 1: expand the schema | Code complete, in the same pull request (tally-portal#67). Not run against MySQL. |
 | Step 2: migrate production into one account | Script written and tested on the test database (`scripts/migrate_to_account.py`), in the same pull request. Not run against MySQL or production. |
+| Step 3: agent sign-up, device tokens, invitations | Code complete, in the same pull request. Backend 228 and agent 27 tests pass; screens not clicked through. |
 | Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
 | Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
 | Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
@@ -309,14 +310,28 @@ To do on production:
 
 ### Step 3: Agent-first onboarding and device tokens
 
-- [ ] Backend: `/agent/signup` and `/agent/signup/verify` with the emailed code
-- [ ] Backend: `/agent/signin`, `/agent/token/refresh`, device-token authentication for the sync endpoints
-- [ ] Backend: `/agent/companies`, `/agent/companies/link`, `/unlink`
-- [ ] Backend: invites (`user_invites`, accept-invite endpoint), "Manage sync agent" permission and its grant rule
-- [ ] Agent: Create account and Sign in screens; device token in the OS credential store
-- [ ] Agent: Companies screen with Link / Unlink and a status line per company
-- [ ] App: accept-invite page; device list with revoke; invite users
-- [ ] One release in which the old user login (with the GUID header) and device tokens both work
+Code complete, in the Phase 0 pull request. Backend and agent logic are tested; the agent's new screens and the web pages are type-checked or compiled but have not been opened and clicked through.
+
+- [x] Backend: `/agent/signup` and `/agent/signup/verify` with the emailed code
+- [x] Backend: `/agent/signin`, `/agent/token/refresh`, device-token authentication for the sync endpoints
+- [x] Backend: `/agent/companies`, `/agent/companies/link`, `/unlink`
+- [x] Backend: invitations (`/admin/invites`, `/auth/invites/{token}`, `/auth/invites/accept`)
+- [x] Backend: "Manage sync agent" access (`/admin/sync-agent-access`, `/admin/users/{id}/sync-agent`) and synced PCs (`/admin/agent-devices`, revoke)
+- [x] Agent: signs in as this PC from the Setup screen, stores a device token, keeps no password
+- [x] Agent: links its company on connect, and asks before taking a company over from another PC
+- [x] Agent: "Create an account" dialog (details, emailed code, first company from Tally)
+- [x] App: accept-invite page (`/accept-invite`)
+- [x] App: Admin → "Sync agent & team" tab: synced PCs with sign-out, who may use the agent, invitations
+- [x] Old agents keep working: a person's login with the GUID header is still accepted
+- [ ] Click through the agent screens on a Windows PC with Tally, and the web pages in a browser
+
+How it differs from the design in section 3:
+
+- **The first company is linked as part of sign-up,** not after it. Every user must have a company to be in, so the account, its admin, this PC and the first company are created together when the code is confirmed. More companies are linked afterwards.
+- **A device token only works on the sync and agent endpoints.** Used anywhere else it is refused, so a token taken from a PC cannot browse the app.
+- **A signed-in PC must name its company on every sync call** and may only name one linked to it. A company moved to another PC is refused on the first PC at once.
+- **A linked company is not seeded with default groups and voucher types.** Its masters arrive from Tally on the first sync.
+- **The Companies screen (several companies, link and unlink in a list) is part of Step 4.** Until then the agent links the one company chosen in Setup.
 
 **Gate:** a new customer can sign up in the agent, link a company and sign in to the app without touching the database; an invited user cannot sign in to the agent.
 

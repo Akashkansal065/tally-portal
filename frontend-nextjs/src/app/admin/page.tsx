@@ -51,6 +51,7 @@ import { ActiveDevicesPanel } from '@/components/admin/ActiveDevicesPanel'
 import { IntegrationsPanel } from '@/components/admin/IntegrationsPanel'
 import { InvoiceDesignPanel } from '@/components/admin/InvoiceDesignPanel'
 import { ApprovalRulesPanel } from '@/components/admin/ApprovalRulesPanel'
+import { SyncAgentPanel } from '@/components/admin/SyncAgentPanel'
 import { relativeTime } from '@/lib/device-sessions'
 import rolesConfig from '@/lib/roles.json'
 
@@ -153,7 +154,7 @@ export default function AdminPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
   
-  const [tab, setTab] = useState<'users' | 'roles' | 'sessions' | 'sync' | 'logs' | 'integrations' | 'invoice' | 'approvals' | 'cache'>('users')
+  const [tab, setTab] = useState<'users' | 'roles' | 'sessions' | 'sync' | 'logs' | 'integrations' | 'invoice' | 'approvals' | 'agent' | 'cache'>('users')
   const [devicesUser, setDevicesUser] = useState<UserItem | null>(null)
   const [users, setUsers] = useState<UserItem[]>([])
   const [logs, setLogs] = useState<AuditLog[]>([])
@@ -171,7 +172,7 @@ export default function AdminPage() {
   }
   const applyLink = (params: URLSearchParams) => {
     const tabParam = params.get('tab')
-    if (tabParam === 'users' || tabParam === 'roles' || tabParam === 'sync' || tabParam === 'logs' || tabParam === 'integrations' || tabParam === 'invoice' || tabParam === 'approvals' || tabParam === 'cache') {
+    if (tabParam === 'users' || tabParam === 'roles' || tabParam === 'sync' || tabParam === 'logs' || tabParam === 'integrations' || tabParam === 'invoice' || tabParam === 'approvals' || tabParam === 'agent' || tabParam === 'cache') {
       setTab(tabParam)
     } else if (tabParam === 'einvoice') {
       // Old links to the e-invoice settings tab, now under Integrations
@@ -1187,6 +1188,15 @@ const handleSavePermissions = async () => {
             <ClipboardCheck className="h-4 w-4" /> Approvals
           </button>
           <button
+            onClick={() => setTab('agent')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'agent' ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-card text-muted-foreground border border-border/60 hover:bg-muted hover:text-foreground'
+            )}
+          >
+            <MonitorSmartphone className="h-4 w-4" /> Sync agent & team
+          </button>
+          <button
             onClick={() => setTab('cache')}
             className={cn(
               'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
@@ -2070,6 +2080,8 @@ const handleSavePermissions = async () => {
             <InvoiceDesignPanel token={token} companyId={user?.company_id} />
           ) : tab === 'approvals' ? (
             <ApprovalRulesPanel token={token} />
+          ) : tab === 'agent' ? (
+            <SyncAgentPanel token={token} companies={user?.allowedCompanies ?? []} />
           ) : (
             <div className="space-y-4 font-sans">
               <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-3">

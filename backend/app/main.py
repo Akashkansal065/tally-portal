@@ -155,6 +155,10 @@ app.include_router(voucher_types.router, prefix="/voucher-type", tags=["Voucher 
 app.include_router(voucher_types.router, prefix="/voucher-types", tags=["Voucher Types"])
 app.include_router(currency_tds.router)
 app.include_router(payroll_masters.router)
+from app.routers import agent as agent_router, team as team_router
+app.include_router(agent_router.router)
+app.include_router(team_router.router)
+app.include_router(team_router.public_router)
 app.include_router(payment.router)
 app.include_router(inventory.router)
 app.include_router(advanced.router)

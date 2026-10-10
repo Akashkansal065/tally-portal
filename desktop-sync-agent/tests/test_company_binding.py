@@ -66,3 +66,59 @@ def test_payload_that_names_no_company_is_not_sent(tmp_path):
     tally = RecordingTally(OK)
     _, cloud = run_task(tmp_path, tally, xml_payload="<ENVELOPE><LEDGER NAME=\"X\"/></ENVELOPE>")
     assert tally.sent == [] and cloud.acked == []
+
+
+# ── Signed in as this PC (a device token) ──
+
+def test_a_signed_in_pc_uses_its_device_token_and_keeps_no_password(tmp_path):
+    agent = make_agent(tmp_path, RecordingTally(OK), OutboundCloud())
+    agent.config.device_token, agent.config.password, agent.config.email = "mta_abc", "old-password", "owner@example.com"
+
+    client = agent._new_cloud_client()
+
+    assert client.device_mode and client.token == "mta_abc"
+    assert client.password == "" and client.email == ""
+
+
+def test_a_signed_out_pc_stops_instead_of_retrying_with_a_password():
+    halted = []
+    client = CloudClient(token="mta_abc", email="owner@example.com", password="pw", on_auth_halted=halted.append)
+
+    assert client.reauthenticate("invalid") is False
+    assert halted == ["device_signed_out"] and client.auth_halt_reason == "device_signed_out"
+
+    revoked = CloudClient(token="mta_abc", on_auth_halted=halted.append)
+    revoked.reauthenticate("admin_revoke")
+    assert halted[-1] == "admin_revoke"
+
+
+class LinkingCloud(OutboundCloud):
+    def __init__(self, answer):
+        super().__init__()
+        self.answer, self.linked = answer, []
+
+    def link_company(self, company, take_over=False):
+        self.linked.append((company, take_over))
+        return self.answer
+
+
+def test_linking_sends_the_open_companys_guid_and_pins_it(tmp_path):
+    tally = RecordingTally(OK, open_companies=[{"name": "Alpha", "guid": "guid-alpha", "starting_from": "20250401"}])
+    cloud = LinkingCloud((True, {"company_id": 5}, ""))
+    agent = make_agent(tmp_path, tally, cloud)
+
+    assert agent.link_active_company() == (True, "", "")
+
+    company, take_over = cloud.linked[0]
+    assert (company["tally_guid"], company["name"], company["books_from"], take_over) == ("guid-alpha", "Alpha", "20250401", False)
+    assert agent.active_company_guid == "guid-alpha" and agent.config.company_guid == "guid-alpha"
+
+
+def test_linking_reports_when_another_pc_syncs_the_company_or_it_is_closed(tmp_path):
+    cloud = LinkingCloud((False, "already synced from another PC", "linked_to_another_device"))
+    agent = make_agent(tmp_path, RecordingTally(OK), cloud)
+    assert agent.link_active_company() == (False, "already synced from another PC", "linked_to_another_device")
+
+    closed = make_agent(tmp_path, RecordingTally(OK, open_companies=[{"name": "Other", "guid": "guid-other"}]), cloud)
+    ok, _, reason = closed.link_active_company()
+    assert (ok, reason) == (False, "not_open")

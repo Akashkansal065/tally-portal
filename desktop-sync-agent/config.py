@@ -7,7 +7,7 @@ from typing import Dict, Optional
 
 from security import store_secret, load_secret, needs_storage_upgrade
 
-SECRET_FIELDS = ("password", "auth_token")
+SECRET_FIELDS = ("password", "auth_token", "device_token")
 
 def get_app_dir() -> str:
     """Returns absolute path to the directory containing the running .exe or script."""
@@ -43,6 +43,9 @@ class AgentConfig:
     backend_url: str = "http://MacBook-Air.local:8000"
     tally_url: str = "http://127.0.0.1:9000"
     auth_token: str = ""
+    # This PC's sign-in to the cloud once it has signed in as a sync agent device. While it is set the agent
+    # uses it and needs no password; auth_token and password are the older, per-person login.
+    device_token: str = ""
     email: str = ""
     username: str = ""
     password: str = ""

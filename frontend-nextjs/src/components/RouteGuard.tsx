@@ -14,7 +14,7 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isLoading) return
 
-    const publicPaths = ['/login', '/signup']
+    const publicPaths = ['/login', '/signup', '/accept-invite']
     const isPublicPath = publicPaths.includes(pathname)
 
     if (!user && !isPublicPath) {
@@ -35,7 +35,7 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
     )
   }
 
-  const publicPaths = ['/login', '/signup']
+  const publicPaths = ['/login', '/signup', '/accept-invite']
   const isPublicPath = publicPaths.includes(pathname)
 
   // Prevent rendering protected content before redirect completes

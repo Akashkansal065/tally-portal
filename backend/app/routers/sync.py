@@ -17,7 +17,8 @@ import logging
 import uuid
 
 from app.core.database import get_db
-from app.core.permissions import require_permission, get_effective_permission, is_admin_user, bind_sync_company, SYNC_COMPANY_GUID_HEADER
+from app.core.permissions import require_permission, get_effective_permission, is_admin_user, bind_sync_company, bind_device_sync_company, SYNC_COMPANY_GUID_HEADER
+from app.core.agent_auth import agent_device
 from app.core.config import settings
 from app.routers.admin import require_admin
 from app.routers.auth import get_current_user
@@ -216,7 +217,7 @@ async def run_inbound_sync_background(xml_data: str, user_id: int, company_name:
             except Exception as e:
                 logger.error(f"Background inbound sync exception for user_id={user_id}: {str(e)}", exc_info=True)
 
-@router.post("/inbound")
+@router.post("/inbound", dependencies=[Depends(bind_device_sync_company)])
 async def inbound_sync(
     request: Request,
     company_name: Optional[str] = Query(None),
@@ -235,7 +236,7 @@ async def inbound_sync(
     company_guid = (request.headers.get(SYNC_COMPANY_GUID_HEADER) or "").strip() or None
 
     is_force = force or (request.headers.get("x-force-sync", "").strip().lower() in ("true", "1", "yes"))
-    if is_force:
+    if is_force and agent_device(request) is None:
         sync_perms = await get_effective_permission(user, "sync", db)
         if not sync_perms.get("can_delete", False):
             raise HTTPException(
@@ -268,7 +269,8 @@ async def inbound_sync(
                 override_company_name=company_name,
                 company_guid=company_guid,
                 force_overwrite=is_force,
-                allow_company_create=is_admin_user(user)
+                # A signed-in PC never creates a company by importing: companies come from linking
+                allow_company_create=is_admin_user(user) and agent_device(request) is None
             )
             company_id = result.get("company_id")
             if company_id:
