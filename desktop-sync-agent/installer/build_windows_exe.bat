@@ -9,33 +9,37 @@ echo  [1/3] Detecting Python on your Windows system...
 echo ===========================================================================
 
 set "PYTHON_EXE="
-set "PYTHON_WITHOUT_TK="
+set "PYTHON_UNUSABLE="
 
-REM The agent's window needs tkinter (the "tcl/tk and IDLE" part of the Python installer), so a
-REM Python without it is passed over: the .exe it builds cannot open.
+REM A Python is only used if it can build an .exe that opens on an ordinary PC:
+REM  - it has tkinter (the "tcl/tk and IDLE" part of the Python installer), which the window needs;
+REM  - it is the 64-bit Intel/AMD build. An ARM64 Python builds an .exe that only runs on ARM PCs,
+REM    and the cryptography package has no ready-made build for it.
+set "PYTHON_CHECK=import sys, tkinter; sys.exit(0 if 'AMD64' in sys.version else 1)"
 
 REM 1. Check if 'python' is in PATH and actually works (not Microsoft store alias)
-python -c "import tkinter" >nul 2>&1 && set "PYTHON_EXE=python" && goto :PYTHON_FOUND
-python -c "import sys" >nul 2>&1 && set "PYTHON_WITHOUT_TK=python"
+python -c "%PYTHON_CHECK%" >nul 2>&1 && set "PYTHON_EXE=python" && goto :PYTHON_FOUND
+python -c "import sys" >nul 2>&1 && set "PYTHON_UNUSABLE=python"
 
 REM 2. Check if 'py' launcher is available
-py -c "import tkinter" >nul 2>&1 && set "PYTHON_EXE=py" && goto :PYTHON_FOUND
-py -c "import sys" >nul 2>&1 && set "PYTHON_WITHOUT_TK=py"
+py -c "%PYTHON_CHECK%" >nul 2>&1 && set "PYTHON_EXE=py" && goto :PYTHON_FOUND
+py -c "import sys" >nul 2>&1 && set "PYTHON_UNUSABLE=py"
 
 REM 3. Search common Windows installation folders
 for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python*" "C:\Python*" "%ProgramFiles%\Python*") do (
     if exist "%%D\python.exe" (
-        "%%D\python.exe" -c "import tkinter" >nul 2>&1 && set "PYTHON_EXE=%%D\python.exe" && goto :PYTHON_FOUND
-        set "PYTHON_WITHOUT_TK=%%D\python.exe"
+        "%%D\python.exe" -c "%PYTHON_CHECK%" >nul 2>&1 && set "PYTHON_EXE=%%D\python.exe" && goto :PYTHON_FOUND
+        set "PYTHON_UNUSABLE=%%D\python.exe"
     )
 )
 
-if defined PYTHON_WITHOUT_TK (
+if defined PYTHON_UNUSABLE (
     echo.
-    echo  Python was found ^(!PYTHON_WITHOUT_TK!^) but it has no tkinter, which the agent's window needs.
-    echo  Fix: Windows Settings - Apps - Installed apps - Python - Modify - Modify,
-    echo  tick "tcl/tk and IDLE", finish, then run this script again.
-    echo  If that Python did not come from python.org, install Python from python.org instead.
+    echo  Python was found ^(!PYTHON_UNUSABLE!^) but it cannot build the agent: it is either an ARM64
+    echo  Python or was installed without tkinter.
+    echo  Fix: from python.org download the "Windows installer (64-bit)" - not the ARM64 one -
+    echo  choose Customize installation, keep "tcl/tk and IDLE" and "pip" ticked, install,
+    echo  then run this script again. Other Pythons can stay installed.
     pause
     exit /b 1
 )
@@ -75,14 +79,22 @@ pause
 exit /b 0
 
 :PYTHON_FOUND
-echo  ✅ Found Python: %PYTHON_EXE%
-%PYTHON_EXE% --version
+echo  ✅ Found Python: !PYTHON_EXE!
+"%PYTHON_EXE%" --version
 echo.
 
 echo ===========================================================================
 echo  [2/3] Installing / Updating Dependencies (CustomTkinter, PyInstaller, Pillow)...
 echo ===========================================================================
-%PYTHON_EXE% -m pip install --upgrade pip pyinstaller customtkinter pystray pillow cryptography keyring
+REM A Python installed with the "pip" box unticked has none; add it for this Windows user
+"%PYTHON_EXE%" -m pip --version >nul 2>&1 || "%PYTHON_EXE%" -m ensurepip --upgrade --user
+"%PYTHON_EXE%" -m pip install --upgrade pip pyinstaller customtkinter pystray pillow cryptography keyring
+if errorlevel 1 (
+    echo.
+    echo  BUILD FAILED: the packages above could not be installed.
+    pause
+    exit /b 1
+)
 
 echo.
 echo ===========================================================================
@@ -90,7 +102,7 @@ echo  [3/3] Bundling SnehDistribuorsSync.exe...
 echo ===========================================================================
 cd /d "%~dp0\.."
 
-%PYTHON_EXE% -m PyInstaller --onefile --windowed --name "SnehDistribuorsSync" ^
+"%PYTHON_EXE%" -m PyInstaller --onefile --windowed --name "SnehDistribuorsSync" ^
     --icon "assets\icon.ico" ^
     --collect-all customtkinter ^
     --copy-metadata customtkinter ^
