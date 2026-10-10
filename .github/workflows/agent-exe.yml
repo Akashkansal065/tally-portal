@@ -1,0 +1,65 @@
+name: Sync agent exe
+
+# Builds the Windows program people double-click: desktop-sync-agent/dist/SnehDistribuorsSync.exe.
+# - Any run: download it from the run's Artifacts.
+# - Pushing a tag like agent-v2.0.0: it is also attached to a GitHub Release of that name.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["agent-v*"]
+  pull_request:
+    paths:
+      - "desktop-sync-agent/**"
+      - ".github/workflows/agent-exe.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build SnehDistribuorsSync.exe
+    runs-on: windows-latest
+    permissions:
+      contents: write   # to attach the .exe to a release when a tag is pushed
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop-sync-agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"   # the version installer/build_windows_exe.bat builds with
+          architecture: x64
+      - name: Install what the agent and the build need
+        run: python -m pip install --upgrade pip pyinstaller customtkinter pystray pillow cryptography keyring pywebview pytest
+      - name: Tests
+        run: python -m pytest -q tests
+      - name: Build the exe
+        run: python installer/build_exe.py
+      - name: Check the exe opens and stays open
+        run: |
+          $exe = Resolve-Path dist\SnehDistribuorsSync.exe
+          "{0:N1} MB" -f ((Get-Item $exe).Length / 1MB)
+          $app = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 25
+          if ($app.HasExited) { throw "The exe closed by itself (exit code $($app.ExitCode))." }
+          Get-Process | Where-Object { $_.MainWindowTitle -eq "MyTally Bridge" } | Select-Object ProcessName, MainWindowTitle
+          Get-Process -Name SnehDistribuorsSync -ErrorAction SilentlyContinue | Stop-Process -Force
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: SnehDistribuorsSync-exe
+          path: desktop-sync-agent/dist/SnehDistribuorsSync.exe
+          if-no-files-found: error
+      - name: Attach to a release
+        if: startsWith(github.ref, 'refs/tags/agent-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create $env:TAG dist\SnehDistribuorsSync.exe --repo $env:GITHUB_REPOSITORY --title "MyTally Bridge $($env:TAG -replace '^agent-v','')" --generate-notes
