@@ -171,7 +171,9 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
         {newInvite && (
           <div className="mt-3 rounded-xl border border-border bg-background p-3 text-sm">
             <p>
-              {newInvite.emailed ? `Invitation emailed to ${newInvite.email}.` : `The email to ${newInvite.email} could not be sent.`} You can also pass this link on yourself. It is shown only now.
+              {newInvite.emailed
+                ? `Invitation emailed to ${newInvite.email}. You can also pass this link on yourself.`
+                : `The email to ${newInvite.email} could not be sent. Pass this link on yourself.`} It is shown only now.
             </p>
             <div className="mt-2 flex items-center gap-2">
               <code className="min-w-0 flex-1 truncate rounded-lg bg-muted px-2 py-1 text-xs">{inviteLink}</code>

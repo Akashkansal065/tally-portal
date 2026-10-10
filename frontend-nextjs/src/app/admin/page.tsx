@@ -495,16 +495,6 @@ export default function AdminPage() {
   const [editUserError, setEditUserError] = useState('')
   const [editUserLoading, setEditUserLoading] = useState(false)
 
-  // Company registration form state
-  const [showRegisterCompany, setShowRegisterCompany] = useState(false)
-  const [companyName, setCompanyName] = useState('')
-  const [booksBeginDate, setBooksBeginDate] = useState('2026-04-01')
-  const [regUsername, setRegUsername] = useState('')
-  const [regEmail, setRegEmail] = useState('')
-  const [regPassword, setRegPassword] = useState('')
-  const [regError, setRegError] = useState('')
-  const [regLoading, setRegLoading] = useState(false)
-
   const fetchCacheStats = useCallback(async () => {
     if (!token) return
     setCacheLoading(true)
@@ -827,47 +817,6 @@ export default function AdminPage() {
       } catch (err) {
         console.error(err)
       }
-    }
-  }
-
-  const handleRegisterCompany = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setRegError('')
-    setRegLoading(true)
-    try {
-      const res = await fetch(`${API_BASE}/auth/register-company`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          company_name: companyName,
-          books_begin_date: booksBeginDate,
-          username: regUsername,
-          email: regEmail,
-          password: regPassword
-        }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.detail || 'Registration failed.')
-      }
-      alert('Company registered successfully!')
-      setShowRegisterCompany(false)
-      
-      // Reset form
-      setCompanyName('')
-      setRegUsername('')
-      setRegEmail('')
-      setRegPassword('')
-      
-      // Fetch latest lists
-      fetchData()
-    } catch (err: any) {
-      setRegError(err.message || 'Failed to register company.')
-    } finally {
-      setRegLoading(false)
     }
   }
 
@@ -2408,103 +2357,6 @@ const handleSavePermissions = async () => {
                   ) : (
                     'Save Changes'
                   )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Register Company Modal */}
-      {showRegisterCompany && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-card w-full max-w-sm rounded-3xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="px-6 py-5 border-b border-border flex justify-between items-center">
-              <div>
-                <h3 className="font-black text-lg text-foreground">Register Company</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">Create a new company database and admin user.</p>
-              </div>
-              <button 
-                onClick={() => setShowRegisterCompany(false)}
-                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors"
-              >
-                <XCircle className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <form onSubmit={handleRegisterCompany} className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-              {regError && (
-                <div className="p-3 bg-destructive/10 text-destructive text-xs font-bold rounded-xl">
-                  {regError}
-                </div>
-              )}
-              
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-foreground ml-1">Company Name</label>
-                <input 
-                  type="text" 
-                  required
-                  value={companyName}
-                  onChange={e => setCompanyName(e.target.value)}
-                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
-                  placeholder="e.g. Sneh Distributors Pvt Ltd"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-foreground ml-1">Books Beginning Date</label>
-                <input 
-                  type="date" 
-                  required
-                  value={booksBeginDate}
-                  onChange={e => setBooksBeginDate(e.target.value)}
-                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-foreground ml-1">Admin Username</label>
-                <input 
-                  type="text" 
-                  required
-                  value={regUsername}
-                  onChange={e => setRegUsername(e.target.value)}
-                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
-                  placeholder="e.g. Akash Kansal"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-foreground ml-1">Admin Email Address</label>
-                <input 
-                  type="email" 
-                  required
-                  value={regEmail}
-                  onChange={e => setRegEmail(e.target.value)}
-                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
-                  placeholder="admin@example.com"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-foreground ml-1">Admin Password</label>
-                <input 
-                  type="password" 
-                  required
-                  value={regPassword}
-                  onChange={e => setRegPassword(e.target.value)}
-                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
-                  placeholder="Minimum 6 characters"
-                />
-              </div>
-
-              <div className="pt-2">
-                <button 
-                  type="submit"
-                  disabled={regLoading}
-                  className="w-full py-3 bg-sky-500 hover:bg-sky-600 active:scale-[0.98] text-white font-bold rounded-xl text-sm transition-all shadow-md disabled:opacity-70"
-                >
-                  {regLoading ? 'Registering...' : 'Register Company'}
                 </button>
               </div>
             </form>

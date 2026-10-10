@@ -11,18 +11,21 @@ Where the two disagreed or a later decision changed them, this document is right
 
 ## 1. Status
 
+All six steps are in PR [Akashkansal065/tally-portal#67](https://github.com/Akashkansal065/tally-portal/pull/67), not merged. A full test round was run on 10 Oct 2026 (section 6). Everything still pending is listed once, in section 7.
+
 | Item | State |
 | --- | --- |
-| Phase 0: explicit sync company, accounts table, account-scoped Admin | Code complete, in PR [Akashkansal065/tally-portal#67](https://github.com/Akashkansal065/tally-portal/pull/67). Not merged, not deployed. |
-| Step 1: expand the schema | Code complete, in the same pull request (tally-portal#67). Not run against MySQL. |
-| Step 2: migrate production into one account | Script written and tested on the test database (`scripts/migrate_to_account.py`), in the same pull request. Not run against MySQL or production. |
-| Step 3: agent sign-up, device tokens, invitations | Code complete, in the same pull request. Backend 228 and agent 27 tests pass; screens not clicked through. |
-| Step 4: multi-company agent, company-owned sales rows | Code complete except chunked full sync, in the same pull request. Backend 232 and agent 34 tests pass; Companies window not clicked through. |
-| Step 5: company switcher, last synced, Companies page | Code complete, in the same pull request. Backend 234 tests pass; screens not opened in a browser. |
-| Step 6: enforce and harden | Mostly code complete, in the same pull request. Backend 243 tests pass. Enforcement SQL not run against MySQL. Operator role, alerts and the all-routers scoping helper are not built. |
-| Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
-| Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
-| Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
+| Phase 0: explicit sync company, accounts table, account-scoped Admin | Code complete. Running on the development setup (backend on the Mac, agent on the Windows PC with Tally). |
+| Step 1: expand the schema | Code complete. Startup created the tables, columns and indexes on MySQL, on the development database and on an empty one. |
+| Step 2: migrate existing data into one account | Run with `--apply` on the development database. Not run on production. |
+| Step 3: agent sign-up, device tokens, invitations | Code complete and tested end to end on MySQL. The agent's Setup sign-in was done on a real PC; its Create account window was not. |
+| Step 4: multi-company agent, company-owned sales rows | Code complete except chunked full sync. The agent's Companies window has not been used with two companies open in Tally. |
+| Step 5: company switcher, last synced, Companies page | Code complete and opened in a browser. Not checked on a phone. |
+| Step 6: enforce and harden | Enforcement stage run for real on a throwaway MySQL database, with both switches on afterwards. Not run on the development or production database. Operator role, alerts and the all-routers scoping helper are not built. |
+| Tests | Backend 246 passed, agent 34 passed, frontend type-check clean, 63 + 15 end-to-end checks on MySQL passed. |
+| Development database today | One account, one company with its Tally GUID, one signed-in PC syncing it. |
+| Production | Not deployed. One company, several users, no accounts. |
+| Stopgap until Phase 0 is deployed to production | Do not switch company in the web app on the login the agent uses. |
 
 ## 2. Decisions
 
@@ -249,7 +252,7 @@ One sequence, replacing the earlier Phases 0 to 4 and migration Stages A to D. E
 - [x] Pull request opened (tally-portal#67)
 - [ ] Review and merge the pull request
 - [ ] Back up both databases and record row counts per table
-- [ ] Deploy the backend, then the agent
+- [ ] Deploy the backend, then the agent (done on the development setup, 10 Oct 2026; production not yet)
 - [ ] Check on the real setup: two companies open in Tally, switch company in the web app while the agent runs
 
 **Gate:** switching company in the web app changes nothing the agent receives.
@@ -268,7 +271,7 @@ Code complete on the Phase 0 branch, in the same pull request. Nothing below has
 - [x] Child tables: none needs its own `company_id` now. The two that are queried directly, `trn_attendance` and `trn_payhead`, are always reached through their voucher.
 - [x] The parentless Tally-side tables: eleven are not read or written by any code (listed in `app/services/tenant_inventory.py`); the inventory reports their row counts so they can be dropped if empty
 - [x] Read-only ownership inventory (`app/services/tenant_inventory.py`), shown by the Step 2 script
-- [ ] Deploy, so startup creates the new tables, columns and indexes
+- [ ] Deploy, so startup creates the new tables, columns and indexes (done on the development MySQL; production not yet)
 
 The foreign keys and the inventory are no longer separate scripts: both are part of the one Step 2 script.
 
@@ -302,11 +305,12 @@ Left out on purpose:
 
 - **Duplicate rows are reported, not merged.** Merging means deleting rows, and deletes in this app can reach Tally. That needs a look at the real duplicates first; it blocks only the unique keys in Step 6.
 - **The agent's device row is created in Step 3,** when the agent signs in and sends its machine id. With one PC there is nothing to save by guessing it now.
+- **The company's Tally GUID is filled in by the first link,** not by this script. A company from before accounts has no GUID; when a PC first links a Tally company of the same name, the server gives that company the GUID instead of making a second one (**changed** 10 Oct 2026, after the test round found it making a second one). This is the one place a name decides anything, and only for a company that has no GUID.
 
 To do on production:
 
-- [ ] Run without `--apply` and read the output
-- [ ] Run with `--apply`
+- [ ] Run without `--apply` and read the output (done on the development database; production not yet)
+- [ ] Run with `--apply` (done on the development database; production not yet)
 - [ ] If a company shows no Tally GUID, run one full sync from the agent
 
 **Gate:** the script reports every row owned and the foreign keys added.
@@ -326,7 +330,9 @@ Code complete, in the Phase 0 pull request. Backend and agent logic are tested; 
 - [x] App: accept-invite page (`/accept-invite`)
 - [x] App: Admin → "Sync agent & team" tab: synced PCs with sign-out, who may use the agent, invitations
 - [x] Old agents keep working: a person's login with the GUID header is still accepted
-- [ ] Click through the agent screens on a Windows PC with Tally, and the web pages in a browser
+- [x] Web pages opened in a browser: accept-invite and Admin → Sync agent & team (invite, link shown, accept, sign in as the invited person)
+- [x] Agent Setup sign-in on a Windows PC with Tally (done by Akash)
+- [ ] Agent "Create an account" window on a Windows PC: not opened yet
 
 How it differs from the design in section 3:
 
@@ -374,13 +380,14 @@ Code complete, in the Phase 0 pull request. The backend is tested and the web co
 - [x] `GET /companies/sync-status`: for each company the caller can open, freshness, last synced, whether the agent is online, the last error, which PC syncs it, and entries waiting to reach Tally
 - [x] `/sync/health` also returns `freshness`, `last_synced_at`, `agent_online`
 - [x] Header chip shows a freshness dot beside the company name
-- [x] Switcher sheet: each company with GSTIN, city and financial year to tell look-alikes apart, its last-synced sentence and pending entries; a search box when there are more than five
+- [x] Switcher sheet: each company with GSTIN, city and financial year to tell look-alikes apart (two same-named companies with none of these filled in look identical; section 7), its last-synced sentence and pending entries; a search box when there are more than five
 - [x] Company chosen per device: kept on the device and sent as `X-Company-ID`; switching no longer changes the account-wide setting
 - [x] Clean restart on switch: the app reloads at the home screen, so nothing of the previous company stays in memory; it asks first if a form is open
 - [x] "Companies" page (`/companies`), in the menu: a card per company with its status, the last error when it needs attention, and which PC syncs it
 - [x] "Data as of" line on Reports and on a ledger's statement, shown only when the company is not freshly synced
 - [x] Company name under the title of the voucher form
-- [ ] Open each of these in a browser and on a phone and check them
+- [x] Opened in a desktop browser: header dot, switcher, switching and reload, Companies page
+- [ ] Not checked: a phone, the "Data as of" line, the company name on the voucher form
 - [ ] Company name on delete confirmations and share sheets (not done: there are many, each with its own dialog)
 - [ ] Deep links that carry the company and switch to it with a notice (not done)
 
@@ -406,7 +413,7 @@ Differences from the design in section 3.6:
 
 ### Step 6: Enforce and harden
 
-Mostly code complete, in the Phase 0 pull request. Backend 243 and agent 34 tests pass. The enforcement SQL has not been run against MySQL. Anything that would lock out existing data is behind a switch that is off until you turn it on.
+Mostly code complete, in the Phase 0 pull request. The enforcement stage ran cleanly on a throwaway MySQL database (37 changes, then every line `ok` on a second run), and the database then refused each kind of bad row it is meant to. Anything that would lock out existing data is behind a switch that is off until you turn it on.
 
 Done:
 
@@ -425,7 +432,7 @@ Not done, and why:
 - [ ] **One scoping helper used by every router.** That is a rewrite of the queries in about 30 routers; too large and too risky to do blind in the same change. The isolation tests added in Phases 0 to 6 cover accounts, roles, settings, sync, invitations, sync status and field-sales rows, not every endpoint.
 - [ ] **Platform-operator role** (D12). Needs its own design: how operators are created, where a customer grants access, what an operator may do. Until it exists nobody can see across accounts at all, which is the safe default.
 - [ ] **Alerts** for unlinked companies, refused cross-account requests and a company not synced for a day. The first two are written to the server log; none raises a notification yet.
-- [ ] **Removing the leftover screens' code.** The first-time setup form on the login page and the Register Company dialog on the Admin page can no longer be reached, but their code is still in the files.
+- [x] **Leftover screens' code removed** (10 Oct 2026): the first-time setup form on the login page and the Register Company dialog on the Admin page.
 - [ ] **Merging duplicate Tally records.** The enforcement stage reports and skips them; merging needs a look at the real rows.
 
 Two findings from this step:
@@ -459,13 +466,87 @@ Two findings from this step:
 | Gmail SMTP sending limits or spam filtering | Sign-up codes arrive late or not at all | Resend button, 10-minute expiry, and a provider interface so the sender can be swapped |
 | Several admins | Any of them can invite users or change roles; those with "Manage sync agent" can also revoke devices | Admin actions are written to the audit log; the last admin, and the last holder of "Manage sync agent", cannot be removed |
 
-## 6. Open items
+## 6. Test round, 10 Oct 2026
 
-- [ ] **Livekeeping trial walkthrough.** Their switcher and last-synced screens were not seen directly. Owner: Akash, with two companies linked in a trial account.
+What was run:
 
-Closed on 10 Oct 2026: admin and agent access (D9, D10, D21), SMS OTP (D18), the audit log (D19), attendance (D20).
+| Check | How | Result |
+| --- | --- | --- |
+| Backend tests | `pytest`, SQLite | 246 passed |
+| Agent tests | `pytest tests` | 34 passed |
+| Web app | Type-check, and lint on changed lines | Clean |
+| Requirements files | Clean install of each, then the tests | Passed |
+| Whole flow on MySQL | A second backend on a throwaway MySQL 8 container, driven over HTTP: migration, PC sign-in, linking, take-over, unlink, token refresh, who may use the agent, invitations, a second and third customer, signing a PC out | 63 checks passed |
+| Enforcement on MySQL | `--enforce --apply` on that database, backend restarted with both switches on | 15 checks passed, including the database refusing a company or user with no account, a second company with the same GUID, a duplicate Tally record and a second active link |
+| Brand-new server | Empty database, two customers signing up from the agent, then enforcement | Passed after the fix below |
+| Web screens | A copy of the web app pointed at the throwaway backend, opened in a browser | Passed after the fixes below |
+| Real setup | Agent built on Windows, signed in, syncing a real Tally company into the development database (done by Akash) | Syncing; the duplicate company it made was repaired (section 7) |
 
-## 7. Sources
+Bugs found and fixed in this round:
+
+| # | Problem | Effect | Fix |
+| --- | --- | --- | --- |
+| 1 | Signing a PC in made a second company when the existing one had no Tally GUID | Two companies with the same name; the old one keeps the users, orders and waiting pushes, the new one gets the sync | The first link takes over the account's GUID-less company of the same name (`backend/app/routers/agent.py`). Two tests added. |
+| 2 | An admin already signed in could not open a newly linked company for up to five minutes | The switcher listed it, but choosing it put them back in the old company | Linking forgets the cached list of companies for the account's users. One test added. |
+| 3 | **Switching company never stuck.** On page load the app asked "who am I" before the code that attaches the chosen company was switched on | Every reload put the device back in the person's default company | The first request names the device's company itself, and the interceptor is installed before it (`AuthContext.tsx`) |
+| 4 | A brand-new server seeded two roles that belonged to no account | The enforcement stage refused to start, with no way to fix it | Roles are no longer seeded at startup; each account gets its own when it is created |
+| 5 | An invitation link opened on a device where someone is signed in went to the home page | The invited person could not accept on a shared device, or the admin could not check the link | The invitation page opens when signed in, says who is signed in, and signs them out when the new person goes on to sign in |
+| 6 | "The email could not be sent. You can also pass this link on yourself." | Wording only | Reworded |
+| 7 | Windows build: Python without tkinter, ARM64 Python, Python without pip, the wrong Python first on PATH | The `.exe` could not be built, or was built but could not open | `build_windows_exe.bat` picks a suitable Python, offers to install one, and explains each failure |
+| 8 | `tzdata` missing from the backend requirements | The backend and its scripts did not start on Windows | Added. Both requirements files now list only what is imported. |
+
+Checked and found correct (no change needed): a device token is refused outside the sync endpoints; a second PC is refused for a company synced elsewhere until it takes over; the same Tally GUID and company name in two accounts stay two companies; one customer cannot list, open, re-target into, or administer another's companies, roles, PCs or admins; an import repeated makes no duplicate; an old agent on a person's login is refused once `REQUIRE_AGENT_DEVICE_SIGNIN` is on (it is recognised by the `X-Client-Type: sync-agent` header it sends).
+
+## 7. Still pending
+
+Ordered by what blocks what. Each line says who has to act.
+
+### Before anything else
+
+- [x] **Development database repaired (10 Oct 2026).** The first PC sign-in, before fix 1, had made a second "Bhrama Enterprises" (#4) beside the original (#1). The original was given the Tally GUID, the PC's link and the sync state, and #4 was deleted with its copied rows (53 ledgers, 19 items, 44 vouchers and the masters under them). The original's rows were counted before and after and did not change. The agent's next cycle reported into the original, and the migration script now lists one company with nothing left to deal with. Production is not affected: fix 1 is in before production's first sign-in.
+- [ ] **Commit and push this round's fixes** to the pull request. Owner: Akash to say.
+
+### Rollout (owner: Akash, follow the runbook)
+
+- [ ] Review and merge the pull request
+- [ ] Back up both production databases
+- [ ] Production `backend/.env`: `SMTP_USER` / `SMTP_PASS`, `APP_PUBLIC_URL`, and `TALLY_URL_COMPANY_GUID` if `TALLY_URL` stays set. The development `.env` has `TALLY_URL` set and no `TALLY_URL_COMPANY_GUID`: harmless with one customer, wrong with two.
+- [ ] Deploy backend, run the migration script, deploy the web app, deploy the agent, sign the PC in
+- [ ] A week or more later: `--enforce --apply`, then `ACCOUNTS_ENFORCED=true` and `REQUIRE_AGENT_DEVICE_SIGNIN=true`
+
+### Not yet checked by hand
+
+- [ ] Agent "Create an account" window on a Windows PC (the emailed code, real Gmail delivery)
+- [ ] Agent Companies window with two companies open in Tally: link, unlink, move to this PC, same-name refusal
+- [ ] A voucher created in the app reaching the right Tally company, and a Tally change appearing in the app, with two companies linked
+- [ ] The web screens on a phone; the "Data as of" line; the company name on the voucher form
+- [ ] The new `build_windows_exe.bat` on a PC with no Python at all (its offer to install one)
+- [ ] Livekeeping trial walkthrough: their switcher and last-synced screens were not seen directly
+
+### Not built
+
+- [ ] **Chunked full sync** with a resumable cursor. Blocked on one check against real Tally: export vouchers for a single month and confirm only that month comes back (Step 4).
+- [ ] **Platform-operator role** (D12). Needs its own design.
+- [ ] **Alerts** for unlinked companies, refused cross-account requests and a company not synced for a day.
+- [ ] **One scoping helper used by every router** (about 30 routers).
+- [ ] **Merging duplicate Tally records.** The enforcement stage reports and skips them. None exist on the development database.
+- [ ] **Company name on delete confirmations and share sheets.**
+- [ ] **Deep links that carry the company** and switch to it with a notice.
+- [ ] **Telling two same-named companies apart when neither has a GSTIN, city or financial year filled in.** The switcher and the Companies page show them identically. Showing the books-from date or which PC syncs each would do.
+- [ ] **The agent's state report carries no watermarks or waiting count,** and no fingerprint is recorded on link. The columns exist (`company_sync_state.master_alter_id`, `voucher_alter_id`, `pending_count`; `companies.tally_fingerprint`) and stay empty. Nothing shown to users depends on them; the restored-copy risk in section 5 does depend on the fingerprint.
+
+### Found in this round, not part of the multi-tenant work
+
+- [ ] **The Tally database name is written into 101 queries** in `backend/app/routers/reports.py` and `ledgers.py` as `tally_sync.`. A server whose `TALLY_DATABASE_NAME` is anything else gets errors on the dashboard and ledger reports. Development and production both use `tally_sync`, so nothing is broken today.
+- [ ] **Times are stored two ways.** The sync columns (`last_seen_at`, `last_success_at`) are UTC; database-default columns (`linked_at`, `updated_at`) are the database server's local time. Everything shown to users reads the UTC ones. Worth making uniform before anything displays the others.
+
+### To decide
+
+- [ ] **The home page's monthly sales target adds up every company of the account** ("· all companies"), which is the combined view D3 says not to have. It was built before D3 and stays inside the account, so nothing leaks. Keep it as the one exception, or make it per company? Owner: Akash.
+
+Closed on 10 Oct 2026: admin and agent access (D9, D10, D21), SMS OTP (D18), the audit log (D19), attendance (D20), the leftover screens' code.
+
+## 8. Sources
 
 - [Livekeeping website](https://www.livekeeping.com/), home page, read 10 Oct 2026
 - [How to Set Up LiveKeeping Data Connector for Tally on mobile](https://www.youtube.com/watch?v=vxHrjts289E), title, description and chapters only

@@ -22,7 +22,7 @@ from app.core.agent_auth import (
 from app.core.account_roles import create_default_roles
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.permissions import get_current_user
+from app.core.permissions import get_current_user, invalidate_auth_cache
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash, verify_password
 from app.models.portal_core import (
@@ -118,13 +118,32 @@ async def _register_device(db: AsyncSession, account: Account, user: User, devic
     return device, token
 
 
+async def _company_from_before_accounts(db: AsyncSession, account: Account, name: str) -> Optional[Company]:
+    """The account's company that has no Tally GUID yet and carries this name, when there is exactly one.
+
+    Companies made before accounts existed were never given a GUID. The first link has to take such a company
+    over, or its ledgers, vouchers, orders and waiting pushes are left behind under a second company of the
+    same name. This is the only place a name decides anything, and only for a company with no GUID."""
+    wanted = name.strip().lower()
+    rows = (await db.execute(select(Company).where(
+        Company.account_id == account.account_id,
+        (Company.tally_guid.is_(None)) | (Company.tally_guid == "")))).scalars().all()
+    matches = [c for c in rows if (c.name or "").strip().lower() == wanted]
+    return matches[0] if len(matches) == 1 else None
+
+
 async def _link_company(db: AsyncSession, account: Account, device: AgentDevice, user: User,
                         info: TallyCompanyIn, take_over: bool = False) -> Company:
-    """Make the Tally company a company of the account (found by GUID, never by name) and make this PC the
-    one syncing it. Doing it again changes nothing."""
+    """Make the Tally company a company of the account (found by GUID; by name only for a company from
+    before accounts that has no GUID yet) and make this PC the one syncing it. Doing it again changes nothing."""
     guid = info.tally_guid.strip()
     company = (await db.execute(select(Company).where(
         Company.account_id == account.account_id, Company.tally_guid == guid))).scalars().first()
+    if company is None:
+        company = await _company_from_before_accounts(db, account, info.name)
+        if company is not None:
+            company.tally_guid = guid
+            company.tally_fingerprint = info.fingerprint or company.tally_fingerprint
     if company is None:
         if account.max_companies is not None:
             held = (await db.execute(select(func.count()).select_from(Company).where(
@@ -338,6 +357,10 @@ async def link_company(request: Request, req: LinkRequest, user: User = Depends(
     device, account = await _device_context(request, user, db)
     company = await _link_company(db, account, device, user, req, take_over=req.take_over)
     await db.commit()
+    # People already signed in remember which companies they may open for a few minutes. Forget that now, so
+    # an admin can switch to a company the moment it is linked instead of being put back in the old one.
+    for user_id in (await db.execute(select(User.user_id).where(User.account_id == account.account_id))).scalars().all():
+        invalidate_auth_cache(user_id=user_id)
     return {"company_id": company.company_id, "name": company.name, "tally_guid": company.tally_guid, "linked_here": True}
 
 

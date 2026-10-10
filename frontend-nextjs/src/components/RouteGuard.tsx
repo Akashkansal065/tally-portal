@@ -6,6 +6,10 @@ import { useEffect } from 'react'
 import { Loader2 } from 'lucide-react'
 import { afterLoginPath } from '@/lib/utils'
 
+// Public pages that someone already signed in may still open: an invitation link is often opened on a device
+// where somebody else (the admin who sent it) is signed in.
+const OPEN_WHEN_SIGNED_IN = ['/accept-invite']
+
 export function RouteGuard({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth()
   const router = useRouter()
@@ -21,7 +25,7 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
       // Come back here after signing in (e.g. a notification opened while signed out)
       const here = `${pathname}${window.location.search}`
       router.replace(here === '/' ? '/login' : `/login?next=${encodeURIComponent(here)}`)
-    } else if (user && isPublicPath) {
+    } else if (user && isPublicPath && !OPEN_WHEN_SIGNED_IN.includes(pathname)) {
       router.replace(afterLoginPath())
     }
   }, [user, isLoading, pathname, router])
@@ -42,7 +46,7 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   if (!user && !isPublicPath) {
     return null
   }
-  if (user && isPublicPath) {
+  if (user && isPublicPath && !OPEN_WHEN_SIGNED_IN.includes(pathname)) {
     return null
   }
 

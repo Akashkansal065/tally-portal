@@ -189,3 +189,64 @@ def test_invited_user_joins_the_inviters_account_and_cannot_use_the_agent(harnes
     # Used once
     assert client.post("/auth/invites/accept", json={"token": invite["invite_token"], "username": "Rep", "password": "pw-7654321"}).status_code == 404
     assert client.post("/agent/signin", json={"email": "rep@example.com", "password": "pw-7654321", **PC_TWO}).status_code == 403
+
+
+def test_first_link_takes_over_the_company_from_before_accounts(harness, client, mail):
+    """A company made before accounts has no Tally GUID. Signing the PC in must link that company, not make a
+    second one of the same name beside it."""
+    signed = sign_up(client, mail)
+    account_id = signed["account"]["account_id"]
+    token = signed["device_token"]
+    harness.execute(P.Company.__table__.insert().values(
+        account_id=account_id, name="Old Books ", books_begin_date=signed_date(), is_active=True))
+    old_id = harness.scalar(select(P.Company.company_id).where(P.Company.name == "Old Books "))
+
+    linked = client.post("/agent/companies/link", json={"tally_guid": "guid-old", "name": "old books"},
+                         headers=device_headers(token)).json()
+    assert linked["company_id"] == old_id
+    assert harness.scalar(select(P.Company.tally_guid).where(P.Company.company_id == old_id)) == "guid-old"
+    again = client.post("/agent/companies/link", json={"tally_guid": "guid-old", "name": "old books"},
+                        headers=device_headers(token)).json()
+    assert again["company_id"] == old_id
+
+    # A different GUID under the same name is another Tally company: the linked one is not touched
+    other = client.post("/agent/companies/link", json={"tally_guid": "guid-new", "name": "Old Books"},
+                        headers=device_headers(token)).json()
+    assert other["company_id"] != old_id
+    assert harness.scalar(select(func.count()).select_from(P.Company).where(P.Company.account_id == account_id)) == 3
+
+
+def test_a_company_without_a_guid_is_not_taken_over_by_another_name_or_account(harness, client, mail):
+    signed = sign_up(client, mail)
+    harness.execute(P.Company.__table__.insert().values(
+        account_id=signed["account"]["account_id"], name="Old Books", books_begin_date=signed_date(), is_active=True))
+    other_account = sign_up(client, mail, signup={**SIGNUP, "email": "ravi@example.com", "business_name": "Ravi Traders"},
+                            device=PC_TWO, company={"tally_guid": "guid-ravi", "name": "Ravi Traders"})
+
+    # Another customer linking a company of the same name gets their own
+    theirs = client.post("/agent/companies/link", json={"tally_guid": "guid-x", "name": "Old Books"},
+                         headers=device_headers(other_account["device_token"])).json()
+    old_id = harness.scalar(select(P.Company.company_id).where(P.Company.tally_guid.is_(None)))
+    assert theirs["company_id"] != old_id
+    # A different name in the same account is a new company too
+    renamed = client.post("/agent/companies/link", json={"tally_guid": "guid-y", "name": "New Books"},
+                          headers=device_headers(signed["device_token"])).json()
+    assert renamed["company_id"] != old_id
+    assert harness.scalar(select(P.Company.tally_guid).where(P.Company.company_id == old_id)) is None
+
+
+def signed_date():
+    from datetime import date
+    return date(2025, 4, 1)
+
+
+def test_an_admin_already_signed_in_can_open_a_company_the_moment_it_is_linked(harness, client, mail):
+    signed = sign_up(client, mail)
+    owner = bearer(login(client, "asha@example.com"))
+    first = client.get("/auth/me", headers=owner).json()["company_id"]   # the sign-in now remembers one company
+
+    beta = client.post("/agent/companies/link", json={"tally_guid": "guid-beta", "name": "Beta Corp"},
+                       headers=device_headers(signed["device_token"])).json()
+
+    opened = client.get("/auth/me", headers={**owner, "X-Company-ID": str(beta["company_id"])}).json()
+    assert opened["company_id"] == beta["company_id"] != first

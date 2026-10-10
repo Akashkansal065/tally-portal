@@ -4,20 +4,12 @@ from sqlalchemy.orm import Session
 
 def seed_global_data(db: Session):
     """
-    Seeds global tables (like roles, modules, and permissions) that do not depend on a specific company.
+    Seeds global tables (modules, and the permissions of roles that exist) that do not depend on a specific company.
     """
-    # 1. Seed Roles
-    roles_exist = db.execute(text("SELECT COUNT(*) FROM roles")).scalar()
-    if roles_exist == 0:
-        print("Seeding default roles...")
-        db.execute(text("""
-            INSERT INTO roles (name, description) VALUES
-            ('Admin', 'Full access to all modules including user management'),
-            ('Sales', 'Field sales, check-in, orders, payments collection & attendance')
-        """))
-        db.commit()
-        print("Roles seeded successfully.")
-    
+    # 1. Roles are not seeded here. Every account gets its own Admin and Sales roles when it is created
+    #    (app.core.account_roles.create_default_roles). A role with no account would belong to nobody and would
+    #    stop the database from requiring an account on every role.
+
     # 2. Seed Modules if not populated
     modules_exist = db.execute(text("SELECT COUNT(*) FROM modules")).scalar()
     if modules_exist == 0:

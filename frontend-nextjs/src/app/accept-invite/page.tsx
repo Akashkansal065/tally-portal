@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation'
 import { Loader2, UserCheck } from 'lucide-react'
 import { API_BASE } from '@/lib/utils'
 import { LinkParams } from '@/components/LinkParams'
+import { useAuth } from '@/context/AuthContext'
 
 const field = 'h-11 w-full rounded-xl border border-border bg-background px-3 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30'
 
 /** Join a business from an invitation: confirm what it is for, choose a name and password, then sign in. */
 export default function AcceptInvitePage() {
   const router = useRouter()
+  const { user, logout } = useAuth()
   const [token, setToken] = useState('')
   const [invite, setInvite] = useState<{ email: string; account_name: string } | null>(null)
   const [username, setUsername] = useState('')
@@ -73,7 +75,7 @@ export default function AcceptInvitePage() {
       {done ? (
         <div className="mt-4 space-y-4 text-sm">
           <p>Your account is ready. Sign in with <span className="font-semibold">{invite?.email}</span> and the password you chose.</p>
-          <button type="button" onClick={() => router.replace('/login')}
+          <button type="button" onClick={() => { if (user) logout(); router.replace('/login') }}
             className="min-h-11 w-full rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground cursor-pointer">Go to sign in</button>
         </div>
       ) : !invite ? (
@@ -90,6 +92,9 @@ export default function AcceptInvitePage() {
       ) : (
         <form className="mt-4 space-y-3 text-sm" onSubmit={accept}>
           <p>You are joining <span className="font-semibold">{invite.account_name}</span> as <span className="font-semibold">{invite.email}</span>.</p>
+          {user && user.email !== invite.email && (
+            <p className="text-muted-foreground">This device is signed in as {user.email}. Going on to sign in as {invite.email} signs that person out here.</p>
+          )}
           <label className="block"><span className="mb-1 block font-semibold">Your name</span>
             <input value={username} onChange={e => setUsername(e.target.value)} autoComplete="name" maxLength={50} required className={field} /></label>
           <label className="block"><span className="mb-1 block font-semibold">Choose a password</span>

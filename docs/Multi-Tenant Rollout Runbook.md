@@ -1,6 +1,6 @@
 # Multi-Tenant Rollout Runbook
 
-Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 6)
+Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 6, and the test round of 10 Oct)
 
 The steps to run by hand, in order, once development is complete. The design and the reasons are in `Multi-Tenant Working Plan.md`; this file is only what to do. Each development step that adds a manual action adds it here.
 
@@ -52,7 +52,7 @@ The old agent keeps working against the new backend. The backend log will show a
 
 ## 4. Move the existing data into one account
 
-Run from the `backend` folder, with the same `.env` the backend uses. The script creates no user and deletes nothing.
+Run from the `backend` folder on the machine the backend runs on, with the same `.env` the backend uses. The script creates no user and deletes nothing. It must be this machine: the same script run elsewhere migrates whatever database that machine's `.env` points to.
 
 - [ ] Look first. This saves nothing:
 
@@ -72,17 +72,19 @@ Run from the `backend` folder, with the same `.env` the backend uses. The script
 
 - [ ] It must print `Saved.` and then one `added` line per foreign key (nine in all). A `STOP` line means that key was not added; send me the line.
 - [ ] It then prints two `done` lines for roles: role names become unique inside an account instead of across the server. A second customer cannot sign up until this has run.
-- [ ] If "Still to deal with" lists a company with no Tally GUID, do a full sync from the agent after section 5 (Sync All in the agent window).
+- [ ] "Still to deal with" will list your company as having no Tally GUID. That is expected: signing the PC in (section 5) gives it the GUID.
 - [ ] If it lists duplicate Tally GUIDs, leave them. They are handled in Step 6 and block nothing before it.
 
 To give the account a different name than the company's: add `--name "Your Business Name"`. Running the script again later is safe; it changes nothing the second time.
 
 ## 5. Deploy the agent (after the backend)
 
-- [ ] On a Windows PC, in `desktop-sync-agent\installer\`, run `build_windows_exe.bat`. The result is `desktop-sync-agent\dist\SnehDistribuorsSync.exe`.
+- [ ] On a Windows PC, in `desktop-sync-agent\installer\`, run `build_windows_exe.bat`. The result is `desktop-sync-agent\dist\SnehDistribuorsSync.exe`. The script needs a 64-bit Intel/AMD Python with tkinter (not the ARM64 one, even on an ARM PC); if there is none it says so and offers to install it. Its failure cases are listed in `desktop-sync-agent/README.md`.
 - [ ] Close the running agent on the Tally PC, replace the `.exe`, start it again. The existing `agent_config.json` is kept, and the agent keeps syncing on the old login for now.
 - [ ] Sign the PC in. With the company open in Tally, open the agent's Setup screen (from Settings), enter an admin's email and password, and press Connect & Start Sync. The agent signs in as this PC, links the company and returns to the dashboard. From then on it stores no password.
-- [ ] If it says "You are not allowed to use the sync agent", section 4 has not been run, or that person is not an admin.
+- [ ] The company name in Tally must match the company's name in the app (capitals and spaces at the ends do not matter). That is how the first sign-in finds your existing company and gives it its Tally GUID. If the names differ, rename the company in the app first (Company profile), or the sign-in adds a second company.
+- [ ] If it says "This server's data has not been moved into an account yet", section 4 has not been run on the backend's machine.
+- [ ] If it says "You are not allowed to use the sync agent", that person is not an admin, or an admin removed their permission.
 - [ ] If it asks "Move sync to this PC?", another PC is syncing the company. Answer Yes only if this PC should take over.
 - [ ] In the agent log, the next cycle should sync as before.
 
@@ -92,6 +94,7 @@ To give the account a different name than the company's: add `--name "Your Busin
 - [ ] Create a test voucher in the app and confirm it reaches Tally in the right company.
 - [ ] Change something in Tally and confirm it appears in the app within a minute or two.
 - [ ] In the backend log, the "names no Tally company" warning should have stopped.
+- [ ] Run the script from section 4 once more without `--apply`. It must list one company (not two with the same name), and that company must now show a GUID.
 - [ ] In the web app, open Admin → Sync agent & team. The PC should be listed as signed in, syncing your company, and every admin should be ticked under "Who may use the sync agent".
 - [ ] Untick any admin who should not be able to use the sync agent.
 - [ ] Invite a test user from that tab, open the link in a private browser window, set a password and sign in. Then try that user's email in the agent's Setup screen: it must be refused.
@@ -146,6 +149,8 @@ Do this only when sections 1 to 6 are done and everything has run normally for a
 | --- | --- |
 | Backend will not start after deploying | Redeploy the previous version. The new columns and tables are ignored by the old code. |
 | The migration script prints `Refused` | Nothing was changed. Send me the message. |
+| The migration script fails on Windows with "No time zone found with key Asia/Kolkata" | Run `python -m pip install -r requirements.txt` in `backend`: Windows needs the `tzdata` package. And check you are on the backend's machine (section 4). |
+| After signing the PC in there are two companies with the same name | The name in Tally did not match the name in the app, so a second company was added. Stop the agent and send me the output of the section 4 script; the two have to be joined by hand. |
 | The migration script prints `NOT saved` | Nothing was changed. The lines starting with `!` say why. |
 | Users cannot see their company after section 4 | Run the script again without `--apply` and check every user shows the same account as the company. |
 | Agent stops syncing after section 5 | Put the previous `.exe` back. The new backend still accepts the old agent. |

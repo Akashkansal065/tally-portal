@@ -235,8 +235,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchMe = useCallback(async (tok: string) => {
     try {
+      // Name this device's company here rather than rely on the request interceptor: this is the first request
+      // of a page load, and the answer decides which company the device stays in.
+      const deviceCompanyId = activeCompanyId ?? rememberedCompanyId()
       const res = await fetch(`${API_BASE}/auth/me`, {
-        headers: authHeaders(tok),
+        headers: { ...authHeaders(tok), ...(deviceCompanyId ? { 'X-Company-ID': String(deviceCompanyId) } : {}) },
         cache: 'no-store',
       })
       const contentType = res.headers.get('content-type') || ''
@@ -339,6 +342,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
+    // Before the first request: every call after this one carries the device's company
+    installSessionEndedInterceptor()
     const saved = localStorage.getItem('mytally_token')
     if (saved) {
       activeToken = saved
@@ -351,7 +356,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Keep the interceptor pointed at the current token and handler
   useEffect(() => {
-    activeToken = token
+    // Signing out clears activeToken itself; an empty token here is only the first render, before the saved
+    // one is read, and must not blank the token the effect above has just set
+    if (token) activeToken = token
   }, [token])
 
   useEffect(() => {
