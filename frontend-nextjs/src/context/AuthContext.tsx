@@ -12,6 +12,8 @@ import { stopHeadlessNativeTracking } from '@/lib/capacitor-native-tracking'
 // signs the user out with an explanation. Only 401s for requests that carried the current token
 // count; network errors and 403 permission errors never sign anyone out.
 let activeToken = ''
+// The company this device is working in. Sent on every API request so the server never has to assume one.
+let activeCompanyId: number | null = null
 let onSessionEnded: ((reason: string | null) => void) | null = null
 let fetchPatched = false
 
@@ -61,12 +63,24 @@ function withIdempotencyKey(input: RequestInfo | URL, init?: RequestInit): Reque
   return { ...init, headers }
 }
 
+function withCompanyHeader(input: RequestInfo | URL, init?: RequestInit): RequestInit | undefined {
+  if (activeCompanyId == null || !activeToken) return init
+  const url = requestUrl(input)
+  if (!url.startsWith(API_BASE) || url.includes('/auth/login')) return init
+  if (requestAuthorization(input, init) !== `Bearer ${activeToken}`) return init
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+  if (headers.has('X-Company-ID')) return init
+  headers.set('X-Company-ID', String(activeCompanyId))
+  return { ...init, headers }
+}
+
 function installSessionEndedInterceptor() {
   if (fetchPatched || typeof window === 'undefined') return
   fetchPatched = true
   const originalFetch = window.fetch.bind(window)
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     init = withIdempotencyKey(input, init)
+    init = withCompanyHeader(input, init)
     const response = await originalFetch(input, init)
     if (response.status === 401 && activeToken && onSessionEnded) {
       const url = requestUrl(input)
@@ -81,6 +95,7 @@ function installSessionEndedInterceptor() {
 /** Remove everything that belongs to the signed-in session on this device. */
 function clearLocalSession() {
   activeToken = ''
+  activeCompanyId = null
   localStorage.removeItem('mytally_token')
   localStorage.removeItem('mytally_email')
   // Don't let the next person on a shared phone inherit an "active shift"
@@ -231,6 +246,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error(`Invalid response format from server (${contentType || 'empty'})`)
       }
       const data = await res.json()
+      if (typeof data.company_id === 'number') activeCompanyId = data.company_id
 
       let allowedCompanies = []
       try {
@@ -363,6 +379,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ company_id })
     })
     if (res.ok) {
+      // Before reloading the profile: that request must already ask for the new company
+      activeCompanyId = company_id
       await fetchMe(token)
     } else {
       let msg = "Failed to switch company"
