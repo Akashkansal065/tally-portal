@@ -33,6 +33,8 @@ HALT_MESSAGES = {
     "device_signed_out": "This PC is signed out of the sync agent. Sign in again in Setup.",
 }
 DEVICE_TOKEN_PREFIX = "mta_"
+# X-Sync-Reason on an HTTP 409: the server is still importing this company's previous push
+SYNC_BUSY_REASON = "sync_in_progress"
 
 
 def halt_message(reason: Optional[str]) -> str:
@@ -473,12 +475,14 @@ class CloudClient:
                 last_diag = {
                     "error_type": err_type,
                     "error": f"HTTP {e.code}: {detail}",
+                    "reason": (e.headers.get("X-Sync-Reason") if e.headers else None),
                     "status_code": e.code,
                     "duration_seconds": dur,
                     "endpoint": endpoint,
                     "payload_size_kb": payload_size_kb
                 }
-                logger.error(f"❌ Inbound push on {endpoint} returned {err_type}: {last_diag['error']} (took {dur:.1f}s)")
+                if last_diag["reason"] != SYNC_BUSY_REASON:   # busy is reported by the caller, and is not an error
+                    logger.error(f"❌ Inbound push on {endpoint} returned {err_type}: {last_diag['error']} (took {dur:.1f}s)")
 
                 # If the endpoint exists and gave an error (not a 404), do not try fallback endpoint
                 if e.code != 404:

@@ -15,11 +15,12 @@ from config import (
     AgentConfig,
     get_logs_dir,
     get_default_config_path,
+    hold_single_instance,
     install_startup as cfg_install_startup,
     uninstall_startup as cfg_uninstall_startup
 )
 from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
-from cloud_client import CloudClient, halt_message
+from cloud_client import CloudClient, halt_message, SYNC_BUSY_REASON
 from xml.sax.saxutils import unescape
 
 # A full voucher sync is cut into date ranges of about this many vouchers each, so neither Tally nor the
@@ -32,6 +33,7 @@ VOUCHERS_PER_RANGE = 50
 FULL_SYNC_SLICE_SECONDS = 90
 # A plan older than this is made again: its counts no longer describe what is in Tally
 FULL_SYNC_PLAN_MAX_AGE_SECONDS = 6 * 3600
+SERVER_BUSY_MESSAGE = "the server is still importing this company's previous sync."
 
 
 def plan_voucher_ranges(dates: List[str], per_range: int = VOUCHERS_PER_RANGE) -> List[List[Any]]:
@@ -850,6 +852,12 @@ class DesktopSyncAgent:
                     # so they are reported rather than retried; fix them in Tally and they re-sync on next edit.
                     total_record_errors += len(record_errors)
                     logger.warning(f"   ⚠️ '{label}': {len(record_errors)} record(s) rejected by the server, e.g. {record_errors[:3]}")
+            elif res.get("reason") == SYNC_BUSY_REASON:
+                # Not sent again and again while the server works: the rest of this cycle would be refused too
+                total_errors += 1
+                self._last_push_error = SERVER_BUSY_MESSAGE
+                logger.warning(f"   ⏳ '{label}' not sent: {SERVER_BUSY_MESSAGE} It is sent again next cycle.")
+                break
             else:
                 total_errors += 1
                 err_type = res.get("error_type", "SYNC_ERROR")
@@ -995,12 +1003,16 @@ class DesktopSyncAgent:
                 logger.error(f"   ❌ Could not export '{label}' from Tally; the full sync carries on from here next cycle.")
                 return False, imported
             ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=bool(cursor.get("force")))
+            if not ok and res.get("reason") == SYNC_BUSY_REASON:
+                logger.warning(f"   ⏳ '{label}' not sent: {SERVER_BUSY_MESSAGE} The full sync carries on from here next cycle.")
+                return False, imported
             if not ok:
                 logger.error(f"   ❌ '{label}' could not be pushed ({res.get('error', 'unknown error')}); "
                              "the full sync carries on from here next cycle.")
                 return False, imported
             imported += res.get("imported_vouchers", 0)
-            logger.info(f"   • ✅ '{label}' synced ({res.get('imported_vouchers', 0)} vouchers)")
+            # The server only counts what it added or changed; a voucher it already holds unchanged is not counted
+            logger.info(f"   • ✅ '{label}' sent: {expected} vouchers, {res.get('imported_vouchers', 0)} new or changed on the server")
             cursor["next"] += 1
             self._save_full_sync_cursor(company_key, cursor)
             if time.time() >= deadline:
@@ -1107,6 +1119,11 @@ def main():
     if args.uninstall_startup:
         print_banner()
         uninstall_startup()
+        return
+
+    if not args.discover and not hold_single_instance():
+        print("Another SnehDistribuors Sync Agent is already running on this PC (look in the system tray). "
+              "Two agents would sync the same companies at once, so this one has not started.")
         return
 
     agent = DesktopSyncAgent(config_path=args.config)

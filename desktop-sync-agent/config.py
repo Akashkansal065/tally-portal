@@ -73,6 +73,38 @@ class AgentConfig:
     # Kept across restarts so autostart doesn't silently sign back in; cleared when credentials are re-entered.
     auth_halt_reason: str = ""
 
+_single_instance_handle = None   # kept for the life of the process: the hold ends when it does
+
+
+def hold_single_instance() -> bool:
+    """Claim this PC's one sync agent slot for this process, whichever way the agent was started (window or
+    command line). False when another agent process already holds it. Two agents would sync the same
+    companies at the same time."""
+    global _single_instance_handle
+    if _single_instance_handle is not None:
+        return True
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.CreateMutexW(None, False, "Global\\SnehDistribuorsSyncAgent_SingleInstance_Mutex")
+            if kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+                return False
+            _single_instance_handle = handle
+        else:
+            import fcntl
+            handle = open(os.path.join(get_logs_dir(), "agent.lock"), "w")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                handle.close()
+                return False
+            _single_instance_handle = handle
+    except Exception:
+        pass   # the check itself failing must not keep the agent from starting
+    return True
+
+
 def is_autostart_registered() -> bool:
     """Checks if the application is currently registered to start with Windows."""
     if sys.platform != "win32":

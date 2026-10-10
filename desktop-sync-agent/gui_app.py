@@ -25,7 +25,8 @@ from config import (
     uninstall_startup,
     is_autostart_registered,
     get_default_config_path,
-    get_logs_dir
+    get_logs_dir,
+    hold_single_instance
 )
 from agent import DesktopSyncAgent
 from tally_client import TallyClient
@@ -49,31 +50,21 @@ WARNING_AMBER = "#F59E0B"    # Amber 500
 ERROR_RED = "#EF4444"        # Red 500
 TEXT_MAIN = "#F8FAFC"        # Slate 50
 TEXT_MUTED = "#94A3B8"       # Slate 400
-# Global reference to prevent garbage collection of Windows single-instance mutex
-_app_single_instance_mutex = None
-
 def check_single_instance() -> bool:
-    """Ensures only one instance of SnehDistribuorsSync runs at a time."""
+    """Ensures only one SnehDistribuorsSync runs at a time, window or command line; brings the open window forward."""
+    if hold_single_instance():
+        return True
     if sys.platform == "win32":
         try:
             import ctypes
-            global _app_single_instance_mutex
-            mutex_name = "Global\\SnehDistribuorsSyncAgent_SingleInstance_Mutex"
-            kernel32 = ctypes.windll.kernel32
-            _app_single_instance_mutex = kernel32.CreateMutexW(None, False, mutex_name)
-            last_error = kernel32.GetLastError()
-            ERROR_ALREADY_EXISTS = 183
-            if last_error == ERROR_ALREADY_EXISTS:
-                # Find and restore the existing window
-                user32 = ctypes.windll.user32
-                hwnd = user32.FindWindowW(None, "SnehDistribuors — Tally Sync Agent")
-                if hwnd:
-                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                    user32.SetForegroundWindow(hwnd)
-                return False
+            user32 = ctypes.windll.user32
+            hwnd = user32.FindWindowW(None, "SnehDistribuors — Tally Sync Agent")
+            if hwnd:
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
         except Exception:
             pass
-    return True
+    return False
 
 def get_asset_path(filename: str) -> str:
     """Finds asset path in sys._MEIPASS (PyInstaller bundled), next to executable, or in source."""

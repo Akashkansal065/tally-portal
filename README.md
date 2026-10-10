@@ -284,7 +284,7 @@ npx cap open ios
 | `python scratch/reset_sync.py` | ⚠️ Truncate synced vouchers and reset AlterIDs so the next sync is a full re-import |
 | `python scratch/wipe_all.py` | ⚠️ Delete **all** data. Dev only |
 
-> **Run the backend with one worker.** The response cache, auth/permission cache, sync lock, rate limiter location-ping guard and background workers (DB keep-alive, attendance auto-punch-out, daily cleanup) all live in process memory. More workers means stale permissions, duplicate notifications and a sync lock that no longer serializes imports. See `architecture.md` → *Scaling constraints*.
+> **Run the backend with one worker.** The response cache, auth/permission cache, sync lock, rate limiter location-ping guard and background workers (DB keep-alive, attendance auto-punch-out, daily cleanup) all live in process memory. More workers means stale permissions, duplicate notifications and imports of different companies running at the same time. One thing does hold across processes: a company's import from the Sync Agent takes a MySQL named lock, so a second import of the same company is refused (HTTP 409, `sync_in_progress`) instead of running alongside the first. See `architecture.md` → *Scaling constraints*.
 
 ### Desktop Sync Agent (`desktop-sync-agent/`)
 
@@ -362,6 +362,8 @@ This file is written by the GUI. Passwords and tokens go into the OS credential 
 | Agent says "This PC is signed out of the sync agent" | It was signed out in Admin → Sync agent & team, or the person who signed it in was deactivated. Sign in again from Setup |
 | Agent says a company is "a different copy of the books" | The company open in Tally is a copy or restored backup of the synced one. Open the right one, or Unlink then Link if the move was deliberate |
 | Header dot stays grey for a company | No agent has synced it recently: the agent is stopped, outdated, or the company isn't open in Tally |
+| Agent log says "the server is still importing this company's previous sync" | Not an error. The server refuses a second import of a company while one is running; the agent sends it again next cycle. If it never clears, another backend is running against the same database |
+| "Another SnehDistribuors Sync Agent is already running on this PC" | One agent per PC, window or command line. Quit the other one from the system tray |
 | Agent says "Tally Offline" | Tally isn't running, the XML server isn't enabled, or the port isn't 9000 |
 | Sync imported nothing | Normal when nothing changed (AlterID unchanged). Use **Sync All** to force a full import |
 | Location trail stops on Android | Set battery optimization to **Unrestricted** for the app (Xiaomi, Vivo, Oppo and Samsung kill background services) |

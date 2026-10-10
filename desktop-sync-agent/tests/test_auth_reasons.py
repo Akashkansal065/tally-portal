@@ -91,3 +91,14 @@ def test_halt_survives_restart_and_clears_on_new_credentials(backend, tmp_path):
     save_config(b.config, cfg_path)
     c = agent_module.DesktopSyncAgent(config_path=cfg_path)
     assert c.cloud.auth_halt_reason == "" and c.cloud.authenticate("agent@example.com", "pw")[0]
+
+
+def test_a_busy_server_is_told_apart_from_a_failed_push(backend):
+    c = client(backend, token="t")
+    backend.api_responses = [(409, {"detail": "A sync of this company is already running on the server."},
+                              {"X-Sync-Reason": "sync_in_progress"})]
+
+    ok, result = c.push_inbound_xml("<ENVELOPE/>", "Alpha")
+
+    assert not ok and result["reason"] == "sync_in_progress" and result["status_code"] == 409
+    assert len(backend.requests) == 1                                    # not sent again to the fallback address

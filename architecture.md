@@ -168,7 +168,7 @@ sequenceDiagram
         AG->>T: Export collections WHERE ALTERID > last
         T-->>AG: XML (masters, vouchers incl. the new one with Tally GUID/AlterID)
         AG->>API: POST /sync/inbound (raw XML, X-Company-Name)
-        API->>API: sync_lock → import_tally_xml(): upsert by GUID/name, recompute balances
+        API->>API: company_sync_guard (409 if this company is already importing) → sync_lock → import_tally_xml(): upsert by GUID/name, recompute balances
         API->>DB: UPSERT tally_sync.*; clear company response cache
     end
 

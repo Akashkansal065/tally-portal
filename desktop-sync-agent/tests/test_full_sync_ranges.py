@@ -63,6 +63,7 @@ class Cloud:
     def __init__(self):
         self.pushed = []          # (label or "vouchers", voucher numbers, forced)
         self.fail_on = set()      # voucher numbers whose push fails
+        self.busy_for = 0         # pushes the server refuses because it is still importing the last one
         self.reports = []
 
     def get_last_alter_id(self):
@@ -71,6 +72,11 @@ class Cloud:
 
     def push_inbound_xml(self, xml, company_name=None, force=False):
         numbers = [int(x.split("</VOUCHERNUMBER>")[0]) for x in xml.split("<VOUCHERNUMBER>")[1:]]
+        if self.busy_for:
+            self.busy_for -= 1
+            self.refused_busy = getattr(self, "refused_busy", 0) + 1
+            return False, {"error": "HTTP 409: A sync of this company is already running on the server.",
+                           "status_code": 409, "reason": "sync_in_progress"}
         if self.fail_on & set(numbers):
             return False, {"error": "server down"}
         self.pushed.append((numbers, force))
@@ -235,6 +241,36 @@ def test_changing_the_size_plans_the_rest_again_and_keeps_what_is_done(tmp_path)
     sizes = [len(numbers) for numbers, _ in cloud.pushed if numbers != [0]]
     assert sizes[:done] == [520, 520] and max(sizes[done:]) == 80        # two days of 40: the rest in small ranges
     assert arrived == list(range(1, 1041))                               # the first two ranges were not sent again
+
+
+def test_a_server_still_importing_is_waited_for_not_pushed_at(tmp_path):
+    tally, cloud = Tally(many_vouchers()), Cloud()
+    agent = make_agent(tmp_path, tally, cloud)
+    cloud.fail_on = {1500}
+    agent.sync_inbound_cycle(is_incremental=False)                       # part-way through
+    done, arrived = agent.config.full_sync_cursors["guid-alpha"]["next"], cloud.all_numbers()
+
+    cloud.fail_on, cloud.busy_for = set(), 99                            # the server is still on the last push
+    agent.sync_inbound_cycle(is_incremental=True)
+
+    assert cloud.refused_busy == 1                                       # asked once, then left alone this cycle
+    assert agent.config.full_sync_cursors["guid-alpha"]["next"] == done and cloud.all_numbers() == arrived
+    assert agent.config.inbound_retry_floors == {} and agent._last_company_ok is False
+
+    cloud.busy_for = 0
+    agent.sync_inbound_cycle(is_incremental=True)                        # the server is free again
+    assert cloud.all_numbers() == list(range(1, 2401)) and agent.config.full_sync_cursors == {}
+
+
+def test_a_busy_server_ends_the_cycles_other_pushes_too(tmp_path):
+    tally, cloud = Tally(many_vouchers(count=40)), Cloud()               # masters, then the vouchers in one go
+    agent = make_agent(tmp_path, tally, cloud)
+    cloud.busy_for = 99
+
+    agent.sync_inbound_cycle(is_incremental=False)
+
+    assert cloud.refused_busy == 1 and cloud.pushed == []                # the second push was not even tried
+    assert "still importing" in agent.last_sync_status and agent._last_company_ok is False
 
 
 def test_a_restart_carries_on_from_the_saved_position(tmp_path):

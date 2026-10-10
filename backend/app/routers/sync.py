@@ -38,7 +38,9 @@ router = APIRouter(prefix="/sync", tags=["Tally Synchronization"])
 # Global lock to serialize direct outbound HTTP requests to Tally Prime (:9000)
 _TALLY_HTTP_LOCK = threading.Lock()
 
-# Global lock to serialize inbound sync background tasks and prevent deadlocks
+# Global lock to serialize inbound sync background tasks and prevent deadlocks. Imports of different
+# companies wait for each other here; a second import of the same company is refused before it gets this far
+# (see app/core/sync_guard.py).
 sync_lock = asyncio.Lock()
 
 def generate_curl_command(tally_url: str, payload: str, format_type: str = "XML") -> str:
@@ -282,27 +284,35 @@ async def inbound_sync(
                            "Link it from the Desktop Sync Agent.")
             # The company being worked in has never been tied to a Tally company: this import ties it
 
-    async with sync_lock:
-        try:
-            result = await import_tally_xml(
-                xml_data, db, user.user_id,
-                company_guid=company_guid,
-                force_overwrite=is_force,
-                target_company_id=target_company_id,
-            )
-            company_id = result.get("company_id")
-            if company_id:
-                from app.core.cache import clear_company_cache
-                clear_company_cache(company_id)
-            return result
-        except Exception as ex:
-            # Full exception stays in the server log; the client gets a reference to quote, not internals
-            error_ref = uuid.uuid4().hex[:12]
-            logger.error(f"❌ [INBOUND SYNC CRITICAL EXCEPTION] ref={error_ref} user_id={user.user_id} company='{company_name}': {ex}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Inbound XML import failed on server (error ref {error_ref}). Check the backend logs for this reference."
-            )
+    from app.core.sync_guard import SYNC_BUSY_REASON, SyncBusy, company_sync_guard
+    try:
+        async with company_sync_guard(db, target_company_id), sync_lock:
+            try:
+                result = await import_tally_xml(
+                    xml_data, db, user.user_id,
+                    company_guid=company_guid,
+                    force_overwrite=is_force,
+                    target_company_id=target_company_id,
+                )
+                company_id = result.get("company_id")
+                if company_id:
+                    from app.core.cache import clear_company_cache
+                    clear_company_cache(company_id)
+                return result
+            except Exception as ex:
+                # Full exception stays in the server log; the client gets a reference to quote, not internals
+                error_ref = uuid.uuid4().hex[:12]
+                logger.error(f"❌ [INBOUND SYNC CRITICAL EXCEPTION] ref={error_ref} user_id={user.user_id} company='{company_name}': {ex}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Inbound XML import failed on server (error ref {error_ref}). Check the backend logs for this reference."
+                )
+    except SyncBusy:
+        # The earlier import of this company is still running (the sender gave up waiting for its answer and
+        # sent again, or another backend holds it). Nothing is queued: the sender tries again later.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, headers={"X-Sync-Reason": SYNC_BUSY_REASON},
+            detail="A sync of this company is already running on the server. Try again when it has finished.")
 
 def voucher_remote_id(voucher) -> Optional[str]:
     """
