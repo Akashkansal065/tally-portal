@@ -52,10 +52,13 @@ class Attendance(Base):
     __tablename__ = "portal_attendance"
     __table_args__ = (
         Index("ix_portal_attendance_user_checkin", "user_id", "check_in_time"),
+        Index("ix_portal_attendance_account", "account_id"),
         {"schema": settings.PORTAL_DATABASE_NAME},
     )
 
     id = Column(Integer, primary_key=True, index=True)
+    # Attendance belongs to the account, not to one company: a person clocks in once a day. Not read yet.
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     check_in_time = Column(DateTime, nullable=False, server_default=func.now())
     check_out_time = Column(DateTime, nullable=True)
@@ -112,10 +115,12 @@ class AttendanceLocationLog(Base):
     __tablename__ = "portal_attendance_locations"
     __table_args__ = (
         Index("ix_attendance_locations_latest", "attendance_id", "recorded_at"),
+        Index("ix_attendance_locations_account", "account_id"),
         {"schema": settings.PORTAL_DATABASE_NAME},
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True)
     attendance_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.portal_attendance.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, index=True)
     latitude = Column(String(32), nullable=False)

@@ -4,7 +4,7 @@ Orders Router — temporary order creation and management.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, desc
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Boolean, Index, desc
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -45,9 +45,14 @@ def format_datetime_utc(dt: Optional[datetime]) -> Optional[str]:
 
 class TempOrder(Base):
     __tablename__ = "temp_orders"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_temp_orders_company", "company_id"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
+    # The company the order was taken for. Not read yet: lists still go by the owner's active company.
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=True)
     custom_customer_name = Column(String(256), nullable=True)

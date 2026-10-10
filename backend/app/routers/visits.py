@@ -5,7 +5,7 @@ Stores GPS check-in records for sales visits.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, Double, DateTime, ForeignKey, Text, desc, or_
+from sqlalchemy import Column, Integer, String, Float, Double, DateTime, ForeignKey, Text, Index, desc, or_
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -25,9 +25,14 @@ router = APIRouter(prefix="/visits", tags=["visits"])
 
 class SalesVisit(Base):
     __tablename__ = "sales_visits"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_sales_visits_company", "company_id"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
+    # The company the visit was made for. Not read yet: lists still go by the owner's active company.
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=True)
     custom_shop_name = Column(String(256), nullable=True)

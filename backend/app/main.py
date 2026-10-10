@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
     from app.core.database import ensure_table_indexes
     from app.models import portal_core as portal
     from app.routers import attendance as attendance_models
+    from app.routers import orders as orders_models, visits as visits_models, expenses as expenses_models
     for table, index_names in (
         (portal.UserSession.__table__, ["ix_user_sessions_token", "ix_user_sessions_active", "ix_user_sessions_device"]),
         (portal.SyncTrafficLog.__table__, ["ix_sync_traffic_company_status", "ix_sync_traffic_company_created"]),
@@ -52,8 +53,16 @@ async def lifespan(app: FastAPI):
         (portal.DeletedRecordAudit.__table__, ["ix_deleted_audit_company_status"]),
         (portal.Notification.__table__, ["ix_notifications_user_unread"]),
         (portal.CustomerLocationLog.__table__, ["ix_customer_location_logs_latest"]),
-        (attendance_models.Attendance.__table__, ["ix_portal_attendance_user_checkin"]),
-        (attendance_models.AttendanceLocationLog.__table__, ["ix_attendance_locations_latest"]),
+        (attendance_models.Attendance.__table__, ["ix_portal_attendance_user_checkin", "ix_portal_attendance_account"]),
+        (attendance_models.AttendanceLocationLog.__table__, ["ix_attendance_locations_latest", "ix_attendance_locations_account"]),
+        # Accounts (multi-tenant): owner columns added to tables that already existed
+        (portal.User.__table__, ["ix_users_account"]),
+        (portal.Company.__table__, ["ix_companies_account_guid"]),
+        (portal.Role.__table__, ["ix_roles_account"]),
+        (portal.ShopPayment.__table__, ["ix_shop_payments_company"]),
+        (orders_models.TempOrder.__table__, ["ix_temp_orders_company"]),
+        (visits_models.SalesVisit.__table__, ["ix_sales_visits_company"]),
+        (expenses_models.Expense.__table__, ["ix_expenses_company"]),
     ):
         await ensure_table_indexes(table, index_names)
         

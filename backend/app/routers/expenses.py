@@ -4,7 +4,7 @@ Expenses Router — expense claim submission and admin approval.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, desc
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Index, desc
 from sqlalchemy.orm import relationship, selectinload
 from sqlalchemy.sql import func
 from pydantic import BaseModel
@@ -21,9 +21,14 @@ from app.core.datetime_utils import get_ist_now, to_ist_iso
 
 class Expense(Base):
     __tablename__ = "expenses"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_expenses_company", "company_id"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
+    # The company the expense was claimed in. Not read yet: lists still go by the owner's active company.
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     salesperson_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
     amount = Column(Float, nullable=False)

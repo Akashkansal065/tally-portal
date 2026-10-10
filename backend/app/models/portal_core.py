@@ -239,9 +239,15 @@ class MstGstRegistration(Base):
 
 class Role(Base):
     __tablename__ = "roles"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_roles_account", "account_id"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
     
     role_id = Column(Integer, primary_key=True, index=True)
+    # The account whose role this is. Not read yet: roles are still shared by every account until each
+    # account gets its own set.
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True)
     name = Column(String(50), nullable=False, unique=True)
     description = Column(String(200), nullable=True)
     # Maximum simultaneously signed-in devices for users of this role; NULL = unlimited
@@ -270,14 +276,28 @@ class Account(Base):
 
     account_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(150), nullable=False)
+    status = Column(String(20), nullable=False, default="active")  # active / closed
+    # The user who signed the account up. A record only: an account has no single owner.
+    created_by_user_id = Column(Integer, nullable=True)
+    # Plan and its limits; NULL = unlimited
+    plan = Column(String(50), nullable=True)
+    max_users = Column(Integer, nullable=True)
+    max_companies = Column(Integer, nullable=True)
+    max_devices = Column(Integer, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    # Indexes on columns added to an existing table are created at startup (ensure_table_indexes)
+    __table_args__ = (
+        Index("ix_users_account", "account_id"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
     
     user_id = Column(Integer, primary_key=True, index=True)
-    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True, index=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True)
+    phone = Column(String(20), nullable=True)
+    email_verified_at = Column(DateTime, nullable=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     username = Column(String(50), nullable=False)
     email = Column(String(120), nullable=False)
@@ -414,10 +434,17 @@ class BlockedDevice(Base):
 
 class Company(Base):
     __tablename__ = "companies"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        # A company is found by its account and Tally GUID, never by name
+        Index("ix_companies_account_guid", "account_id", "tally_guid"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
     
     company_id = Column(Integer, primary_key=True, index=True)
-    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True, index=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True)
+    # Books-from date and company number as Tally reported them when the company was linked: tells a restored
+    # or re-created company apart from the original when the GUID alone cannot
+    tally_fingerprint = Column(String(200), nullable=True)
     name = Column(String(150), nullable=False)
     gstin = Column(String(15), nullable=True)
     pan = Column(String(10), nullable=True)
@@ -451,6 +478,102 @@ class Company(Base):
     
     financial_years = relationship("FinancialYear", back_populates="company", cascade="all, delete-orphan")
     users = relationship("User", back_populates="company", cascade="all, delete-orphan")
+
+class AgentDevice(Base):
+    """A PC running the Desktop Sync Agent, registered to one account. The agent signs in as the device, with
+    a token of which only the hash is kept here."""
+    __tablename__ = "agent_devices"
+    __table_args__ = (
+        UniqueConstraint("account_id", "machine_id", name="uq_agent_devices_account_machine"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    device_id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="CASCADE"), nullable=False, index=True)
+    registered_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    machine_id = Column(String(128), nullable=False)
+    name = Column(String(150), nullable=True)
+    token_hash = Column(String(64), nullable=True, unique=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class AgentCompanyLink(Base):
+    """Which device syncs which company. A company is synced by one PC at a time: is_active is True on the
+    current link and NULL on ended ones, so the unique key allows any number of ended links per company and
+    only one current one."""
+    __tablename__ = "agent_company_links"
+    __table_args__ = (
+        UniqueConstraint("company_id", "is_active", name="uq_agent_company_links_one_active"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    link_id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.agent_devices.device_id", ondelete="CASCADE"), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    is_active = Column(Boolean, nullable=True, default=True)
+    # Where this PC reaches Tally for the company (one port per PC today)
+    tally_url = Column(String(255), nullable=True)
+    linked_at = Column(DateTime, server_default=func.now())
+    unlinked_at = Column(DateTime, nullable=True)
+
+
+class CompanySyncState(Base):
+    """What the agent last reported for a company: the source of "Last synced" in the app."""
+    __tablename__ = "company_sync_state"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), primary_key=True)
+    device_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.agent_devices.device_id", ondelete="SET NULL"), nullable=True)
+    state = Column(String(30), nullable=True)  # live / syncing / closed / error
+    # The last cycle that finished for this company with no errors; a heartbeat or a partial cycle does not move it
+    last_success_at = Column(DateTime, nullable=True)
+    last_attempt_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    master_alter_id = Column(BigInteger, nullable=True)
+    voucher_alter_id = Column(BigInteger, nullable=True)
+    pending_count = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class UserInvite(Base):
+    """An admin's invitation for someone to join their account. is_open is True until the invite is accepted,
+    revoked or replaced and NULL afterwards, so an account has one open invite per email."""
+    __tablename__ = "user_invites"
+    __table_args__ = (
+        UniqueConstraint("account_id", "email", "is_open", name="uq_user_invites_one_open"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    invite_id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String(120), nullable=False)
+    phone = Column(String(20), nullable=True)
+    role_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.roles.role_id"), nullable=False)
+    company_ids = Column(JSON, nullable=True)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    is_open = Column(Boolean, nullable=True, default=True)
+    expires_at = Column(DateTime, nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    invited_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class SignupVerification(Base):
+    """A sign-up waiting for its emailed code. payload holds what the account will be created from, with the
+    password already hashed; nothing here is a user until the code is confirmed."""
+    __tablename__ = "signup_verifications"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    verification_id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(120), nullable=False, unique=True)
+    code_hash = Column(String(64), nullable=False)
+    payload = Column(JSON, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
 
 class FinancialYear(Base):
     __tablename__ = "financial_years"
@@ -962,9 +1085,14 @@ class ManualPurchase(Base):
 
 class ShopPayment(Base):
     __tablename__ = "shop_payments"
-    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    __table_args__ = (
+        Index("ix_shop_payments_company", "company_id"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
+    # The company the payment was collected for. Not read yet: lists still go by the collector's active company.
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=True)
     user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False)
     ledger_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.ledgers.ledger_id"), nullable=False)
     amount = Column(Numeric(18, 2), nullable=False)

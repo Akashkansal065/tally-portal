@@ -14,6 +14,7 @@ Where the two disagreed or a later decision changed them, this document is right
 | Item | State |
 | --- | --- |
 | Phase 0: explicit sync company, accounts table, account-scoped Admin | Code complete, in PR [Akashkansal065/tally-portal#67](https://github.com/Akashkansal065/tally-portal/pull/67). Not merged, not deployed. |
+| Step 1: expand the schema | Code complete on branch `step1-expand-schema`, uncommitted. Backend tests: 214 passed. Not run against MySQL. |
 | Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
 | Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
 | Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
@@ -250,18 +251,26 @@ One sequence, replacing the earlier Phases 0 to 4 and migration Stages A to D. E
 
 ### Step 1: Expand the schema (no behaviour change)
 
-- [ ] Foreign keys and indexes for the Phase 0 `account_id` columns (the startup sync added plain columns)
-- [ ] `accounts`: `status`, `plan`, `max_users`, `max_companies`, `max_devices`
-- [ ] `users`: `phone`, `email_verified_at`; `accounts`: `created_by_user_id`
-- [ ] `companies`: `tally_fingerprint`
-- [ ] New tables: `agent_devices`, `agent_company_links`, `company_sync_state`, `user_invites`, `signup_verifications`
-- [ ] `company_id` on the child tables that are queried directly
-- [ ] `company_id` (nullable for now) on `temp_orders`, `sales_visits`, `shop_payments`, `expenses`; `account_id` on `portal_attendance`, `portal_attendance_locations` (section 3.7)
-- [ ] `account_id` (nullable for now) on `roles`
-- [ ] Find out whether the eleven parentless Tally-side tables are still used
-- [ ] Read-only inventory script: companies, users, roles, grants, missing GUIDs, duplicate (`company_id`, `tally_guid`) rows
+Code complete on branch `step1-expand-schema` (stacked on the Phase 0 branch). Nothing below has run against production yet.
 
-**Gate:** migrations run clean on a copy of production; the old code runs unchanged against the new schema.
+- [x] Indexes for the owner columns, created at startup through `ensure_table_indexes` (the `index=True` flags Phase 0 used are not built on existing tables)
+- [x] `accounts`: `status`, `created_by_user_id`, `plan`, `max_users`, `max_companies`, `max_devices`
+- [x] `users`: `phone`, `email_verified_at`
+- [x] `companies`: `tally_fingerprint`; index on (`account_id`, `tally_guid`)
+- [x] New tables: `agent_devices`, `agent_company_links`, `company_sync_state`, `user_invites`, `signup_verifications`
+- [x] `company_id` on `temp_orders`, `sales_visits`, `shop_payments`, `expenses`; `account_id` on `portal_attendance`, `portal_attendance_locations` (nullable, not read yet)
+- [x] `account_id` on `roles` (nullable, not read yet)
+- [x] Child tables: none needs its own `company_id` now. The two that are queried directly, `trn_attendance` and `trn_payhead`, are always reached through their voucher.
+- [x] The parentless Tally-side tables: eleven are not read or written by any code (listed in `app/services/tenant_inventory.py`); the inventory reports their row counts so they can be dropped if empty
+- [x] Read-only inventory: `python scripts/tenant_inventory.py` (add `--json` for the full report)
+- [x] Foreign-key script: `python scripts/add_tenant_foreign_keys.py` shows what it would add; `--apply` adds it
+- [ ] Deploy, so startup creates the new tables, columns and indexes
+- [ ] Run the foreign-key script with `--apply` on production
+- [ ] Run the inventory on production and keep its output for Step 2
+
+Two details of the new tables: "one active link per company" and "one open invite per email" are enforced with a flag that is true on the current row and empty on ended ones, because MySQL has no partial unique index.
+
+**Gate:** startup and both scripts run clean on a copy of production; the old code paths behave as before.
 
 ### Step 2: Migrate production into one account
 
