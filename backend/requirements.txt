@@ -13,6 +13,8 @@ slowapi==0.1.10
 pydantic==2.13.4
 pydantic-settings==2.14.2
 python-dotenv==1.2.2
+# Time zones (Asia/Kolkata): Windows has no time zone database of its own
+tzdata==2026.5
 
 # Database: MySQL in production (cryptography is needed for MySQL 8 password auth)
 SQLAlchemy==2.0.51
