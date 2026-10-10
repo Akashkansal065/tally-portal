@@ -141,6 +141,8 @@ export const NAV_MODULES: NavModule[] = [
     visible: ({ can }) => can('currencies', 'read') },
   { id: 'voucher-types', href: '/masters/voucher-types', label: 'Voucher types', icon: FileText, group: 'masters',
     visible: ({ can }) => can('voucher_types', 'read') },
+  { id: 'payroll-masters', href: '/masters/payroll', label: 'Payroll masters', icon: Users, group: 'masters', keywords: 'employee pay head attendance type salary',
+    visible: ({ can }) => can('payroll', 'read') },
 
   // Admin & tools
   { id: 'notifications', href: '/notifications', label: 'Notifications', icon: Bell, group: 'admin', keywords: 'alerts approvals settings push',

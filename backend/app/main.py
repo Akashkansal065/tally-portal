@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data
-from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backup_schedule
+from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backup_schedule, payroll_masters
 
 from app.core.logging_config import setup_logging, get_logger, RequestLoggingMiddleware
 
@@ -104,6 +104,11 @@ from app.core.rate_limiter import limiter, rate_limit_exceeded_handler
 
 app = FastAPI(title="Open Tally-Clone API", version="1.0.0", lifespan=lifespan)
 
+# A write is carried out once, however often it is sent (double click, client retry). Added first so it
+# sits closest to the routes and replays a response before compression and CORS headers are applied.
+from app.core.idempotency import IdempotencyMiddleware
+app.add_middleware(IdempotencyMiddleware)
+
 # Structured Request Logging & Correlation
 app.add_middleware(RequestLoggingMiddleware)
 
@@ -140,6 +145,7 @@ app.include_router(vouchers.router)
 app.include_router(voucher_types.router, prefix="/voucher-type", tags=["Voucher Types"])
 app.include_router(voucher_types.router, prefix="/voucher-types", tags=["Voucher Types"])
 app.include_router(currency_tds.router)
+app.include_router(payroll_masters.router)
 app.include_router(payment.router)
 app.include_router(inventory.router)
 app.include_router(advanced.router)
