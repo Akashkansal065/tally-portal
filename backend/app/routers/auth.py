@@ -20,7 +20,8 @@ from app.core.sessions import (
     live_session_conditions, utcnow
 )
 from app.core.rate_limiter import limiter
-from app.models.portal_core import Company
+from app.models.portal_core import Company, Account
+from app.core.permissions import same_account_as_user
 from app.models.portal_core import User, Role, UserSession, UserCompanyAccess
 from app.schemas.user import UserLogin, Token, UserResponse
 from pydantic import BaseModel
@@ -127,8 +128,12 @@ async def register_company(
                 detail="A user with this email already exists."
             )
 
-        # 1. Company with full Tally Prime fields
+        # 1. A new customer account, and its first company with full Tally Prime fields
+        account = Account(name=req.company_name)
+        db.add(account)
+        await db.flush()
         company = Company(
+            account_id=account.account_id,
             name=req.company_name,
             address_line1=req.address_line1,
             address_line2=req.address_line2,
@@ -153,6 +158,7 @@ async def register_company(
 
         # 3. Admin user for the company, with access to it
         user = User(
+            account_id=account.account_id,
             company_id=company.company_id,
             username=req.username,
             email=req.email,
@@ -351,9 +357,10 @@ async def switch_active_company(
     
     if not access:
         from app.models.portal_core import Role
-        # Admins have global access to all registered companies
+        # Admins have access to every company of their own account; another account's company does not exist to them
         if user.role and user.role.name.lower() == "admin":
-            comp_check = await db.execute(select(Company).where(Company.company_id == payload.company_id))
+            comp_check = await db.execute(select(Company).where(
+                Company.company_id == payload.company_id, same_account_as_user(user.user_id)))
             if not comp_check.scalars().first():
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -398,9 +405,9 @@ async def get_my_companies(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Admin role can view and switch between all active companies
+    # Admin role can view and switch between all active companies of its own account
     if user.role and user.role.name.lower() == "admin":
-        query = await db.execute(select(Company).where(Company.is_active == True))
+        query = await db.execute(select(Company).where(Company.is_active == True, same_account_as_user(user.user_id)))
         return list(query.scalars().all())
 
     # Non-admin users can view only companies explicitly granted in UserCompanyAccess

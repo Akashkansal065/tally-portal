@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Dict, Any, Optional, Sequence, Set
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy import update
+from sqlalchemy import update, and_, or_
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
@@ -26,22 +26,52 @@ oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login", au
 
 ADMIN_ROLE_NAMES = ("admin", "superadmin", "owner")
 
+def same_account_as_user(user_id: int):
+    """SQL condition: the company belongs to this user's account (rows without an account match each other)."""
+    own_account = select(User.account_id).where(User.user_id == user_id).scalar_subquery()
+    return or_(Company.account_id == own_account, and_(Company.account_id.is_(None), own_account.is_(None)))
+
+
 def is_admin_user(user: Optional[User]) -> bool:
     """True if the user's role is one of the administrator roles (role must be loaded)."""
     return bool(user is not None and user.role is not None and user.role.name and user.role.name.lower() in ADMIN_ROLE_NAMES)
 
 
 async def accessible_company_ids(db: AsyncSession, user_id: int, home_company_id: int, role_name: Optional[str]) -> Set[int]:
-    """Companies a user may open: admins get every active company, others their home company plus granted ones."""
+    """Companies a user may open: admins get every active company of their own account, others their home
+    company plus granted ones. No role reaches a company of another account."""
     allowed: Set[int] = {home_company_id}
     if role_name and role_name.lower() in ADMIN_ROLE_NAMES:
-        rows = await db.execute(select(Company.company_id).where(Company.is_active == True))
+        rows = await db.execute(select(Company.company_id).where(Company.is_active == True, same_account_as_user(user_id)))
     else:
         rows = await db.execute(select(UserCompanyAccess.company_id).where(UserCompanyAccess.user_id == user_id))
     allowed.update(rows.scalars().all())
     return allowed
 
 logger = logging.getLogger("app.core.permissions")
+
+# The Desktop Sync Agent names the Tally company it is syncing on every call, by Tally's company GUID
+SYNC_COMPANY_GUID_HEADER = "x-tally-company-guid"
+# user_id -> when an agent call without the header was last logged (the agent polls every few seconds)
+_legacy_sync_warned: Dict[int, float] = {}
+LEGACY_SYNC_WARN_INTERVAL_SECONDS = 600
+
+
+async def company_for_tally_guid(db: AsyncSession, user: User, tally_guid: str) -> Optional[Company]:
+    """The company this user may access that is linked to the Tally company GUID, or None when no company
+    is linked to it yet. Two accessible companies claiming one GUID is refused: neither can be trusted."""
+    allowed = await accessible_company_ids(db, user.user_id, user.company_id, user.role.name if user.role else "")
+    rows = (await db.execute(
+        select(Company).where(Company.tally_guid == tally_guid, Company.company_id.in_(allowed))
+    )).scalars().all()
+    if len(rows) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"More than one company is linked to Tally company GUID {tally_guid}. Sync is stopped until only one is.",
+            headers={"X-Sync-Reason": "company_ambiguous"},
+        )
+    return rows[0] if rows else None
+
 
 # How often a session's last_active_at is written while it's in use
 LAST_ACTIVE_WRITE_INTERVAL_SECONDS = 300
@@ -245,6 +275,40 @@ async def _request_user(db: AsyncSession, request: Request, snapshot: User, allo
         if h_cid is not None and h_cid != user.company_id and h_cid in allowed_company_ids:
             set_committed_value(user, "company_id", h_cid)
     return user
+
+
+async def bind_sync_company(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Point a Desktop Sync Agent request at the company the agent names, never at the company the account
+    happens to have active (someone switching company in the app must not move the agent's queue or
+    watermark to another company).
+
+    Like X-Company-ID, this re-targets the one request and writes nothing to users.company_id. An agent
+    from before the header existed still gets its account's active company, with a warning in the log."""
+    tally_guid = (request.headers.get(SYNC_COMPANY_GUID_HEADER) or "").strip()
+    if not tally_guid:
+        now = time.time()
+        if now - _legacy_sync_warned.get(user.user_id, 0) >= LEGACY_SYNC_WARN_INTERVAL_SECONDS:
+            _legacy_sync_warned[user.user_id] = now
+            logger.warning(
+                f"Sync request to {request.url.path} from user_id={user.user_id} names no Tally company; using the "
+                f"account's active company #{user.company_id}. Update the Desktop Sync Agent."
+            )
+        return
+    company = await company_for_tally_guid(db, user, tally_guid)
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"No company you can access is linked to Tally company GUID {tally_guid} yet. "
+                   "Run a full sync of that company from the Desktop Sync Agent to link it.",
+            headers={"X-Sync-Reason": "company_not_linked"},
+        )
+    if company.company_id != user.company_id:
+        set_committed_value(user, "company_id", company.company_id)
+
 
 MODULE_TOGGLE_MAPPING = {
     "ledgers": "showLedger",

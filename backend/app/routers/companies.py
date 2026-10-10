@@ -80,6 +80,7 @@ async def create_company(
 
     # 1. Create Company
     company = Company(
+        account_id=user.account_id,
         name=req.name,
         address_line1=req.address_line1,
         address_line2=req.address_line2,

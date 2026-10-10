@@ -17,7 +17,7 @@ import logging
 import uuid
 
 from app.core.database import get_db
-from app.core.permissions import require_permission, get_effective_permission, is_admin_user
+from app.core.permissions import require_permission, get_effective_permission, is_admin_user, bind_sync_company, SYNC_COMPANY_GUID_HEADER
 from app.core.config import settings
 from app.routers.admin import require_admin
 from app.routers.auth import get_current_user
@@ -230,7 +230,10 @@ async def inbound_sync(
     """
     if not company_name:
         company_name = request.headers.get("x-company-name")
-        
+    # Unlike the other agent endpoints, a GUID no company is linked to yet is allowed here: this import
+    # is what links it
+    company_guid = (request.headers.get(SYNC_COMPANY_GUID_HEADER) or "").strip() or None
+
     is_force = force or (request.headers.get("x-force-sync", "").strip().lower() in ("true", "1", "yes"))
     if is_force:
         sync_perms = await get_effective_permission(user, "sync", db)
@@ -263,6 +266,7 @@ async def inbound_sync(
             result = await import_tally_xml(
                 xml_data, db, user.user_id,
                 override_company_name=company_name,
+                company_guid=company_guid,
                 force_overwrite=is_force,
                 allow_company_create=is_admin_user(user)
             )
@@ -787,7 +791,7 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         logger.error(f"Error in build_voucher_xml_payload for voucher {voucher_id}: {e}", exc_info=True)
         return ""
 
-@router.get("/outbound-queue")
+@router.get("/outbound-queue", dependencies=[Depends(bind_sync_company)])
 async def get_outbound_queue(
     user: User = Depends(require_permission("sync", "read")),
     db: AsyncSession = Depends(get_db)
@@ -994,6 +998,11 @@ async def get_outbound_queue(
             await db.commit()
             
     if outbound_payloads:
+        # Lets the agent check each payload is for the Tally company it is tied to before sending it
+        queue_company_guid = (await db.execute(
+            select(Company.tally_guid).where(Company.company_id == user.company_id))).scalar()
+        for payload in outbound_payloads:
+            payload["company_guid"] = queue_company_guid
         items_summary = ", ".join([f"{p['record_type']} #{p['record_id']} ({p['action']})" for p in outbound_payloads])
         logger.info(f"📤 [OUTBOUND DISPATCH] Sending {len(outbound_payloads)} item(s) to Desktop Sync Agent: [{items_summary}]")
         # Payloads carry customer names, GSTINs and addresses: only at DEBUG (they're also in the sync traffic log)
@@ -1003,7 +1012,7 @@ async def get_outbound_queue(
 
     return outbound_payloads
 
-@router.post("/acknowledge")
+@router.post("/acknowledge", dependencies=[Depends(bind_sync_company)])
 async def acknowledge_sync(
     sync_ids: List[int],
     user: User = Depends(require_permission("sync", "update")),
@@ -1024,7 +1033,7 @@ async def acknowledge_sync(
     
     return {"status": "success", "acknowledged_count": len(sync_ids)}
 
-@router.post("/voucher-identities")
+@router.post("/voucher-identities", dependencies=[Depends(bind_sync_company)])
 async def report_voucher_identities(
     identities: List[Dict[str, Any]],
     user: User = Depends(require_permission("sync", "update")),
@@ -1053,7 +1062,7 @@ async def report_voucher_identities(
         clear_company_cache(user.company_id)
     return {"status": "success", "updated": updated}
 
-@router.get("/last-alter-id")
+@router.get("/last-alter-id", dependencies=[Depends(bind_sync_company)])
 async def get_last_alter_id(
     user: User = Depends(require_permission("sync", "read")),
     db: AsyncSession = Depends(get_db)

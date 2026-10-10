@@ -105,6 +105,7 @@ async def ensure_tally_user_exists(db: AsyncSession, company_id: int, user_name:
     # never-disclosed password; an admin must use "Reset password" to enable a real login.
     password_hash = get_password_hash(secrets.token_urlsafe(32))
     new_user = User(
+        account_id=(await db.execute(select(Company.account_id).where(Company.company_id == company_id))).scalar(),
         company_id=company_id,
         username=raw_name,
         email=generated_email,
@@ -600,11 +601,14 @@ async def import_tally_xml(
     user_id: int,
     override_company_name: Optional[str] = None,
     force_overwrite: bool = False,
-    allow_company_create: bool = False
+    allow_company_create: bool = False,
+    company_guid: Optional[str] = None
 ) -> dict:
     """Import Tally XML into the mirror for a company the user can access.
     allow_company_create: create the company (and grant the user access) when it doesn't exist yet.
-    Only administrator-initiated syncs should pass True."""
+    Only administrator-initiated syncs should pass True.
+    company_guid: the Tally company GUID the sender says this export is from. When given, it decides the
+    company: a name is only used to link a company that has no GUID yet, never one linked to another GUID."""
     if not xml_data or not xml_data.strip():
         return {"status": "error", "message": "Empty XML payload."}
         
@@ -649,11 +653,20 @@ async def import_tally_xml(
         company_node = root.find(".//COMPANY")
         
         tally_guid = None
-        if company_node is not None:
+        if company_guid:
+            # Tally lists every open company in a Company export, so the first one may be another company
+            tally_guid = company_guid
+            company_node = next(
+                (node for node in root.iter("COMPANY")
+                 if ((node.findtext("COMPANYGUID") or node.findtext("GUID") or "").strip() == company_guid)),
+                None)
+        elif company_node is not None:
             tally_guid = company_node.findtext("COMPANYGUID") or company_node.findtext("GUID")
             
         company_name = None
-        if override_company_name:
+        if company_guid and company_node is not None:
+            company_name = company_node.get("NAME") or company_node.findtext("NAME") or override_company_name
+        elif override_company_name:
             company_name = override_company_name.strip()
         elif company_node is not None:
             company_name = company_node.get("NAME") or company_node.findtext("NAME")
@@ -697,6 +710,16 @@ async def import_tally_xml(
                 comp_res = await db.execute(name_stmt)
                 company_obj = comp_res.scalars().first()
             
+            if company_guid and company_obj and company_obj.tally_guid and company_obj.tally_guid != company_guid:
+                # Found by name only, and that company belongs to a different Tally company of the same name
+                logger.warning(
+                    f"Inbound import refused for user_id={user_id}: '{company_name}' (company #{company_obj.company_id}) is "
+                    f"linked to Tally GUID {company_obj.tally_guid}, not {company_guid}.")
+                return {
+                    "status": "error",
+                    "message": f"Company '{company_name}' is linked to a different Tally company (GUID {company_obj.tally_guid}). "
+                               "This Tally company has the same name but is not the same company, so nothing was imported."
+                }
             if not company_obj and not allow_company_create:
                 logger.warning(f"Inbound import refused for user_id={user_id}: no accessible company named '{company_name}' (guid={tally_guid}).")
                 return {
@@ -707,6 +730,7 @@ async def import_tally_xml(
             if not company_obj:
                 # Auto-create company (administrator-initiated sync only)
                 company_obj = Company(
+                    account_id=(await db.execute(select(User.account_id).where(User.user_id == user_id))).scalar(),
                     name=company_name or "Unknown Sync Company",
                     tally_guid=tally_guid,
                     books_begin_date=date.today(),

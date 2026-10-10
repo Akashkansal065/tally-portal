@@ -229,6 +229,7 @@ async def create_user(
     password_hash = get_password_hash(payload.password)
     is_new_admin = role.name == "Admin"
     user = User(
+        account_id=admin.account_id,
         company_id=admin.company_id,
         username=payload.username,
         email=payload.email,

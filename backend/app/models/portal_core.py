@@ -261,11 +261,23 @@ class UserCompanyAccess(Base):
     user = relationship("User", back_populates="company_access")
     company = relationship("Company")
 
+class Account(Base):
+    """One customer of the hosted service. Companies and users belong to an account, and nobody, whatever
+    their role, reaches a company outside their own. Rows from before accounts existed have no account
+    (NULL) and form one shared group among themselves."""
+    __tablename__ = "accounts"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    account_id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
     
     user_id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True, index=True)
     company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
     username = Column(String(50), nullable=False)
     email = Column(String(120), nullable=False)
@@ -405,6 +417,7 @@ class Company(Base):
     __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
     
     company_id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String(150), nullable=False)
     gstin = Column(String(15), nullable=True)
     pan = Column(String(10), nullable=True)
