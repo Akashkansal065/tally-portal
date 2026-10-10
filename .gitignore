@@ -62,3 +62,5 @@ google-services.json
 GoogleService-Info.plist
 *firebase-adminsdk*.json
 *service-account*.json
+/tally_audit/backups
+/tally_audit
