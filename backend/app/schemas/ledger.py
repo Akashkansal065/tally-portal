@@ -54,6 +54,12 @@ class AccountGroupResponse(AccountGroupBase):
     is_system_defined: bool
     is_deemed_positive: bool = False
     gst_details: Optional[List[GroupGstDetailSchema]] = []
+    # Outcome of the Tally push made by a create or update; None when no push was attempted
+    tally_master_id: Optional[int] = None
+    tally_guid: Optional[str] = None
+    tally_synced: Optional[bool] = None
+    tally_status: Optional[str] = None
+    tally_message: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -139,7 +145,6 @@ class LedgerBankDetailResponse(LedgerBankDetailBase):
 class LedgerCreate(LedgerBase):
     bank_details: Optional[List[LedgerBankDetailCreate]] = None
 
-from pydantic import field_validator
 
 class LedgerResponse(LedgerBase):
     ledger_id: int
@@ -154,12 +159,12 @@ class LedgerResponse(LedgerBase):
     is_customer: Optional[bool] = None
     is_supplier: Optional[bool] = None
     bank_details: Optional[List[LedgerBankDetailResponse]] = None
+    # Outcome of the Tally push made by a create or update; None when no push was attempted
+    tally_master_id: Optional[int] = None
+    tally_synced: Optional[bool] = None
+    tally_status: Optional[str] = None
+    tally_message: Optional[str] = None
     
-    @field_validator('name')
-    @classmethod
-    def to_title_case(cls, v: str) -> str:
-        return v.title() if v else v
-
     class Config:
         from_attributes = True
 

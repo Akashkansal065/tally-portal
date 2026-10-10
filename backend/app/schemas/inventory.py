@@ -16,6 +16,12 @@ class UnitOfMeasureCreate(BaseModel):
 class UnitOfMeasureResponse(UnitOfMeasureCreate):
     unit_id: int
     company_id: int
+    # Outcome of the Tally push made by a create or update; None when no push was attempted
+    tally_master_id: Optional[int] = None
+    tally_guid: Optional[str] = None
+    tally_synced: Optional[bool] = None
+    tally_status: Optional[str] = None
+    tally_message: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -36,6 +42,12 @@ class StockGroupResponse(StockGroupCreate):
     stock_group_id: int
     company_id: int
     aliases: List[StockGroupAlias] = []
+    # Outcome of the Tally push made by a create or update; None when no push was attempted
+    tally_master_id: Optional[int] = None
+    tally_guid: Optional[str] = None
+    tally_synced: Optional[bool] = None
+    tally_status: Optional[str] = None
+    tally_message: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -171,6 +183,7 @@ class StockItemCreate(BaseModel):
     unit_id: Optional[int] = None
     alt_unit_id: Optional[int] = None
     alt_unit_conversion: Optional[Decimal] = None
+    alt_unit_denominator: Optional[Decimal] = None  # alt_unit_conversion alternate units = this many base units (default 1)
     description: Optional[str] = None
     standard_cost_price: Optional[Decimal] = None
     standard_selling_price: Optional[Decimal] = None
@@ -218,6 +231,12 @@ class StockItemResponse(StockItemCreate):
     opening_balances: List[StockItemOpeningBalanceResponse] = []
     boms: List[StockItemBOMResponse] = []
     price_level_rates: List[StockItemPriceLevelRateResponse] = []
+    # Outcome of the Tally push made by a create or update; None when no push was attempted
+    tally_master_id: Optional[int] = None
+    tally_guid: Optional[str] = None
+    tally_synced: Optional[bool] = None
+    tally_status: Optional[str] = None
+    tally_message: Optional[str] = None
     
     class Config:
         from_attributes = True

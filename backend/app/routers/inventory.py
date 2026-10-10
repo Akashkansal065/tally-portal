@@ -37,33 +37,64 @@ router = APIRouter(prefix="/inventory", tags=["Inventory Management"])
 
 # --- Unit of Measure (UOM) ---
 
+async def _resolve_unit_request(req: UnitOfMeasureCreate, user: User, db: AsyncSession, unit_id: int = None):
+    """
+    Validates a unit and settles its symbol. A compound unit is always named "<base> of <n> <additional>":
+    Tally names compound units itself, so any other name could never be found there again.
+    """
+    from sqlalchemy import func
+    from app.routers.sync import compound_unit_name
+
+    if not req.is_simple_unit:
+        if not req.base_unit_id or not req.additional_unit_id or not req.conversion_factor:
+            raise HTTPException(status_code=400, detail="Compound units require base unit, additional unit, and conversion factor.")
+        if unit_id in (req.base_unit_id, req.additional_unit_id) or req.base_unit_id == req.additional_unit_id:
+            raise HTTPException(status_code=400, detail="A compound unit needs two different simple units.")
+
+        base_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.base_unit_id, MstUom.company_id == user.company_id))).scalars().first()
+        add_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.additional_unit_id, MstUom.company_id == user.company_id))).scalars().first()
+        if not base_uom or not add_uom:
+            raise HTTPException(status_code=400, detail="Invalid base or additional unit.")
+        if not base_uom.is_simple_unit or not add_uom.is_simple_unit:
+            raise HTTPException(status_code=400, detail="Base and additional units must be simple units.")
+
+        req.symbol = compound_unit_name(base_uom.symbol, req.conversion_factor, add_uom.symbol)
+        req.name = req.symbol
+    else:
+        req.symbol = (req.symbol or "").strip()
+        if not req.symbol:
+            raise HTTPException(status_code=400, detail="Simple units require a symbol.")
+        # Tally rejects these as BAD UNIT NAME (a compound unit reads as "<unit> of <number> <unit>").
+        # A unit that already carries such a symbol (read from Tally, so Tally accepted it) stays editable.
+        current_symbol = None
+        if unit_id:
+            current_symbol = (await db.execute(select(MstUom.symbol).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalar()
+        if req.symbol != (current_symbol or "").strip() and any(ch.isdigit() or ch.isspace() or ch == "-" for ch in req.symbol):
+            raise HTTPException(status_code=400, detail="A unit symbol cannot contain digits, spaces or hyphens; Tally does not accept them.")
+        req.name = req.symbol
+
+    # Tally treats unit names without regard to case, and a second row would overwrite the first there
+    dup_stmt = select(MstUom.unit_id).where(MstUom.company_id == user.company_id, func.lower(func.trim(MstUom.symbol)) == req.symbol.lower())
+    if unit_id:
+        dup_stmt = dup_stmt.where(MstUom.unit_id != unit_id)
+    if (await db.execute(dup_stmt)).first():
+        raise HTTPException(status_code=400, detail=f"A unit named '{req.symbol}' already exists.")
+
+
+def _attach_unit_tally_result(uom: MstUom, result):
+    ok, status_code, message = result or (False, "FAILED", "Unit sync failed")
+    uom.tally_synced = ok
+    uom.tally_status = status_code
+    uom.tally_message = message
+
+
 @router.post("/uoms", response_model=UnitOfMeasureResponse)
 async def create_uom(
     req: UnitOfMeasureCreate,
     user: User = Depends(require_permission("units", "create")),
     db: AsyncSession = Depends(get_db)
 ):
-    if not req.is_simple_unit:
-        if not req.base_unit_id or not req.additional_unit_id or not req.conversion_factor:
-            raise HTTPException(status_code=400, detail="Compound units require base unit, additional unit, and conversion factor.")
-        
-        # Verify base and additional units are simple
-        base_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.base_unit_id, MstUom.company_id == user.company_id))).scalars().first()
-        add_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.additional_unit_id, MstUom.company_id == user.company_id))).scalars().first()
-        
-        if not base_uom or not add_uom:
-            raise HTTPException(status_code=400, detail="Invalid base or additional unit.")
-        if not base_uom.is_simple_unit or not add_uom.is_simple_unit:
-            raise HTTPException(status_code=400, detail="Base and additional units must be simple units.")
-            
-        cf_val = req.conversion_factor or 1
-        cf_str = str(int(cf_val)) if cf_val % 1 == 0 else str(cf_val)
-        req.symbol = req.symbol or f"{base_uom.symbol} of {cf_str} {add_uom.symbol}"
-        req.name = req.name or req.symbol
-    else:
-        if not req.symbol:
-            raise HTTPException(status_code=400, detail="Simple units require a symbol.")
-        req.name = req.name or req.symbol
+    await _resolve_unit_request(req, user, db)
 
     uom = MstUom(
         company_id=user.company_id,
@@ -71,7 +102,7 @@ async def create_uom(
         symbol=req.symbol,
         original_name=req.original_name,
         is_simple_unit=req.is_simple_unit,
-        decimal_places=req.decimal_places,
+        decimal_places=req.decimal_places if req.is_simple_unit else 0,
         base_unit_id=req.base_unit_id if not req.is_simple_unit else None,
         additional_unit_id=req.additional_unit_id if not req.is_simple_unit else None,
         conversion_factor=req.conversion_factor if not req.is_simple_unit else None
@@ -80,19 +111,22 @@ async def create_uom(
     await db.flush()
 
     # Sync Queue & Realtime Push to Tally
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Unit",
-        record_id=uom.unit_id,
-        action="Create",
-    )
-    db.add(sync_item)
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(db, user.company_id, "Unit", uom.unit_id, "Create")
     await db.commit()
     await db.refresh(uom)
 
     from app.routers.sync import try_push_uom_realtime
-    await try_push_uom_realtime(uom.unit_id, sync_item.sync_id, "Create", db)
+    result = await try_push_uom_realtime(uom.unit_id, sync_item.sync_id, "Create", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the unit, so it must not exist here either
+        from sqlalchemy import delete as sa_delete
+        from app.models.portal_core import SyncQueue
+        await db.execute(sa_delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.delete(uom)
+        await db.commit()
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this unit: {result[2]}")
+    _attach_unit_tally_result(uom, result)
 
     return uom
 
@@ -106,48 +140,69 @@ async def update_uom(
     uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
     if not uom:
         raise HTTPException(status_code=404, detail="Unit of measure not found.")
-        
-    if not req.is_simple_unit:
-        if not req.base_unit_id or not req.additional_unit_id or not req.conversion_factor:
-            raise HTTPException(status_code=400, detail="Compound units require base unit, additional unit, and conversion factor.")
-        
-        base_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.base_unit_id, MstUom.company_id == user.company_id))).scalars().first()
-        add_uom = (await db.execute(select(MstUom).where(MstUom.unit_id == req.additional_unit_id, MstUom.company_id == user.company_id))).scalars().first()
-        
-        if not base_uom or not add_uom:
-            raise HTTPException(status_code=400, detail="Invalid base or additional unit.")
-            
-        cf_val = req.conversion_factor or 1
-        cf_str = str(int(cf_val)) if cf_val % 1 == 0 else str(cf_val)
-        req.symbol = req.symbol or f"{base_uom.symbol} of {cf_str} {add_uom.symbol}"
-        req.name = req.name or req.symbol
-    else:
-        req.name = req.name or req.symbol
+
+    if bool(uom.is_simple_unit) != bool(req.is_simple_unit):
+        raise HTTPException(status_code=400, detail="A simple unit cannot be turned into a compound unit or back. Create a new unit instead.")
+    if uom.is_simple_unit and req.decimal_places < (uom.decimal_places or 0):
+        raise HTTPException(status_code=400, detail=f"Decimal places cannot be reduced (currently {uom.decimal_places or 0}); Tally does not allow it.")
+
+    await _resolve_unit_request(req, user, db, unit_id)
+
+    # Tally still knows the unit by its current name; a rename, or a compound unit whose parts changed
+    # (Tally renames those itself), has to address that name
+    previous_symbol = uom.symbol
+    # Everything this request changes, so it can be put back if Tally refuses it
+    before = {field: getattr(uom, field) for field in (
+        "name", "symbol", "original_name", "decimal_places", "base_unit_id", "additional_unit_id", "conversion_factor")}
+    renamed_dependents = []
 
     uom.name = req.name
     uom.symbol = req.symbol
     uom.original_name = req.original_name
-    uom.is_simple_unit = req.is_simple_unit
-    uom.decimal_places = req.decimal_places
+    uom.decimal_places = req.decimal_places if req.is_simple_unit else 0
     uom.base_unit_id = req.base_unit_id if not req.is_simple_unit else None
     uom.additional_unit_id = req.additional_unit_id if not req.is_simple_unit else None
     uom.conversion_factor = req.conversion_factor if not req.is_simple_unit else None
-    
+
+    if uom.is_simple_unit and previous_symbol != uom.symbol:
+        # Tally renames every compound unit built on this one; keep their names here in step
+        from sqlalchemy import or_
+        from app.routers.sync import compound_unit_name
+        dependents = (await db.execute(select(MstUom).where(
+            MstUom.company_id == user.company_id,
+            or_(MstUom.base_unit_id == unit_id, MstUom.additional_unit_id == unit_id)
+        ))).scalars().all()
+        for dep in dependents:
+            other_id = dep.additional_unit_id if dep.base_unit_id == unit_id else dep.base_unit_id
+            other = (await db.execute(select(MstUom).where(MstUom.unit_id == other_id))).scalars().first()
+            if not other:
+                continue
+            base_symbol, add_symbol = (uom.symbol, other.symbol) if dep.base_unit_id == unit_id else (other.symbol, uom.symbol)
+            renamed_dependents.append((dep, dep.symbol, dep.name))
+            dep.symbol = dep.name = compound_unit_name(base_symbol, dep.conversion_factor, add_symbol)
+
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(
+        db, user.company_id, "Unit", uom.unit_id, "Alter",
+        {"tally_name": previous_symbol} if previous_symbol != uom.symbol else None
+    )
     await db.commit()
     await db.refresh(uom)
 
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Unit",
-        record_id=uom.unit_id,
-        action="Alter",
-    )
-    db.add(sync_item)
-    await db.commit()
-
     from app.routers.sync import try_push_uom_realtime
-    await try_push_uom_realtime(uom.unit_id, sync_item.sync_id, "Alter", db)
+    result = await try_push_uom_realtime(uom.unit_id, sync_item.sync_id, "Alter", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the change, so it is not kept here either
+        from sqlalchemy import delete as sa_delete
+        from app.models.portal_core import SyncQueue
+        for field, value in before.items():
+            setattr(uom, field, value)
+        for dep, old_symbol, old_name in renamed_dependents:
+            dep.symbol, dep.name = old_symbol, old_name
+        await db.execute(sa_delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.commit()
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this change: {result[2]}")
+    _attach_unit_tally_result(uom, result)
 
     return uom
 
@@ -157,26 +212,49 @@ async def delete_uom(
     user: User = Depends(require_permission("units", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
+    from sqlalchemy import or_, delete as sa_delete
+    from app.models.portal_core import SyncQueue
+    from app.services.group_deletion import queue_sync_event, _blocking_references, _describe_references
+
     uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
     if not uom:
         raise HTTPException(status_code=404, detail="Unit of measure not found.")
 
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Unit",
-        record_id=unit_id,
-        action="Delete",
-    )
-    db.add(sync_item)
-    await db.flush()
+    # What still uses the unit here. Tally refuses the same delete, and removing it only here would
+    # leave compound units without a base and the two sides out of step.
+    compounds = (await db.execute(select(MstUom.symbol).where(
+        MstUom.company_id == user.company_id,
+        or_(MstUom.base_unit_id == unit_id, MstUom.additional_unit_id == unit_id)
+    ))).scalars().all()
+    if compounds:
+        raise HTTPException(status_code=409, detail=f"'{uom.symbol}' is part of compound unit(s): {', '.join(compounds)}. Delete those first.")
+    refs = (await _blocking_references(db, MstUom.__table__.c.unit_id, [unit_id])).get(unit_id)
+    if refs:
+        raise HTTPException(status_code=409, detail=f"'{uom.symbol}' is still used ({_describe_references(refs)}).")
+
+    # The name is all a later retry or the Desktop Sync Agent has once the row is gone
+    sync_item = await queue_sync_event(db, user.company_id, "Unit", unit_id, "Delete", {"tally_name": uom.symbol})
+    await db.commit()
 
     from app.routers.sync import try_push_uom_realtime
-    await try_push_uom_realtime(unit_id, sync_item.sync_id, "Delete", db)
+    tally_ok, tally_status, tally_err = await try_push_uom_realtime(unit_id, sync_item.sync_id, "Delete", db)
 
-    await db.delete(uom)
+    if tally_status == "REJECTED":
+        # Tally answered and refused: it still uses the unit (a compound unit or stock item there)
+        await db.execute(sa_delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.commit()
+        raise HTTPException(status_code=409, detail=f"Tally refused to delete this unit: {tally_err}. It is usually still used by a compound unit or stock item in Tally.")
+
+    uom = (await db.execute(select(MstUom).where(MstUom.unit_id == unit_id, MstUom.company_id == user.company_id))).scalars().first()
+    if uom:
+        await db.delete(uom)
     await db.commit()
-    return {"message": "Unit of measure deleted successfully."}
+    return {
+        "message": "Unit of measure deleted successfully.",
+        "tally_synced": tally_ok,
+        "tally_status": tally_status,
+        "tally_message": tally_err
+    }
 
 @router.get("/uoms", response_model=List[UnitOfMeasureResponse])
 async def get_uoms(
@@ -196,22 +274,58 @@ async def get_uoms(
 
 # --- Stock Groups ---
 
+async def _validate_stock_group(req: StockGroupCreate, user: User, db: AsyncSession, group_id: int = None):
+    from sqlalchemy import func
+
+    req.name = (req.name or "").strip()
+    if not req.name:
+        raise HTTPException(status_code=400, detail="Stock group name is required.")
+    req.aliases = [a.strip() for a in (req.aliases or []) if a and a.strip()]
+
+    # Tally treats names without regard to case, and a second row would overwrite the first group there
+    dup_stmt = select(MstStockGroup.stock_group_id).where(
+        MstStockGroup.company_id == user.company_id, func.lower(func.trim(MstStockGroup.name)) == req.name.lower())
+    if group_id:
+        dup_stmt = dup_stmt.where(MstStockGroup.stock_group_id != group_id)
+    if (await db.execute(dup_stmt)).first():
+        raise HTTPException(status_code=400, detail=f"A stock group named '{req.name}' already exists.")
+
+    if req.parent_id:
+        if req.parent_id == group_id:
+            raise HTTPException(status_code=400, detail="Group cannot be its own parent.")
+        # Walk up from the new parent: reaching this group would close a loop, which Tally refuses
+        seen = set()
+        current_id = req.parent_id
+        while current_id is not None and current_id not in seen:
+            seen.add(current_id)
+            row = (await db.execute(select(MstStockGroup.stock_group_id, MstStockGroup.parent_id).where(
+                MstStockGroup.stock_group_id == current_id, MstStockGroup.company_id == user.company_id))).first()
+            if not row:
+                if current_id == req.parent_id:
+                    raise HTTPException(status_code=400, detail="Parent group not found.")
+                break
+            if group_id and row.parent_id == group_id:
+                raise HTTPException(status_code=400, detail="A stock group cannot be placed under one of its own sub-groups.")
+            current_id = row.parent_id
+
+
+async def _stock_group_response(db: AsyncSession, group_id: int, result=None):
+    final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases))
+                             .where(MstStockGroup.stock_group_id == group_id).execution_options(populate_existing=True))
+    group = final.scalars().first()
+    if group is not None and result is not None:
+        group.tally_synced, group.tally_status, group.tally_message = result
+    return group
+
+
 @router.post("/groups", response_model=StockGroupResponse)
 async def create_stock_group(
     req: StockGroupCreate,
     user: User = Depends(require_permission("stock_groups", "create")),
     db: AsyncSession = Depends(get_db)
 ):
-    if req.parent_id:
-        p_query = await db.execute(
-            select(MstStockGroup).where(
-                MstStockGroup.stock_group_id == req.parent_id,
-                MstStockGroup.company_id == user.company_id
-            )
-        )
-        if not p_query.scalars().first():
-            raise HTTPException(status_code=400, detail="Parent group not found.")
-            
+    await _validate_stock_group(req, user, db)
+
     group = MstStockGroup(
         company_id=user.company_id,
         name=req.name,
@@ -224,21 +338,25 @@ async def create_stock_group(
     for alias in req.aliases:
         db.add(StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias))
         
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="StockGroup",
-        record_id=group.stock_group_id,
-        action="Create",
-    )
-    db.add(sync_item)
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(db, user.company_id, "StockGroup", group.stock_group_id, "Create")
     await db.commit()
+    group_id = group.stock_group_id
 
     from app.routers.sync import try_push_stock_group_realtime
-    await try_push_stock_group_realtime(group.stock_group_id, sync_item.sync_id, "Create", db)
-    
-    final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group.stock_group_id))
-    return final.scalars().first()
+    result = await try_push_stock_group_realtime(group_id, sync_item.sync_id, "Create", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the group, so it must not exist here either. (When Tally cannot be
+        # reached the group is kept and the push stays queued.)
+        from sqlalchemy import delete as sa_delete
+        from app.models.portal_core import SyncQueue
+        await db.execute(sa_delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.execute(sa_delete(StockGroupAlias).where(StockGroupAlias.stock_group_id == group_id))
+        await db.execute(sa_delete(MstStockGroup).where(MstStockGroup.stock_group_id == group_id))
+        await db.commit()
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this stock group: {result[2]}")
+
+    return await _stock_group_response(db, group_id, result)
 
 @router.put("/groups/{group_id}", response_model=StockGroupResponse)
 async def update_stock_group(
@@ -250,14 +368,14 @@ async def update_stock_group(
     group = (await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
     if not group:
         raise HTTPException(status_code=404, detail="Stock group not found.")
-        
-    if req.parent_id:
-        if req.parent_id == group_id:
-            raise HTTPException(status_code=400, detail="Group cannot be its own parent.")
-        p_query = await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == req.parent_id, MstStockGroup.company_id == user.company_id))
-        if not p_query.scalars().first():
-            raise HTTPException(status_code=400, detail="Parent group not found.")
-            
+
+    await _validate_stock_group(req, user, db, group_id)
+
+    # Tally still knows the group by its current name; a rename has to address that name
+    previous_name = group.name
+    # Everything this request changes, so it can be put back if Tally refuses it
+    before = (group.name, group.parent_id, group.is_active, [a.alias for a in group.aliases])
+
     group.name = req.name
     group.parent_id = req.parent_id
     group.is_active = req.is_active
@@ -267,48 +385,110 @@ async def update_stock_group(
     for alias in req.aliases:
         db.add(StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias))
         
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="StockGroup",
-        record_id=group_id,
-        action="Alter",
+    # Kept on the queue row so a later retry or the Desktop Sync Agent still renames instead of creating
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(
+        db, user.company_id, "StockGroup", group_id, "Alter",
+        {"tally_name": previous_name} if previous_name != req.name else None
     )
-    db.add(sync_item)
     await db.commit()
 
     from app.routers.sync import try_push_stock_group_realtime
-    await try_push_stock_group_realtime(group_id, sync_item.sync_id, "Alter", db)
-    
-    final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases)).where(MstStockGroup.stock_group_id == group.stock_group_id))
-    return final.scalars().first()
+    result = await try_push_stock_group_realtime(group_id, sync_item.sync_id, "Alter", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the change, so it is not kept here either
+        from sqlalchemy import delete as sa_delete, update as sa_update
+        from app.models.portal_core import SyncQueue
+        name, parent_id, is_active, aliases = before
+        await db.execute(sa_update(MstStockGroup).where(MstStockGroup.stock_group_id == group_id).values(
+            name=name, parent_id=parent_id, is_active=is_active))
+        await db.execute(sa_delete(StockGroupAlias).where(StockGroupAlias.stock_group_id == group_id))
+        for alias in aliases:
+            db.add(StockGroupAlias(stock_group_id=group_id, alias=alias))
+        await db.execute(sa_delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.commit()
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this change: {result[2]}")
 
-@router.delete("/groups/{group_id}")
-async def delete_stock_group(
+    return await _stock_group_response(db, group_id, result)
+
+async def _stock_group_for_delete(group_id: int, user: User, db: AsyncSession) -> MstStockGroup:
+    group = (await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Stock group not found.")
+    return group
+
+@router.get("/groups/{group_id}/delete-preview")
+async def preview_stock_group_delete(
     group_id: int,
     user: User = Depends(require_permission("stock_groups", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
-    group = (await db.execute(select(MstStockGroup).where(MstStockGroup.stock_group_id == group_id, MstStockGroup.company_id == user.company_id))).scalars().first()
-    if not group:
-        raise HTTPException(status_code=404, detail="Stock group not found.")
+    """
+    Everything that stands in the way of deleting this stock group: the sub-groups and stock items under it
+    at any depth, in MyTally and in Tally, in the order they would be deleted, each marked with whether it can be.
+    """
+    from app.services.stock_group_deletion import build_stock_group_delete_plan
+    group = await _stock_group_for_delete(group_id, user, db)
+    return await build_stock_group_delete_plan(db, user, group)
 
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="StockGroup",
-        record_id=group_id,
-        action="Delete",
-    )
-    db.add(sync_item)
-    await db.flush()
+@router.delete("/groups/{group_id}")
+async def delete_stock_group(
+    group_id: int,
+    cascade: bool = Query(False, description="Also delete the sub-groups and stock items under the group"),
+    user: User = Depends(require_permission("stock_groups", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes the stock group in MyTally and in Tally. When sub-groups or stock items are in the way, nothing
+    is deleted and the 409 lists them; cascade=true deletes them first, deepest first. Repeating a request
+    is safe: whatever is already gone is skipped.
+    """
+    from app.services.group_deletion import GroupDeleteInProgress
+    from app.services.stock_group_deletion import execute_stock_group_delete_plan
 
-    from app.routers.sync import try_push_stock_group_realtime
-    await try_push_stock_group_realtime(group_id, sync_item.sync_id, "Delete", db)
+    group = await _stock_group_for_delete(group_id, user, db)
+    group_name = group.name
 
-    await db.delete(group)
-    await db.commit()
-    return {"message": "Stock group deleted successfully."}
+    try:
+        result = await execute_stock_group_delete_plan(db, user, group, cascade)
+    except GroupDeleteInProgress:
+        raise HTTPException(status_code=409, detail={
+            "code": "DELETE_IN_PROGRESS",
+            "message": "This stock group is already being deleted. Wait for that to finish.",
+        })
+
+    if result["deleted"]:
+        clear_company_cache(user.company_id)
+
+    plan = result["plan"]
+    if result["status"] == "deleted":
+        return {
+            "message": "Stock group deleted successfully.",
+            "deleted": result["deleted"],
+            "tally_synced": plan["tally_checked"],
+            "tally_status": "SUCCESS" if plan["tally_checked"] else "NOT_CONFIGURED",
+            "tally_message": plan["tally_message"],
+        }
+
+    if result["status"] == "blocked":
+        if not plan["can_delete_all"]:
+            message = f"\"{group_name}\" cannot be deleted: some of what it contains cannot be deleted."
+        else:
+            message = f"\"{group_name}\" still contains {plan['blocker_count']} item(s). Delete them first, or delete everything together."
+        code = "GROUP_HAS_BLOCKERS"
+    elif result["status"] == "unreachable":
+        message = "Tally stopped answering part way. What was deleted stays deleted; run the delete again to finish."
+        code = "TALLY_UNREACHABLE"
+    else:
+        message = "Some items could not be deleted. What was deleted stays deleted."
+        code = "DELETE_INCOMPLETE"
+    raise HTTPException(status_code=409, detail={
+        "code": code,
+        "message": message,
+        "plan": plan,
+        "deleted": result["deleted"],
+        "failed": result["failed"],
+    })
 
 @router.get("/groups", response_model=List[StockGroupResponse])
 async def get_stock_groups(
@@ -663,12 +843,59 @@ async def save_price_level_rates(
 
 from app.models.tally_core import StockItemAlias, StockItemPriceList, StockItemOpeningBalance, StockItemBOM, StockItemBOMComponent, StockItemPriceLevelRate
 
+async def _require_unique_stock_item_name(db: AsyncSession, company_id: int, name: str, item_id: int = None):
+    """Tally treats names without regard to case, and a second row would overwrite the first item there."""
+    from sqlalchemy import func
+    stmt = select(MstStockItem.stock_item_id).where(
+        MstStockItem.company_id == company_id, func.lower(func.trim(MstStockItem.name)) == name.strip().lower())
+    if item_id:
+        stmt = stmt.where(MstStockItem.stock_item_id != item_id)
+    if (await db.execute(stmt)).first():
+        raise HTTPException(status_code=400, detail=f"A stock item named '{name.strip()}' already exists.")
+
+
+async def _push_stock_item_change(db: AsyncSession, user: User, item_id: int, action: str, previous_name: str = None,
+                                  include_gst: bool = True):
+    """
+    Sends the change, still uncommitted, to Tally and keeps it only if Tally does not refuse it.
+    A refusal rolls the whole request back (the item, its aliases, opening balances, everything) and raises
+    with Tally's reason; when Tally cannot be reached the change is kept and stays queued.
+    Returns the (synced, status, message) to put on the response.
+    """
+    from app.routers.sync import send_stock_item, record_stock_item_push
+    from app.services.group_deletion import queue_sync_event
+
+    # The old name is kept on the queue row so a later retry or the Desktop Sync Agent still renames
+    # instead of creating
+    # ... and whether the HSN code or GST rate is part of this change (see build_stock_item_xml)
+    snapshot = {"include_gst": include_gst}
+    if previous_name:
+        snapshot["tally_name"] = previous_name
+    sync_item = await queue_sync_event(db, user.company_id, "StockItem", item_id, action, snapshot)
+    sync_id = sync_item.sync_id
+    tally_name = (sync_item.snapshot_data or {}).get("tally_name")
+    result = await send_stock_item(db, item_id, action, tally_name, user.company_id, include_gst)
+    if result["status"] == "REJECTED":
+        await db.rollback()
+        await record_stock_item_push(db, item_id, None, action, result)
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this stock item: {result['reason']}")
+    await db.commit()
+    clear_company_cache(user.company_id)
+    await record_stock_item_push(db, item_id, sync_id, action, result)
+    return (result["status"] == "SUCCESS", result["status"], result["reason"])
+
+
 @router.post("/items", response_model=StockItemResponse)
 async def create_stock_item(
     req: StockItemCreate,
     user: User = Depends(require_permission("stock_items", "create")),
     db: AsyncSession = Depends(get_db)
 ):
+    req.name = (req.name or "").strip()
+    if not req.name:
+        raise HTTPException(status_code=400, detail="Stock item name is required.")
+    await _require_unique_stock_item_name(db, user.company_id, req.name)
+
     # Verify or resolve UOM
     unit_id = req.unit_id
     if unit_id:
@@ -729,6 +956,7 @@ async def create_stock_item(
         unit_id=unit_id,
         alt_unit_id=req.alt_unit_id,
         alt_unit_conversion=req.alt_unit_conversion,
+        alt_unit_denominator=req.alt_unit_denominator,
         description=req.description,
         standard_cost_price=req.standard_cost_price,
         standard_selling_price=req.standard_selling_price,
@@ -769,19 +997,9 @@ async def create_stock_item(
         db.add(StockItemPriceLevelRate(stock_item_id=item.stock_item_id, price_level_id=plr.price_level_id, effective_from=plr.effective_from, qty_from=plr.qty_from, qty_to=plr.qty_to, rate=plr.rate, discount_percent=plr.discount_percent))
 
     # Sync Queue & Realtime Push to Tally
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="StockItem",
-        record_id=item.stock_item_id,
-        action="Create",
-    )
-    db.add(sync_item)
-    await db.commit()
-    clear_company_cache(user.company_id)
-    
-    from app.routers.sync import try_push_stock_item_realtime
-    await try_push_stock_item_realtime(item.stock_item_id, sync_item.sync_id, "Create", db)
+    await db.flush()
+    new_item_id = item.stock_item_id
+    tally_result = await _push_stock_item_change(db, user, new_item_id, "Create")
     
     final = await db.execute(
         select(MstStockItem)
@@ -794,7 +1012,8 @@ async def create_stock_item(
             selectinload(MstStockItem.boms).selectinload(StockItemBOM.components).selectinload(StockItemBOMComponent.component_item),
             selectinload(MstStockItem.price_level_rates)
         )
-        .where(MstStockItem.stock_item_id == item.stock_item_id)
+        .where(MstStockItem.stock_item_id == new_item_id)
+        .execution_options(populate_existing=True)
     )
     res_item = final.scalars().first()
     
@@ -803,12 +1022,15 @@ async def create_stock_item(
         "stock_item_id": res_item.stock_item_id,
         "item_id": res_item.stock_item_id,
         "company_id": res_item.company_id,
+        "tally_guid": res_item.tally_guid,
+        "tally_master_id": res_item.tally_master_id,
         "name": res_item.name,
         "stock_group_id": res_item.stock_group_id,
         "stock_category_id": res_item.stock_category_id,
         "unit_id": res_item.unit_id,
         "alt_unit_id": res_item.alt_unit_id,
         "alt_unit_conversion": res_item.alt_unit_conversion,
+        "alt_unit_denominator": res_item.alt_unit_denominator,
         "description": res_item.description,
         "standard_cost_price": res_item.standard_cost_price,
         "standard_selling_price": res_item.standard_selling_price,
@@ -845,7 +1067,10 @@ async def create_stock_item(
                 "component_type": c.component_type
             } for c in b.components]
         } for b in res_item.boms],
-        "price_level_rates": res_item.price_level_rates
+        "price_level_rates": res_item.price_level_rates,
+        "tally_synced": tally_result[0],
+        "tally_status": tally_result[1],
+        "tally_message": tally_result[2],
     }
     return StockItemResponse(**res_dict)
 
@@ -877,12 +1102,15 @@ async def get_stock_item(
         "stock_item_id": item.stock_item_id,
         "item_id": item.stock_item_id,
         "company_id": item.company_id,
+        "tally_guid": item.tally_guid,
+        "tally_master_id": item.tally_master_id,
         "name": item.name,
         "stock_group_id": item.stock_group_id,
         "stock_category_id": item.stock_category_id,
         "unit_id": item.unit_id,
         "alt_unit_id": item.alt_unit_id,
         "alt_unit_conversion": item.alt_unit_conversion,
+        "alt_unit_denominator": item.alt_unit_denominator,
         "description": item.description,
         "standard_cost_price": item.standard_cost_price,
         "standard_selling_price": item.standard_selling_price,
@@ -946,6 +1174,16 @@ async def update_stock_item(
     if not item:
         raise HTTPException(status_code=404, detail="Stock item not found.")
         
+    req.name = (req.name or "").strip()
+    if not req.name:
+        raise HTTPException(status_code=400, detail="Stock item name is required.")
+    await _require_unique_stock_item_name(db, user.company_id, req.name, item_id)
+    # Tally still knows the item by its current name; a rename has to address that name
+    previous_name = item.name if item.name != req.name else None
+    # HSN and GST go to Tally only when this edit changes them
+    gst_changed = ((req.hsn_code or "").strip() != (item.hsn_code or "").strip()
+                   or Decimal(str(req.gst_rate_percent or 0)) != Decimal(str(item.gst_rate_percent or 0)))
+
     # Validations similar to create
     uom_query = await db.execute(select(MstUom).where(MstUom.unit_id == req.unit_id, MstUom.company_id == user.company_id))
     if not uom_query.scalars().first(): raise HTTPException(status_code=400, detail="Unit of Measure not found.")
@@ -964,6 +1202,7 @@ async def update_stock_item(
     item.unit_id = req.unit_id
     item.alt_unit_id = req.alt_unit_id
     item.alt_unit_conversion = req.alt_unit_conversion
+    item.alt_unit_denominator = req.alt_unit_denominator
     item.description = req.description
     item.standard_cost_price = req.standard_cost_price
     item.standard_selling_price = req.standard_selling_price
@@ -988,6 +1227,9 @@ async def update_stock_item(
     await db.execute(StockItemOpeningBalance.__table__.delete().where(StockItemOpeningBalance.stock_item_id == item_id))
     for ob in req.opening_balances: db.add(StockItemOpeningBalance(stock_item_id=item_id, godown_id=ob.godown_id, batch_name=ob.batch_name, quantity=ob.quantity, rate=ob.rate, amount=ob.amount))
     
+    # Components first: not every database removes them with their BOM
+    await db.execute(StockItemBOMComponent.__table__.delete().where(
+        StockItemBOMComponent.bom_id.in_(select(StockItemBOM.bom_id).where(StockItemBOM.stock_item_id == item_id))))
     await db.execute(StockItemBOM.__table__.delete().where(StockItemBOM.stock_item_id == item_id))
     for bom_req in req.boms:
         bom = StockItemBOM(stock_item_id=item_id, bom_name=bom_req.bom_name, unit_of_manufacture=bom_req.unit_of_manufacture, is_active=bom_req.is_active)
@@ -1009,19 +1251,8 @@ async def update_stock_item(
         ))
 
     # Sync Queue & Realtime Push to Tally
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="StockItem",
-        record_id=item_id,
-        action="Alter",
-    )
-    db.add(sync_item)
-    await db.commit()
-    clear_company_cache(user.company_id)
-    
-    from app.routers.sync import try_push_stock_item_realtime
-    await try_push_stock_item_realtime(item_id, sync_item.sync_id, "Alter", db)
+    await db.flush()
+    tally_result = await _push_stock_item_change(db, user, item_id, "Alter", previous_name, include_gst=gst_changed)
     
     final = await db.execute(
         select(MstStockItem)
@@ -1035,6 +1266,7 @@ async def update_stock_item(
             selectinload(MstStockItem.price_level_rates)
         )
         .where(MstStockItem.stock_item_id == item_id)
+        .execution_options(populate_existing=True)
     )
     res_item = final.scalars().first()
     
@@ -1042,12 +1274,15 @@ async def update_stock_item(
         "stock_item_id": res_item.stock_item_id,
         "item_id": res_item.stock_item_id,
         "company_id": res_item.company_id,
+        "tally_guid": res_item.tally_guid,
+        "tally_master_id": res_item.tally_master_id,
         "name": res_item.name,
         "stock_group_id": res_item.stock_group_id,
         "stock_category_id": res_item.stock_category_id,
         "unit_id": res_item.unit_id,
         "alt_unit_id": res_item.alt_unit_id,
         "alt_unit_conversion": res_item.alt_unit_conversion,
+        "alt_unit_denominator": res_item.alt_unit_denominator,
         "description": res_item.description,
         "standard_cost_price": res_item.standard_cost_price,
         "standard_selling_price": res_item.standard_selling_price,
@@ -1081,9 +1316,12 @@ async def update_stock_item(
                 "godown_id": c.godown_id,
                 "quantity": c.quantity,
                 "component_type": c.component_type
-            } for c in res_item.boms]
+            } for c in b.components]
         } for b in res_item.boms],
-        "price_level_rates": res_item.price_level_rates
+        "price_level_rates": res_item.price_level_rates,
+        "tally_synced": tally_result[0],
+        "tally_status": tally_result[1],
+        "tally_message": tally_result[2],
     }
     return StockItemResponse(**res_dict)
 
@@ -1093,15 +1331,23 @@ async def delete_stock_item(
     user: User = Depends(require_permission("stock_items", "delete")),
     db: AsyncSession = Depends(get_db)
 ):
+    from sqlalchemy import delete as sa_delete
+    from app.services.group_deletion import queue_sync_event, _blocking_references, _describe_references
+
     item = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id))).scalars().first()
     if not item:
         raise HTTPException(status_code=404, detail="Stock item not found.")
+
+    # Vouchers, orders and the like that still use the item here; Tally refuses the same delete
+    refs = (await _blocking_references(db, MstStockItem.__table__.c.stock_item_id, [item_id])).get(item_id)
+    if refs:
+        raise HTTPException(status_code=409, detail=f"'{item.name}' is still used ({_describe_references(refs)}). Remove those entries first.")
 
     snapshot = {
         "stock_item_id": item.stock_item_id,
         "company_id": item.company_id,
         "name": item.name,
-        "group_id": item.group_id,
+        "stock_group_id": item.stock_group_id,
         "unit_id": item.unit_id,
         "closing_qty": float(item.closing_qty or 0)
     }
@@ -1117,19 +1363,25 @@ async def delete_stock_item(
     )
     db.add(del_audit)
 
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="StockItem",
-        record_id=item_id,
-        action="Delete",
-    )
-    db.add(sync_item)
-    await db.flush()
+    # The name is all a later retry or the Desktop Sync Agent has once the row is gone
+    sync_item = await queue_sync_event(db, user.company_id, "StockItem", item_id, "Delete", {"tally_name": item.name})
+    await db.commit()
+    audit_id, sync_id = del_audit.audit_id, sync_item.sync_id
 
     from app.routers.sync import try_push_stock_item_realtime
-    tally_ok, tally_status, tally_err = await try_push_stock_item_realtime(item_id, sync_item.sync_id, "Delete", db)
+    tally_ok, tally_status, tally_err = await try_push_stock_item_realtime(item_id, sync_id, "Delete", db)
 
-    await db.delete(item)
+    if tally_status == "REJECTED":
+        # Tally answered and refused, typically because the item is used in vouchers there. Deleting it
+        # here anyway would leave the two permanently out of step, so nothing is deleted on either side.
+        await db.execute(sa_delete(DeletedRecordAudit).where(DeletedRecordAudit.audit_id == audit_id))
+        await db.execute(sa_delete(SyncQueue).where(SyncQueue.sync_id == sync_id))
+        await db.commit()
+        raise HTTPException(status_code=409, detail=f"Tally refused to delete this stock item: {tally_err}. It is usually still used in vouchers in Tally; remove those first.")
+
+    item = (await db.execute(select(MstStockItem).where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id))).scalars().first()
+    if item:
+        await db.delete(item)
     await db.commit()
     clear_company_cache(user.company_id)
     return {
@@ -1205,6 +1457,8 @@ async def get_stock_items(
                 tracking_type=item.tracking_type,
                 shelf_life_days=item.shelf_life_days,
                 is_active=item.is_active,
+                tally_guid=item.tally_guid,
+                tally_master_id=item.tally_master_id,
                 group_name=item.group_name,
                 company_name=item.group_name,
                 uom=item.uom,
@@ -1333,6 +1587,8 @@ async def get_stock_items(
             tracking_type=item.tracking_type,
             shelf_life_days=item.shelf_life_days,
             is_active=item.is_active,
+            tally_guid=item.tally_guid,
+            tally_master_id=item.tally_master_id,
             group_name=item.group_name,
             company_name=item.group_name,
             uom=item.uom,
@@ -1783,8 +2039,17 @@ async def create_manufacturing_journal(
     db.add(sync_item)
     await db.commit()
 
+    # Sent to Tally now as a Stock Journal; if Tally cannot be reached it stays queued
+    from app.routers.sync import try_push_voucher_realtime
+    voucher_id = voucher.voucher_id
+    tally_ok, tally_status, tally_message = await try_push_voucher_realtime(voucher_id, sync_item.sync_id, "Create", db)
+    voucher = (await db.execute(select(TrnVoucher).where(TrnVoucher.voucher_id == voucher_id).execution_options(populate_existing=True))).scalars().first()
+
     return {
         "status": "success",
+        "tally_synced": tally_ok,
+        "tally_status": tally_status,
+        "tally_message": tally_message,
         "voucher_id": voucher.voucher_id,
         "voucher_number": voucher.voucher_number,
         "finished_item": item.name,

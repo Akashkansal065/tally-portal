@@ -88,6 +88,26 @@ async def is_ancestor_group(group_id: int, target_name: str, company_id: int, db
 
 # --- Account Groups ---
 
+# How Tally encodes a group's nature: (is_revenue, is_deemed_positive)
+NATURE_FLAGS = {
+    "Asset": (False, True),
+    "Liability": (False, False),
+    "Income": (True, False),
+    "Expense": (True, True),
+}
+
+def apply_nature_flags(group: MstGroup):
+    """Keeps the two Tally flags in step with the group's nature, which is what the user chooses."""
+    flags = NATURE_FLAGS.get(group.nature)
+    if flags:
+        group.is_revenue, group.is_deemed_positive = flags
+
+def attach_tally_result(group: MstGroup, result):
+    ok, status_code, message = result or (False, "FAILED", "Group sync failed")
+    group.tally_synced = ok
+    group.tally_status = status_code
+    group.tally_message = message
+
 @router.get("/groups", response_model=List[AccountGroupResponse])
 async def get_groups(
     user: User = Depends(require_permission("ledger_groups", "read")),
@@ -185,12 +205,8 @@ async def create_group(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Parent group not found in this company."
             )
-        if not parent_grp.is_addable:
-            logger.warning(f"User {user.user_id} failed to create group: Parent ID {req.parent_group_id} is not addable.")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot add sub-groups under this parent group."
-            )
+        # is_addable mirrors Tally's ISADDABLE ("nett debit/credit balances for reporting"); it says nothing
+        # about sub-groups, which Tally allows under any group
             
     group = MstGroup(
         company_id=user.company_id,
@@ -207,6 +223,7 @@ async def create_group(
         method_to_allocate=req.method_to_allocate,
         is_system_defined=False
     )
+    apply_nature_flags(group)
     db.add(group)
     await db.flush()
     
@@ -226,19 +243,22 @@ async def create_group(
         await db.flush()
     
     # Sync Queue
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Group",
-        record_id=group.group_id,
-        action="Create",
-    )
-    db.add(sync_item)
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(db, user.company_id, "Group", group.group_id, "Create")
     await db.commit()
     await db.refresh(group)
     
     from app.routers.sync import try_push_group_realtime
-    await try_push_group_realtime(group.group_id, sync_item.sync_id, "Create", db)
+    result = await try_push_group_realtime(group.group_id, sync_item.sync_id, "Create", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the group, so it must not exist here either. (When Tally cannot be
+        # reached the group is kept and the push stays queued.)
+        await db.execute(delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.delete(group)
+        await db.commit()
+        logger.warning(f"User {user.user_id} failed to create group '{req.name}': Tally refused ({result[2]}).")
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this group: {result[2]}")
+    attach_tally_result(group, result)
     
     logger.info(f"Group created successfully: {group.name} (ID: {group.group_id})")
     return group
@@ -305,6 +325,20 @@ async def update_group(
             p2 = parent_query2.scalars().first()
             curr_parent = p2.parent_group_id if p2 else None
             
+    # Tally still knows the group by its current name; a rename has to address that name
+    previous_name = group.name
+    # Everything this request changes, so it can be put back if Tally refuses it
+    GROUP_FIELDS = ("name", "parent_group_id", "nature", "affects_gross_profit", "alias_name", "is_addable",
+                    "is_revenue", "is_deemed_positive", "is_subledger", "is_billwise_on", "used_for_calculation",
+                    "method_to_allocate")
+    before = {field: getattr(group, field) for field in GROUP_FIELDS}
+    gst_before = None
+    if req.gst_details is not None:
+        from app.models.tally_core import MstGroupGstDetails
+        gst_rows = (await db.execute(select(MstGroupGstDetails).where(MstGroupGstDetails.group_id == group_id))).scalars().all()
+        gst_before = [{c.name: getattr(row, c.name) for c in MstGroupGstDetails.__table__.columns if not c.primary_key}
+                      for row in gst_rows]
+
     group.name = req.name
     group.parent_group_id = req.parent_group_id
     group.nature = req.nature
@@ -316,6 +350,7 @@ async def update_group(
     group.is_billwise_on = req.is_billwise_on
     group.used_for_calculation = req.used_for_calculation
     group.method_to_allocate = req.method_to_allocate
+    apply_nature_flags(group)
     
     if req.gst_details is not None:
         from app.models.tally_core import MstGroupGstDetails
@@ -333,30 +368,37 @@ async def update_group(
             db.add(gst_row)
             
     await db.flush()
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Group",
-        record_id=group.group_id,
-        action="Alter",
+    # Kept on the queue row so a later retry or the Desktop Sync Agent still renames instead of creating.
+    # A row still pending from an earlier edit is reused, with the name Tally had before that edit.
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(
+        db, user.company_id, "Group", group.group_id, "Alter",
+        {"tally_name": previous_name} if previous_name != group.name else None
     )
-    db.add(sync_item)
     await db.commit()
     await db.refresh(group)
     
     from app.routers.sync import try_push_group_realtime
-    await try_push_group_realtime(group.group_id, sync_item.sync_id, "Alter", db)
+    result = await try_push_group_realtime(group.group_id, sync_item.sync_id, "Alter", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the change, so it is not kept here either
+        for field, value in before.items():
+            setattr(group, field, value)
+        if gst_before is not None:
+            from app.models.tally_core import MstGroupGstDetails
+            await db.execute(delete(MstGroupGstDetails).where(MstGroupGstDetails.group_id == group_id))
+            for row in gst_before:
+                db.add(MstGroupGstDetails(**row))
+        await db.execute(delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.commit()
+        logger.warning(f"User {user.user_id} failed to update group ID {group_id}: Tally refused ({result[2]}).")
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this change: {result[2]}")
+    attach_tally_result(group, result)
     
     logger.info(f"Group updated successfully: {group.name} (ID: {group.group_id})")
     return group
 
-@router.delete("/groups/{group_id}")
-async def delete_group(
-    group_id: int,
-    user: User = Depends(require_permission("ledger_groups", "delete")),
-    db: AsyncSession = Depends(get_db)
-):
-    logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to delete group ID {group_id}")
-    
+async def _group_for_delete(group_id: int, user: User, db: AsyncSession) -> MstGroup:
     query = await db.execute(
         select(MstGroup).where(
             MstGroup.group_id == group_id,
@@ -367,44 +409,103 @@ async def delete_group(
     if not group:
         logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: Not found.")
         raise HTTPException(status_code=404, detail="Group not found.")
-        
-    if group.is_system_defined:
-        logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: System-defined group.")
-        raise HTTPException(status_code=400, detail="Cannot delete system-defined groups.")
-        
-    # Check for child groups
-    child_group_query = await db.execute(select(MstGroup).where(MstGroup.parent_group_id == group_id))
-    if child_group_query.scalars().first():
-        logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: Has child groups.")
-        raise HTTPException(status_code=400, detail="Cannot delete group because it has child sub-groups.")
-        
-    # Check for child ledgers
-    child_ledger_query = await db.execute(select(MstLedger).where(MstLedger.group_id == group_id))
-    if child_ledger_query.scalars().first():
-        logger.warning(f"User {user.user_id} failed to delete group ID {group_id}: Has attached ledgers.")
-        raise HTTPException(status_code=400, detail="Cannot delete group because it is assigned to one or more ledgers.")
-        
-    from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Group",
-        record_id=group.group_id,
-        action="Delete",
-    )
-    db.add(sync_item)
-    await db.flush()
-    
-    from app.routers.sync import try_push_group_realtime
-    await try_push_group_realtime(group.group_id, sync_item.sync_id, "Delete", db)
-    
-    await db.delete(group)
-    await db.commit()
-    
-    logger.info(f"Group deleted successfully: {group.name} (ID: {group_id})")
-    
-    return {"detail": "Group deleted successfully."}
+    return group
+
+@router.get("/groups/{group_id}/delete-preview")
+async def preview_group_delete(
+    group_id: int,
+    user: User = Depends(require_permission("ledger_groups", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Everything that stands in the way of deleting this group: the sub-groups and ledgers under it at any
+    depth, in MyTally and in Tally, in the order they would be deleted, each marked with whether it can be.
+    """
+    from app.services.group_deletion import build_delete_plan
+    group = await _group_for_delete(group_id, user, db)
+    return await build_delete_plan(db, user, group)
+
+@router.delete("/groups/{group_id}")
+async def delete_group(
+    group_id: int,
+    cascade: bool = Query(False, description="Also delete the sub-groups and ledgers under the group"),
+    user: User = Depends(require_permission("ledger_groups", "delete")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes the group in MyTally and in Tally. When sub-groups or ledgers are in the way, nothing is deleted
+    and the 409 lists them; cascade=true deletes them first, deepest first. Repeating a request is safe:
+    whatever is already gone is skipped.
+    """
+    from app.core.cache import clear_company_cache
+    from app.services.group_deletion import execute_delete_plan, GroupDeleteInProgress
+
+    logger.info(f"User {user.user_id} (Company {user.company_id}) attempting to delete group ID {group_id} (cascade={cascade})")
+    group = await _group_for_delete(group_id, user, db)
+    group_name = group.name
+
+    try:
+        result = await execute_delete_plan(db, user, group, cascade)
+    except GroupDeleteInProgress:
+        raise HTTPException(status_code=409, detail={
+            "code": "DELETE_IN_PROGRESS",
+            "message": "This group is already being deleted. Wait for that to finish.",
+        })
+
+    if result["deleted"]:
+        clear_company_cache(user.company_id)
+
+    plan = result["plan"]
+    if result["status"] == "deleted":
+        logger.info(f"Group deleted successfully: {group_name} (ID: {group_id})")
+        return {
+            "detail": "Group deleted successfully.",
+            "deleted": result["deleted"],
+            "tally_synced": plan["tally_checked"],
+            "tally_status": "SUCCESS" if plan["tally_checked"] else "NOT_CONFIGURED",
+            "tally_message": plan["tally_message"],
+        }
+
+    if result["status"] == "blocked":
+        if plan["undeletable_count"] or not plan["can_delete_all"]:
+            message = f"\"{group_name}\" cannot be deleted: some of what it contains can never be deleted."
+        else:
+            message = f"\"{group_name}\" still contains {plan['blocker_count']} item(s). Delete them first, or delete everything together."
+        code = "GROUP_HAS_BLOCKERS"
+    elif result["status"] == "unreachable":
+        message = "Tally stopped answering part way. What was deleted stays deleted; run the delete again to finish."
+        code = "TALLY_UNREACHABLE"
+    else:
+        message = "Some items could not be deleted. What was deleted stays deleted."
+        code = "DELETE_INCOMPLETE"
+    logger.warning(f"User {user.user_id} could not delete group ID {group_id}: {code}")
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+        "code": code,
+        "message": message,
+        "plan": plan,
+        "deleted": result["deleted"],
+        "failed": result["failed"],
+    })
 
 # --- Ledgers ---
+
+def fold_mobile(data_dict: dict, mobile_val):
+    """
+    Stores the mobile number in its own column and, as the customer screens still read it from there,
+    as the " | Mobile: " suffix of the address.
+    """
+    data_dict["mobile"] = mobile_val or None
+    if mobile_val and data_dict.get("address"):
+        if " | Mobile: " not in data_dict["address"]:
+            data_dict["address"] = f"{data_dict['address']} | Mobile: {mobile_val}"
+    elif mobile_val and not data_dict.get("address"):
+        data_dict["address"] = f"| Mobile: {mobile_val}"
+
+def attach_ledger_tally_result(ledger: MstLedger, result):
+    ok, status_code, message = result or (False, "FAILED", "Ledger sync failed")
+    ledger.tally_synced = ok
+    ledger.tally_status = status_code
+    ledger.tally_message = message
 
 @router.get("", response_model=List[LedgerResponse])
 async def get_ledgers(
@@ -578,6 +679,7 @@ async def create_ledger(
     data_dict = req.model_dump()
     bank_details_data = data_dict.pop("bank_details", None)
     mobile_val = data_dict.pop("mobile", None)
+    fold_mobile(data_dict, mobile_val)
 
     # Auto-extract PAN from GSTIN if missing
     if data_dict.get("gstin") and len(data_dict["gstin"].strip()) >= 12 and not data_dict.get("pan_number"):
@@ -612,20 +714,25 @@ async def create_ledger(
                 )
                 db.add(b_record)
 
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Ledger",
-        record_id=ledger.ledger_id,
-        action="Create",
-    )
-    db.add(sync_item)
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(db, user.company_id, "Ledger", ledger.ledger_id, "Create")
 
     await db.commit()
     await db.refresh(ledger)
 
     # Trigger real-time on-the-run push to Tally Prime
     from app.routers.sync import try_push_ledger_realtime
-    await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Create", db)
+    result = await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Create", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the ledger, so it must not exist here either. (When Tally cannot be
+        # reached the ledger is kept and the push stays queued.)
+        await db.execute(delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.delete(ledger)
+        await db.commit()
+        from app.core.cache import clear_company_cache
+        clear_company_cache(user.company_id)
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this ledger: {result[2]}")
+    attach_ledger_tally_result(ledger, result)
 
     from app.core.cache import clear_company_cache
     clear_company_cache(user.company_id)
@@ -690,11 +797,16 @@ async def update_ledger(
     if data_dict.get("gstin") and len(data_dict["gstin"].strip()) >= 12 and not data_dict.get("pan_number"):
         data_dict["pan_number"] = data_dict["gstin"].strip()[2:12].upper()
 
-    if mobile_val and data_dict.get("address"):
-        if " | Mobile: " not in data_dict["address"]:
-            data_dict["address"] = f"{data_dict['address']} | Mobile: {mobile_val}"
-    elif mobile_val and not data_dict.get("address"):
-        data_dict["address"] = f"| Mobile: {mobile_val}"
+    fold_mobile(data_dict, mobile_val)
+
+    # Tally still knows the ledger by its current name; a rename has to address that name
+    previous_name = ledger.name
+    # Everything this request can change, so it can be put back if Tally refuses it
+    ledger_before = {c.name: getattr(ledger, c.name) for c in MstLedger.__table__.columns if not c.primary_key}
+    bank_before = [{c.name: getattr(row, c.name) for c in MstLedgerBankDetail.__table__.columns if not c.primary_key}
+                   for row in ledger.bank_details]
+    msme_row = (await db.execute(select(MstLedgerMsmeDetail).where(MstLedgerMsmeDetail.ledger_id == ledger.ledger_id))).scalars().first()
+    msme_before = (msme_row.enterprise_type, msme_row.udyam_reg_no) if msme_row else None
 
     valid_cols = {c.name for c in MstLedger.__table__.columns}
     for k, v in data_dict.items():
@@ -715,7 +827,6 @@ async def update_ledger(
             if udyam_no: m_obj.udyam_reg_no = udyam_no
 
     if bank_details_data is not None:
-        from sqlalchemy import delete
         await db.execute(delete(MstLedgerBankDetail).where(MstLedgerBankDetail.ledger_id == ledger.ledger_id))
         for bd in bank_details_data:
             if bd.get("account_number") or bd.get("upi_id") or bd.get("bank_name"):
@@ -726,20 +837,38 @@ async def update_ledger(
                 )
                 db.add(b_record)
 
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Ledger",
-        record_id=ledger.ledger_id,
-        action="Alter",
+    # Kept on the queue row so a later retry or the Desktop Sync Agent still renames instead of creating.
+    # A row still pending from an earlier edit is reused, with the name Tally had before that edit.
+    from app.services.group_deletion import queue_sync_event
+    sync_item = await queue_sync_event(
+        db, user.company_id, "Ledger", ledger.ledger_id, "Alter",
+        {"tally_name": previous_name} if previous_name != ledger.name else None
     )
-    db.add(sync_item)
         
     await db.commit()
     await db.refresh(ledger)
 
     # Trigger real-time on-the-run push to Tally Prime
     from app.routers.sync import try_push_ledger_realtime
-    await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Alter", db)
+    result = await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Alter", db)
+    if result and result[1] == "REJECTED":
+        # Tally answered and refused the change, so it is not kept here either
+        for field, value in ledger_before.items():
+            setattr(ledger, field, value)
+        await db.execute(delete(MstLedgerBankDetail).where(MstLedgerBankDetail.ledger_id == ledger.ledger_id))
+        for row in bank_before:
+            db.add(MstLedgerBankDetail(**row))
+        msme_now = (await db.execute(select(MstLedgerMsmeDetail).where(MstLedgerMsmeDetail.ledger_id == ledger.ledger_id))).scalars().first()
+        if msme_now and msme_before is None:
+            await db.delete(msme_now)
+        elif msme_now:
+            msme_now.enterprise_type, msme_now.udyam_reg_no = msme_before
+        await db.execute(delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+        await db.commit()
+        from app.core.cache import clear_company_cache
+        clear_company_cache(user.company_id)
+        raise HTTPException(status_code=400, detail=f"Tally did not accept this change: {result[2]}")
+    attach_ledger_tally_result(ledger, result)
 
     from app.core.cache import clear_company_cache
     clear_company_cache(user.company_id)
@@ -751,74 +880,89 @@ async def delete_ledger(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    ledger_query = await db.execute(
-        select(MstLedger).where(
-            MstLedger.ledger_id == ledger_id,
-            MstLedger.company_id == user.company_id
+    # A repeated request (double click, client retry) must not send Tally a second delete
+    from app.services.group_deletion import begin_ledger_delete, end_ledger_delete
+    if not begin_ledger_delete(user.company_id, ledger_id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This ledger is already being deleted.")
+    try:
+        ledger_query = await db.execute(
+            select(MstLedger).where(
+                MstLedger.ledger_id == ledger_id,
+                MstLedger.company_id == user.company_id
+            )
         )
-    )
-    ledger = ledger_query.scalars().first()
-    if not ledger:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Ledger not found."
-        )
+        ledger = ledger_query.scalars().first()
+        if not ledger:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ledger not found."
+            )
         
-    # Check permissions dynamically
-    is_debtor = await is_ancestor_group(ledger.group_id, "Sundry Debtors", user.company_id, db)
-    is_creditor = await is_ancestor_group(ledger.group_id, "Sundry Creditors", user.company_id, db)
+        # Check permissions dynamically
+        is_debtor = await is_ancestor_group(ledger.group_id, "Sundry Debtors", user.company_id, db)
+        is_creditor = await is_ancestor_group(ledger.group_id, "Sundry Creditors", user.company_id, db)
     
-    module_code = "ledger_customer" if is_debtor else "ledger_supplier" if is_creditor else "ledgers"
-    perms = await get_effective_permission(user, module_code, db)
-    if not perms.get("can_delete", False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"You do not have permission to delete in module {module_code}."
+        module_code = "ledger_customer" if is_debtor else "ledger_supplier" if is_creditor else "ledgers"
+        perms = await get_effective_permission(user, module_code, db)
+        if not perms.get("can_delete", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You do not have permission to delete in module {module_code}."
+            )
+
+        snapshot = {
+            "ledger_id": ledger.ledger_id,
+            "company_id": ledger.company_id,
+            "name": ledger.name,
+            "group_id": ledger.group_id,
+            "opening_balance": float(ledger.opening_balance or 0),
+            "guid": getattr(ledger, 'guid', None)
+        }
+        del_audit = DeletedRecordAudit(
+            company_id=user.company_id,
+            entity_type="Ledger",
+            record_id=ledger_id,
+            tally_guid=getattr(ledger, 'guid', None) or f"MYTALLY-LEDGER-{ledger_id}",
+            entity_identifier=ledger.name,
+            deleted_by_user_id=user.user_id,
+            tally_sync_status="PENDING",
+            snapshot_data=snapshot
         )
+        db.add(del_audit)
 
-    snapshot = {
-        "ledger_id": ledger.ledger_id,
-        "company_id": ledger.company_id,
-        "name": ledger.name,
-        "group_id": ledger.group_id,
-        "opening_balance": float(ledger.opening_balance or 0),
-        "guid": getattr(ledger, 'guid', None)
-    }
-    del_audit = DeletedRecordAudit(
-        company_id=user.company_id,
-        entity_type="Ledger",
-        record_id=ledger_id,
-        tally_guid=getattr(ledger, 'guid', None) or f"MYTALLY-LEDGER-{ledger_id}",
-        entity_identifier=ledger.name,
-        deleted_by_user_id=user.user_id,
-        tally_sync_status="PENDING",
-        snapshot_data=snapshot
-    )
-    db.add(del_audit)
+        # The name is all a later retry or the Desktop Sync Agent has once the row is gone
+        from app.services.group_deletion import queue_sync_event
+        sync_item = await queue_sync_event(db, user.company_id, "Ledger", ledger.ledger_id, "Delete", {"tally_name": ledger.name})
+        await db.flush()
 
-    sync_item = SyncQueue(
-        company_id=user.company_id,
-        record_type="Ledger",
-        record_id=ledger.ledger_id,
-        action="Delete",
-    )
-    db.add(sync_item)
-    await db.flush()
+        # Trigger real-time on-the-run push to Tally Prime
+        from app.routers.sync import try_push_ledger_realtime
+        tally_ok, tally_status, tally_err = await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Delete", db)
 
-    # Trigger real-time on-the-run push to Tally Prime
-    from app.routers.sync import try_push_ledger_realtime
-    tally_ok, tally_status, tally_err = await try_push_ledger_realtime(ledger.ledger_id, sync_item.sync_id, "Delete", db)
+        if tally_status == "REJECTED":
+            # Tally answered and refused, typically because the ledger is used in vouchers there. Deleting it
+            # here anyway would leave the two permanently out of step, so nothing is deleted on either side.
+            await db.execute(delete(DeletedRecordAudit).where(DeletedRecordAudit.audit_id == del_audit.audit_id))
+            await db.execute(delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Tally refused to delete this ledger: {tally_err or 'no reason given'}. "
+                       "It is usually still used in vouchers in Tally; remove those first."
+            )
         
-    await db.delete(ledger)
-    await db.commit()
-    from app.core.cache import clear_company_cache
-    clear_company_cache(user.company_id)
-    return {
-        "detail": "Ledger deleted successfully in MyTally.",
-        "tally_synced": tally_ok,
-        "tally_status": tally_status,
-        "tally_message": tally_err
-    }
+        await db.delete(ledger)
+        await db.commit()
+        from app.core.cache import clear_company_cache
+        clear_company_cache(user.company_id)
+        return {
+            "detail": "Ledger deleted successfully in MyTally.",
+            "tally_synced": tally_ok,
+            "tally_status": tally_status,
+            "tally_message": tally_err
+        }
+    finally:
+        end_ledger_delete(user.company_id, ledger_id)
 
 @router.get("/{ledger_id}")
 async def get_ledger_by_id(
