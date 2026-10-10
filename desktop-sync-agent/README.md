@@ -86,9 +86,25 @@ You can bundle the entire application into a single standalone `.exe` with icon 
    ```
 3. The standalone binary will be created in:
    - 📂 `desktop-sync-agent\dist\SnehDistribuorsSync.exe`
-   - 📄 `desktop-sync-agent\dist\agent_config.json`
 
-Simply distribute `SnehDistribuorsSync.exe` to any Windows client PC running TallyPrime. No Python installation required!
+Simply distribute `SnehDistribuorsSync.exe` to any 64-bit Windows client PC running TallyPrime, including ARM ones. No Python installation required! `agent_config.json` is created on first launch.
+
+### If the build fails
+
+The script explains each of these on screen and fixes the first three itself. They are listed here for reference.
+
+| What you see | Cause | Fix |
+| --- | --- | --- |
+| No Python on the PC | — | Answer **Y** when the script offers to install Python 3.13 (64-bit) from python.org |
+| `No module named 'tkinter'` | Python was installed with **tcl/tk and IDLE** unticked | Answer **Y** to the script's offer, or run the python.org installer → Modify → tick **tcl/tk and IDLE** |
+| `No module named pip` | Python was installed with **pip** unticked | The script adds pip itself. By hand: `python -m ensurepip --upgrade --user` |
+| `Failed building wheel for cryptography`, `link.exe not found`, Rust or Visual Studio messages | The Python is the **ARM64** build, or too new for ready-made packages | Install the python.org file ending in `-amd64.exe`, even on an ARM PC. The script skips ARM64 Pythons |
+| Modify asks you to browse for a file | The original installer file is gone | Cancel, download the same installer from python.org, choose Uninstall, then install again with Customize |
+| `python` still runs the old version after installing a new one | The old one is first on PATH | Nothing: the script checks every installed Python and uses the first that qualifies |
+| `PermissionError` on `SnehDistribuorsSync.exe` | The agent is running | Quit it from the tray icon, then build again |
+| The `.exe` disappears after the build | Antivirus removed it | Allow the `desktop-sync-agent\dist` folder |
+
+The Python used for building must be the **64-bit Intel/AMD** one: the `.exe` takes its architecture from it, and an ARM64 build would not run on ordinary PCs.
 
 ---
 
