@@ -9,41 +9,35 @@ echo  [1/3] Detecting Python on your Windows system...
 echo ===========================================================================
 
 set "PYTHON_EXE="
+set "PYTHON_WITHOUT_TK="
+
+REM The agent's window needs tkinter (the "tcl/tk and IDLE" part of the Python installer), so a
+REM Python without it is passed over: the .exe it builds cannot open.
 
 REM 1. Check if 'python' is in PATH and actually works (not Microsoft store alias)
-python -c "import sys; print(sys.version)" >nul 2>&1
-if %errorlevel% equ 0 (
-    set "PYTHON_EXE=python"
-    goto :PYTHON_FOUND
-)
+python -c "import tkinter" >nul 2>&1 && set "PYTHON_EXE=python" && goto :PYTHON_FOUND
+python -c "import sys" >nul 2>&1 && set "PYTHON_WITHOUT_TK=python"
 
 REM 2. Check if 'py' launcher is available
-py -c "import sys; print(sys.version)" >nul 2>&1
-if %errorlevel% equ 0 (
-    set "PYTHON_EXE=py"
-    goto :PYTHON_FOUND
-)
+py -c "import tkinter" >nul 2>&1 && set "PYTHON_EXE=py" && goto :PYTHON_FOUND
+py -c "import sys" >nul 2>&1 && set "PYTHON_WITHOUT_TK=py"
 
 REM 3. Search common Windows installation folders
-for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python*") do (
+for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python*" "C:\Python*" "%ProgramFiles%\Python*") do (
     if exist "%%D\python.exe" (
-        set "PYTHON_EXE=%%D\python.exe"
-        goto :PYTHON_FOUND
+        "%%D\python.exe" -c "import tkinter" >nul 2>&1 && set "PYTHON_EXE=%%D\python.exe" && goto :PYTHON_FOUND
+        set "PYTHON_WITHOUT_TK=%%D\python.exe"
     )
 )
 
-for /d %%D in ("C:\Python*") do (
-    if exist "%%D\python.exe" (
-        set "PYTHON_EXE=%%D\python.exe"
-        goto :PYTHON_FOUND
-    )
-)
-
-for /d %%D in ("%ProgramFiles%\Python*") do (
-    if exist "%%D\python.exe" (
-        set "PYTHON_EXE=%%D\python.exe"
-        goto :PYTHON_FOUND
-    )
+if defined PYTHON_WITHOUT_TK (
+    echo.
+    echo  Python was found ^(!PYTHON_WITHOUT_TK!^) but it has no tkinter, which the agent's window needs.
+    echo  Fix: Windows Settings - Apps - Installed apps - Python - Modify - Modify,
+    echo  tick "tcl/tk and IDLE", finish, then run this script again.
+    echo  If that Python did not come from python.org, install Python from python.org instead.
+    pause
+    exit /b 1
 )
 
 REM If Python was not found, automatically download and install it silently
@@ -109,6 +103,12 @@ cd /d "%~dp0\.."
     --add-data "tally_client.py;." ^
     --add-data "cloud_client.py;." ^
     gui_app.py
+if errorlevel 1 (
+    echo.
+    echo  BUILD FAILED. See the messages above.
+    pause
+    exit /b 1
+)
 
 REM Never ship the build machine's agent_config.json: it identifies the developer's account and
 REM backend. The .exe creates a fresh config on first launch and stores credentials in the
