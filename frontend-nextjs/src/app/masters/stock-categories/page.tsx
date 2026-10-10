@@ -3,8 +3,8 @@
 import React, { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders } from '@/lib/utils'
-import { Plus, Edit2, Trash2, X, ChevronRight, ChevronDown, Folder, FolderOpen } from 'lucide-react'
+import { API_BASE, authHeaders, cn } from '@/lib/utils'
+import { Plus, Edit2, Trash2, X, ChevronRight, Folder, FolderOpen } from 'lucide-react'
 
 type StockCategory = {
   stock_category_id: number
@@ -144,43 +144,86 @@ export default function StockCategoriesPage() {
     return nodes.map(node => {
       const isExpanded = expandedNodes.has(node.stock_category_id)
       const hasChildren = node.children.length > 0
+      const isSelected = isPanelOpen && categoryId === node.stock_category_id
 
       return (
-        <div key={node.stock_category_id}>
+        <div key={node.stock_category_id} className="relative">
           <div 
-            className={`flex items-center group hover:bg-muted/30 p-2 rounded-lg transition-colors border-l-2 ${categoryId === node.stock_category_id ? 'border-primary bg-primary/5' : 'border-transparent'}`}
-            style={{ paddingLeft: `${depth * 1.5 + 0.5}rem` }}
+            className={cn(
+              "flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl transition-all cursor-pointer group select-none",
+              isSelected
+                ? "bg-primary/10 text-primary border border-primary/30 shadow-xs"
+                : "hover:bg-muted/60 text-foreground border border-transparent"
+            )}
+            onClick={() => hasChildren ? toggleExpand(node.stock_category_id) : openEdit(node)}
           >
-            <div className="flex items-center gap-2 flex-1 cursor-pointer" onClick={() => hasChildren ? toggleExpand(node.stock_category_id) : openEdit(node)}>
-              <button 
-                onClick={(e) => { e.stopPropagation(); toggleExpand(node.stock_category_id) }}
-                className={`p-1 rounded hover:bg-muted text-muted-foreground ${!hasChildren && 'invisible'}`}
-              >
-                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              </button>
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              {isSelected && (
+                <span className="w-1.5 h-4 rounded-full bg-primary shrink-0 -ml-1" />
+              )}
+
+              <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                {hasChildren ? (
+                  <button 
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); toggleExpand(node.stock_category_id) }}
+                    className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-all cursor-pointer"
+                  >
+                    <ChevronRight className={cn("h-3.5 w-3.5 transition-transform duration-200", isExpanded && "rotate-90")} />
+                  </button>
+                ) : (
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/25" />
+                )}
+              </div>
               
-              {isExpanded ? <FolderOpen className="h-4 w-4 text-primary" /> : <Folder className="h-4 w-4 text-muted-foreground" />}
+              {isExpanded ? (
+                <FolderOpen className={cn("h-4 w-4 shrink-0", isSelected ? "text-primary" : "text-primary/80")} />
+              ) : (
+                <Folder className={cn("h-4 w-4 shrink-0", isSelected ? "text-primary" : "text-muted-foreground")} />
+              )}
               
-              <span className={`text-sm font-medium ${!node.is_active && 'line-through text-muted-foreground'}`}>
+              <span className={cn(
+                "text-sm tracking-tight truncate",
+                !node.is_active && "text-muted-foreground",
+                isSelected ? "font-bold text-foreground" : "font-semibold"
+              )}>
                 {node.name}
               </span>
+
+              {!node.is_active && (
+                <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border shrink-0">
+                  Inactive
+                </span>
+              )}
+
+              {isSelected && (
+                <span className="text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary/20 text-primary border border-primary/30 shrink-0 ml-auto mr-1">
+                  Editing
+                </span>
+              )}
             </div>
 
-            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+            <div 
+              className={cn(
+                "flex items-center gap-1 shrink-0 transition-opacity",
+                isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
+              )}
+              onClick={(e) => e.stopPropagation()}
+            >
               {can('stock_categories', 'create') && (
-                <button onClick={() => openCreate(node.stock_category_id)} className="p-1.5 text-muted-foreground hover:text-primary transition-colors"><Plus className="h-4 w-4" /></button>
+                <button type="button" onClick={() => openCreate(node.stock_category_id)} className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors cursor-pointer"><Plus className="h-3.5 w-3.5" /></button>
               )}
               {can('stock_categories', 'update') && (
-                <button onClick={() => openEdit(node)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
+                <button type="button" onClick={() => openEdit(node)} className={cn("p-1.5 rounded-lg transition-colors cursor-pointer", isSelected ? "text-primary bg-primary/15 font-bold" : "text-muted-foreground hover:text-foreground hover:bg-muted")}><Edit2 className="h-3.5 w-3.5" /></button>
               )}
               {can('stock_categories', 'delete') && (
-                <button onClick={() => handleDelete(node.stock_category_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                <button type="button" onClick={() => handleDelete(node.stock_category_id)} className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"><Trash2 className="h-3.5 w-3.5" /></button>
               )}
             </div>
           </div>
 
           {isExpanded && hasChildren && (
-            <div className="mt-1">
+            <div className="ml-5 pl-3 border-l-2 border-border/50 space-y-1 mt-1">
               {renderTree(node.children, depth + 1)}
             </div>
           )}
@@ -244,11 +287,14 @@ export default function StockCategoriesPage() {
             <div>
               <label className="text-sm font-semibold mb-1.5 block">Under Category</label>
               <select value={parentId} onChange={e => setParentId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
-                <option value="">Primary (Root)</option>
+                <option value="">Primary (Top Level / Root)</option>
                 {categories.filter(c => c.stock_category_id !== categoryId).map(c => (
                   <option key={c.stock_category_id} value={c.stock_category_id}>{c.name}</option>
                 ))}
               </select>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                In Tally, <span className="font-semibold text-foreground">Primary</span> is the top level (no parent category).
+              </p>
             </div>
 
             <div className="flex items-center gap-3 pt-2">

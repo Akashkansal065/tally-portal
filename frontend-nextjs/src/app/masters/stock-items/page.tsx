@@ -35,6 +35,8 @@ export default function StockItemsPage() {
   const [unitId, setUnitId] = useState<number | ''>('')
   const [altUnitId, setAltUnitId] = useState<number | ''>('')
   const [altUnitConversion, setAltUnitConversion] = useState<string>('')
+  // Tally keeps the ratio as a pair ("<conversion> alternate units = <denominator> base units"), so 1:3 stays exact
+  const [altUnitDenominator, setAltUnitDenominator] = useState<string>('1')
   const [description, setDescription] = useState('')
   const [isActive, setIsActive] = useState(true)
   
@@ -114,6 +116,7 @@ export default function StockItemsPage() {
     setUnitId('')
     setAltUnitId('')
     setAltUnitConversion('')
+    setAltUnitDenominator('1')
     setDescription('')
     setIsActive(true)
     
@@ -150,7 +153,8 @@ export default function StockItemsPage() {
       setCategoryId(i.stock_category_id || '')
       setUnitId(i.unit_id || '')
       setAltUnitId(i.alt_unit_id || '')
-      setAltUnitConversion(i.alt_unit_conversion ? i.alt_unit_conversion.toString() : '')
+      setAltUnitConversion(i.alt_unit_conversion ? Number(i.alt_unit_conversion).toString() : '')
+      setAltUnitDenominator(i.alt_unit_denominator ? Number(i.alt_unit_denominator).toString() : '1')
       setDescription(i.description || '')
       setIsActive(i.is_active ?? true)
       
@@ -206,6 +210,7 @@ export default function StockItemsPage() {
       unit_id: Number(unitId),
       alt_unit_id: altUnitId === '' ? null : Number(altUnitId),
       alt_unit_conversion: altUnitConversion === '' ? null : Number(altUnitConversion),
+      alt_unit_denominator: altUnitConversion === '' ? null : Number(altUnitDenominator) || 1,
       description: description || null,
       standard_cost_price: stdCost === '' ? null : Number(stdCost),
       standard_selling_price: stdSelling === '' ? null : Number(stdSelling),
@@ -505,7 +510,9 @@ export default function StockItemsPage() {
                       <label className="text-xs font-semibold uppercase text-muted-foreground mb-2 block">Where</label>
                       <div className="flex items-center gap-3">
                         <input type="number" min="0.0001" step="any" value={altUnitConversion} onChange={e => setAltUnitConversion(e.target.value)} placeholder="e.g. 10" className="w-24 bg-background border border-input rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary focus:outline-none" />
-                        <span className="text-sm font-medium">{uoms.find(u => u.unit_id === Number(altUnitId))?.symbol || 'Alt Unit'} = 1 {uoms.find(u => u.unit_id === Number(unitId))?.symbol || 'Base Unit'}</span>
+                        <span className="text-sm font-medium">{uoms.find(u => u.unit_id === Number(altUnitId))?.symbol || 'Alt Unit'} =</span>
+                        <input type="number" min="0.0001" step="any" value={altUnitDenominator} onChange={e => setAltUnitDenominator(e.target.value)} aria-label="Base unit quantity" className="w-24 bg-background border border-input rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary focus:outline-none" />
+                        <span className="text-sm font-medium">{uoms.find(u => u.unit_id === Number(unitId))?.symbol || 'Base Unit'}</span>
                       </div>
                     </div>
                   )}

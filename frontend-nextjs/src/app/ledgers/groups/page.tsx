@@ -7,6 +7,7 @@ import { API_BASE, authHeaders } from '@/lib/utils'
 import { Search, Plus, Edit2, Trash2, ChevronRight, ChevronDown, FolderTree, RefreshCw, Info, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import GroupFormModal, { AccountGroupTreeNode, GroupFormData } from '@/components/GroupFormModal'
+import DeleteGroupModal from '@/components/DeleteGroupModal'
 
 export default function GroupsPage() {
   const { user, token, can } = useAuth()
@@ -19,6 +20,7 @@ export default function GroupsPage() {
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [editGroupData, setEditGroupData] = useState<GroupFormData | null>(null)
   const [parentGroupId, setParentGroupId] = useState<number | null>(null)
+  const [groupToDelete, setGroupToDelete] = useState<{ group_id: number; name: string } | null>(null)
 
   // Tree state
   const [expandedNodes, setExpandedNodes] = useState<Set<number>>(new Set())
@@ -77,27 +79,14 @@ export default function GroupsPage() {
     setIsFormOpen(true)
   }
 
-  const handleDelete = async (group: any, e: React.MouseEvent) => {
+  const handleDelete = (group: any, e: React.MouseEvent) => {
     e.stopPropagation()
     if (group.is_system_defined) {
       alert("System defined groups cannot be deleted.")
       return
     }
-    if (!confirm(`Are you sure you want to delete the group "${group.name}"?`)) return
-
-    try {
-      const res = await fetch(`${API_BASE}/ledgers/groups/${group.group_id}`, {
-        method: 'DELETE',
-        headers: authHeaders(token)
-      })
-      if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.detail || 'Failed to delete')
-      }
-      fetchData()
-    } catch (err: any) {
-      alert(err.message)
-    }
+    // The dialog lists whatever is in the way (sub-groups, ledgers, in MyTally and in Tally) before anything is deleted
+    setGroupToDelete({ group_id: group.group_id, name: group.name })
   }
 
   const toggleNode = (groupId: number, e: React.MouseEvent) => {
@@ -298,6 +287,13 @@ export default function GroupsPage() {
         initialData={editGroupData}
         token={token}
         parentGroupId={parentGroupId}
+      />
+      <DeleteGroupModal
+        key={groupToDelete?.group_id ?? 'none'}
+        group={groupToDelete}
+        token={token}
+        onClose={() => setGroupToDelete(null)}
+        onChanged={fetchData}
       />
     </div>
   )

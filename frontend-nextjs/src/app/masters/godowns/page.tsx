@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
-import { API_BASE, authHeaders } from '@/lib/utils'
+import { API_BASE, authHeaders, cn } from '@/lib/utils'
 import { Plus, Edit2, Trash2, X, ChevronRight, ChevronDown, MapPin, Building2 } from 'lucide-react'
 
 type Godown = {
@@ -108,6 +108,12 @@ export default function GodownsPage() {
     setIsPanelOpen(true)
   }
 
+  const closePanel = () => {
+    setIsPanelOpen(false)
+    setGodownId(null)
+    setIsEditing(false)
+  }
+
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this godown? Inventory could be affected.')) return
     try {
@@ -116,7 +122,7 @@ export default function GodownsPage() {
         headers: authHeaders(token)
       })
       fetchGodowns()
-      if (godownId === id) setIsPanelOpen(false)
+      if (godownId === id) closePanel()
     } catch (e) {
       console.error(e)
     }
@@ -149,7 +155,7 @@ export default function GodownsPage() {
         alert(d.detail || "Error saving godown")
         return
       }
-      setIsPanelOpen(false)
+      closePanel()
       fetchGodowns()
     } catch (e) {
       console.error(e)
@@ -160,50 +166,126 @@ export default function GodownsPage() {
     return nodes.map(node => {
       const isExpanded = expandedNodes.has(node.godown_id)
       const hasChildren = node.children.length > 0
+      const isSelected = isPanelOpen && godownId === node.godown_id
 
       return (
-        <div key={node.godown_id}>
+        <div key={node.godown_id} className="relative">
           <div 
-            className={`flex items-center group hover:bg-muted/30 p-2 rounded-lg transition-colors border-l-2 ${godownId === node.godown_id ? 'border-primary bg-primary/5' : 'border-transparent'}`}
-            style={{ paddingLeft: `${depth * 1.5 + 0.5}rem` }}
+            className={cn(
+              "flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl transition-all cursor-pointer group select-none",
+              isSelected
+                ? "bg-primary/10 text-primary border border-primary/30 shadow-xs"
+                : "hover:bg-muted/60 text-foreground border border-transparent"
+            )}
+            onClick={() => {
+              if (hasChildren) toggleExpand(node.godown_id)
+              else openEdit(node)
+            }}
           >
-            <div className="flex items-center gap-2 flex-1 cursor-pointer" onClick={() => hasChildren ? toggleExpand(node.godown_id) : openEdit(node)}>
-              <button 
-                onClick={(e) => { e.stopPropagation(); toggleExpand(node.godown_id) }}
-                className={`p-1 rounded hover:bg-muted text-muted-foreground ${!hasChildren && 'invisible'}`}
-              >
-                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              </button>
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              {/* Selected indicator pill */}
+              {isSelected && (
+                <span className="w-1.5 h-4 rounded-full bg-primary shrink-0 -ml-1" />
+              )}
+
+              {/* Chevron or spacer */}
+              <div className="w-5 h-5 flex items-center justify-center shrink-0">
+                {hasChildren ? (
+                  <button 
+                    type="button"
+                    onClick={(e) => { 
+                      e.stopPropagation()
+                      toggleExpand(node.godown_id) 
+                    }}
+                    className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-all cursor-pointer"
+                  >
+                    <ChevronRight className={cn("h-3.5 w-3.5 transition-transform duration-200", isExpanded && "rotate-90")} />
+                  </button>
+                ) : (
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/25" />
+                )}
+              </div>
               
-              <Building2 className={`h-4 w-4 ${isExpanded ? 'text-primary' : 'text-muted-foreground'}`} />
+              <Building2 className={cn("h-4 w-4 shrink-0", isSelected ? "text-primary" : isExpanded ? "text-primary/80" : "text-muted-foreground")} />
               
-              <div className="flex flex-col ml-1">
-                <span className={`text-sm font-medium ${!node.is_active && 'line-through text-muted-foreground'}`}>
-                  {node.name}
-                </span>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "text-sm tracking-tight truncate",
+                    !node.is_active && "text-muted-foreground",
+                    isSelected ? "font-bold text-foreground" : "font-semibold"
+                  )}>
+                    {node.name}
+                  </span>
+
+                  {!node.is_active && (
+                    <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border shrink-0">
+                      Inactive
+                    </span>
+                  )}
+                </div>
+
                 {node.address && depth === 0 && (
-                  <span className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                    <MapPin className="h-3 w-3" /> {node.address}
+                  <span className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5 truncate">
+                    <MapPin className="h-3 w-3 shrink-0" /> {node.address}
                   </span>
                 )}
               </div>
+
+              {isSelected && (
+                <span className="text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary/20 text-primary border border-primary/30 shrink-0 ml-auto mr-1">
+                  Editing
+                </span>
+              )}
             </div>
 
-            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-opacity">
+            <div 
+              className={cn(
+                "flex items-center gap-1 shrink-0 transition-opacity",
+                isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
+              )}
+              onClick={(e) => e.stopPropagation()}
+            >
               {can('godowns', 'create') && (
-                <button onClick={() => openCreate(node.godown_id)} className="p-1.5 text-muted-foreground hover:text-primary transition-colors"><Plus className="h-4 w-4" /></button>
+                <button 
+                  type="button" 
+                  onClick={() => openCreate(node.godown_id)} 
+                  title="Add child godown"
+                  className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
               )}
               {can('godowns', 'update') && (
-                <button onClick={() => openEdit(node)} className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"><Edit2 className="h-4 w-4" /></button>
+                <button 
+                  type="button" 
+                  onClick={() => openEdit(node)} 
+                  title="Edit godown"
+                  className={cn(
+                    "p-1.5 rounded-lg transition-colors cursor-pointer",
+                    isSelected 
+                      ? "text-primary bg-primary/15 font-bold" 
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                  )}
+                >
+                  <Edit2 className="h-3.5 w-3.5" />
+                </button>
               )}
               {can('godowns', 'delete') && (
-                <button onClick={() => handleDelete(node.godown_id)} className="p-1.5 text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="h-4 w-4" /></button>
+                <button 
+                  type="button" 
+                  onClick={() => handleDelete(node.godown_id)} 
+                  title="Delete godown"
+                  className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               )}
             </div>
           </div>
 
           {isExpanded && hasChildren && (
-            <div className="mt-1">
+            <div className="ml-5 pl-3 border-l-2 border-border/50 space-y-1 mt-1">
               {renderTree(node.children, depth + 1)}
             </div>
           )}
@@ -251,10 +333,18 @@ export default function GodownsPage() {
         )}
       </div>
 
-      <div className={`fixed top-[64px] right-0 bottom-0 w-[400px] bg-card border-l border-border shadow-2xl transition-transform duration-300 transform flex flex-col ${isPanelOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+      {/* Mobile backdrop overlay */}
+      {isPanelOpen && (
+        <div 
+          className="fixed inset-0 bg-black/40 backdrop-blur-xs z-30 lg:hidden"
+          onClick={closePanel}
+        />
+      )}
+
+      <div className={`fixed top-[64px] right-0 bottom-0 w-[400px] max-w-[90vw] bg-card border-l border-border shadow-2xl transition-transform duration-300 transform flex flex-col z-40 ${isPanelOpen ? 'translate-x-0' : 'translate-x-full'}`}>
         <div className="px-6 py-4 border-b border-border flex items-center justify-between bg-muted/30">
           <h2 className="text-lg font-bold">{isEditing ? 'Edit Godown' : 'Create Godown'}</h2>
-          <button onClick={() => setIsPanelOpen(false)} className="p-2 hover:bg-muted rounded-full transition-colors"><X className="h-5 w-5" /></button>
+          <button type="button" onClick={closePanel} className="p-2 hover:bg-muted rounded-full transition-colors"><X className="h-5 w-5" /></button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
@@ -267,11 +357,14 @@ export default function GodownsPage() {
             <div>
               <label className="text-sm font-semibold mb-1.5 block">Under Godown (Parent)</label>
               <select value={parentId} onChange={e => setParentId(e.target.value ? Number(e.target.value) : '')} className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none">
-                <option value="">Primary</option>
+                <option value="">Primary (Top Level / Root)</option>
                 {godowns.filter(g => g.godown_id !== godownId).map(g => (
                   <option key={g.godown_id} value={g.godown_id}>{g.name}</option>
                 ))}
               </select>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                In Tally, <span className="font-semibold text-foreground">Primary</span> is the top level (no parent godown).
+              </p>
             </div>
 
             <div>
@@ -310,7 +403,7 @@ export default function GodownsPage() {
         </div>
 
         <div className="p-4 border-t border-border bg-muted/10 flex justify-end gap-3">
-          <button type="button" onClick={() => setIsPanelOpen(false)} className="px-4 py-2 rounded-lg font-medium text-sm hover:bg-muted transition-colors">Cancel</button>
+          <button type="button" onClick={closePanel} className="px-4 py-2 rounded-lg font-medium text-sm hover:bg-muted transition-colors">Cancel</button>
           <button type="submit" form="godown-form" className="bg-primary text-primary-foreground px-4 py-2 rounded-lg font-medium text-sm hover:bg-primary/90 transition-colors">Save Godown</button>
         </div>
       </div>
