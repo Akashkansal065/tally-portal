@@ -1192,6 +1192,12 @@ async def get_last_alter_id(
         except Exception:
             pass
 
+    # What the server holds for this company now, for the agent's tiles
+    counts = {}
+    for key, model in (("vouchers", TrnVoucher), ("ledgers", MstLedger), ("stock_items", MstStockItem)):
+        counts[key] = int((await db.execute(select(func.count()).select_from(model).where(
+            model.company_id == user.company_id))).scalar() or 0)
+
     voucher_alter_id = details.get(TrnVoucher.__tablename__, 0)
     master_alter_id = max([v for k, v in details.items() if k != TrnVoucher.__tablename__], default=0)
     return {
@@ -1200,6 +1206,7 @@ async def get_last_alter_id(
         "last_ledger_alter_id": details.get(MstLedger.__tablename__, 0),
         "last_voucher_alter_id": voucher_alter_id,
         "last_stock_item_alter_id": details.get(MstStockItem.__tablename__, 0),
+        "counts": counts,
         "details": details
     }
 
@@ -2092,6 +2099,12 @@ def currency_import_xml(company_name: str, action: str, curr=None, tally_name: s
 </ENVELOPE>"""
 
 
+# Deleting a currency by XML import crashes TallyPrime ("Internal Error. Software Exception c0000005, Memory
+# Access Violation": seen on 10 Oct 2026 with a currency that had no entries), and Tally stays down until
+# someone restarts it. So a currency delete is never sent: it is deleted in the app, and by hand in Tally.
+CURRENCY_DELETE_REACHES_TALLY = False
+
+
 async def queued_currency_xml(db: AsyncSession, item) -> Optional[str]:
     """The Tally request for a queued currency change, or None when there is nothing left to send: the
     currency was deleted before its create or alter went out, or it is not this company's."""
@@ -2099,6 +2112,8 @@ async def queued_currency_xml(db: AsyncSession, item) -> Optional[str]:
     from app.models.portal_core import Company, Currency
     company_name = (await db.execute(select(Company.name).where(Company.company_id == item.company_id))).scalar() or ""
     if (item.action or "").lower() == "delete":
+        if not CURRENCY_DELETE_REACHES_TALLY:
+            return None
         # The row is gone; the queue entry kept the name Tally knows it by
         tally_name = (item.snapshot_data or {}).get("tally_name")
         return currency_import_xml(company_name, "Delete", tally_name=tally_name) if tally_name else None

@@ -940,6 +940,9 @@ async def import_tally_xml(
     imported_uoms = 0
     imported_godowns = 0
     imported_stock_categories = 0
+    imported_cost_categories = 0
+    imported_cost_centres = 0
+    imported_attendance_types = 0
     imported_stock_items = 0
     imported_currencies = 0
     imported_voucher_types = 0
@@ -1392,10 +1395,10 @@ async def import_tally_xml(
             )
             db.add(new_cc)
             
-        imported_stock_categories += 1
+        imported_cost_categories += 1
         
     await db.flush()
-    if imported_stock_categories > 0:
+    if imported_cost_categories > 0:
         await db.commit()
         logger.info(f"Committed Cost Categories")
 
@@ -1464,6 +1467,7 @@ async def import_tally_xml(
             )
             db.add(new_cc)
         await _read_payroll_cost_centre(db, company_id, existing_cc or new_cc, cc_node, cc_guid)
+        imported_cost_centres += 1
             
     await db.flush()
     await db.commit()
@@ -1498,6 +1502,7 @@ async def import_tally_xml(
         if at_guid:
             existing_at.tally_guid = at_guid
             existing_at.tally_master_id = int(at_node.findtext("MASTERID").strip()) if (at_node.findtext("MASTERID") or "").strip().isdigit() else existing_at.tally_master_id
+        imported_attendance_types += 1
     await db.flush()
 
     # 1.5. Parse Godowns (<GODOWN>)
@@ -3062,5 +3067,8 @@ async def import_tally_xml(
         "imported_stock_items": imported_stock_items,
         "imported_currencies": imported_currencies,
         "imported_voucher_types": imported_voucher_types,
+        "imported_cost_categories": imported_cost_categories,
+        "imported_cost_centres": imported_cost_centres,
+        "imported_attendance_types": imported_attendance_types,
         "errors": import_errors
     }

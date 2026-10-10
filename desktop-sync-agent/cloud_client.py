@@ -540,6 +540,18 @@ class CloudClient:
 
         return False, last_diag
 
+    def get_server_counts(self) -> Optional[Dict[str, int]]:
+        """How many vouchers, ledgers and stock items the server holds for the company being synced.
+        None when it could not be asked, or the server is too old to say."""
+        try:
+            req = urllib.request.Request(f"{self.backend_url}/sync/last-alter-id", headers=self._get_headers())
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                counts = json.loads(resp.read().decode("utf-8")).get("counts")
+                return {k: int(v) for k, v in counts.items()} if isinstance(counts, dict) else None
+        except Exception as e:
+            logger.debug(f"Could not read the server's record counts: {e}")
+            return None
+
     def get_last_alter_id(self) -> Tuple[int, int]:
         """
         The highest alter ids the backend holds: (masters, vouchers). Tally counts changes to masters and to

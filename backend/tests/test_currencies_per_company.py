@@ -164,53 +164,46 @@ def test_a_server_with_no_company_yet_keeps_the_list_for_later(harness):
 
 
 # ── reaching Tally ──
-def test_a_delete_tally_did_not_answer_stays_queued_with_the_name_to_delete(harness, two, monkeypatch):
-    """The row is gone after a delete, so the queue entry must carry Tally's name for the currency, and the
-    PC's agent must be handed the request instead of the entry being quietly closed."""
+def queued(agent, headers):
+    payloads = agent.get("/sync/outbound-queue", headers=headers).json()
+    tasks = payloads["tasks"] if isinstance(payloads, dict) else payloads
+    return [t for t in tasks if t["record_type"] == "Currency"]
+
+
+def test_creates_and_edits_go_to_the_companys_own_pc(harness, two):
     from app.routers import sync
     client, (alpha, a), (beta, b) = two
     agent = harness.app(auth.router, sync.router, currency_tds.router)
-    created = agent.post("/currency", json=USD, headers=a).json()
+    agent.post("/currency", json=USD, headers=a)
 
-    payloads = agent.get("/sync/outbound-queue", headers=a).json()
-    tasks = payloads["tasks"] if isinstance(payloads, dict) else payloads
-    create = [t for t in tasks if t["record_type"] == "Currency"]
+    create = queued(agent, a)
     assert len(create) == 1 and '<CURRENCY NAME="$" ACTION="Create">' in create[0]["xml_payload"]
     assert "<SVCURRENTCOMPANY>Alpha</SVCURRENTCOMPANY>" in create[0]["xml_payload"]
-
-    assert agent.delete(f"/currency/{created['currency_id']}", headers=a).status_code == 200
-    payloads = agent.get("/sync/outbound-queue", headers=a).json()
-    tasks = payloads["tasks"] if isinstance(payloads, dict) else payloads
-    waiting = [t for t in tasks if t["record_type"] == "Currency"]
-    assert [t["action"] for t in waiting] == ["Delete"]                  # the unsent create is closed by it
-    assert '<CURRENCY NAME="$" ACTION="Delete">' in waiting[0]["xml_payload"]
-    assert harness.scalar(select(P.SyncQueue.is_processed).where(P.SyncQueue.sync_id == waiting[0]["sync_id"])) is False
-
-    other = agent.get("/sync/outbound-queue", headers=b).json()
-    other = other["tasks"] if isinstance(other, dict) else other
-    assert [t for t in other if t["record_type"] == "Currency"] == []    # never offered to another company's PC
+    assert queued(agent, b) == []                                        # never offered to another company's PC
 
 
-def test_deleting_what_tally_no_longer_has_counts_as_done(harness, two, monkeypatch):
+def test_a_currency_delete_is_never_sent_to_tally(harness, two, monkeypatch):
+    """The delete request crashes TallyPrime, so nothing about a deleted currency may reach it: not the
+    delete, and not a create that was still waiting."""
     from app.routers import sync
     client, (alpha, a), _ = two
+    agent = harness.app(auth.router, sync.router, currency_tds.router)
     sent = []
     monkeypatch.setattr(sync, "current_tally_url", lambda: "http://tally.test")
     monkeypatch.setattr(sync, "_post_to_tally_sync", lambda url, xml, timeout=5: sent.append(xml) or "")
-    row = harness.add(P.SyncQueue(company_id=alpha.company_id, record_type="Currency", record_id=999, action="Delete",
+    created = agent.post("/currency", json=USD, headers=a).json()       # its create is still waiting
+
+    deleted = agent.delete(f"/currency/{created['currency_id']}", headers=a)
+    assert deleted.status_code == 200 and "by hand" in deleted.json()["tally_note"]
+    assert queued(agent, a) == []
+    assert harness.query(select(P.SyncQueue.sync_id).where(P.SyncQueue.is_processed == False)) == []
+
+    # Even a delete entry left in the queue by an older version is not turned into a request
+    old = harness.add(P.SyncQueue(company_id=alpha.company_id, record_type="Currency", record_id=999, action="Delete",
                                   is_processed=False, snapshot_data={"tally_name": "$"}))
 
-    def push():
-        async def go():
-            async with harness.Session() as db:
-                await sync.try_push_currency_realtime(999, row.sync_id, "Delete", db)
-        run(go())
-
-    push()                                                              # Tally silent: stays waiting
-    assert harness.scalar(select(P.SyncQueue.is_processed).where(P.SyncQueue.sync_id == row.sync_id)) is False
-    monkeypatch.setattr(sync, "_post_to_tally_sync", lambda url, xml, timeout=5: sent.append(xml) or
-                        "<RESPONSE><LINEERROR>Currency '$' does not exist!</LINEERROR><ERRORS>1</ERRORS></RESPONSE>")
-    push()
-    assert harness.scalar(select(P.SyncQueue.is_processed).where(P.SyncQueue.sync_id == row.sync_id)) is True
-    push()                                                              # already done: nothing more is sent
-    assert len(sent) == 2 and all('<CURRENCY NAME="$" ACTION="Delete">' in xml for xml in sent)
+    async def push():
+        async with harness.Session() as db:
+            await sync.try_push_currency_realtime(999, old.sync_id, "Delete", db)
+    run(push())
+    assert queued(agent, a) == [] and sent == []

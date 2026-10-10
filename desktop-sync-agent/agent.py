@@ -28,6 +28,15 @@ from xml.sax.saxutils import unescape
 # Settings can change it (config.vouchers_per_range). A company with no more vouchers than one range is
 # exported whole.
 VOUCHERS_PER_RANGE = 50
+# Every kind of record the server reports back after an import, in the order they are synced
+IMPORTED_KINDS = (
+    ("imported_groups", "Groups"), ("imported_ledgers", "Ledgers"), ("imported_voucher_types", "Voucher types"),
+    ("imported_currencies", "Currencies"), ("imported_stock_groups", "Stock groups"), ("imported_uoms", "Units"),
+    ("imported_godowns", "Godowns"), ("imported_stock_categories", "Stock categories"),
+    ("imported_cost_categories", "Cost categories"), ("imported_cost_centres", "Cost centres"),
+    ("imported_attendance_types", "Attendance types"), ("imported_stock_items", "Stock items"),
+    ("imported_vouchers", "Vouchers"),
+)
 # How long one company's full sync may run in a cycle before the other companies, and the entries waiting to
 # reach Tally, get their turn. It carries on in the next cycle.
 FULL_SYNC_SLICE_SECONDS = 90
@@ -175,6 +184,8 @@ class DesktopSyncAgent:
         self.last_sync_time = None
         self.last_sync_timestr = "Never"
         self.last_sync_status = "Ready"
+        self._server_counts: Optional[Dict[str, int]] = None   # what the server holds for the active company
+        self._cycle_counts: Dict[str, int] = {}                # what the server added or changed this cycle
         self.total_vouchers = 0
         self.total_ledgers = 0
         self.total_items = 0
@@ -240,9 +251,11 @@ class DesktopSyncAgent:
             "open_companies_count": self.open_companies_count,
             "linked_companies_count": len(self.linked_companies()),
             "tally_release": self.tally_release,
-            "total_vouchers": self.total_vouchers,
-            "total_ledgers": self.total_ledgers,
-            "total_items": self.total_items,
+            # What the server holds for the company on screen. Falls back to what this run has sent, for a
+            # server too old to say; that number grows with every repeated sync and is not a count of records.
+            "total_vouchers": (self._server_counts or {}).get("vouchers", self.total_vouchers),
+            "total_ledgers": (self._server_counts or {}).get("ledgers", self.total_ledgers),
+            "total_items": (self._server_counts or {}).get("stock_items", self.total_items),
             "total_errors": self.total_errors,
             "last_sync_time": self.last_sync_time,
             "last_sync_timestr": self.last_sync_timestr,
@@ -466,6 +479,8 @@ class DesktopSyncAgent:
 
     def _activate(self, company: Dict[str, str]) -> None:
         """Point the agent and its cloud calls at one company for the work that follows."""
+        if company["guid"] != self.active_company_guid:
+            self._server_counts = None      # the tiles show one company's records, never the last one's
         self.active_company_name, self.active_company_guid = company["name"], company["guid"]
         self.cloud.company_guid = self.active_company_guid
         self.cloud.company_fingerprint = company.get("fingerprint", "")
@@ -774,8 +789,11 @@ class DesktopSyncAgent:
                 else:
                     logger.info("   ✨ 0 changes detected in Tally. Database is 100% up-to-date.")
                     self.last_sync_status = "Up-to-date (0 changes)"
+                    if self._server_counts is None:
+                        self._refresh_server_counts()
                 return self._last_company_ok
 
+            self._cycle_counts = {}
             total_vouchers, total_ledgers, total_items, total_errors = self._push_collections(collections, force_all)
 
             # Vouchers of a full sync come in date ranges, a slice at a time (see _sync_vouchers_in_ranges)
@@ -812,6 +830,8 @@ class DesktopSyncAgent:
             elif (total_vouchers + total_ledgers + total_items) > 0 or not is_incremental:
                 msg = f"🎉 [DATABASE UPDATED] Synced {total_vouchers} Vouchers, {total_ledgers} Ledgers, {total_items} Items for '{self.active_company_name}'! (Errors: {total_errors})"
                 logger.info(msg)
+                self._refresh_server_counts()
+                self._log_cycle_summary()
                 self.last_sync_status = f"Synced {total_vouchers} Vouchers, {total_ledgers} Ledgers"
             else:
                 msg = f"   ✨ 0 changes detected in Tally. Database is up-to-date. (Errors: {total_errors})"
@@ -825,6 +845,33 @@ class DesktopSyncAgent:
         finally:
             self.is_syncing = False
         return self._last_company_ok
+
+    def _note_imported(self, res: Dict[str, Any]) -> str:
+        """Add one push's counts to the cycle's totals. Returns them as text, every kind the server changed."""
+        parts = []
+        for key, name in IMPORTED_KINDS:
+            n = int(res.get(key) or 0)
+            if n:
+                self._cycle_counts[key] = self._cycle_counts.get(key, 0) + n
+                parts.append(f"{name}: {n}")
+        return ", ".join(parts) or "nothing new or changed"
+
+    def _log_cycle_summary(self):
+        """One block at the end of a sync: every kind of record, what the server added or changed, and what
+        it now holds."""
+        logger.info(f"   📊 Sync summary for '{self.active_company_name}' (new or changed on the server):")
+        for key, name in IMPORTED_KINDS:
+            logger.info(f"      {name + ':':<18}{self._cycle_counts.get(key, 0)}")
+        if self._server_counts:
+            held = self._server_counts
+            logger.info(f"      Server now holds:  {held.get('vouchers', 0)} vouchers, {held.get('ledgers', 0)} ledgers, "
+                        f"{held.get('stock_items', 0)} stock items")
+
+    def _refresh_server_counts(self):
+        ask = getattr(self.cloud, "get_server_counts", None)
+        counts = ask() if ask else None
+        if counts is not None:
+            self._server_counts = counts
 
     def _push_collections(self, collections: List[Tuple[str, str]], force_all: bool) -> Tuple[int, int, int, int]:
         """Push exported collections to the cloud. Returns (vouchers, ledgers, items imported, pushes that failed)."""
@@ -845,7 +892,7 @@ class DesktopSyncAgent:
                 total_vouchers += v_count
                 total_ledgers += l_count
                 total_items += s_count
-                logger.info(f"   • ✅ '{label}' Synced in {dur:.2f}s (Vouchers: {v_count}, Ledgers: {l_count}, Items: {s_count}, Groups: {g_count})")
+                logger.info(f"   • ✅ '{label}' Synced in {dur:.2f}s ({self._note_imported(res)})")
                 record_errors = res.get("errors") or []
                 if record_errors:
                     # Individual records the server rejected. They would fail the same way on a re-pull,
@@ -1011,6 +1058,7 @@ class DesktopSyncAgent:
                              "the full sync carries on from here next cycle.")
                 return False, imported
             imported += res.get("imported_vouchers", 0)
+            self._note_imported(res)
             # The server only counts what it added or changed; a voucher it already holds unchanged is not counted
             logger.info(f"   • ✅ '{label}' sent: {expected} vouchers, {res.get('imported_vouchers', 0)} new or changed on the server")
             cursor["next"] += 1

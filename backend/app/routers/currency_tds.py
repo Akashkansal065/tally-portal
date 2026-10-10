@@ -229,24 +229,23 @@ async def delete_currency(
         
     code = curr.code
     curr_symbol = curr.symbol
-    # The row is about to go, so the queue entry carries the name Tally knows the currency by (its symbol).
-    # Without it a delete that Tally did not answer could never be sent again.
-    new_sq = SyncQueue(company_id=user.company_id, record_type="Currency", record_id=currency_id, action="Delete",
-                       is_processed=False, snapshot_data={"tally_name": curr_symbol, "code": code})
-    db.add(new_sq)
+    # A currency delete is not sent to Tally: the request crashes TallyPrime (see sync.CURRENCY_DELETE_REACHES_TALLY).
+    # A create or alter of it that has not gone out yet is closed, so the currency is not sent after it was deleted.
+    from sqlalchemy import update as sql_update
+    await db.execute(sql_update(SyncQueue).where(
+        SyncQueue.company_id == user.company_id, SyncQueue.record_type == "Currency",
+        SyncQueue.record_id == currency_id, SyncQueue.is_processed == False,
+    ).values(is_processed=True, status="SUPERSEDED"))
     # The currency is this company's own, and its exchange rates go with it
     from sqlalchemy import delete as sql_delete
     await db.execute(sql_delete(ExchangeRate).where(ExchangeRate.currency_id == currency_id))
     await db.delete(curr)
     await db.commit()
     
-    logger.info(f"Currency {code} (ID: {currency_id}) deleted successfully. Added to SyncQueue (Delete).")
-    
-    # Try pushing to Tally in real-time
-    logger.info(f"Triggering real-time Tally push for Currency {code} (Delete)...")
-    await try_push_currency_realtime(currency_id, new_sq.sync_id, "Delete", db, deleted_symbol=curr_symbol, deleted_code=code)
-    
-    return {"message": "Currency deleted successfully"}
+    logger.info(f"Currency {code} (ID: {currency_id}) deleted in the app; not sent to Tally.")
+    return {"message": "Currency deleted successfully",
+            "tally_note": f"Deleted here only. If Tally has the currency {curr_symbol}, delete it there by hand; "
+                          "otherwise the next sync brings it back."}
 
 # --- TDS Sections ---
 

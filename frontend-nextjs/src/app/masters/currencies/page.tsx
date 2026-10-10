@@ -49,6 +49,8 @@ export default function CurrenciesPage() {
         const err = await res.json()
         throw new Error(err.detail || 'Failed to delete currency')
       }
+      const done = await res.json().catch(() => null)
+      if (done?.tally_note) alert(done.tally_note)
       fetchCurrencies()
     } catch (e: any) {
       alert(e.message)
