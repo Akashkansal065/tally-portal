@@ -20,6 +20,13 @@ from config import (
 )
 from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
 from cloud_client import CloudClient, halt_message
+from xml.sax.saxutils import unescape
+
+_SV_CURRENT_COMPANY = re.compile(r"<SVCURRENTCOMPANY>(.*?)</SVCURRENTCOMPANY>", re.DOTALL)
+
+
+def unescape_xml(text: str) -> str:
+    return unescape(text, {"&quot;": '"', "&apos;": "'"})
 
 # Configure Logging with both Console and Rotating File Handler in safe logs directory
 logs_dir = get_logs_dir()
@@ -113,6 +120,7 @@ class DesktopSyncAgent:
         self.last_inbound_time = 0
         self.active_company_name = self.config.company_name
         self.active_company_guid = getattr(self.config, "company_guid", "") or ""
+        self.cloud.company_guid = self.active_company_guid
         self.company_paused = False
         self.open_companies_count = 0
 
@@ -223,6 +231,7 @@ class DesktopSyncAgent:
         )
         self.active_company_name = self.config.company_name
         self.active_company_guid = getattr(self.config, "company_guid", "") or ""
+        self.cloud.company_guid = self.active_company_guid
         self.company_paused = False
         logger.info("🔄 Agent configuration reloaded.")
 
@@ -333,6 +342,7 @@ class DesktopSyncAgent:
         if match:
             self.company_paused = False
             self.active_company_guid = match.get("guid", "")
+            self.cloud.company_guid = self.active_company_guid
             if self.active_company_guid:
                 self.config.company_guid = self.active_company_guid
                 save_config(self.config, self.config_path)
@@ -346,6 +356,28 @@ class DesktopSyncAgent:
             )
         self.company_paused = True
 
+    def _address_to_active_company(self, xml_payload: str, task_company_guid: Optional[str]) -> Tuple[str, Optional[str]]:
+        """
+        Check a queued payload is for the Tally company this agent is tied to. Returns (payload, why it must not
+        be sent or None).
+
+        When the server says which Tally company the task belongs to (by GUID), that decides, and the payload is
+        addressed to the name Tally shows for that company right now (the server may still hold an older name).
+        A server that does not say is trusted only as far as the company name in the payload matches.
+        """
+        m_cmp = _SV_CURRENT_COMPANY.search(xml_payload)
+        if task_company_guid and self.active_company_guid:
+            if task_company_guid != self.active_company_guid:
+                return xml_payload, (f"it is for Tally company GUID {task_company_guid}, and this agent is tied to "
+                                     f"'{self.active_company_name}' (GUID {self.active_company_guid}).")
+            if m_cmp and self.active_company_name:
+                xml_payload = xml_payload[:m_cmp.start(1)] + escape_xml(self.active_company_name) + xml_payload[m_cmp.end(1):]
+            return xml_payload, None
+        if m_cmp and self.active_company_name and unescape_xml(m_cmp.group(1)).strip() != self.active_company_name:
+            return xml_payload, (f"it is addressed to company '{unescape_xml(m_cmp.group(1)).strip()}', and this agent is "
+                                 f"tied to '{self.active_company_name}'.")
+        return xml_payload, None
+
     def _paused_status(self) -> str:
         return f"Paused: '{self.active_company_name}' is not open in Tally"
 
@@ -354,6 +386,7 @@ class DesktopSyncAgent:
         if self.cloud.auth_halt_reason:
             return 0
         self.check_and_handle_company_switch()
+        self.cloud.company_guid = self.active_company_guid
         if self.company_paused:
             # Shown in the GUI: nothing is sent to Tally until the company this agent is tied to is open again
             self.last_sync_status = self._paused_status()
@@ -382,6 +415,11 @@ class DesktopSyncAgent:
                 logger.warning(f"Task #{sync_id} ({rec_type} #{rec_id}) has no XML payload. Skipping.")
                 continue
 
+            xml_payload, refusal = self._address_to_active_company(xml_payload, task.get("company_guid"))
+            if refusal:
+                logger.error(f"⛔ Not sending {rec_type} #{rec_id} ({action}) to Tally: {refusal}")
+                continue
+
             # Ensure SVCURRENTCOMPANY is explicitly set in STATICVARIABLES to avoid multi-company cross-talk
             if "<SVCURRENTCOMPANY>" not in xml_payload and self.active_company_name:
                 esc_cmp = escape_xml(self.active_company_name)
@@ -390,6 +428,11 @@ class DesktopSyncAgent:
                     xml_payload = xml_payload.replace("<STATICVARIABLES>", sv_tag)
                 elif "<DESC>" in xml_payload:
                     xml_payload = xml_payload.replace("<DESC>", f"<DESC><STATICVARIABLES><SVCURRENTCOMPANY>{esc_cmp}</SVCURRENTCOMPANY></STATICVARIABLES>")
+
+            if "<SVCURRENTCOMPANY>" not in xml_payload and "svCurrentCompany" not in xml_payload:
+                # Without it Tally writes to whichever company is in front of the operator
+                logger.error(f"⛔ Not sending {rec_type} #{rec_id} ({action}) to Tally: the payload names no company.")
+                continue
 
             # A voucher addressed by master id is only found under the date it has in Tally right now. If
             # someone moved it in Tally since the backend last heard, the old date would make a second voucher.
@@ -450,6 +493,7 @@ class DesktopSyncAgent:
             return
 
         self.check_and_handle_company_switch()
+        self.cloud.company_guid = self.active_company_guid
         if self.company_paused:
             self.last_sync_status = self._paused_status()
             return

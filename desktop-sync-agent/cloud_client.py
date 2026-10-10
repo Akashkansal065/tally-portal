@@ -94,6 +94,9 @@ class CloudClient:
         self.auth_halt_reason = auth_halt_reason or ""
         self.on_auth_halted = on_auth_halted
         self.identity_headers = device_identity_headers()
+        # GUID of the Tally company this agent is tied to. Sent on every sync call so the server works on
+        # that company, whichever company the account has active in the app.
+        self.company_guid = ""
 
     def _halt(self, reason: str) -> None:
         if self.auth_halt_reason == reason:
@@ -114,6 +117,8 @@ class CloudClient:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        if self.company_guid:
+            headers["X-Tally-Company-GUID"] = self.company_guid
         return headers
 
     def authenticate(self, username_or_email: str, password: str) -> Tuple[bool, str]:
@@ -211,6 +216,12 @@ class CloudClient:
                             logger.error(f"Retry after reauth failed: {retry_ex}")
                     last_error = halt_message(self.auth_halt_reason) if self.auth_halt_reason else "Authentication Required (HTTP 401). Please check email/password in config."
                     break  # Do not fallback to /api/v1 when auth fails
+                elif e.code == 409:
+                    # The server has no company linked to this agent's Tally company (yet), or more than one
+                    try:
+                        last_error = json.loads(e.read().decode("utf-8", errors="ignore")).get("detail") or "HTTP 409"
+                    except Exception:
+                        last_error = "HTTP 409: the server could not match this Tally company"
                 else:
                     last_error = f"HTTP {e.code} on {endpoint}: {e.reason}"
                 if e.code != 404:
@@ -281,6 +292,8 @@ class CloudClient:
             headers["Authorization"] = f"Bearer {self.token}"
         if company_name:
             headers["x-company-name"] = company_name
+        if self.company_guid:
+            headers["X-Tally-Company-GUID"] = self.company_guid
         if force:
             headers["x-force-sync"] = "true"
 
