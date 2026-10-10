@@ -296,7 +296,7 @@ class CloudClient:
                             logger.error(f"Retry after reauth failed: {retry_ex}")
                     last_error = halt_message(self.auth_halt_reason) if self.auth_halt_reason else "Authentication Required (HTTP 401). Please check email/password in config."
                     break  # Do not fallback to /api/v1 when auth fails
-                elif e.code in (403, 409):
+                elif e.code in (403, 409, 426):
                     # The server has no company linked to this agent's Tally company (yet), or this PC is not
                     # the one syncing it
                     try:

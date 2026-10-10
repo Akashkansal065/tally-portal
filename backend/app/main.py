@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
-from app.core.seed import seed_global_data
+from app.core.seed import seed_global_data, ensure_admin_roles_have_every_module
 from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backup_schedule, payroll_masters
 
 from app.core.logging_config import setup_logging, get_logger, RequestLoggingMiddleware
@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
             from sqlalchemy.orm import Session
             sync_db = Session(bind=connection)
             seed_global_data(sync_db)
+            ensure_admin_roles_have_every_module(sync_db)
     async with engine.connect() as conn:
         # We need to run the sync function in a thread pool since it blocks
         # and SQLAlchemy requires a special wrapper for sync execution

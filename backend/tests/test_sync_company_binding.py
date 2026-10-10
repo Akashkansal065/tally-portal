@@ -1,6 +1,6 @@
 """The Desktop Sync Agent names its Tally company by GUID on every call; the server uses that company, not
 the one the agent's account has active in the app."""
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 import app.models.portal_core as P
 from app.routers import auth, sync
@@ -103,3 +103,39 @@ def test_import_refuses_a_same_name_company_linked_to_another_guid(harness):
     assert result["status"] == "error"
     assert "different Tally company" in result["message"]
     assert harness.scalar(select(P.Company.tally_guid).where(P.Company.company_id == alpha.company_id)) == GUID_A
+
+
+# ── /sync/inbound: the company is settled by the caller, never by a name in the payload ──
+
+LEDGER_EXPORT = """<ENVELOPE><BODY><DATA><COLLECTION>
+  <COMPANY NAME="Beta"><GUID>guid-not-ours</GUID></COMPANY>
+  <GROUP NAME="Imported Group"><PARENT>Primary</PARENT></GROUP>
+</COLLECTION></DATA></BODY></ENVELOPE>"""
+
+
+def groups_by_company(harness):
+    import app.models.tally_core as T
+    return {company_id for (company_id,) in harness.query(select(T.MstGroup.company_id).where(T.MstGroup.name == "Imported Group"))}
+
+
+def test_a_persons_import_goes_to_the_company_they_are_in_whatever_the_payload_names(harness):
+    client, headers, admin, alpha, beta = seed(harness)   # working in Alpha; the payload says "Beta"
+
+    res = client.post("/sync/inbound?company_name=Beta", content=LEDGER_EXPORT, headers={**headers, "Content-Type": "text/xml"})
+
+    assert res.status_code == 200 and res.json().get("company_id") == alpha.company_id
+    assert groups_by_company(harness) == {alpha.company_id}
+    # Alpha keeps its own GUID and name: another company's entry in the export is not its profile
+    assert harness.query(select(P.Company.name, P.Company.tally_guid).where(P.Company.company_id == alpha.company_id)) == [("Alpha", GUID_A)]
+
+
+def test_an_agent_on_a_persons_login_imports_into_the_company_it_names_by_guid(harness):
+    client, headers, admin, alpha, beta = seed(harness)
+
+    res = client.post("/sync/inbound", content=LEDGER_EXPORT, headers={**headers, "Content-Type": "text/xml", "X-Tally-Company-GUID": GUID_B})
+    assert res.json().get("company_id") == beta.company_id
+
+    unknown = client.post("/sync/inbound", content=LEDGER_EXPORT, headers={**headers, "Content-Type": "text/xml", "X-Tally-Company-GUID": "guid-unknown"})
+    assert unknown.status_code == 409
+    assert groups_by_company(harness) == {beta.company_id}
+    assert harness.scalar(select(func.count()).select_from(P.Company)) == 2   # nothing was created

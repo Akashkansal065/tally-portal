@@ -1,6 +1,6 @@
 # Multi-Tenant Rollout Runbook
 
-Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 5)
+Last updated: 10 Oct 2026 (covers Phase 0 and Steps 1 to 6)
 
 The steps to run by hand, in order, once development is complete. The design and the reasons are in `Multi-Tenant Working Plan.md`; this file is only what to do. Each development step that adds a manual action adds it here.
 
@@ -14,7 +14,7 @@ Status of each part:
 | Step 3: agent sign-up and device tokens | Yes: two settings, and signing the PC in | Sections 3, 5 and 6 |
 | Step 4: multi-company agent | Only when you add a second company | Section 7 |
 | Step 5: app switcher and last synced | Deploy the web app; checks only | Sections 3 and 6 |
-| Step 6: enforce and harden | Not built yet | To be added |
+| Step 6: enforce and harden | Yes: one setting now, three later | Sections 3 and 8 |
 
 ## 1. Before you start
 
@@ -40,6 +40,7 @@ mysqldump -u <user> -p --single-transaction --routines tally_sync > tally_sync_b
 
 - [ ] In `backend/.env`, check the email settings are there: `SMTP_USER` and `SMTP_PASS` (a Gmail app password). Sign-up codes and invitations are sent with them. Without them, creating an account fails with "The verification email could not be sent".
 - [ ] In `backend/.env`, add `APP_PUBLIC_URL=` with the address people open the app at (for example `https://app.yourdomain.com`). Invitation emails link to it. Without it the email carries a code to paste instead.
+- [ ] If `TALLY_URL` is set in `backend/.env` (the server reaches Tally directly, for example through a tunnel), decide now: on a server that will hold more than one customer, also set `TALLY_URL_COMPANY_GUID=` to the Tally GUID of the company that Tally belongs to. The migration script in section 4 prints each company's GUID. Without it, a second customer's vouchers would be sent to this Tally.
 - [ ] Deploy the backend from `master` and start it once.
 - [ ] In the startup log, look for lines beginning `Auto Schema Synchronizer:`. They list each column and index it adds. New tables (`accounts`, `agent_devices`, `agent_company_links`, `company_sync_state`, `user_invites`, `signup_verifications`) are created silently.
 - [ ] Confirm there is no line beginning `Warning during auto schema sync`.
@@ -70,6 +71,7 @@ Run from the `backend` folder, with the same `.env` the backend uses. The script
 ```
 
 - [ ] It must print `Saved.` and then one `added` line per foreign key (nine in all). A `STOP` line means that key was not added; send me the line.
+- [ ] It then prints two `done` lines for roles: role names become unique inside an account instead of across the server. A second customer cannot sign up until this has run.
 - [ ] If "Still to deal with" lists a company with no Tally GUID, do a full sync from the agent after section 5 (Sync All in the agent window).
 - [ ] If it lists duplicate Tally GUIDs, leave them. They are handled in Step 6 and block nothing before it.
 
@@ -115,7 +117,30 @@ Nothing needs doing until you want a second Tally company in the app.
 
 To stop syncing a company from this PC, press Unlink beside it in the same window. Its data in the app stays.
 
-## 8. If something goes wrong
+## 8. Switching enforcement on (a week or more after section 6)
+
+Do this only when sections 1 to 6 are done and everything has run normally for a while. It makes the database itself refuse rows with no owner and duplicate Tally records. Pick a quiet time: making a key unique on the vouchers table can take minutes and holds the table while it runs.
+
+- [ ] Back up both databases again (section 1).
+- [ ] Look first. This changes nothing:
+
+```bash
+./venv/bin/python scripts/migrate_to_account.py --enforce
+```
+
+- [ ] If it says "Not ready to enforce", run the script without `--enforce` first (section 4), then try again.
+- [ ] Read the plan. Lines starting `would` are what it will do. A line starting `STOP` names a key that still has duplicate rows: it will be skipped, and everything else still goes ahead. Send me the `STOP` lines; those rows need merging by hand.
+- [ ] Do it:
+
+```bash
+./venv/bin/python scripts/migrate_to_account.py --enforce --apply
+```
+
+- [ ] In `backend/.env`, add `ACCOUNTS_ENFORCED=true` and restart the backend. Sign in and check you still see your company.
+- [ ] When every sync agent PC has been updated and signed in (section 5), add `REQUIRE_AGENT_DEVICE_SIGNIN=true` and restart. An agent still on the old login is then refused and told to update.
+- [ ] Run the script once more with `--enforce`: every line should now start with `ok`.
+
+## 9. If something goes wrong
 
 | Problem | What to do |
 | --- | --- |
@@ -129,5 +154,8 @@ To stop syncing a company from this PC, press Unlink beside it in the same windo
 | Agent says "Two companies named ... are open" | Close the copy that should not be synced. |
 | The header dot stays grey "No sync agent has connected this company yet" | The agent on that PC is older than Step 4, or has not finished a cycle yet. Update it and wait one minute. |
 | After switching company the app shows the old company | The device was not allowed to open the one chosen (access was removed). It falls back to the person's own company. |
+| After `ACCOUNTS_ENFORCED=true` someone cannot see a company | That person or company has no account. Remove the setting, restart, run the script in section 4 again, then put it back. |
+| An agent says "This sync agent must be updated and signed in again" | `REQUIRE_AGENT_DEVICE_SIGNIN` is on and that PC is still on the old login. Update it and sign in from Setup, or remove the setting for now. |
+| "Accounts are created from the Desktop Sync Agent" when registering | Web registration is removed on purpose. New businesses sign up in the agent; people join by invitation. |
 | Sign-up or invitation email never arrives | Check `SMTP_USER` / `SMTP_PASS` and the backend log line "could not be emailed". The admin can copy the invitation link from the screen instead. |
 | You need to undo section 4 completely | Restore `tally_portal` from the backup taken in section 1. |

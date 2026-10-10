@@ -21,6 +21,7 @@ from app.core.database import get_db
 from app.core.permissions import require_permission, get_effective_permission, is_admin_user, bind_sync_company, bind_device_sync_company, SYNC_COMPANY_GUID_HEADER
 from app.core.agent_auth import agent_device
 from app.core.config import settings
+from app.core.tally_target import current_tally_url
 from app.routers.admin import require_admin
 from app.routers.auth import get_current_user
 from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, DeletedRecordAudit
@@ -190,10 +191,10 @@ class ActiveTallySyncConfig:
 async def get_active_tally_sync_for_company(company_id: int, db: AsyncSession) -> Optional[ActiveTallySyncConfig]:
     """
     Retrieves the active Tally Sync configuration for a specific company.
-    Currently uses the global settings.TALLY_URL until multi-tenant Tally sync configuration is implemented.
+    Currently uses the global current_tally_url() until multi-tenant Tally sync configuration is implemented.
     """
-    if settings.TALLY_URL:
-        return ActiveTallySyncConfig(tally_url=settings.TALLY_URL)
+    if current_tally_url():
+        return ActiveTallySyncConfig(tally_url=current_tally_url())
     return None
 
 async def run_inbound_sync_background(xml_data: str, user_id: int, company_name: Optional[str] = None):
@@ -263,15 +264,31 @@ async def inbound_sync(
             "imported_stock_categories": 0, "imported_stock_items": 0
         }
         
+    # Which company this is for is settled here, never by a name in the payload. A signed-in PC is already
+    # held to a company linked to it. A person's import goes to the company they are working in, or, when
+    # an agent on a person's login names a Tally company, to the company linked to that GUID.
+    target_company_id = user.company_id
+    if agent_device(request) is None and company_guid:
+        from app.core.permissions import company_for_tally_guid
+        named = await company_for_tally_guid(db, user, company_guid)
+        if named is not None:
+            target_company_id = named.company_id
+        else:
+            current_guid = (await db.execute(select(Company.tally_guid).where(Company.company_id == user.company_id))).scalar()
+            if current_guid:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, headers={"X-Sync-Reason": "company_not_linked"},
+                    detail=f"No company you can access is linked to Tally company GUID {company_guid}. "
+                           "Link it from the Desktop Sync Agent.")
+            # The company being worked in has never been tied to a Tally company: this import ties it
+
     async with sync_lock:
         try:
             result = await import_tally_xml(
                 xml_data, db, user.user_id,
-                override_company_name=company_name,
                 company_guid=company_guid,
                 force_overwrite=is_force,
-                # A signed-in PC never creates a company by importing: companies come from linking
-                allow_company_create=is_admin_user(user) and agent_device(request) is None
+                target_company_id=target_company_id,
             )
             company_id = result.get("company_id")
             if company_id:
@@ -1927,7 +1944,7 @@ async def try_push_cost_centre_class_realtime(class_id: int, sync_id: int, actio
         from app.models.tally_core import MstCostCentreClass, MstCostCentreClassAllocation
         from app.core.config import settings
 
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             return
 
@@ -2003,7 +2020,7 @@ async def try_push_currency_realtime(currency_id: int, sync_id: int, action: str
         from app.models.portal_core import SyncQueue, Company, Currency
         from app.core.config import settings
 
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             return
 
@@ -2114,7 +2131,7 @@ async def try_push_voucher_type_realtime(vt_id: int, sync_id: int, action: str, 
         from app.models.tally_core import MstVoucherType, MstVoucherTypeClass
         from app.core.config import settings
 
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             return
 
@@ -2334,7 +2351,7 @@ async def send_voucher(db: AsyncSession, voucher_id: int, action: str, ident: Op
     ident = ident or {}
     result = {"status": "FAILED", "reason": None, "envelope": None, "response": None, "name": None,
               "company_id": ident.get("company_id"), "duration_ms": 0, "renumbered_from": None}
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     if not tally_url:
         result.update(status="NOT_CONFIGURED", reason="TALLY_URL is not configured")
         return result
@@ -2459,7 +2476,7 @@ async def record_voucher_push(db: AsyncSession, voucher_id: int, sync_id: Option
             db=db, company_id=result["company_id"], sync_id=sync_id if sync_id and sync_id > 0 else None,
             entity_type="Voucher", entity_id=voucher_id, entity_name=result["name"], action=result.get("sent_action") or action,
             outbound_format="XML", outbound_payload=result["envelope"], inbound_response=result["response"],
-            duration_ms=result["duration_ms"], tally_url=settings.TALLY_URL)
+            duration_ms=result["duration_ms"], tally_url=current_tally_url())
     ok = result["status"] in ("SUCCESS", "ALREADY_ABSENT")
     if sync_id and sync_id > 0 and result["status"] != "NOT_CONFIGURED":
         await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_id).values(
@@ -2636,7 +2653,7 @@ async def try_push_group_realtime(group_id: int, sync_id: int, action: str, db: 
         await db.commit()
 
     try:
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
 
@@ -2717,7 +2734,7 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
     import time
     start_time = time.time()
     try:
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
@@ -2981,7 +2998,7 @@ async def send_stock_item(db: AsyncSession, stock_item_id: int, action: str, tal
 
     result = {"status": "FAILED", "reason": None, "envelope": None, "response": None, "name": tally_name,
               "company_id": company_id, "duration_ms": 0}
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     if not tally_url:
         result.update(status="NOT_CONFIGURED", reason="TALLY_URL is not configured")
         return result
@@ -3079,7 +3096,7 @@ async def record_stock_item_push(db: AsyncSession, stock_item_id: int, sync_item
             db=db, company_id=result["company_id"], sync_id=sync_item_id if sync_item_id and sync_item_id > 0 else None,
             entity_type="StockItem", entity_id=stock_item_id, entity_name=result["name"], action=action,
             outbound_format="XML", outbound_payload=result["envelope"], inbound_response=result["response"],
-            duration_ms=result["duration_ms"], tally_url=settings.TALLY_URL)
+            duration_ms=result["duration_ms"], tally_url=current_tally_url())
     ok = result["status"] == "SUCCESS"
     if sync_item_id and sync_item_id > 0 and result["status"] != "NOT_CONFIGURED":
         await db.execute(update(SyncQueue).where(SyncQueue.sync_id == sync_item_id).values(
@@ -3241,7 +3258,7 @@ async def try_push_uom_realtime(unit_id: int, sync_item_id: int, action: str, db
         from app.models.tally_core import MstUom
         from app.models.portal_core import SyncQueue, Company
 
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
@@ -3406,7 +3423,7 @@ async def try_push_stock_group_realtime(group_id: int, sync_item_id: int, action
         from app.models.tally_core import MstStockGroup
         from app.models.portal_core import SyncQueue, Company
 
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
@@ -3537,7 +3554,7 @@ async def store_tally_master_identity(db: AsyncSession, subtype: str, model, rec
     """
     try:
         from sqlalchemy.orm.attributes import set_committed_value
-        if not settings.TALLY_URL:
+        if not current_tally_url():
             return
         pk = list(model.__table__.primary_key.columns)[0]
         # Read and written as plain columns: the caller is about to serialise this record, and reloading
@@ -3548,7 +3565,7 @@ async def store_tally_master_identity(db: AsyncSession, subtype: str, model, rec
             return
         name, company_id, guid, master_id = found
         comp = (await db.execute(select(Company.name).where(Company.company_id == company_id))).scalar()
-        ident = await fetch_tally_master_identity(settings.TALLY_URL, comp or "", subtype, name)
+        ident = await fetch_tally_master_identity(current_tally_url(), comp or "", subtype, name)
         if ident and (guid != ident["guid"] or master_id != ident["master_id"]):
             await db.execute(update(model).where(pk == record_id).values(tally_guid=ident["guid"], tally_master_id=ident["master_id"])
                              .execution_options(synchronize_session=False))
@@ -3594,7 +3611,7 @@ async def try_push_stock_category_realtime(category_id: int, sync_item_id: int, 
         from app.models.tally_core import MstStockCategory
         from app.models.portal_core import SyncQueue, Company
 
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
@@ -3708,7 +3725,7 @@ async def try_push_godown_realtime(godown_id: int, sync_item_id: int, action: st
         from app.models.tally_core import MstGodown
         from app.models.portal_core import SyncQueue, Company
 
-        tally_url = settings.TALLY_URL
+        tally_url = current_tally_url()
         if not tally_url:
             logger.warning("Real-time Tally push skipped: TALLY_URL is not configured.")
             return (False, "NOT_CONFIGURED", "TALLY_URL is not configured")
@@ -3836,7 +3853,7 @@ async def run_once_sync_background(user_id: int):
     from app.core.database import AsyncSessionLocal
     from app.core.cache import clear_company_cache
     
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     if not tally_url:
         logger.error(f"Background run-once sync aborted for user_id={user_id}: TALLY_URL is not configured.")
         return
@@ -4030,7 +4047,9 @@ async def run_once_sync_background(user_id: int):
                                 clean_cname = c_name.strip()
                                 target_companies.append(clean_cname)
                                 c_xml_str = ET.tostring(c_node, encoding='utf-8').decode('utf-8')
-                                await import_tally_xml(c_xml_str, db, user_id, override_company_name=clean_cname, allow_company_create=True)
+                                # Companies come only from linking in the sync agent: one Tally lists that this server
+                                # does not hold is skipped by the importer, not created
+                                await import_tally_xml(c_xml_str, db, user_id, override_company_name=clean_cname)
                     except Exception as e:
                         logger.error(f"Error parsing company list XML: {str(e)}")
             except Exception as e:
@@ -4410,7 +4429,7 @@ async def run_once_sync_background(user_id: int):
                                 continue
                             
                             logger.info(f"📥 [SYNC RECEIVED] Got {len(resp_xml)} bytes from Tally for collection '{name}'. Processing import...")
-                            res = await import_tally_xml(resp_xml, db, user_id, override_company_name=company_name, allow_company_create=True)
+                            res = await import_tally_xml(resp_xml, db, user_id, override_company_name=company_name)
                             
                             if res.get("status") == "success":
                                 c_groups = res.get("imported_groups", 0)
@@ -4468,7 +4487,7 @@ async def run_once(
     Runs a single cycle of the bidirectional synchronization with the Tally XML Server in the background.
     Requires Admin privileges.
     """
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     if not tally_url:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -4503,7 +4522,7 @@ async def query_vouchers_from_tally(
     On-Demand Period & Voucher-Type TDL Query Engine.
     Executes a high-performance filtered TDL collection query against live Tally and optionally imports into the database.
     """
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     if not tally_url:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -4903,7 +4922,7 @@ async def compare_voucher_with_tally(
     Fetches the live voucher state from Tally and compares it side-by-side with MyTally DB.
     Detects version conflicts (alter_id mismatches) and field differences.
     """
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     if not tally_url:
         raise HTTPException(status_code=503, detail="Tally URL is not configured.")
 
@@ -5133,7 +5152,7 @@ async def retry_deleted_audit_sync(
     c_res = await db.execute(select(Company).where(Company.company_id == audit.company_id))
     comp = c_res.scalars().first()
     comp_name = comp.name if comp else ""
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
 
     if not tally_url:
         raise HTTPException(status_code=400, detail="Tally URL is not configured")
@@ -5359,7 +5378,7 @@ async def deactivate_deleted_master_in_tally(
     c_res = await db.execute(select(Company).where(Company.company_id == audit.company_id))
     comp = c_res.scalars().first()
     comp_name = comp.name if comp else ""
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
 
     if not tally_url:
         raise HTTPException(status_code=400, detail="Tally URL is not configured")

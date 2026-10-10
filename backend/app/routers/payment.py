@@ -344,7 +344,7 @@ async def get_aging_dashboard(
         customers=customers,
         upi_vpa=vpa,
         merchant_name=merchant_name,
-        default_credit_days=int(await get_setting(db, "default_credit_days")),
+        default_credit_days=int(await get_setting(db, "default_credit_days", user.account_id)),
     )
 
 

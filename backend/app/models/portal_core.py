@@ -241,14 +241,15 @@ class Role(Base):
     __tablename__ = "roles"
     __table_args__ = (
         Index("ix_roles_account", "account_id"),
+        # A role name is unique inside its account, not across the server
+        UniqueConstraint("account_id", "name", name="uq_roles_account_name"),
         {"schema": settings.PORTAL_DATABASE_NAME},
     )
     
     role_id = Column(Integer, primary_key=True, index=True)
-    # The account whose role this is. Not read yet: roles are still shared by every account until each
-    # account gets its own set.
+    # The account whose role this is (see app/core/account_roles.py)
     account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="SET NULL"), nullable=True)
-    name = Column(String(50), nullable=False, unique=True)
+    name = Column(String(50), nullable=False)
     description = Column(String(200), nullable=True)
     # Maximum simultaneously signed-in devices for users of this role; NULL = unlimited
     max_active_devices = Column(Integer, nullable=True)

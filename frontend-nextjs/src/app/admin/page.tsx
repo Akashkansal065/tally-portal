@@ -1070,15 +1070,9 @@ const handleSavePermissions = async () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {/* Create User & Register Company buttons (shown when in users directory tab) */}
+            {/* Create User button (shown when in users directory tab). Companies are added from the sync agent. */}
             {tab === 'users' && (
               <div className="flex items-center gap-2">
-                <button 
-                  onClick={() => setShowRegisterCompany(true)}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-sky-500 hover:bg-sky-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer"
-                >
-                  <Landmark className="h-4 w-4" /> Register Company
-                </button>
                 <button 
                   onClick={() => setShowCreateUser(true)}
                   className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer"

@@ -400,6 +400,11 @@ export default function LoginPage() {
               {submitting ? 'Processing...' : needBootstrap ? 'Register & Log In' : 'Sign In'}
             </button>
           </form>
+          {/* There is no sign-up here: an account starts in the sync agent, and people join one by invitation */}
+          <p className="mt-4 text-center text-xs text-muted-foreground">
+            New business? Create your account from the Desktop Sync Agent on the PC that runs Tally.
+            Joining one? <a href="/accept-invite" className="font-semibold underline">Accept your invitation</a>.
+          </p>
         </div>
       </div>
     </div>

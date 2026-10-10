@@ -19,13 +19,14 @@ from sqlalchemy.future import select
 from app.core.agent_auth import (
     agent_device, can_manage_sync_agent, grant_sync_agent, new_device_token, now_utc,
 )
+from app.core.account_roles import create_default_roles
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.permissions import get_current_user
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash, verify_password
 from app.models.portal_core import (
-    Account, AgentCompanyLink, AgentDevice, Company, Role, SignupVerification, User, UserCompanyAccess,
+    Account, AgentCompanyLink, AgentDevice, Company, SignupVerification, User, UserCompanyAccess,
 )
 from app.services import messaging
 
@@ -251,16 +252,11 @@ async def signup_verify(request: Request, response: Response, req: SignupVerifyR
 
     if (await db.execute(select(User.user_id).where(func.lower(User.email) == email))).scalars().first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already have an account. Sign in.")
-    admin_role = (await db.execute(select(Role).where(func.lower(Role.name) == "admin"))).scalars().first()
-    if admin_role is None:
-        admin_role = Role(name="Admin", description="Full access")
-        db.add(admin_role)
-        await db.flush()
-
     details = pending.payload
     account = Account(name=details["business_name"], status="active")
     db.add(account)
     await db.flush()
+    admin_role = await create_default_roles(db, account.account_id)   # the account's own Admin and Sales roles
     # The first company comes with the sign-up: a user always has a company to be in
     company = Company(account_id=account.account_id, name=req.company.name.strip(), tally_guid=req.company.tally_guid.strip(),
                       tally_fingerprint=req.company.fingerprint, books_begin_date=_books_from(req.company.books_from),

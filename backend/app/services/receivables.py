@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.datetime_utils import get_ist_date
 from app.models.portal_core import CustomerCreditTerm
 from app.models.tally_core import MstGroup, MstLedger, MstVoucherType, TrnAccounting, TrnVoucher
-from app.services.app_settings import get_setting
+from app.services.app_settings import account_of_company, get_setting
 
 BUCKETS = ("Not due", "1-30 Days", "31-60 Days", "61-90 Days", "90+ Days")
 # Days overdue shown for the opening / pre-sync balance, whose bills aren't known
@@ -96,7 +96,7 @@ async def credit_days_for(
     db: AsyncSession, company_id: int, tally_days: Dict[int, Optional[int]]
 ) -> Dict[int, Tuple[int, str]]:
     """Credit days and where they came from, for each ledger id (tally_days maps ledger id to Tally's value)."""
-    default_days = int(await get_setting(db, "default_credit_days"))
+    default_days = int(await get_setting(db, "default_credit_days", await account_of_company(db, company_id)))
     own = {}
     if tally_days:
         rows = await db.execute(select(CustomerCreditTerm.ledger_id, CustomerCreditTerm.credit_days).where(

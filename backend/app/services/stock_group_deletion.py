@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.config import settings
+from app.core.tally_target import current_tally_url
 from app.core.logging_config import get_logger
 from app.core.permissions import get_effective_permission
 from app.models.portal_core import Company, DeletedRecordAudit, User
@@ -43,10 +44,10 @@ async def build_stock_group_delete_plan(db: AsyncSession, user: User, group: Mst
 
     tally: Optional[dict] = None
     tally_message = None
-    if not settings.TALLY_URL:
+    if not current_tally_url():
         tally_message = "Tally is not connected; only MyTally was checked."
     else:
-        tally = await fetch_tally_members(settings.TALLY_URL, company_name, group.name, TALLY_CONTAINER, TALLY_MEMBER)
+        tally = await fetch_tally_members(current_tally_url(), company_name, group.name, TALLY_CONTAINER, TALLY_MEMBER)
         if tally is None:
             tally_message = "Tally could not be reached; only MyTally was checked."
 

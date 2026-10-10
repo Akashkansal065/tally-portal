@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.config import settings
+from app.core.tally_target import current_tally_url
 from app.core.logging_config import get_logger
 from app.core.permissions import get_effective_permission
 from app.models.portal_core import Company, DeletedRecordAudit, SyncQueue, User
@@ -221,7 +222,7 @@ async def build_delete_plan(db: AsyncSession, user: User, group: MstGroup) -> di
     comp = (await db.execute(select(Company).where(Company.company_id == company_id))).scalars().first()
     company_name = comp.name if comp else ""
 
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     tally: Optional[dict] = None
     tally_message = None
     if not tally_url:
@@ -380,12 +381,12 @@ async def _delete_in_tally(db: AsyncSession, company_id: int, company_name: str,
   </BODY>
 </ENVELOPE>"""
     start = time.time()
-    resp = await asyncio.to_thread(_post_to_tally_sync, settings.TALLY_URL, envelope, 10)
+    resp = await asyncio.to_thread(_post_to_tally_sync, current_tally_url(), envelope, 10)
     await record_sync_traffic_log(
         db=db, company_id=company_id, sync_id=sync_id, entity_type=entity_type,
         entity_id=item["app_id"], entity_name=item["name"], action="Delete", outbound_format="XML",
         outbound_payload=envelope, inbound_response=resp, duration_ms=int((time.time() - start) * 1000),
-        tally_url=settings.TALLY_URL,
+        tally_url=current_tally_url(),
     )
     if not resp or not resp.strip():
         raise TallyUnreachable("Tally did not answer.")

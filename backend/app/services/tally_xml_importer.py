@@ -80,12 +80,14 @@ async def ensure_tally_user_exists(db: AsyncSession, company_id: int, user_name:
         _checked_tally_users.add(cache_key)
         return existing_user
 
-    # Get default 'User' or 'Staff' role
-    role_stmt = select(Role).where(Role.name.in_(["User", "Staff"]))
+    # Get default 'User' or 'Staff' role, from the roles of the company's own account
+    from app.core.account_roles import role_in_account
+    own_roles = role_in_account((await db.execute(select(Company.account_id).where(Company.company_id == company_id))).scalar())
+    role_stmt = select(Role).where(Role.name.in_(["User", "Staff"]), own_roles).order_by(Role.role_id)
     role_res = await db.execute(role_stmt)
     default_role = role_res.scalars().first()
     if not default_role:
-        role_stmt2 = select(Role).limit(1)
+        role_stmt2 = select(Role).where(own_roles).order_by(Role.role_id).limit(1)
         role_res2 = await db.execute(role_stmt2)
         default_role = role_res2.scalars().first()
 
@@ -602,13 +604,16 @@ async def import_tally_xml(
     override_company_name: Optional[str] = None,
     force_overwrite: bool = False,
     allow_company_create: bool = False,
-    company_guid: Optional[str] = None
+    company_guid: Optional[str] = None,
+    target_company_id: Optional[int] = None
 ) -> dict:
     """Import Tally XML into the mirror for a company the user can access.
     allow_company_create: create the company (and grant the user access) when it doesn't exist yet.
     Only administrator-initiated syncs should pass True.
     company_guid: the Tally company GUID the sender says this export is from. When given, it decides the
-    company: a name is only used to link a company that has no GUID yet, never one linked to another GUID."""
+    company: a name is only used to link a company that has no GUID yet, never one linked to another GUID.
+    target_company_id: the company this import is for, already decided and checked by the caller. When given,
+    nothing in the XML chooses the company: its name is not looked up, and no company is created."""
     if not xml_data or not xml_data.strip():
         return {"status": "error", "message": "Empty XML payload."}
         
@@ -673,6 +678,30 @@ async def import_tally_xml(
         elif company_name_node is not None and company_name_node.text:
             company_name = company_name_node.text.strip()
             
+        target_company = None
+        if target_company_id is not None:
+            target_company = (await db.execute(select(Company).where(Company.company_id == target_company_id))).scalars().first()
+            if target_company is None:
+                return {"status": "error", "message": "The company this import is for does not exist."}
+
+            def node_guid(node):
+                return (node.findtext("COMPANYGUID") or node.findtext("GUID") or "").strip()
+
+            def node_name(node):
+                return (node.get("NAME") or node.findtext("NAME") or "").strip()
+
+            nodes = list(root.iter("COMPANY"))
+            if target_company.tally_guid:
+                # Its profile is read only from the entry for this very company (Tally lists every open one)
+                company_node = next((n for n in nodes if node_guid(n) == target_company.tally_guid), None)
+            else:
+                # Not linked to a Tally company yet: its own entry is the one with its name, or the only one
+                company_node = next((n for n in nodes if node_name(n).lower() == (target_company.name or "").lower()), None)
+                if company_node is None and len(nodes) == 1 and not company_guid:
+                    company_node = nodes[0]
+            tally_guid = target_company.tally_guid or company_guid or (node_guid(company_node) if company_node is not None else None)
+            company_name = (node_name(company_node) if company_node is not None else "") or target_company.name
+
         if company_name: company_name = company_name.strip()
         if tally_guid: tally_guid = tally_guid.strip()
             
@@ -685,10 +714,10 @@ async def import_tally_xml(
                 company_name = fallback_comp.name
                 
         if company_name or tally_guid:
-            company_obj = None
+            company_obj = target_company
             
             # 1. Try finding by tally_guid mapped to this user
-            if tally_guid:
+            if not company_obj and tally_guid:
                 guid_stmt = select(Company).join(UserCompanyAccess, Company.company_id == UserCompanyAccess.company_id).where(
                     UserCompanyAccess.user_id == user_id,
                     Company.tally_guid == tally_guid

@@ -63,59 +63,13 @@ class CompanyResponse(BaseModel):
     class Config:
         from_attributes = True
 
-@router.post("", response_model=CompanyResponse)
-async def create_company(
-    req: CompanyCreate,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    try:
-        fy_start = datetime.strptime(req.financial_year_start, "%Y-%m-%d").date()
-        books_begin = datetime.strptime(req.books_begin_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid date format. Use YYYY-MM-DD."
-        )
-
-    # 1. Create Company
-    company = Company(
-        account_id=user.account_id,
-        name=req.name,
-        address_line1=req.address_line1,
-        address_line2=req.address_line2,
-        state=req.state,
-        country=req.country,
-        pincode=req.pincode,
-        telephone=req.telephone,
-        mobile=req.mobile,
-        email=req.email,
-        website=req.website,
-        financial_year_start=fy_start,
-        books_begin_date=books_begin,
-        base_currency=req.base_currency,
-        features={"maintain_accounts": True, "maintain_inventory": True, "enable_gst": False},
-        is_active=True
-    )
-    db.add(company)
-    await db.commit()
-    await db.refresh(company)
-
-    # Seed defaults (Voucher types, groups)
-    from app.services.seed import seed_company_defaults
-    def run_seeding(sync_session):
-        seed_company_defaults(sync_session, company.company_id)
-    await db.run_sync(run_seeding)
-
-    # 2. Grant access to current authenticated user
-    access = UserCompanyAccess(
-        user_id=user.user_id,
-        company_id=company.company_id
-    )
-    db.add(access)
-    await db.commit()
-
-    return company
+@router.post("", status_code=status.HTTP_410_GONE)
+async def create_company():
+    """A company comes into being only when it is linked from the Desktop Sync Agent, so it always has its
+    Tally GUID and its account from the first moment."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Companies are added from the Desktop Sync Agent: open the company in TallyPrime and link it in the agent's Companies window.")
 
 
 @router.get("", response_model=List[CompanyResponse])

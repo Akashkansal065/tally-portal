@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import decode_access_token
+from app.core.tally_target import note_request_company
 from app.core.agent_auth import agent_device, authenticate_device, device_company, is_device_token
 from app.models.portal_core import (
     User, UserSession, UserPermissionOverride, Permission, Module, UserDataScope,
@@ -28,8 +29,14 @@ oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login", au
 ADMIN_ROLE_NAMES = ("admin", "superadmin", "owner")
 
 def same_account_as_user(user_id: int):
-    """SQL condition: the company belongs to this user's account (rows without an account match each other)."""
+    """SQL condition: the company belongs to this user's account.
+
+    Until a server's existing rows have been moved into an account, rows without one match each other, which is
+    how a one-customer server has always worked. With ACCOUNTS_ENFORCED on, a user with no account matches
+    nothing: by then that can only be a mistake, and seeing nothing is the safe way for it to fail."""
     own_account = select(User.account_id).where(User.user_id == user_id).scalar_subquery()
+    if settings.ACCOUNTS_ENFORCED:
+        return Company.account_id == own_account
     return or_(Company.account_id == own_account, and_(Company.account_id.is_(None), own_account.is_(None)))
 
 
@@ -279,6 +286,7 @@ async def _request_user(db: AsyncSession, request: Request, snapshot: User, allo
             h_cid = None
         if h_cid is not None and h_cid != user.company_id and h_cid in allowed_company_ids:
             set_committed_value(user, "company_id", h_cid)
+    await note_request_company(db, user.company_id)
     return user
 
 
@@ -303,7 +311,9 @@ async def bind_sync_company(
         company = await device_company(db, device, tally_guid)
         if company.company_id != user.company_id:
             set_committed_value(user, "company_id", company.company_id)
+        await note_request_company(db, company.company_id)
         return
+    refuse_person_login_from_agent(request)
     if not tally_guid:
         now = time.time()
         if now - _legacy_sync_warned.get(user.user_id, 0) >= LEGACY_SYNC_WARN_INTERVAL_SECONDS:
@@ -323,6 +333,19 @@ async def bind_sync_company(
         )
     if company.company_id != user.company_id:
         set_committed_value(user, "company_id", company.company_id)
+    await note_request_company(db, company.company_id)
+
+
+def refuse_person_login_from_agent(request: Request) -> None:
+    """Once every PC has signed in to the sync agent, a sync agent still using a person's login is out of date
+    (or is that login being used from somewhere it should not be). Off until REQUIRE_AGENT_DEVICE_SIGNIN is set."""
+    if not settings.REQUIRE_AGENT_DEVICE_SIGNIN:
+        return
+    if (request.headers.get("x-client-type") or "").strip().lower() == "sync-agent":
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED, headers={"X-Sync-Reason": "device_signin_required"},
+            detail="This sync agent must be updated and signed in again: open Setup, enter an admin's email and password, "
+                   "and press Connect & Start Sync.")
 
 
 async def bind_device_sync_company(
@@ -334,6 +357,8 @@ async def bind_device_sync_company(
     agent on a person's login may still name a company that this import is about to link."""
     if agent_device(request) is not None:
         await bind_sync_company(request, user, db)
+    else:
+        refuse_person_login_from_agent(request)
 
 
 MODULE_TOGGLE_MAPPING = {

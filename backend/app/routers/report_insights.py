@@ -40,7 +40,7 @@ async def get_report_settings(
     db: AsyncSession = Depends(get_db),
 ):
     """Monthly sales target and default credit days."""
-    return await app_settings.get_settings(db)
+    return await app_settings.get_settings(db, user.account_id)
 
 
 @router.put("/settings")
@@ -52,13 +52,13 @@ async def update_report_settings(
     """Change the monthly sales target and/or default credit days. Admin only."""
     try:
         for key, value in req.model_dump(exclude_none=True).items():
-            await app_settings.set_setting(db, key, value, user.user_id)
+            await app_settings.set_setting(db, key, value, user.user_id, user.account_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await db.commit()
     # Default credit days change every company's ageing
     clear_all_cache()
-    return await app_settings.get_settings(db)
+    return await app_settings.get_settings(db, user.account_id)
 
 
 # ─── Monthly sales target ────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ async def sales_target_progress(
         days_elapsed = today.day
     days_left = days_in_month - days_elapsed + (1 if start <= today <= end else 0)  # today still counts
 
-    target = float(await app_settings.get_setting(db, "monthly_sales_target"))
+    target = float(await app_settings.get_setting(db, "monthly_sales_target", user.account_id))
     companies = await _companies_for(db, user)
     by_company = await net_sales_by_day(db, list(companies), start, min(end, today))
 

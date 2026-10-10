@@ -199,6 +199,22 @@ def seed_global_data(db: Session):
                     """))
                     db.commit()
 
+def ensure_admin_roles_have_every_module(db: Session) -> None:
+    """Each account has its own Admin role. When a module is added, every one of them gets full access to it."""
+    admin_ids = [row[0] for row in db.execute(text("SELECT role_id FROM roles WHERE LOWER(name) = 'admin'")).all()]
+    module_ids = [row[0] for row in db.execute(text("SELECT module_id FROM modules WHERE code <> 'sync_agent'")).all()]
+    added = False
+    for role_id in admin_ids:
+        held = {row[0] for row in db.execute(text("SELECT module_id FROM permissions WHERE role_id = :r"), {"r": role_id}).all()}
+        for module_id in module_ids:
+            if module_id not in held:
+                db.execute(text("INSERT INTO permissions (role_id, module_id, can_create, can_read, can_update, can_delete) "
+                                "VALUES (:r, :m, 1, 1, 1, 1)"), {"r": role_id, "m": module_id})
+                added = True
+    if added:
+        db.commit()
+
+
 def seed_company_defaults(db: Session, company_id: int, commit: bool = True):
     """
     Seeds company-specific defaults (account groups, voucher types)

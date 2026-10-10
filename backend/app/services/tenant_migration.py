@@ -119,6 +119,16 @@ async def migrate_to_single_account(db: AsyncSession, account_name: Optional[str
             user_id=admin.user_id, module_id=module.module_id, can_create=True, can_read=True, can_update=True,
             can_delete=True, reason="Granted to every admin when the account was created", granted_by=admin.user_id))
         granted.append(admin.email)
+    # The business's settings (sales target, credit days) become the account's own
+    from app.models.portal_core import AppSetting
+    from app.services.app_settings import SETTINGS, stored_key
+    copied = 0
+    for row in (await db.execute(select(AppSetting).where(AppSetting.key.in_(list(SETTINGS))))).scalars().all():
+        own_key = stored_key(row.key, account_id)
+        if (await db.execute(select(AppSetting.key).where(AppSetting.key == own_key))).scalar() is None:
+            db.add(AppSetting(key=own_key, value=row.value, updated_by_user_id=row.updated_by_user_id))
+            copied += 1
+    changed["settings"] = copied
     changed["sync_agent_granted_to"] = granted
     changed["admins"] = [admin.email for admin in admins]
     if account.created_by_user_id is None:
@@ -179,4 +189,144 @@ async def add_foreign_keys(conn, apply: bool) -> list:
             lines.append(f"added  {table}.{column} -> {parent}.{parent_column}")
         else:
             lines.append(f"would  add {table}.{column} -> {parent}.{parent_column}")
+    return lines
+
+
+async def allow_role_names_per_account(conn, apply: bool) -> list:
+    """MySQL only. Role names used to be unique across the whole server, which stops a second account from having
+    its own "Admin". Replaces that with unique-inside-an-account. Needed before a second customer can sign up, so
+    it runs with the migration itself, not with the later enforcement. Safe to run again."""
+    from sqlalchemy import text
+    lines = []
+    for (index_name,) in (await conn.execute(text(
+            "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = :s AND TABLE_NAME = 'roles' "
+            "AND NON_UNIQUE = 0 AND INDEX_NAME <> 'PRIMARY' GROUP BY INDEX_NAME "
+            "HAVING COUNT(*) = 1 AND MAX(COLUMN_NAME) = 'name'"), {"s": PORTAL})).fetchall():
+        if apply:
+            await conn.execute(text(f"ALTER TABLE `{PORTAL}`.`roles` DROP INDEX `{index_name}`"))
+        lines.append(f"{'done ' if apply else 'would'}  roles: drop the server-wide unique name index `{index_name}`")
+    has_own = (await conn.execute(text(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = :s AND TABLE_NAME = 'roles' "
+        "AND INDEX_NAME = 'uq_roles_account_name'"), {"s": PORTAL})).scalar()
+    if has_own:
+        lines.append("ok     roles: names already unique inside an account")
+    else:
+        if apply:
+            await conn.execute(text(f"ALTER TABLE `{PORTAL}`.`roles` ADD UNIQUE INDEX `uq_roles_account_name` (`account_id`, `name`)"))
+        lines.append(f"{'done ' if apply else 'would'}  roles: names unique inside an account")
+    return lines
+
+
+# ─── Enforcement: run once every row has its owner ───────────────────────────
+
+# Owner columns that must never be empty again. (table, column, parent table, parent column, on delete)
+REQUIRED_OWNERS = (
+    ("users", "account_id", "accounts", "account_id", "RESTRICT"),
+    ("companies", "account_id", "accounts", "account_id", "RESTRICT"),
+    ("roles", "account_id", "accounts", "account_id", "RESTRICT"),
+    ("portal_attendance", "account_id", "accounts", "account_id", "RESTRICT"),
+    ("portal_attendance_locations", "account_id", "accounts", "account_id", "RESTRICT"),
+    ("temp_orders", "company_id", "companies", "company_id", "CASCADE"),
+    ("sales_visits", "company_id", "companies", "company_id", "CASCADE"),
+    ("shop_payments", "company_id", "companies", "company_id", "CASCADE"),
+    ("expenses", "company_id", "companies", "company_id", "CASCADE"),
+)
+
+
+# Tables in which a Tally GUID is one record's identity inside its company: the importer finds the row to update
+# by (company, GUID). Named one by one on purpose: other tables carry a GUID that is not theirs alone (a bill
+# repeats its voucher's, the deletion audit can name one record more than once) and must never be made unique.
+TALLY_IDENTITY_TABLES = (
+    "account_groups", "attendance_types", "cost_centres", "ledgers", "stock_groups", "stock_items",
+    "units_of_measure", "voucher_types", "vouchers",
+)
+
+
+def unique_key_targets() -> list:
+    """Every key that becomes unique: a company by (account, Tally GUID), and each Tally record by
+    (company, Tally GUID). Returns (schema, table, columns, index name). Rows with no GUID yet (made in the app
+    and not in Tally) are not affected: an empty GUID never collides."""
+    from app.core.database import Base
+    import app.models.tally_core  # noqa: F401
+    targets = [(PORTAL, "companies", ("account_id", "tally_guid"), "uq_companies_account_guid"),
+               (PORTAL, "roles", ("account_id", "name"), "uq_roles_account_name")]
+    tables = {table.name: table for table in Base.metadata.tables.values()}
+    for name in TALLY_IDENTITY_TABLES:
+        table = tables[name]
+        targets.append((table.schema or PORTAL, name, ("company_id", "tally_guid"), f"uq_{name}_company_guid"))
+    return targets
+
+
+async def enforce_account_rules(conn, apply: bool) -> list:
+    """MySQL only. Makes the database refuse what the application no longer does: a row with no owner, two rows
+    of one company with the same Tally GUID, two roles of one account with the same name. Safe to run again.
+    Returns one line per step saying what was done or would be done."""
+    from sqlalchemy import text
+    lines = []
+
+    async def scalar(sql, **params):
+        return (await conn.execute(text(sql), params)).scalar()
+
+    async def run(description: str, sql: str):
+        if apply:
+            await conn.execute(text(sql))
+            lines.append(f"done   {description}")
+        else:
+            lines.append(f"would  {description}")
+
+    # 1. An empty-string GUID is "no GUID": stored as NULL so it never counts as a duplicate
+    for schema, table, columns, _ in unique_key_targets():
+        guid = columns[1]
+        if guid == "name":
+            continue
+        blanks = await scalar(f"SELECT COUNT(*) FROM `{schema}`.`{table}` WHERE `{guid}` = ''")
+        if blanks:
+            await run(f"{table}: {blanks} empty Tally GUID(s) stored as none", f"UPDATE `{schema}`.`{table}` SET `{guid}` = NULL WHERE `{guid}` = ''")
+
+    # 2. Role names were unique across the whole server; they are unique inside an account now
+    for (index_name,) in (await conn.execute(text(
+            "SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = :s AND TABLE_NAME = 'roles' "
+            "AND NON_UNIQUE = 0 AND INDEX_NAME <> 'PRIMARY' GROUP BY INDEX_NAME "
+            "HAVING COUNT(*) = 1 AND MAX(COLUMN_NAME) = 'name'"), {"s": PORTAL})).fetchall():
+        await run(f"roles: drop the server-wide unique name index `{index_name}`", f"ALTER TABLE `{PORTAL}`.`roles` DROP INDEX `{index_name}`")
+
+    # 3. Unique keys
+    for schema, table, columns, name in unique_key_targets():
+        if await scalar("SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t AND INDEX_NAME = :n",
+                        s=schema, t=table, n=name):
+            lines.append(f"ok     {table}: {columns} already unique")
+            continue
+        duplicates = await scalar(
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM `{schema}`.`{table}` WHERE `{columns[1]}` IS NOT NULL AND `{columns[1]}` <> '' "
+            f"GROUP BY `{columns[0]}`, `{columns[1]}` HAVING COUNT(*) > 1) d")
+        if duplicates:
+            lines.append(f"STOP   {table}: {duplicates} value(s) of {columns} are held by more than one row; not made unique")
+            continue
+        column_list = ", ".join(f"`{c}`" for c in columns)
+        await run(f"{table}: {columns} unique", f"ALTER TABLE `{schema}`.`{table}` ADD UNIQUE INDEX `{name}` ({column_list})")
+
+    # 4. Owner columns can no longer be empty
+    for table, column, parent, parent_column, on_delete in REQUIRED_OWNERS:
+        where = {"s": PORTAL, "t": table, "c": column}
+        nullable = await scalar("SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t AND COLUMN_NAME = :c", **where)
+        if nullable is None:
+            lines.append(f"skip   {table}.{column}: the column is not there")
+            continue
+        if nullable == "NO":
+            lines.append(f"ok     {table}.{column} is already required")
+            continue
+        missing = await scalar(f"SELECT COUNT(*) FROM `{PORTAL}`.`{table}` WHERE `{column}` IS NULL")
+        if missing:
+            lines.append(f"STOP   {table}.{column}: {missing} row(s) still have no owner; not made required")
+            continue
+        # A key that empties the column when the parent goes cannot sit on a required column: replace it
+        for (constraint,) in (await conn.execute(text(
+                "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = :s AND TABLE_NAME = :t "
+                "AND COLUMN_NAME = :c AND REFERENCED_TABLE_NAME IS NOT NULL"), where)).fetchall():
+            await run(f"{table}.{column}: drop foreign key `{constraint}` to replace it",
+                      f"ALTER TABLE `{PORTAL}`.`{table}` DROP FOREIGN KEY `{constraint}`")
+        await run(f"{table}.{column} required", f"ALTER TABLE `{PORTAL}`.`{table}` MODIFY COLUMN `{column}` INT NOT NULL")
+        await run(f"{table}.{column}: foreign key to {parent} (on delete {on_delete.lower()})",
+                  f"ALTER TABLE `{PORTAL}`.`{table}` ADD CONSTRAINT `fk_{table}_{column}_req` FOREIGN KEY (`{column}`) "
+                  f"REFERENCES `{PORTAL}`.`{parent}` (`{parent_column}`) ON DELETE {on_delete}")
     return lines

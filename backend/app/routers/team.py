@@ -14,6 +14,7 @@ from sqlalchemy.future import select
 from app.core.agent_auth import (
     can_manage_sync_agent, grant_sync_agent, hash_token, now_utc, revoke_sync_agent, sync_agent_holders,
 )
+from app.core.account_roles import role_in_account
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.permissions import ADMIN_ROLE_NAMES
@@ -62,6 +63,15 @@ async def _require_sync_agent(db: AsyncSession, admin: User) -> None:
                             detail="Only an admin with the 'Manage sync agent' permission can do this.")
 
 
+async def _check_user_limit(db: AsyncSession, account: Account) -> None:
+    if account.max_users is None:
+        return
+    users = (await db.execute(select(func.count()).select_from(User).where(
+        User.account_id == account.account_id, User.is_active == True))).scalar() or 0  # noqa: E712
+    if users >= account.max_users:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"This account's plan allows {account.max_users} user(s).")
+
+
 # ─── Invitations ─────────────────────────────────────────────────────────────
 
 def _invite_dict(invite: UserInvite) -> dict:
@@ -82,18 +92,15 @@ async def create_invite(payload: InviteCreate, db: AsyncSession = Depends(get_db
     email = email.lower()
     if (await db.execute(select(User.user_id).where(func.lower(User.email) == email))).scalars().first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists.")
-    if (await db.execute(select(Role.role_id).where(Role.role_id == payload.role_id))).scalars().first() is None:
+    if (await db.execute(select(Role.role_id).where(
+            Role.role_id == payload.role_id, role_in_account(account.account_id)))).scalars().first() is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Role not found.")
     own = set((await db.execute(select(Company.company_id).where(
         Company.account_id == account.account_id, Company.company_id.in_(payload.company_ids)))).scalars().all())
     if own != set(payload.company_ids):
         # Another account's company and a company that does not exist get the same answer
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
-    if account.max_users is not None:
-        users = (await db.execute(select(func.count()).select_from(User).where(
-            User.account_id == account.account_id, User.is_active == True))).scalar() or 0  # noqa: E712
-        if users >= account.max_users:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Your plan allows {account.max_users} user(s).")
+    await _check_user_limit(db, account)
 
     for earlier in (await db.execute(select(UserInvite).where(
             UserInvite.account_id == account.account_id, UserInvite.email == email, UserInvite.is_open == True))).scalars():  # noqa: E712
@@ -165,6 +172,8 @@ async def accept_invite(request: Request, response: Response, payload: InviteAcc
     if not companies:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="The companies this invitation was for are gone. Ask your admin for a new one.")
+    # The limit is checked again here: other people may have joined since the invitation was sent
+    await _check_user_limit(db, (await db.execute(select(Account).where(Account.account_id == invite.account_id))).scalars().first())
     role = (await db.execute(select(Role).where(Role.role_id == invite.role_id))).scalars().first()
     is_admin = bool(role and role.name.lower() in ADMIN_ROLE_NAMES)
     user = User(account_id=invite.account_id, company_id=companies[0], username=payload.username.strip(), email=invite.email,

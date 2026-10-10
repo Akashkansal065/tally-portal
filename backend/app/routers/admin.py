@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from pydantic import BaseModel, Field
 
 from app.core.database import get_db
+from app.core.account_roles import role_in_account
 from app.core.permissions import (
     get_current_user,
     get_all_user_permissions,
@@ -218,7 +219,7 @@ async def create_user(
         )
         
     # Check if role exists
-    role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id))
+    role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id, role_in_account(admin.account_id)))
     role = role_q.scalars().first()
     if not role:
         raise HTTPException(
@@ -320,7 +321,7 @@ async def update_user(
     # 3. Update role_id if changed
     if payload.role_id is not None and payload.role_id != user.role_id:
         if user_id == admin.user_id:
-            target_role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id))
+            target_role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id, role_in_account(admin.account_id)))
             target_role = target_role_q.scalars().first()
             if not target_role or target_role.name.lower() not in ("admin", "superadmin", "owner"):
                 raise HTTPException(
@@ -329,7 +330,7 @@ async def update_user(
                 )
             user.role_id = payload.role_id
         else:
-            role_check = (await db.execute(select(Role).where(Role.role_id == payload.role_id))).scalars().first()
+            role_check = (await db.execute(select(Role).where(Role.role_id == payload.role_id, role_in_account(admin.account_id)))).scalars().first()
             if not role_check:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -496,10 +497,10 @@ async def update_user_role(
         
     role = None
     if payload.role_id is not None:
-        role = (await db.execute(select(Role).where(Role.role_id == payload.role_id))).scalars().first()
+        role = (await db.execute(select(Role).where(Role.role_id == payload.role_id, role_in_account(admin.account_id)))).scalars().first()
     elif payload.role:
         role_str = payload.role.strip()
-        role = (await db.execute(select(Role).where(Role.name.ilike(role_str)))).scalars().first()
+        role = (await db.execute(select(Role).where(Role.name.ilike(role_str), role_in_account(admin.account_id)).order_by(Role.role_id))).scalars().first()
 
     if not role:
         raise HTTPException(
@@ -520,7 +521,7 @@ async def get_roles(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    roles_q = await db.execute(select(Role).order_by(Role.role_id.asc()))
+    roles_q = await db.execute(select(Role).where(role_in_account(admin.account_id)).order_by(Role.role_id.asc()))
     roles = roles_q.scalars().all()
     
     # Calculate user count per role
@@ -586,18 +587,20 @@ async def create_role(
     if not name:
         raise HTTPException(status_code=400, detail="Role name is required.")
         
-    existing = (await db.execute(select(Role).where(func.lower(Role.name) == name.lower()))).scalars().first()
+    existing = (await db.execute(select(Role).where(func.lower(Role.name) == name.lower(), role_in_account(admin.account_id)))).scalars().first()
     if existing:
         raise HTTPException(status_code=400, detail=f"A role with name '{name}' already exists.")
         
-    new_role = Role(name=name, description=payload.description)
+    new_role = Role(name=name, description=payload.description, account_id=admin.account_id)
     db.add(new_role)
     await db.flush()  # Populates new_role.role_id
     
     # Clone permissions if requested
     if payload.clone_from_role_id:
         base_perms = (await db.execute(
-            select(Permission).where(Permission.role_id == payload.clone_from_role_id)
+            # Only one of the account's own roles can be copied from
+            select(Permission).join(Role, Role.role_id == Permission.role_id)
+            .where(Permission.role_id == payload.clone_from_role_id, role_in_account(admin.account_id))
         )).scalars().all()
         for bp in base_perms:
             np = Permission(
@@ -640,7 +643,7 @@ async def update_role(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    role = (await db.execute(select(Role).where(Role.role_id == role_id))).scalars().first()
+    role = (await db.execute(select(Role).where(Role.role_id == role_id, role_in_account(admin.account_id)))).scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found.")
         
@@ -650,7 +653,7 @@ async def update_role(
     if payload.name:
         name = payload.name.strip()
         dup = (await db.execute(
-            select(Role).where(func.lower(Role.name) == name.lower(), Role.role_id != role_id)
+            select(Role).where(func.lower(Role.name) == name.lower(), Role.role_id != role_id, role_in_account(admin.account_id))
         )).scalars().first()
         if dup:
             raise HTTPException(status_code=400, detail=f"Another role with name '{name}' already exists.")
@@ -681,7 +684,7 @@ async def delete_role(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    role = (await db.execute(select(Role).where(Role.role_id == role_id))).scalars().first()
+    role = (await db.execute(select(Role).where(Role.role_id == role_id, role_in_account(admin.account_id)))).scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found.")
         
@@ -710,7 +713,7 @@ async def get_role_permissions(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    role = (await db.execute(select(Role).where(Role.role_id == role_id))).scalars().first()
+    role = (await db.execute(select(Role).where(Role.role_id == role_id, role_in_account(admin.account_id)))).scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found.")
         
@@ -745,7 +748,7 @@ async def update_role_permissions(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    role = (await db.execute(select(Role).where(Role.role_id == role_id))).scalars().first()
+    role = (await db.execute(select(Role).where(Role.role_id == role_id, role_in_account(admin.account_id)))).scalars().first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found.")
         

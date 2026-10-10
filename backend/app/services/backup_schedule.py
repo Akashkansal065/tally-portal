@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.tally_target import current_tally_url
 from app.core.datetime_utils import get_ist_now
 from app.core.logging_config import get_logger
 from app.models.portal_core import AppSetting, Company
@@ -73,7 +74,7 @@ async def start_backups(db: AsyncSession, data: Dict[str, Any], now: datetime) -
     data["last_run_day"] = now.date().isoformat()
     if not connected:
         data["last_result"] = {"at": now.isoformat(), "ok": False, "message": f"Tally isn't reachable from the server: {message}"}
-        await _notify(db, "Scheduled backup skipped", f"Tally isn't reachable from the server ({settings.TALLY_URL or 'TALLY_URL not set'}). "
+        await _notify(db, "Scheduled backup skipped", f"Tally isn't reachable from the server ({current_tally_url() or 'TALLY_URL not set'}). "
                       "Backups read straight from Tally, so they run only where the server can reach the Tally PC.")
         return []
     open_names = {str(c.get("name", "")).strip().lower(): str(c.get("name", "")).strip() for c in open_companies}

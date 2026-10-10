@@ -1,6 +1,6 @@
 """Companies and users belong to a customer account. An admin reaches every company of their own account and
 none of another's, whichever way they ask for it."""
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 import app.models.portal_core as P
 from app.routers import auth, sync
@@ -78,18 +78,118 @@ def test_sync_agent_cannot_name_another_accounts_tally_company(harness):
     assert res.status_code == 409 and res.headers["X-Sync-Reason"] == "company_not_linked"
 
 
-def test_registering_a_customer_creates_its_own_account(harness, monkeypatch):
-    # The default groups and voucher types are seeded with MySQL-only SQL
-    monkeypatch.setattr(auth, "seed_company_defaults", lambda session, company_id, commit=True: None)
+def test_registration_and_company_creation_from_the_web_are_gone(harness):
+    from app.routers import companies as companies_router
     client, admins, _ = seed(harness)
+    client = harness.app(auth.router, companies_router.router)
+    headers = bearer(login(client, admins["one"].email))
+
+    for path in ("/auth/register", "/auth/register-company", "/companies"):
+        res = client.post(path, headers=headers, json={"company_name": "Gamma", "name": "Gamma"})
+        assert res.status_code == 410, path
+        assert "Desktop Sync Agent" in res.json()["detail"]
+    assert client.get("/auth/bootstrap-status").json() == {"need_bootstrap": False}
+    assert harness.scalar(select(func.count()).select_from(P.Company)) == 4
+
+
+# ── Roles belong to an account ──
+
+def test_each_account_sees_and_changes_only_its_own_roles(harness):
+    from app.core.account_roles import create_default_roles
+    from app.routers import admin as admin_router
+    from tests.conftest import run
+    client, admins, _ = seed(harness)
+    client = harness.app(auth.router, admin_router.router)
+    accounts = {name: harness.scalar(select(P.User.account_id).where(P.User.user_id == admins[name].user_id)) for name in ("one", "two")}
+    harness.add(P.Module(code="orders", name="Orders"), P.Module(code="ledgers", name="Ledgers"))
+
+    async def make():
+        async with harness.Session() as db:
+            for account_id in accounts.values():
+                await create_default_roles(db, account_id)
+                await create_default_roles(db, account_id)      # again: nothing is duplicated
+            await db.commit()
+    run(make())
+    one, two = (bearer(login(client, admins[name].email)) for name in ("one", "two"))
+
+    names = lambda headers: sorted(r["name"] for r in client.get("/admin/roles", headers=headers).json())  # noqa: E731
+    assert names(one) == ["Admin", "Sales"] and names(two) == ["Admin", "Sales"]
+    their_sales = harness.scalar(select(P.Role.role_id).where(P.Role.name == "Sales", P.Role.account_id == accounts["two"]))
+
+    # Both accounts can have a role with the same name; neither can touch the other's
+    assert client.post("/admin/roles", headers=one, json={"name": "Accountant"}).status_code == 200
+    assert client.post("/admin/roles", headers=two, json={"name": "Accountant"}).status_code == 200
+    assert client.put(f"/admin/roles/{their_sales}", headers=one, json={"name": "Renamed"}).status_code == 404
+    assert client.delete(f"/admin/roles/{their_sales}", headers=one).status_code == 404
+    assert harness.scalar(select(P.Role.name).where(P.Role.role_id == their_sales)) == "Sales"
+    # A new account's Admin can do everything, its Sales only the field work
+    perms = {(role, module): can_create for role, module, can_create in harness.query(
+        select(P.Role.name, P.Module.code, P.Permission.can_create)
+        .join(P.Permission, P.Permission.role_id == P.Role.role_id).join(P.Module, P.Module.module_id == P.Permission.module_id)
+        .where(P.Role.account_id == accounts["one"], P.Role.name.in_(["Admin", "Sales"])))}
+    assert perms == {("Admin", "orders"): True, ("Admin", "ledgers"): True, ("Sales", "orders"): True}
+
+
+# ── After enforcement ──
+
+def test_with_accounts_enforced_a_user_without_an_account_reaches_only_their_own_company(harness, monkeypatch):
+    from app.core.config import settings
+    client, admins, companies = seed(harness)
+    stray = harness.company("Stray")           # another company that was never given an account
     headers = bearer(login(client, admins["legacy"].email))
+    ask = lambda: client.get("/auth/me", headers={**headers, "X-Company-ID": str(stray.company_id)}).json()["company_id"]  # noqa: E731
 
-    res = client.post("/auth/register", headers=headers, json={
-        "company_name": "Gamma", "username": "gamma", "email": "gamma@example.com", "password": "pw-1234567",
-        "financial_year_start": "2026-04-01", "books_begin_date": "2026-04-01"})
-    assert res.status_code in (200, 201), res.text
+    assert ask() == stray.company_id           # before: account-less rows are one shared group
 
-    account_id = harness.scalar(select(P.Company.account_id).where(P.Company.name == "Gamma"))
-    assert account_id is not None
-    assert harness.scalar(select(P.User.account_id).where(P.User.email == "gamma@example.com")) == account_id
-    assert companies_of(client, admins["legacy"]) == {"Legacy"}
+    monkeypatch.setattr(settings, "ACCOUNTS_ENFORCED", True)
+    from app.core import permissions
+    permissions._auth_cache.clear()
+    assert ask() == companies["legacy"].company_id
+
+
+def test_a_sync_agent_on_a_persons_login_can_be_refused(harness, monkeypatch):
+    from app.core.config import settings
+    client, admins, _ = seed(harness)
+    agent_headers = {**bearer(login(client, admins["two"].email)), "X-Client-Type": "sync-agent", "X-Tally-Company-GUID": "guid-b1"}
+    assert client.get("/sync/last-alter-id", headers=agent_headers).status_code == 200
+
+    monkeypatch.setattr(settings, "REQUIRE_AGENT_DEVICE_SIGNIN", True)
+
+    refused = client.get("/sync/last-alter-id", headers=agent_headers)
+    assert refused.status_code == 426 and refused.headers["X-Sync-Reason"] == "device_signin_required"
+    # A person in the browser is not a sync agent and is unaffected
+    assert client.get("/sync/last-alter-id", headers=bearer(login(client, admins["two"].email))).status_code == 200
+
+
+def test_each_account_has_its_own_settings(harness):
+    from app.routers import admin as admin_router, report_insights
+    client, admins, _ = seed(harness)
+    client = harness.app(auth.router, admin_router.router, report_insights.router)
+    one, two = (bearer(login(client, admins[name].email)) for name in ("one", "two"))
+    path = next(r.path for r in report_insights.router.routes if r.path.endswith("/settings") and "PUT" in r.methods)
+
+    assert client.put(path, headers=one, json={"default_credit_days": 45}).status_code == 200
+
+    assert client.get(path, headers=one).json()["default_credit_days"] == 45
+    assert client.get(path, headers=two).json()["default_credit_days"] == 30      # the default, untouched
+
+
+def test_the_servers_own_tally_is_used_for_one_named_company_only(harness, monkeypatch):
+    from app.core import tally_target
+    from app.core.config import settings
+    from tests.conftest import run
+    _, _, companies = seed(harness)       # B1 is linked to guid-b1
+    monkeypatch.setattr(settings, "TALLY_URL", "http://tally.test:9000")
+
+    async def url_for(company_id):
+        async with harness.Session() as db:
+            await tally_target.note_request_company(db, company_id)
+            return tally_target.current_tally_url()
+
+    # Not restricted: as on a one-customer server, every company may use it
+    assert run(url_for(companies["a1"].company_id)) == "http://tally.test:9000"
+
+    monkeypatch.setattr(settings, "TALLY_URL_COMPANY_GUID", "guid-b1")
+    tally_target._guid_cache.clear()
+    assert run(url_for(companies["b1"].company_id)) == "http://tally.test:9000"
+    assert run(url_for(companies["a1"].company_id)) is None     # another customer's company waits for its own agent

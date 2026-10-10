@@ -165,16 +165,21 @@ def test_revoking_a_pc_signs_it_out_and_frees_its_companies(harness, client, mai
 def test_invited_user_joins_the_inviters_account_and_cannot_use_the_agent(harness, client, mail):
     signed = sign_up(client, mail)
     owner = bearer(login(client, "asha@example.com"))
-    sales = harness.role("Salesman")
+    account_id = signed["account"]["account_id"]
+    sales_role_id = harness.scalar(select(P.Role.role_id).where(P.Role.name == "Sales", P.Role.account_id == account_id))
+    shared_role = harness.role("Salesman")   # from before roles belonged to accounts: not this account's
     other = sign_up(client, mail, signup={**SIGNUP, "email": "ravi@example.com"}, device=PC_TWO)
 
     # Another account's company is "not found", never "not yours"
     foreign = client.post("/admin/invites", headers=owner, json={
-        "email": "rep@example.com", "role_id": sales.role_id, "company_ids": [other["company"]["company_id"]]})
+        "email": "rep@example.com", "role_id": sales_role_id, "company_ids": [other["company"]["company_id"]]})
     assert foreign.status_code == 404
+    not_ours = client.post("/admin/invites", headers=owner, json={
+        "email": "rep@example.com", "role_id": shared_role.role_id, "company_ids": [signed["company"]["company_id"]]})
+    assert not_ours.status_code == 400
 
     invite = client.post("/admin/invites", headers=owner, json={
-        "email": "Rep@Example.com", "role_id": sales.role_id, "company_ids": [signed["company"]["company_id"]]}).json()
+        "email": "Rep@Example.com", "role_id": sales_role_id, "company_ids": [signed["company"]["company_id"]]}).json()
     assert client.get(f"/auth/invites/{invite['invite_token']}").json() == {"email": "rep@example.com", "account_name": "ABC Group"}
     accepted = client.post("/auth/invites/accept", json={"token": invite["invite_token"], "username": "Rep", "password": "pw-7654321"})
     assert accepted.status_code == 200

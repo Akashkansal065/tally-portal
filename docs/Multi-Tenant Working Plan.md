@@ -19,6 +19,7 @@ Where the two disagreed or a later decision changed them, this document is right
 | Step 3: agent sign-up, device tokens, invitations | Code complete, in the same pull request. Backend 228 and agent 27 tests pass; screens not clicked through. |
 | Step 4: multi-company agent, company-owned sales rows | Code complete except chunked full sync, in the same pull request. Backend 232 and agent 34 tests pass; Companies window not clicked through. |
 | Step 5: company switcher, last synced, Companies page | Code complete, in the same pull request. Backend 234 tests pass; screens not opened in a browser. |
+| Step 6: enforce and harden | Mostly code complete, in the same pull request. Backend 243 tests pass. Enforcement SQL not run against MySQL. Operator role, alerts and the all-routers scoping helper are not built. |
 | Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
 | Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
 | Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
@@ -405,21 +406,34 @@ Differences from the design in section 3.6:
 
 ### Step 6: Enforce and harden
 
-- [ ] Constraints: `account_id` not null, unique (`account_id`, `tally_guid`), unique (`company_id`, `tally_guid`), foreign keys
-- [ ] Delete the "no account matches no account" rule in `same_account_as_user()`
-- [ ] Refuse the old user login for sync, with an upgrade message
-- [ ] Remove `/auth/register`, `POST /companies` and the web "new company" page
-- [ ] Remove the name and first-company fallbacks from the importer
-- [ ] One scoping helper adopted across routers; cross-tenant test suite in CI
-- [ ] Per-company realtime push target replaces the global `TALLY_URL`
-- [ ] Roles per account: unique (`account_id`, `name`), default roles seeded at sign-up, built-in templates read-only
-- [ ] `app_settings` split into platform and per-account settings
-- [ ] `company_id` not null on the sales-side tables; `account_id` not null on the attendance tables
-- [ ] Plan limits checked on invite acceptance, company link and device sign-in
-- [ ] Platform-operator role with per-account, time-limited, audited access
-- [ ] Alerts: 409 "not linked", refused cross-account requests, a company not synced for a day while its agent is online
+Mostly code complete, in the Phase 0 pull request. Backend 243 and agent 34 tests pass. The enforcement SQL has not been run against MySQL. Anything that would lock out existing data is behind a switch that is off until you turn it on.
 
-**Gate:** the cross-tenant suite passes for user and device tokens, and an agent on the previous version is refused with a clear message.
+Done:
+
+- [x] **Imports never choose a company by name.** `/sync/inbound` settles the company itself: a signed-in PC's linked company, the company named by GUID, or the company the person is working in. Server-side imports no longer create companies.
+- [x] **Roles per account.** Each account has its own Admin and Sales roles, created at sign-up, plus whatever it adds; role names are unique inside an account. Listing, creating, renaming, deleting and assigning roles all stay inside the caller's account.
+- [x] **Settings per account.** Monthly sales target and default credit days are stored per account; the migration script copies the existing values to the one account.
+- [x] **The server's own Tally connection can be limited to one company.** With `TALLY_URL_COMPANY_GUID` set, direct pushes to `TALLY_URL` are made for that company only; every other company's changes wait for its own agent.
+- [x] **Web registration and web company creation are removed.** `/auth/register`, `/auth/register-company` and `POST /companies` answer "gone" with where to go instead; the Register Company button and the new-company page are removed; the login page says how to start or join.
+- [x] **Plan limits** on users (invite and accept), companies (link) and PCs (sign-in). All empty today, meaning unlimited.
+- [x] **Enforcement stage in the migration script** (`--enforce`): empty GUIDs stored as none, role names unique per account, companies unique by (account, GUID), nine Tally tables unique by (company, GUID), and the owner columns made required. It refuses to start while any row lacks an owner, and skips any key that still has duplicates.
+- [x] **`ACCOUNTS_ENFORCED` switch.** Off: rows with no account still see each other, as on a one-customer server. On: a user with no account reaches only their own company.
+- [x] **`REQUIRE_AGENT_DEVICE_SIGNIN` switch.** On: a sync agent still using a person's email and password is refused with a message to update and sign in.
+
+Not done, and why:
+
+- [ ] **One scoping helper used by every router.** That is a rewrite of the queries in about 30 routers; too large and too risky to do blind in the same change. The isolation tests added in Phases 0 to 6 cover accounts, roles, settings, sync, invitations, sync status and field-sales rows, not every endpoint.
+- [ ] **Platform-operator role** (D12). Needs its own design: how operators are created, where a customer grants access, what an operator may do. Until it exists nobody can see across accounts at all, which is the safe default.
+- [ ] **Alerts** for unlinked companies, refused cross-account requests and a company not synced for a day. The first two are written to the server log; none raises a notification yet.
+- [ ] **Removing the leftover screens' code.** The first-time setup form on the login page and the Register Company dialog on the Admin page can no longer be reached, but their code is still in the files.
+- [ ] **Merging duplicate Tally records.** The enforcement stage reports and skips them; merging needs a look at the real rows.
+
+Two findings from this step:
+
+- **The server's direct Tally connection was shared by every company.** `TALLY_URL` is one Tally, used for realtime pushes for whichever company a request was for. With a second customer on the server, their vouchers would be sent to the first customer's Tally and would land in its books if a company of the same name were open. `TALLY_URL_COMPANY_GUID` closes this; set it before a second customer is onboarded, or remove `TALLY_URL`.
+- **Not every table with a GUID can have it made unique.** A bill repeats its voucher's GUID and the deletion audit can name one record twice, so the unique keys are limited to nine tables named one by one.
+
+**Gate:** the isolation tests pass with `ACCOUNTS_ENFORCED` on, the enforcement stage reports every key unique and every owner required, and an agent on a person's login is refused with a clear message.
 
 ### Rollback
 
@@ -428,7 +442,7 @@ Differences from the design in section 3.6:
 | 1 | Nothing to undo: nullable columns and empty tables are ignored by the old code |
 | 2 | Clear `account_id` and the new `company_id` columns, empty the new tables, restore deleted orphans and duplicates from the exported files |
 | 3 to 5 | Feature releases; the previous agent and app keep working during the overlap release |
-| 6 | Drop the constraints and restore the shared-group rule |
+| 6 | Turn `ACCOUNTS_ENFORCED` and `REQUIRE_AGENT_DEVICE_SIGNIN` off again and restart. The unique keys and required columns stay; they only refuse data the application no longer writes. Dropping them is a manual `ALTER TABLE`. |
 
 ## 5. Risks
 

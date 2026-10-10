@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     
     # Tally Synchronization Settings
     TALLY_URL: Optional[str] = None
+    # The Tally company (its GUID) that TALLY_URL belongs to. Set it on a server that holds more than one
+    # customer: direct pushes to TALLY_URL are then made for that company only (see app/core/tally_target.py).
+    TALLY_URL_COMPANY_GUID: Optional[str] = None
+    # Turn on after scripts/migrate_to_account.py has given every existing row its account: from then on a row
+    # with no account belongs to nobody, instead of to the shared group a one-customer server started as.
+    ACCOUNTS_ENFORCED: bool = False
+    # Turn on once every sync agent PC has signed in as a PC: a sync agent still using a person's email and
+    # password is then refused with a message to update and sign in.
+    REQUIRE_AGENT_DEVICE_SIGNIN: bool = False
 
     # GST provider adapter. Credentials stay server-side; the adapter is API-shape agnostic.
     GST_PROVIDER_URL: Optional[str] = None

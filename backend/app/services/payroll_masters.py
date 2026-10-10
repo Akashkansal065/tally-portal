@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.config import settings
+from app.core.tally_target import current_tally_url
 from app.models.portal_core import Company, SyncQueue
 from app.services.tally_xml import x
 
@@ -130,7 +131,7 @@ async def send_master(db: AsyncSession, company_id: int, record_type: str, recor
     """
     from app.routers.sync import check_tally_success, parse_tally_response_metrics
     result = {"status": "NOT_CONFIGURED", "message": "TALLY_URL is not configured", "guid": tally_guid, "master_id": None}
-    tally_url = settings.TALLY_URL
+    tally_url = current_tally_url()
     if not tally_url:
         return result
     tdl_type, tag = KINDS[record_type]
@@ -178,7 +179,7 @@ async def record_master_push(db: AsyncSession, company_id: int, record_type: str
     from app.routers.sync import record_sync_traffic_log
     await record_sync_traffic_log(db=db, company_id=company_id, sync_id=sync_id, entity_type=record_type, entity_id=record_id, entity_name=name,
                                   action=action, outbound_format="XML", outbound_payload=result["payload"], inbound_response=result.get("response") or "",
-                                  duration_ms=result.get("duration_ms") or 0, tally_url=settings.TALLY_URL)
+                                  duration_ms=result.get("duration_ms") or 0, tally_url=current_tally_url())
 
 
 async def queue_for_later(db: AsyncSession, company_id: int, record_type: str, record_id: int, action: str, tally_guid: Optional[str], tally_name: str) -> None:

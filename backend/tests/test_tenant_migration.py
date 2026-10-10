@@ -74,7 +74,7 @@ def test_second_run_changes_nothing(harness):
     assert changed["account"].startswith("existing")
     assert {key: value for key, value in changed.items() if isinstance(value, int) and key != "account_id"} == {
         "companies": 0, "users": 0, "roles": 0, "attendance": 0, "attendance_locations": 0,
-        "temp_orders": 0, "sales_visits": 0, "shop_payments": 0, "expenses": 0}
+        "temp_orders": 0, "sales_visits": 0, "shop_payments": 0, "expenses": 0, "settings": 0}
     assert changed["sync_agent_granted_to"] == []
     assert harness.scalar(select(func.count()).select_from(P.Account)) == 1
     assert harness.scalar(select(func.count()).select_from(P.UserPermissionOverride)) == 2
@@ -105,3 +105,31 @@ def test_refuses_when_no_admin_would_be_left_to_run_the_account(harness):
 
     with pytest.raises(MigrationRefused, match="admin"):
         migrate(harness)
+
+
+def test_the_businesss_settings_become_the_accounts(harness):
+    from app.services.app_settings import get_settings
+    seed(harness)
+    harness.add(P.AppSetting(key="default_credit_days", value="45"))
+
+    changed, _ = migrate(harness)
+    assert changed["settings"] == 1
+    assert migrate(harness)[0]["settings"] == 0          # not copied twice
+
+    async def read():
+        async with harness.Session() as db:
+            return await get_settings(db, changed["account_id"])
+    assert run(read())["default_credit_days"] == 45
+
+
+def test_keys_that_become_unique_cover_companies_roles_and_tally_records():
+    from app.services.tenant_migration import unique_key_targets
+    targets = {table: (columns, name) for _, table, columns, name in unique_key_targets()}
+
+    assert targets["companies"] == (("account_id", "tally_guid"), "uq_companies_account_guid")
+    assert targets["roles"] == (("account_id", "name"), "uq_roles_account_name")
+    assert targets["ledgers"][0] == ("company_id", "tally_guid") and targets["vouchers"][0] == ("company_id", "tally_guid")
+    assert all(len(name) <= 64 for _, name in targets.values())          # MySQL's limit on an index name
+    assert all(columns[0] in ("company_id", "account_id") for columns, _ in targets.values())
+    # A GUID that is not one row's own identity must never be made unique
+    assert "bills" not in targets and "deleted_records_audit" not in targets

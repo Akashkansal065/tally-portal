@@ -14,13 +14,12 @@ from app.core.permissions import (
     get_current_user, get_optional_current_user, is_admin_user, oauth2_scheme,
     get_all_user_permissions, get_user_permission_toggles, invalidate_auth_cache
 )
-from app.core.seed import seed_company_defaults
 from app.core.sessions import (
     create_user_session, revoke_sessions, forget_tokens, current_token_hash, session_to_dict,
     live_session_conditions, utcnow
 )
 from app.core.rate_limiter import limiter
-from app.models.portal_core import Company, Account
+from app.models.portal_core import Company
 from app.core.permissions import same_account_as_user
 from app.models.portal_core import User, Role, UserSession, UserCompanyAccess
 from app.schemas.user import UserLogin, Token, UserResponse
@@ -28,159 +27,21 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-_SYSTEM_BOOTSTRAPPED = None
+GONE_SIGN_UP = "Accounts are created from the Desktop Sync Agent. To join a business that already has one, ask its admin for an invitation."
+
 
 @router.get("/bootstrap-status")
-async def get_bootstrap_status(db: AsyncSession = Depends(get_db)):
-    global _SYSTEM_BOOTSTRAPPED
-    if _SYSTEM_BOOTSTRAPPED is True:
-        return {"need_bootstrap": False}
+async def get_bootstrap_status():
+    """Kept for app versions that still ask: nothing is ever set up from the login page any more."""
+    return {"need_bootstrap": False}
 
-    try:
-        admin_role_query = await db.execute(select(Role.role_id).where(Role.name == "Admin"))
-        admin_role_id = admin_role_query.scalars().first()
-        if admin_role_id:
-            admin_users_exist = await db.execute(select(User.user_id).where(User.role_id == admin_role_id).limit(1))
-            has_admin = admin_users_exist.scalars().first() is not None
-        else:
-            has_admin = False
 
-        if has_admin:
-            _SYSTEM_BOOTSTRAPPED = True
-
-        return {"need_bootstrap": not has_admin}
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Error during bootstrap check: {e}", exc_info=True)
-        return {"error": "Internal server error during bootstrap check.", "need_bootstrap": False}
-
-class RegisterCompanyRequest(BaseModel):
-    company_name: str
-    mailing_name: Optional[str] = None
-    address_line1: Optional[str] = None
-    address_line2: Optional[str] = None
-    state: Optional[str] = None
-    country: Optional[str] = "India"
-    pincode: Optional[str] = None
-    telephone: Optional[str] = None
-    mobile: Optional[str] = None
-    website: Optional[str] = None
-    financial_year_start: Optional[str] = None # YYYY-MM-DD
-    books_begin_date: str  # YYYY-MM-DD
-    base_currency: Optional[str] = "INR"
-    username: str
-    email: str
-    password: str
-
-@router.post("/register", response_model=UserResponse)
-@router.post("/register-company", response_model=UserResponse)
-@limiter.limit(settings.REGISTER_RATE_LIMIT)
-async def register_company(
-    req: RegisterCompanyRequest,
-    request: Request,
-    response: Response,
-    caller: Optional[User] = Depends(get_optional_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    global _SYSTEM_BOOTSTRAPPED
-    # The caller counts as an admin only with a live, unrevoked session (same checks as every
-    # other endpoint), not merely a JWT that still decodes.
-    is_admin_calling = is_admin_user(caller)
-
-    try:
-        begin_date = datetime.strptime(req.books_begin_date, "%Y-%m-%d").date()
-        fy_start = datetime.strptime(req.financial_year_start, "%Y-%m-%d").date() if req.financial_year_start else begin_date
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid date format. Use YYYY-MM-DD."
-        )
-
-    try:
-        # Lock the Admin role row for the whole transaction so concurrent registrations run one at a
-        # time; the locking reads below then see each other's committed admins and emails.
-        admin_role = (await db.execute(
-            select(Role).where(Role.name == "Admin").with_for_update().execution_options(populate_existing=True)
-        )).scalars().first()
-        if not admin_role:
-            # Fallback if roles weren't seeded
-            admin_role = Role(name="Admin", description="Full access")
-            db.add(admin_role)
-            await db.flush()
-
-        if not is_admin_calling:
-            # Anonymous registration is only the one-time bootstrap of the first admin
-            has_admin = (await db.execute(
-                select(User.user_id).where(User.role_id == admin_role.role_id).limit(1).with_for_update()
-            )).scalars().first() is not None
-            if has_admin:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Registration is disabled. Only existing administrators can register new companies."
-                )
-
-        email_taken = (await db.execute(
-            select(User.user_id).where(User.email == req.email).limit(1).with_for_update()
-        )).scalars().first() is not None
-        if email_taken:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A user with this email already exists."
-            )
-
-        # 1. A new customer account, and its first company with full Tally Prime fields
-        account = Account(name=req.company_name)
-        db.add(account)
-        await db.flush()
-        company = Company(
-            account_id=account.account_id,
-            name=req.company_name,
-            address_line1=req.address_line1,
-            address_line2=req.address_line2,
-            state=req.state,
-            country=req.country or "India",
-            pincode=req.pincode,
-            telephone=req.telephone,
-            mobile=req.mobile,
-            email=req.email,
-            website=req.website,
-            financial_year_start=fy_start,
-            books_begin_date=begin_date,
-            base_currency=req.base_currency or "INR",
-            features={"maintain_accounts": True, "maintain_inventory": True, "enable_gst": False},
-            is_active=True
-        )
-        db.add(company)
-        await db.flush()
-
-        # 2. Default groups and voucher types, inside this transaction
-        await db.run_sync(lambda sync_session: seed_company_defaults(sync_session, company.company_id, commit=False))
-
-        # 3. Admin user for the company, with access to it
-        user = User(
-            account_id=account.account_id,
-            company_id=company.company_id,
-            username=req.username,
-            email=req.email,
-            password_hash=get_password_hash(req.password),
-            role_id=admin_role.role_id,
-            is_active=True,
-            ledger_scope='full',
-            stock_scope='full'
-        )
-        db.add(user)
-        await db.flush()
-        db.add(UserCompanyAccess(user_id=user.user_id, company_id=company.company_id))
-
-        # All-or-nothing: no orphan company if any step above fails
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
-
-    await db.refresh(user)
-    _SYSTEM_BOOTSTRAPPED = True
-    return user
+@router.post("/register", status_code=status.HTTP_410_GONE)
+@router.post("/register-company", status_code=status.HTTP_410_GONE)
+async def register_company():
+    """Registration from the web was the way in before accounts existed. An account is now created only from the
+    Desktop Sync Agent (POST /agent/signup), and people join one by invitation."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=GONE_SIGN_UP)
 
 
 @router.post("/login", response_model=Token)
