@@ -14,7 +14,7 @@ Where the two disagreed or a later decision changed them, this document is right
 | Item | State |
 | --- | --- |
 | Phase 0: explicit sync company, accounts table, account-scoped Admin | Code complete, in PR [Akashkansal065/tally-portal#67](https://github.com/Akashkansal065/tally-portal/pull/67). Not merged, not deployed. |
-| Step 1: expand the schema | Code complete on branch `step1-expand-schema`, uncommitted. Backend tests: 214 passed. Not run against MySQL. |
+| Step 1: expand the schema | Code complete, in the same pull request (tally-portal#67). Backend tests: 214 passed. Not run against MySQL. |
 | Tests | Backend 212 passed, agent 23 passed, frontend type-check clean. Not run against real Tally or MySQL. |
 | Production today | One company, several users, all rows without an account. The agent shares its login with a web user. |
 | Stopgap until Phase 0 is deployed | Do not switch company in the web app on the login the agent uses. |
@@ -251,7 +251,7 @@ One sequence, replacing the earlier Phases 0 to 4 and migration Stages A to D. E
 
 ### Step 1: Expand the schema (no behaviour change)
 
-Code complete on branch `step1-expand-schema` (stacked on the Phase 0 branch). Nothing below has run against production yet.
+Code complete on the Phase 0 branch, in the same pull request. Nothing below has run against production yet.
 
 - [x] Indexes for the owner columns, created at startup through `ensure_table_indexes` (the `index=True` flags Phase 0 used are not built on existing tables)
 - [x] `accounts`: `status`, `created_by_user_id`, `plan`, `max_users`, `max_companies`, `max_devices`
