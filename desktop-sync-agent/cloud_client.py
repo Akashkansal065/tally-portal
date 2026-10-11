@@ -148,17 +148,26 @@ class CloudClient:
             return 0, f"Cannot reach {self.backend_url} ({e})", {}
 
     # ── Signing this PC in ──
-    def sign_up(self, details: Dict[str, Any]) -> Tuple[bool, str]:
-        """Ask for a new account: the server emails a code to confirm. Nothing is created until verify_sign_up."""
-        status, body, _ = self._call("POST", "/agent/signup", details)
-        return status == 200, "" if status == 200 else str(body)
-
-    def verify_sign_up(self, email: str, code: str, company: Dict[str, Any]) -> Tuple[bool, Any]:
-        """Confirm the emailed code. Creates the account with this PC and the company, and signs this PC in."""
-        status, body, _ = self._call("POST", "/agent/signup/verify", {"email": email, "code": code, "company": company, **self._device()})
-        if status == 200:
-            self.token, self.auth_halt_reason = body["device_token"], ""
+    def start_code_sign_in(self) -> Tuple[bool, Any]:
+        """Ask for a code to sign this PC in with. Returns (ok, {"code", "poll_token", "expires_in_minutes"} or
+        why not). Nothing is signed in until someone enters the code in the MyTally app."""
+        status, body, _ = self._call("POST", "/agent/pair/start", self._device())
+        if status == 404:
+            return False, "This server does not offer sign-in with a code yet. Sign in with email and password."
         return status == 200, body
+
+    def collect_code_sign_in(self, poll_token: str) -> Tuple[str, Any]:
+        """Whether the code has been entered in the app yet: ("pending", None), ("approved", who this PC is now
+        signed in as) or ("error", why)."""
+        status, body, _ = self._call("POST", "/agent/pair/claim", {"poll_token": poll_token, **self._device()})
+        if status == 200 and isinstance(body, dict) and body.get("status") == "approved":
+            self.token, self.auth_halt_reason = body["device_token"], ""
+            return "approved", body
+        if status == 200:
+            return "pending", None
+        if status in (0, 429) or status >= 500:
+            return "pending", None   # a dropped connection or a busy server: ask again
+        return "error", str(body)
 
     def sign_in_device(self, email: str, password: str) -> Tuple[bool, Any, int]:
         """Sign this PC in to an existing account. Returns (ok, body or message, HTTP status); a 404 means the

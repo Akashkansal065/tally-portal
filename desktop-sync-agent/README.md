@@ -13,10 +13,11 @@
    - A **health bar** on every page says in one sentence whether sync is working (Up to date, Syncing, Synced just now, something to check, can't reach TallyPrime or the server, paused), with dots for **TallyPrime** and the **Server**. Its button follows the agent's real state: **Sync now**, **Syncing...**, **Retry**, **Resume** or **Sign in again**. **More** holds **Full re-sync...** (asks first), **Pause syncing** and **Hide to tray**.
    - Three pages on the left: **Companies** (the home page), **Activity** (the log) and **Settings**.
 
-2. **First run: sign up or sign this PC in**:
+2. **First run: sign this PC in**:
    - Open the company in TallyPrime first; the agent looks for it by itself and shows what it found.
-   - **New business**: press **Create an account**, fill in your details, press **Email me a code**, and enter the code on the next screen. This creates the account, its first admin, this PC's device and the first company (the one open in Tally) in one step.
-   - **Existing account**: press **My business already uses MyTally**, enter the email and password of someone who holds the **Manage sync agent** permission (admins do by default) and press **Sign in and start syncing**. Everyone else joins the business by invitation from the web app, not from the agent.
+   - Accounts are not created here. A new business signs up in the MyTally app with a mobile number, then comes back to this PC.
+   - **Connect with a code from the app**: press **Get a code**, then enter the code shown on the app's **Connect Tally** screen (signed in as someone who holds the **Manage sync agent** permission) and confirm the PC's name there. No password is typed on this PC. A code lasts 10 minutes. This is the way for someone who signs in with a mobile number.
+   - **Sign in with email and password**: enter the email and password of someone who holds the **Manage sync agent** permission (admins do by default) and press **Sign in and start syncing**. Everyone else joins the business by invitation from the web app, not from the agent.
    - Either way the PC is signed in **as a device**: it gets its own token and stores no password afterwards. The PC is listed in the web app under Admin → Sync agent & team, where an admin can sign it out.
    - **Advanced** (a link under the button) holds the server address, the TallyPrime address and **Test connection**.
 
@@ -73,7 +74,7 @@ The `.exe` is not code-signed, so the first time it runs Windows SmartScreen say
 python gui_app.py
 ```
 Add `--classic` for the CustomTkinter window. To look at the page alone with made-up data, serve this folder (`python -m http.server 8765`) and open `http://localhost:8765/ui/index.html?demo` (`?demo=sync`, `warn`, `error`, `paused` or `setup`; add `&theme=dark`).
-*(On first launch, open the company in TallyPrime, then either create an account or sign the PC in with an admin's email and password (the server address is under Advanced). Once connected, settings are saved to `agent_config.json` and the Companies page appears.)*
+*(On first launch, open the company in TallyPrime, then sign the PC in with a code from the MyTally app or with an admin's email and password (the server address is under Advanced). Once connected, settings are saved to `agent_config.json` and the Companies page appears.)*
 
 The company's name in Tally must match its name in the app the first time an existing company is linked, otherwise a second company is added.
 

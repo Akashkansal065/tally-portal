@@ -342,7 +342,7 @@ class BridgeApp(ctk.CTk):
 
 
 # ---------------------------------------------------------------------------
-# VIEW 1: First run. Welcome, then sign in or create an account, all in one card
+# VIEW 1: First run. Welcome, then sign in with a code from the app or with email and password, all in one card
 # ---------------------------------------------------------------------------
 class SetupView(ctk.CTkFrame):
     CARD_WIDTH = 372
@@ -358,15 +358,11 @@ class SetupView(ctk.CTkFrame):
         self.v_email = tk.StringVar(value=cfg.email or cfg.username or "")
         self.v_password = tk.StringVar(value=cfg.password or "")
         self.v_company = tk.StringVar(value=cfg.company_name or "")
-        self.v_name = tk.StringVar()
-        self.v_business = tk.StringVar()
-        self.v_phone = tk.StringVar()
-        self.v_code = tk.StringVar()
-        self.v_terms = tk.BooleanVar(value=False)
         self.v_autostart = tk.BooleanVar(value=cfg.autostart_enabled or is_autostart_registered())
         self.advanced_open = False
         self.tally_note: Tuple[str, str] = ("Looking for TallyPrime...", "idle")
-        self.company: Optional[Dict[str, Any]] = None   # the Tally company a new account starts with
+        self.pair_code = ""                             # the sign-in code on screen, if one was asked for
+        self.pair: Optional[Tuple[str, str]] = None     # its server and the secret it is collected with
         self._sending = False
 
         # Scrollable container for smaller screens
@@ -387,6 +383,8 @@ class SetupView(ctk.CTkFrame):
     def _show(self, screen: str):
         for child in self.card.winfo_children():
             child.destroy()
+        if screen != "code":
+            self.pair_code, self.pair = "", None   # leaving the code screen gives the code up
         self.screen = screen
         self.msg = self.note_lbl = self.main_btn = None
         ctk.CTkFrame(self.card, fg_color="transparent", height=14, width=self.CARD_WIDTH + 48).pack()
@@ -448,17 +446,14 @@ class SetupView(ctk.CTkFrame):
     def _build_welcome(self):
         self._title("Connect TallyPrime to MyTally",
                     f"{APP_SHORT} runs on this PC and keeps your Tally companies in step with the MyTally app.")
-        primary_button(self.card, "Create an account", lambda: self._show("create"), height=40).pack(fill="x", padx=24, pady=(4, 8))
-        secondary_button(self.card, "My business already uses MyTally", lambda: self._show("signin"), height=40).pack(fill="x", padx=24, pady=(0, 14))
+        primary_button(self.card, "Connect with a code from the app", lambda: self._show("code"), height=40).pack(fill="x", padx=24, pady=(4, 8))
+        secondary_button(self.card, "Sign in with email and password", lambda: self._show("signin"), height=40).pack(fill="x", padx=24, pady=(0, 14))
         ctk.CTkFrame(self.card, fg_color=BORDER, height=1).pack(fill="x", padx=24)
-        ctk.CTkLabel(self.card, text=f"Invited by your admin? You don't need {APP_SHORT}. Accept the invitation in the MyTally app.",
+        ctk.CTkLabel(self.card, text="New to MyTally? Create your account in the MyTally app first, then come back here. "
+                                     f"Invited by your admin? You don't need {APP_SHORT}. Accept the invitation in the app.",
                      font=font(12), text_color=TEXT_3, wraplength=self.CARD_WIDTH, justify="left").pack(anchor="w", padx=24, pady=(12, 0))
 
-    def _build_signin(self):
-        self._title("Sign in to link this PC", "Use an account that can manage the sync agent. Admins can by default.")
-        field(self.card, "Email", self.v_email)
-        self._password_field("Password")
-
+    def _company_field(self):
         ctk.CTkLabel(self.card, text="Company", font=font(12, True), text_color=TEXT_2).pack(anchor="w", padx=24, pady=(0, 2))
         row = ctk.CTkFrame(self.card, fg_color="transparent")
         row.pack(fill="x", padx=24, pady=(0, 2))
@@ -466,58 +461,40 @@ class SetupView(ctk.CTkFrame):
         self.detect_btn = secondary_button(row, "Detect", self._detect_tally_company, height=34, width=70)
         self.detect_btn.pack(side="left", padx=(8, 0))
         self._tally_line()
-
         ctk.CTkCheckBox(self.card, text="Start with Windows", variable=self.v_autostart, font=font(13), text_color=TEXT_2,
                         fg_color=PRIMARY, hover_color=PRIMARY_HOVER, border_color=BORDER_INPUT, checkmark_color=ON_PRIMARY,
                         checkbox_width=18, checkbox_height=18, border_width=1, corner_radius=4).pack(anchor="w", padx=24, pady=(0, 14))
 
+    def _foot_links(self, label: str, screen: str):
+        links = ctk.CTkFrame(self.card, fg_color="transparent")
+        links.pack(fill="x", padx=20, pady=(8, 6))
+        link_button(links, label, lambda: self._show(screen)).pack(side="left")
+        link_button(links, "Hide advanced" if self.advanced_open else "Advanced", self._toggle_advanced).pack(side="right")
+        self._advanced()
+
+    def _build_signin(self):
+        self._title("Sign in to link this PC", "Use an account that can manage the sync agent. Admins can by default.")
+        field(self.card, "Email", self.v_email)
+        self._password_field("Password")
+        self._company_field()
         self.main_btn = primary_button(self.card, "Sign in and start syncing", self._connect_and_launch, height=40)
         self.main_btn.pack(fill="x", padx=24)
         self._message_line()
-
-        links = ctk.CTkFrame(self.card, fg_color="transparent")
-        links.pack(fill="x", padx=20, pady=(8, 6))
-        link_button(links, "Create an account", lambda: self._show("create")).pack(side="left")
-        link_button(links, "Hide advanced" if self.advanced_open else "Advanced", self._toggle_advanced).pack(side="right")
-        self._advanced()
-
-    def _build_create(self):
-        self._title("Create your account")
-        if not self.v_business.get():
-            self.v_business.set(self.v_company.get())
-        field(self.card, "Your name", self.v_name)
-        field(self.card, "Mobile number", self.v_phone)
-        field(self.card, "Business name", self.v_business)
-        self._tally_line()
-        field(self.card, "Email", self.v_email)
-        self._password_field("Password", "At least 8 characters")
-
-        ctk.CTkCheckBox(self.card, text="I accept the terms of service", variable=self.v_terms, font=font(13), text_color=TEXT_2,
-                        fg_color=PRIMARY, hover_color=PRIMARY_HOVER, border_color=BORDER_INPUT, checkmark_color=ON_PRIMARY,
-                        checkbox_width=18, checkbox_height=18, border_width=1, corner_radius=4).pack(anchor="w", padx=24, pady=(0, 14))
-
-        self.main_btn = primary_button(self.card, "Email me a code", self._send_code, height=40)
-        self.main_btn.pack(fill="x", padx=24)
-        self._message_line()
-
-        links = ctk.CTkFrame(self.card, fg_color="transparent")
-        links.pack(fill="x", padx=20, pady=(8, 6))
-        link_button(links, "I already have an account", lambda: self._show("signin")).pack(side="left")
-        link_button(links, "Hide advanced" if self.advanced_open else "Advanced", self._toggle_advanced).pack(side="right")
-        self._advanced()
+        self._foot_links("Connect with a code instead", "code")
 
     def _build_code(self):
-        first = f" Your first company will be '{self.company['name']}'." if self.company else ""
-        self._title("Check your email",
-                    f"We emailed a 6-digit code to {self.v_email.get().strip()}. It is valid for 10 minutes.{first}")
-        field(self.card, "Code from the email", self.v_code).focus_set()
-        self.main_btn = primary_button(self.card, "Create account", self._create, height=40)
+        if self.pair_code:
+            self._title("Connect with a code", "Open the MyTally app on your phone or browser, go to Connect Tally and enter "
+                                               "this code. This PC is signed in as soon as you do.")
+            ctk.CTkLabel(self.card, text=self.pair_code, font=font(28, True), text_color=TEXT).pack(padx=24, pady=(2, 14))
+        else:
+            self._title("Connect with a code", "You get a code to enter in the MyTally app, signed in as someone who can "
+                                               "manage the sync agent. No password is typed on this PC.")
+            self._company_field()
+        self.main_btn = primary_button(self.card, "Get a new code" if self.pair_code else "Get a code", self._start_code, height=40)
         self.main_btn.pack(fill="x", padx=24)
         self._message_line()
-        links = ctk.CTkFrame(self.card, fg_color="transparent")
-        links.pack(fill="x", padx=20, pady=(8, 6))
-        link_button(links, "Change email", lambda: self._show("create")).pack(side="left")
-        link_button(links, "Send the code again", self._send_code).pack(side="right")
+        self._foot_links("Sign in with email and password", "signin")
 
     # -- TallyPrime ---------------------------------------------------------
     def _detect_tally_company(self):
@@ -540,8 +517,6 @@ class SetupView(ctk.CTkFrame):
             return
         if found["company"]:
             self.v_company.set(found["company"])
-            if self.screen == "create" and not self.v_business.get():
-                self.v_business.set(found["company"])
         self._set_tally_note(found["text"], found["kind"])
 
     def _run_connection_test(self):
@@ -590,21 +565,26 @@ class SetupView(ctk.CTkFrame):
 
         threading.Thread(target=connect_worker, daemon=True).start()
 
-    def _link_company_then_launch(self, take_over: bool = False):
+    def _link_company_then_launch(self, take_over: bool = False, open_anyway: bool = False):
         """Worker thread: make this PC the one syncing the chosen company, then open the dashboard. If another PC
-        syncs it, ask before moving it here."""
+        syncs it, ask before moving it here. open_anyway: the PC was signed in with a code and that screen is
+        gone, so the dashboard opens even when the company could not be linked; its Companies page says why."""
         ok, message, reason = self.app.agent.link_active_company(take_over=take_over)
         if ok:
             self.after(0, self._on_connect_success)
         elif reason == "linked_to_another_device":
-            self.after(0, lambda: self._ask_to_move_company(message))
+            self.after(0, lambda: self._ask_to_move_company(message, open_anyway))
+        elif open_anyway:
+            self.after(0, self._on_connect_success)
         else:
             self.after(0, lambda: self._on_connect_failed(f"Signed in, but the company could not be linked: {message}"))
 
-    def _ask_to_move_company(self, message: str):
+    def _ask_to_move_company(self, message: str, open_anyway: bool = False):
         from tkinter import messagebox
         if messagebox.askyesno("Move sync to this PC?", f"{message}\n\nThe other PC will stop syncing this company."):
-            threading.Thread(target=lambda: self._link_company_then_launch(take_over=True), daemon=True).start()
+            threading.Thread(target=lambda: self._link_company_then_launch(take_over=True, open_anyway=open_anyway), daemon=True).start()
+        elif open_anyway:
+            self._on_connect_success()
         else:
             self._on_connect_failed("Not linked: the company is still synced from the other PC.")
 
@@ -616,73 +596,61 @@ class SetupView(ctk.CTkFrame):
         self.app.show_dashboard()
         self.app.start_sync_thread()
 
-    # -- create an account --------------------------------------------------
-    # Details, then the code emailed to confirm them. The company open in Tally becomes the account's first
-    # company. For joining an existing business there is no form here: an admin of that business sends an
-    # invitation from the app.
-    def _send_code(self):
+    # -- sign in with a code ------------------------------------------------
+    # The PC shows a code; someone signed in to the MyTally app enters it there, and this PC is signed in.
+    # Accounts are created in the app, not here.
+    def _start_code(self):
         backend_url = self._need_server()
-        if not backend_url:
-            return
-        details = {"full_name": self.v_name.get().strip(), "business_name": self.v_business.get().strip(),
-                   "email": self.v_email.get().strip(), "phone": self.v_phone.get().strip(), "password": self.v_password.get()}
-        if not all(details.values()):
-            self._say("Fill in every field.", "error")
-            return
-        if not self.v_terms.get():
-            self._say("Accept the terms to create an account.", "error")
-            return
-        if self._sending:
+        if not backend_url or self._sending:
             return
         self._sending = True
-        details["accept_terms"] = True
-        tally_url, company_name = self.v_tally.get().strip(), self.v_company.get().strip()
-        idle_text = "Email me a code" if self.screen == "create" else "Create account"
-        self._busy("Sending...")
+        self.pair_code, self.pair = "", None
+        self._busy("Getting a code...")
 
         def worker():
-            ok, message, company = core.request_sign_up_code(backend_url, tally_url, company_name, details)
-            if company:
-                self.company = company
-            self.after(0, lambda: self._code_sent(ok, message, idle_text))
+            ok, body = core.start_code_sign_in(backend_url)
+            self.after(0, lambda: self._code_started(ok, body, backend_url))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _code_sent(self, ok: bool, message: str, idle_text: str):
+    def _code_started(self, ok: bool, body: Any, backend_url: str):
         self._sending = False
-        if not self.winfo_exists():
+        if not self.winfo_exists() or self.screen != "code":
             return
-        self._busy(None, idle_text)
         if not ok:
-            self._say(message, "error")
-        elif self.screen == "code":
-            self._say("We sent a new code.", "ok")
-        else:
-            self.v_code.set("")
-            self._show("code")
-
-    def _create(self):
-        code = self.v_code.get().strip()
-        if not code or self.company is None:
-            self._say("Enter the code from the email.", "error")
+            self._busy(None, "Get a code")
+            self._say(str(body), "error")
             return
-        args = (self.v_server.get().strip(), self.v_email.get().strip(), code, self.company, self.v_tally.get().strip(),
-                self.v_autostart.get())
-        self._busy("Creating...")
+        self.pair_code, self.pair = body["code"], (backend_url, body["poll_token"])
+        self._show("code")
+        self._say(f"Waiting for the code to be entered in the app. It is valid for {body.get('expires_in_minutes') or 10} minutes.")
+        self.after(3000, lambda: self._check_code(self.pair))
+
+    def _check_code(self, pair: Optional[Tuple[str, str]]):
+        """Every few seconds while this code is on screen: has it been entered in the app?"""
+        if not self.winfo_exists() or pair is None or self.pair != pair:
+            return
+        args = (*pair, self.v_tally.get().strip(), self.v_company.get().strip(), self.v_autostart.get())
 
         def worker():
-            ok, message = core.finish_sign_up(self.app, *args)
-            self.after(0, lambda: self._created(ok, message))
+            state, message = core.finish_code_sign_in(self.app, *args)
+            if state == "approved":
+                self.pair = None
+                self._link_company_then_launch(open_anyway=True)
+            else:
+                self.after(0, lambda: self._code_checked(state, message, pair))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _created(self, ok: bool, message: str):
-        if not ok:
-            self._busy(None, "Create account")
-            self._say(message, "error")
+    def _code_checked(self, state: str, message: str, pair: Tuple[str, str]):
+        if not self.winfo_exists() or self.pair != pair:
             return
-        self._on_connect_success()
-
+        if state == "pending":
+            self.after(3000, lambda: self._check_code(pair))
+            return
+        self.pair_code, self.pair = "", None
+        self._show("code")
+        self._say(message, "error")
 
 
 # ---------------------------------------------------------------------------

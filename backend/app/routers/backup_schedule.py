@@ -1,4 +1,7 @@
-"""Admin → Backup: the daily backup schedule (app/services/backup_schedule.py)."""
+"""Admin → Backup: the daily backup schedule (app/services/backup_schedule.py).
+
+There is one schedule for the whole server and it backs up every company open in the server's Tally, emailing
+the files where it is told to, so only the people who run the server may see or change it."""
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.datetime_utils import get_ist_now
 from app.models.portal_core import User
-from app.routers.admin import require_admin
+from app.core.permissions import require_platform_admin
 from app.services import backup_schedule as svc
 from app.services.messaging import clean_email
 
@@ -27,12 +30,12 @@ def _out(data: dict) -> dict:
 
 
 @router.get("")
-async def get_schedule(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def get_schedule(user: User = Depends(require_platform_admin), db: AsyncSession = Depends(get_db)):
     return _out(await svc.load(db))
 
 
 @router.put("")
-async def save_schedule(req: ScheduleIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def save_schedule(req: ScheduleIn, user: User = Depends(require_platform_admin), db: AsyncSession = Depends(get_db)):
     if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", req.time):
         raise HTTPException(status_code=422, detail="Time must look like 21:00.")
     if req.email_to and not clean_email(req.email_to):
@@ -45,7 +48,7 @@ async def save_schedule(req: ScheduleIn, user: User = Depends(require_admin), db
 
 
 @router.post("/run-now")
-async def run_now(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def run_now(user: User = Depends(require_platform_admin), db: AsyncSession = Depends(get_db)):
     """Back up now with the scheduled settings (keep-last and email), whatever the time."""
     try:
         data = await svc.load(db)

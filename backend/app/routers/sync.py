@@ -18,11 +18,10 @@ import logging
 import uuid
 
 from app.core.database import get_db
-from app.core.permissions import require_permission, get_effective_permission, is_admin_user, bind_sync_company, bind_device_sync_company, SYNC_COMPANY_GUID_HEADER
+from app.core.permissions import require_permission, get_effective_permission, is_admin_user, bind_sync_company, bind_device_sync_company, SYNC_COMPANY_GUID_HEADER, require_platform_admin
 from app.core.agent_auth import agent_device
 from app.core.config import settings
-from app.core.tally_target import current_tally_url
-from app.routers.admin import require_admin
+from app.core.tally_target import current_tally_url, note_request_company
 from app.routers.auth import get_current_user
 from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, DeletedRecordAudit
 from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting, MstStockItem, MstVoucherType
@@ -1016,6 +1015,9 @@ async def get_outbound_queue(
 
         if item.record_type == "Currency":
             xml_envelope = await queued_currency_xml(db, item) or ""
+
+        if item.record_type == "Company":
+            xml_envelope = await queued_company_xml(db, item)
 
         if xml_envelope:
             outbound_payloads.append({
@@ -2103,6 +2105,18 @@ def currency_import_xml(company_name: str, action: str, curr=None, tally_name: s
 # Access Violation": seen on 10 Oct 2026 with a currency that had no entries), and Tally stays down until
 # someone restarts it. So a currency delete is never sent: it is deleted in the app, and by hand in Tally.
 CURRENCY_DELETE_REACHES_TALLY = False
+
+
+async def queued_company_xml(db: AsyncSession, item) -> str:
+    """The Tally alteration for a queued company profile edit: the values that edit changed, addressed to the
+    name Tally knows the company by. "" for a row with nothing to send."""
+    from app.models.portal_core import Company
+    from app.services.company_profile_push import build_company_alter_envelope
+    snapshot = item.snapshot_data or {}
+    company = (await db.execute(select(Company).where(Company.company_id == item.record_id))).scalars().first()
+    if not company or company.company_id != item.company_id:
+        return ""
+    return build_company_alter_envelope(snapshot.get("tally_name") or company.name, snapshot.get("fields") or {})
 
 
 async def queued_currency_xml(db: AsyncSession, item) -> Optional[str]:
@@ -3885,7 +3899,7 @@ async def run_once_sync_background(user_id: int):
     from app.core.database import AsyncSessionLocal
     from app.core.cache import clear_company_cache
     
-    tally_url = current_tally_url()
+    tally_url = settings.TALLY_URL
     if not tally_url:
         logger.error(f"Background run-once sync aborted for user_id={user_id}: TALLY_URL is not configured.")
         return
@@ -3905,6 +3919,11 @@ async def run_once_sync_background(user_id: int):
             
             outbound_success = 0
             for item in queue_items:
+                # The server's Tally belongs to one company (app/core/tally_target.py): another company's changes are
+                # never sent to it, they wait in the queue for that company's own sync agent
+                await note_request_company(db, item.company_id)
+                if not current_tally_url():
+                    continue
                 xml_envelope = ""
         # 1. Map Ledger Creation
                 if item.record_type == "Ledger":
@@ -3934,61 +3953,12 @@ async def run_once_sync_background(user_id: int):
 
                 # 3. Map Company Profile Alteration
                 elif item.record_type == "Company":
-                    comp_stmt = select(Company).where(Company.company_id == item.record_id)
-                    comp_res = await db.execute(comp_stmt)
-                    company = comp_res.scalars().first()
-                    if company:
-                        addr_list = ""
-                        if company.address_line1:
-                            addr_list += f"<ADDRESS>{x(company.address_line1)}</ADDRESS>"
-                        if company.address_line2:
-                            addr_list += f"<ADDRESS>{x(company.address_line2)}</ADDRESS>"
+                    xml_envelope = await queued_company_xml(db, item)
+                    if not xml_envelope:
+                        item.is_processed = True   # nothing to send
+                        outbound_success += 1
+                        continue
 
-                        # Build books/FY date strings for XML
-                        books_from_xml = company.books_begin_date.strftime('%Y%m%d') if company.books_begin_date else ''
-                        fy_start_xml = company.financial_year_start.strftime('%Y%m%d') if company.financial_year_start else ''
-                        fy_end_xml = company.financial_year_end.strftime('%Y%m%d') if company.financial_year_end else ''
-
-                        xml_envelope = f"""<ENVELOPE>
-<HEADER>
-<TALLYREQUEST>Import Data</TALLYREQUEST>
-</HEADER>
-<BODY>
-<IMPORTDATA>
-<REQUESTDESC>
-<REPORTNAME>All Masters</REPORTNAME>
-<STATICVARIABLES>
-<SVCURRENTCOMPANY>{x(company.name)}</SVCURRENTCOMPANY>
-</STATICVARIABLES>
-</REQUESTDESC>
-<REQUESTDATA>
-<TALLYMESSAGE xmlns:UDF="TallyUDF">
-<COMPANY NAME="{x(company.name)}" ACTION="Alter">
-<NAME>{x(company.name)}</NAME>
-<STATENAME>{x(company.state or '')}</STATENAME>
-<COUNTRYNAME>{x(company.country or '')}</COUNTRYNAME>
-<PINCODE>{x(company.pincode or '')}</PINCODE>
-<PHONENUMBER>{x(company.telephone or '')}</PHONENUMBER>
-<MOBILENUMBERS.LIST><MOBILENUMBERS>{x(company.mobile or '')}</MOBILENUMBERS></MOBILENUMBERS.LIST>
-<EMAIL>{x(company.email or '')}</EMAIL>
-<WEBSITE>{x(company.website or '')}</WEBSITE>
-<INCOMETAXNUMBER>{x(company.pan or '')}</INCOMETAXNUMBER>
-<GSTREGISTRATIONNUMBER>{x(company.gstin or '')}</GSTREGISTRATIONNUMBER>
-<BOOKSFROM>{books_from_xml}</BOOKSFROM>
-<STARTINGFROM>{fy_start_xml}</STARTINGFROM>
-<ENDINGAT>{fy_end_xml}</ENDINGAT>
-<CURRENCYNAME>{x(company.base_currency or 'INR')}</CURRENCYNAME>
-<GUID>{x(company.tally_guid or '')}</GUID>
-<ADDRESS.LIST>
-{addr_list}
-</ADDRESS.LIST>
-</COMPANY>
-</TALLYMESSAGE>
-</REQUESTDATA>
-</IMPORTDATA>
-</BODY>
-</ENVELOPE>"""
-                        
                 # 4. Cost Categories and Cost Centres
                 elif item.record_type == "CostCategory":
                     await try_push_cost_category_realtime(item.record_id, item.sync_id, item.action or 'Create', db)
@@ -4512,12 +4482,12 @@ async def run_once_sync_background(user_id: int):
 @router.post("/run-once")
 async def run_once(
     background_tasks: BackgroundTasks,
-    user: User = Depends(require_admin),
+    user: User = Depends(require_platform_admin),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Runs a single cycle of the bidirectional synchronization with the Tally XML Server in the background.
-    Requires Admin privileges.
+    Only for the people who run the server: it reaches the server's own Tally, which belongs to one customer.
     """
     tally_url = current_tally_url()
     if not tally_url:

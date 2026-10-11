@@ -1,5 +1,6 @@
 from typing import Optional
 import os
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -50,12 +51,25 @@ class Settings(BaseSettings):
     # The Tally company (its GUID) that TALLY_URL belongs to. Set it on a server that holds more than one
     # customer: direct pushes to TALLY_URL are then made for that company only (see app/core/tally_target.py).
     TALLY_URL_COMPANY_GUID: Optional[str] = None
+    # Better than the GUID: the MyTally company id that TALLY_URL belongs to. A GUID can be given to a company of
+    # another account by whoever signs up; an id cannot. When set, it wins over TALLY_URL_COMPANY_GUID.
+    TALLY_URL_COMPANY_ID: Optional[int] = None
+
+    @field_validator("TALLY_URL_COMPANY_ID", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value):
+        """TALLY_URL_COMPANY_ID= with nothing after it (as in .env.example) means not set, not a startup error."""
+        return None if isinstance(value, str) and not value.strip() else value
     # Turn on after scripts/migrate_to_account.py has given every existing row its account: from then on a row
     # with no account belongs to nobody, instead of to the shared group a one-customer server started as.
     ACCOUNTS_ENFORCED: bool = False
     # Turn on once every sync agent PC has signed in as a PC: a sync agent still using a person's email and
     # password is then refused with a message to update and sign in.
     REQUIRE_AGENT_DEVICE_SIGNIN: bool = False
+    # Emails (comma-separated) of the people who run this server. Only they may use what acts on the whole server
+    # rather than one account: backups of the server's Tally and the backup schedule. Being an account's Admin is
+    # not enough, since anyone who signs up from the sync agent is the Admin of their own account. Empty = nobody.
+    PLATFORM_ADMIN_EMAILS: str = ""
 
     # GST provider adapter. Credentials stay server-side; the adapter is API-shape agnostic.
     GST_PROVIDER_URL: Optional[str] = None
@@ -72,6 +86,16 @@ class Settings(BaseSettings):
 
     # Firebase service account (JSON text, or a path to the JSON file) for Android app push. Unset = off.
     FCM_SERVICE_ACCOUNT_JSON: Optional[str] = None
+
+    # Sign-in and sign-up with a mobile number and an OTP, next to email and password. Off until it has been
+    # tested: while off the app does not offer it and the server refuses it.
+    PHONE_SIGNIN_ENABLED: bool = False
+    # The app confirms the OTP with Firebase Authentication and sends the server the ID token Firebase gives it.
+    # This is the Firebase project those tokens must come from; left empty, the project of
+    # FCM_SERVICE_ACCOUNT_JSON is used.
+    FIREBASE_PROJECT_ID: Optional[str] = None
+    # How long after the OTP was confirmed its token is still taken (long enough to fill in the sign-up form)
+    PHONE_OTP_MAX_AGE_MINUTES: int = 30
 
     # Rate Limiting Settings
     RATE_LIMIT_ENABLED: bool = True
@@ -100,7 +124,7 @@ class Settings(BaseSettings):
 
     # Pagination Settings
     DEFAULT_PAGE_SIZE: int = 50
-    MAX_PAGE_SIZE: int = 50000
+    MAX_PAGE_SIZE: int = 500  # the page_size / limit query parameters already refuse more than this
     
     @property
     def PORTAL_DATABASE_NAME(self) -> str:

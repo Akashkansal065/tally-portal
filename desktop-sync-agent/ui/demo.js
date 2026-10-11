@@ -4,6 +4,7 @@
 (function () {
   const params = new URLSearchParams(location.search);
   let kind = params.get("demo") || "idle";
+  let codeChecks = 0;
   const HEALTH = {
     idle: { kind: "idle", title: "Up to date", detail: "Last synced 10 Oct 2026, 10:42:10 PM", action: "sync" },
     sync: { kind: "sync", title: "Syncing Sneh Distributors", detail: "This can take a while for a large company.", action: "sync" },
@@ -46,8 +47,8 @@
     test_connection: () => wait({ kind: "ok", text: "TallyPrime: connected (Sneh Distributors). Server: reachable." }, 500),
     sign_in: (v) => wait(v.password ? { ok: true } : { ok: false, message: "Sign-in failed: enter your password." }, 500),
     link_active: () => wait({ ok: true }),
-    send_code: (v) => wait(v.terms ? { ok: true, company: "Sneh Distributors" } : { ok: false, message: "Accept the terms to create an account." }, 400),
-    create_account: (v) => wait(v.code === "000000" ? { ok: false, message: "That code is not right. Check the email and try again." } : { ok: true }, 400),
+    code_start: () => { codeChecks = 0; return wait({ ok: true, code: "K7QM-2XHP", minutes: 10 }, 400); },
+    code_check: () => wait(++codeChecks < 4 ? { status: "pending" } : { status: "done", ok: true }, 100),
     hide: () => wait({ ok: true }),
     quit: () => wait({ ok: true }),
   } };

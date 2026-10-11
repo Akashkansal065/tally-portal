@@ -72,9 +72,10 @@ function confirmDialog(title, text, okLabel, danger) {
 }
 
 // ---------------------------------------------------------------------------
-// First run: welcome, sign in, create an account, enter the code
+// First run: welcome, then sign in with a code from the MyTally app, or with email and password
 // ---------------------------------------------------------------------------
-const F = { server: "", tally: "", email: "", password: "", company: "", name: "", business: "", phone: "", code: "", terms: false, autostart: false };
+const F = { server: "", tally: "", email: "", password: "", company: "", autostart: false };
+const pairing = { code: "", timer: null };
 const setup = { screen: "", advanced: false, note: { text: "Looking for TallyPrime...", kind: "idle" }, msgEl: null, noteEl: null, mainBtn: null, mainLabel: "", detected: false };
 
 function input(key, type) {
@@ -136,54 +137,47 @@ const SCREENS = {
   welcome: () => [
     h("h1", null, "Connect TallyPrime to MyTally"),
     h("p", { class: "lead" }, boot.app.short + " runs on this PC and keeps your Tally companies in step with the MyTally app."),
-    h("button", { class: "btn pri lg", id: "welcome-create", onclick: () => showSetup("create") }, "Create an account"),
-    h("button", { class: "btn sec lg", id: "welcome-signin", onclick: () => showSetup("signin") }, "My business already uses MyTally"),
-    h("div", { class: "aside" }, "Invited by your admin? You don't need " + boot.app.short + ". Accept the invitation in the MyTally app."),
+    h("button", { class: "btn pri lg", id: "welcome-code", onclick: () => showSetup("code") }, "Connect with a code from the app"),
+    h("button", { class: "btn sec lg", id: "welcome-signin", onclick: () => showSetup("signin") }, "Sign in with email and password"),
+    h("div", { class: "aside" }, "New to MyTally? Create your account in the MyTally app first, then come back here. " +
+      "Invited by your admin? You don't need " + boot.app.short + ". Accept the invitation in the app."),
   ],
   signin: () => [
     h("h1", null, "Sign in to link this PC"),
     h("p", { class: "lead" }, "Use an account that can manage the sync agent. Admins can by default."),
     field("Email", "email"),
     passwordField(),
-    h("div", { class: "field" }, h("label", { for: "f-company" }, "Company"),
-      h("div", { class: "row" }, input("company"), h("button", { class: "btn sec", id: "setup-detect", onclick: detectTally }, "Detect")), tallyNote()),
+    companyField(),
     checkbox("autostart", "Start with Windows"),
     mainButton("Sign in and start syncing", signIn),
     (setup.msgEl = h("div", { class: "msg" })),
-    footLinks("Create an account", "create"),
+    footLinks("Connect with a code instead", "code"),
     advancedFields(),
   ],
-  create: () => {
-    if (!F.business) F.business = F.company;
-    return [
-      h("h1", null, "Create your account"),
-      h("div", { class: "two" }, field("Your name", "name"), field("Mobile number", "phone")),
-      h("div", { class: "field" }, h("label", { for: "f-business" }, "Business name"), input("business"), tallyNote()),
-      field("Email", "email"),
-      passwordField("At least 8 characters"),
-      checkbox("terms", "I accept the terms of service"),
-      mainButton("Email me a code", () => sendCode(false)),
-      (setup.msgEl = h("div", { class: "msg" })),
-      footLinks("I already have an account", "signin"),
-      advancedFields(),
-    ];
-  },
   code: () => [
-    h("h1", null, "Check your email"),
-    h("p", { class: "lead" }, "We emailed a 6-digit code to " + F.email.trim() + ". It is valid for 10 minutes." +
-      (setup.firstCompany ? " Your first company will be '" + setup.firstCompany + "'." : "")),
-    field("Code from the email", "code"),
-    mainButton("Create account", createAccount),
+    h("h1", null, "Connect with a code"),
+    h("p", { class: "lead" }, pairing.code
+      ? "Open the MyTally app on your phone or browser, go to Connect Tally and enter this code. This PC is signed in as soon as you do."
+      : "You get a code to enter in the MyTally app, signed in as someone who can manage the sync agent. No password is typed on this PC."),
+    pairing.code ? h("div", { class: "paircode", id: "pair-code", "aria-label": "Code " + pairing.code.split("").join(" ") }, pairing.code) : null,
+    pairing.code ? null : companyField(),
+    pairing.code ? null : checkbox("autostart", "Start with Windows"),
+    mainButton(pairing.code ? "Get a new code" : "Get a code", startCode),
     (setup.msgEl = h("div", { class: "msg" })),
-    h("div", { class: "foot" },
-      h("button", { class: "link", id: "code-back", onclick: () => showSetup("create") }, "Change email"),
-      h("button", { class: "link", id: "code-again", onclick: () => sendCode(true) }, "Send the code again")),
+    footLinks("Sign in with email and password", "signin"),
+    advancedFields(),
   ],
 };
+
+function companyField() {
+  return h("div", { class: "field" }, h("label", { for: "f-company" }, "Company"),
+    h("div", { class: "row" }, input("company"), h("button", { class: "btn sec", id: "setup-detect", onclick: detectTally }, "Detect")), tallyNote());
+}
 
 function showSetup(screen) {
   view = "setup";
   closeMenu();
+  if (screen !== "code") stopCode();
   setup.screen = screen;
   setup.msgEl = setup.noteEl = setup.mainBtn = null;
   $app.replaceChildren(h("div", { class: "setup" }, h("div", { class: "card" }, SCREENS[screen]())));
@@ -199,8 +193,6 @@ async function detectTally() {
     F.company = found.company;
     const box = document.getElementById("f-company");
     if (box) box.value = found.company;
-    const business = document.getElementById("f-business");
-    if (business && !F.business) { F.business = found.company; business.value = found.company; }
   }
   setNote(found.text, found.kind);
 }
@@ -231,29 +223,49 @@ async function signIn() {
   say(result.message, "error");
 }
 
-async function sendCode(again) {
-  if (!needServer()) return;
-  busy("Sending...");
-  const result = await api.send_code(F);
-  busy(null);
-  if (!result.ok) return say(result.message, "error");
-  setup.firstCompany = result.company;
-  if (again) return say("We sent a new code.", "ok");
-  F.code = "";
-  showSetup("code");
+// The code is shown until it is entered in the app, it runs out, or the person leaves the screen
+function stopCode() {
+  clearInterval(pairing.timer);
+  pairing.timer = null;
+  pairing.code = "";
 }
 
-async function createAccount() {
-  if (!F.code.trim()) return say("Enter the code from the email.", "error");
-  busy("Creating...");
-  const result = await api.create_account(F);
-  if (result.ok) return enterMain();
-  busy(null);
-  say(result.message, "error");
+async function startCode() {
+  if (!needServer()) return;
+  stopCode();
+  busy("Getting a code...");
+  const result = await api.code_start(F);
+  if (setup.screen !== "code" || view !== "setup") return;
+  if (!result.ok) { busy(null); return say(result.message, "error"); }
+  pairing.code = result.code;
+  showSetup("code");
+  say("Waiting for the code to be entered in the app. It is valid for " + result.minutes + " minutes.");
+  pairing.timer = setInterval(checkCode, 3000);
+}
+
+async function checkCode() {
+  if (pairing.checking) return;
+  pairing.checking = true;
+  let result;
+  try { result = await api.code_check(F); } catch (err) { result = { status: "pending" }; }
+  pairing.checking = false;
+  if (result.status === "pending" || setup.screen !== "code" || view !== "setup") return;
+  stopCode();
+  if (result.status === "error") {
+    showSetup("code");
+    return say(result.message, "error");
+  }
+  // Signed in. The company is linked as after an email sign-in; if it could not be, the Companies page shows why.
+  if (!result.ok && result.reason === "linked_to_another_device" &&
+      await confirmDialog("Move sync to this PC?", result.message + "\n\nThe other PC will stop syncing this company.", "Move it here")) {
+    await api.link_active(true);
+  }
+  enterMain();
 }
 
 function enterMain() {
-  F.password = ""; F.code = "";
+  F.password = "";
+  stopCode();
   boot.signed_in = true;
   boot.setup.email = F.email;
   showMain("companies");

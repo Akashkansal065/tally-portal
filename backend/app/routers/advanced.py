@@ -435,7 +435,10 @@ async def get_pos_payment(
     user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db)
 ):
-    stmt = select(PosPayment).where(PosPayment.voucher_id == voucher_id)
+    # Only a voucher of the caller's company: another company's voucher answers like one that does not exist
+    stmt = (select(PosPayment)
+            .join(TrnVoucher, TrnVoucher.voucher_id == PosPayment.voucher_id)
+            .where(PosPayment.voucher_id == voucher_id, TrnVoucher.company_id == user.company_id))
     res = await db.execute(stmt)
     pos = res.scalars().first()
     if not pos:

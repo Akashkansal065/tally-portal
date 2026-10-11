@@ -170,7 +170,7 @@ def test_connection(backend_url: str, email: str, password: str, tally_url: str)
 
 
 # ---------------------------------------------------------------------------
-# Sign in, and create an account
+# Sign in: with email and password, or with a code entered in the MyTally app
 # ---------------------------------------------------------------------------
 def sign_in_pc(host, backend_url: str, email: str, password: str, tally_url: str, company_name: str,
                autostart: bool) -> Tuple[bool, str, bool]:
@@ -233,38 +233,38 @@ def company_details(company: Dict[str, Any], tally_url: str) -> Dict[str, Any]:
             "fingerprint": company.get("fingerprint") or None}
 
 
-def request_sign_up_code(backend_url: str, tally_url: str, company_name: str,
-                         details: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
-    """Ask the server to email the code that confirms a new account. Returns (ok, why not, the Tally company
-    the account will start with). Nothing is created until finish_sign_up."""
-    # The account's first company is the one open in Tally: without it there is nothing to sync
-    open_cmps = TallyClient(tally_url=tally_url).get_open_companies()
-    match = next((c for c in open_cmps if c.get("name") == company_name), None) or (open_cmps[0] if open_cmps else None)
-    if match is None or not match.get("guid"):
-        return False, "Open your company in TallyPrime first, then try again.", None
-    ok, message = CloudClient(backend_url=backend_url).sign_up(details)
-    return ok, message, company_details(match, tally_url)
+def start_code_sign_in(backend_url: str) -> Tuple[bool, Any]:
+    """Ask the server for a code to show. Returns (ok, {"code", "poll_token", "expires_in_minutes"} or why not)."""
+    client = CloudClient(backend_url=backend_url)
+    client.check_health()
+    return client.start_code_sign_in()
 
 
-def finish_sign_up(host, backend_url: str, email: str, code: str, company: Dict[str, Any], tally_url: str,
-                   autostart: bool) -> Tuple[bool, str]:
-    """Confirm the emailed code. The account then exists and this PC is signed in to it with its first
-    company linked."""
-    ok, signed = CloudClient(backend_url=backend_url).verify_sign_up(email, code, company)
-    if not ok:
-        return False, str(signed)
+def finish_code_sign_in(host, backend_url: str, poll_token: str, tally_url: str, company_name: str,
+                        autostart: bool) -> Tuple[str, str]:
+    """Ask whether the code has been entered in the MyTally app. Returns ("pending", ""), ("error", why) or
+    ("approved", ""): this PC is then signed in and that is saved. Its company is still to be linked
+    (link_active_company), as after signing in with email and password."""
+    state, signed = CloudClient(backend_url=backend_url).collect_code_sign_in(poll_token)
+    if state != "approved":
+        return state, "" if state == "pending" else str(signed)
     cfg = host.config
+    email = (signed.get("user") or {}).get("email") or ""
     cfg.backend_url, cfg.email, cfg.username, cfg.tally_url = backend_url, email, email, tally_url
     cfg.password, cfg.auth_token, cfg.auth_halt_reason = "", "", ""
     cfg.device_token = signed["device_token"]
-    cfg.company_name = signed["company"]["name"]
-    cfg.company_guid = signed["company"]["tally_guid"]
+    if company_name:
+        if company_name != cfg.company_name:
+            cfg.company_guid = ""   # a different company: its GUID is pinned when it is next seen open in Tally
+        cfg.company_name = company_name
     cfg.autostart_enabled = autostart
     save_config(cfg, host.config_file)
-    if cfg.autostart_enabled:
+    if autostart:
         install_startup()
+    else:
+        uninstall_startup()
     host.agent.reload_config(cfg)
-    return True, ""
+    return "approved", ""
 
 
 # ---------------------------------------------------------------------------

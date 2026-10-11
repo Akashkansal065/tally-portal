@@ -145,7 +145,9 @@ export default function BackupPage() {
         }
       } else {
         setTallyConnected(false)
-        setTallyMessage(`HTTP Error ${res.status}: Cannot reach backup service`)
+        // 403: signed in, but not one of the people who run the server (PLATFORM_ADMIN_EMAILS)
+        const refused = res.status === 403 ? (await res.json().catch(() => ({}))).detail : null
+        setTallyMessage(refused || `HTTP Error ${res.status}: Cannot reach backup service`)
       }
     } catch (e: any) {
       setTallyConnected(false)

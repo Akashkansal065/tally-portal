@@ -202,6 +202,9 @@ async def update_company(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
 
     # 3. Update Fields
+    from app.services.company_profile_push import profile_values, fields_to_push
+    tally_name = company.name   # what Tally knows the company by, whatever it is renamed to here
+    profile_before = profile_values(company)
     if req.name is not None: company.name = req.name
     if req.address_line1 is not None: company.address_line1 = req.address_line1
     if req.address_line2 is not None: company.address_line2 = req.address_line2
@@ -236,16 +239,27 @@ async def update_company(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid books_begin_date format. Use YYYY-MM-DD.")
 
-    # 4. Queue Outbound Sync Item for Tally Prime
+    # 4. Queue the changed values for Tally. One pending row per company: an edit made before the last one was
+    # sent is folded into this one, so saving twice sends once.
     from app.models.portal_core import SyncQueue
-    sync_item = SyncQueue(
-        company_id=company_id,
-        record_type="Company",
-        record_id=company_id,
-        action="Update",
-        is_processed=False
-    )
-    db.add(sync_item)
+    to_push = fields_to_push(profile_before, profile_values(company))
+    if to_push:
+        pending = (await db.execute(select(SyncQueue).where(
+            SyncQueue.company_id == company_id, SyncQueue.record_type == "Company",
+            SyncQueue.record_id == company_id, SyncQueue.action == "Update",
+            SyncQueue.is_processed == False).order_by(SyncQueue.sync_id.asc()))).scalars().all()  # noqa: E712
+        fields = {}
+        for row in pending:
+            fields.update((row.snapshot_data or {}).get("fields") or {})
+        fields.update(to_push)
+        db.add(SyncQueue(
+            company_id=company_id,
+            record_type="Company",
+            record_id=company_id,
+            action="Update",
+            is_processed=False,
+            snapshot_data={"tally_name": tally_name, "fields": fields},
+        ))
 
     await db.commit()
     await db.refresh(company)

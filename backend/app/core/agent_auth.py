@@ -170,6 +170,23 @@ async def can_manage_sync_agent(db: AsyncSession, user_id: int) -> bool:
         UserPermissionOverride.user_id == user_id, *_holds_sync_agent(module.module_id)))).scalars().first() is not None
 
 
+async def needs_tally_setup(db: AsyncSession, user: User) -> bool:
+    """Whether this person has to connect a Tally PC before using the app: their business was created in the
+    app and still has neither a Tally company nor a PC signed in to the sync agent. Asked only of people who
+    can do something about it (they hold "Manage sync agent"); nobody else is ever held up."""
+    if user.account_id is None:
+        return False
+    awaiting = (await db.execute(select(Company.company_id).where(
+        Company.account_id == user.account_id, Company.awaiting_tally == True).limit(1))).scalars().first()  # noqa: E712
+    if awaiting is None:
+        return False
+    connected = (await db.execute(select(AgentDevice.device_id).where(
+        AgentDevice.account_id == user.account_id, AgentDevice.revoked_at.is_(None)).limit(1))).scalars().first()
+    if connected is not None:
+        return False
+    return await can_manage_sync_agent(db, user.user_id)
+
+
 async def sync_agent_holders(db: AsyncSession, account_id: int) -> list:
     """Active users of the account who may use the sync agent."""
     module = (await db.execute(select(Module).where(Module.code == SYNC_AGENT_MODULE))).scalars().first()

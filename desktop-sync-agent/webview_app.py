@@ -98,8 +98,8 @@ class Api:
         self._window = None
         self._on_quit = None
         self._open_companies: Dict[str, Dict[str, Any]] = {}   # what Tally had open at the last look, by GUID
-        self._signup_company: Optional[Dict[str, Any]] = None  # the Tally company a new account starts with
-        self._lock = threading.Lock()                          # one sign-in or sign-up request at a time
+        self._code_sign_in: Optional[Dict[str, str]] = None    # the code on screen: its server and its secret
+        self._lock = threading.Lock()                          # one sign-in request at a time
 
     # -- start and state ----------------------------------------------------
     def boot(self) -> Dict[str, Any]:
@@ -243,46 +243,41 @@ class Api:
             return {"ok": False, "message": str(message), "reason": reason}
         return {"ok": False, "message": f"Signed in, but the company could not be linked: {message}", "reason": reason or ""}
 
-    def send_code(self, values: Dict[str, Any]) -> Dict[str, Any]:
-        """Create an account, step 1: details, then the code emailed to confirm them. The company open in
-        Tally becomes the account's first company."""
-        v = values or {}
-        backend_url = str(v.get("server") or "").strip()
+    def code_start(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Sign in with a code, step 1: get the code to show. The secret that goes with it stays here."""
+        backend_url = str((values or {}).get("server") or "").strip()
         if not backend_url:
             return {"ok": False, "message": "Enter the server address under Advanced."}
-        details = {"full_name": str(v.get("name") or "").strip(), "business_name": str(v.get("business") or "").strip(),
-                   "email": str(v.get("email") or "").strip(), "phone": str(v.get("phone") or "").strip(),
-                   "password": str(v.get("password") or "")}
-        if not all(details.values()):
-            return {"ok": False, "message": "Fill in every field."}
-        if not v.get("terms"):
-            return {"ok": False, "message": "Accept the terms to create an account."}
-        details["accept_terms"] = True
         if not self._lock.acquire(blocking=False):
-            return {"ok": False, "message": "Still sending. Give it a moment."}
+            return {"ok": False, "message": "Still working. Give it a moment."}
         try:
-            ok, message, company = core.request_sign_up_code(backend_url, str(v.get("tally") or "").strip(),
-                                                             str(v.get("company") or "").strip(), details)
-            if company:
-                self._signup_company = company
-            return {"ok": ok, "message": message, "company": company["name"] if company else ""}
+            ok, body = core.start_code_sign_in(backend_url)
+            if not ok:
+                return {"ok": False, "message": str(body)}
+            self._code_sign_in = {"server": backend_url, "poll_token": body["poll_token"]}
+            return {"ok": True, "code": body["code"], "minutes": int(body.get("expires_in_minutes") or 10)}
         finally:
             self._lock.release()
 
-    def create_account(self, values: Dict[str, Any]) -> Dict[str, Any]:
+    def code_check(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Step 2, asked every few seconds: has the code been entered in the app? Once it has, this PC is
+        signed in and its company is linked as after sign_in. Answers {"status": "pending" | "done" | "error"}."""
         v = values or {}
-        code = str(v.get("code") or "").strip()
-        if not code or self._signup_company is None:
-            return {"ok": False, "message": "Enter the code from the email."}
+        pending = self._code_sign_in
+        if pending is None:
+            return {"status": "error", "ok": False, "message": "Ask for a new code.", "reason": ""}
         if not self._lock.acquire(blocking=False):
-            return {"ok": False, "message": "Still creating the account. Give it a moment."}
+            return {"status": "pending"}
         try:
-            ok, message = core.finish_sign_up(self._session, str(v.get("server") or "").strip(), str(v.get("email") or "").strip(),
-                                              code, self._signup_company, str(v.get("tally") or "").strip(), bool(v.get("autostart")))
-            if ok:
-                self._signup_company = None
-                self._session.start_sync()
-            return {"ok": ok, "message": message}
+            state, message = core.finish_code_sign_in(
+                self._session, pending["server"], pending["poll_token"], str(v.get("tally") or "").strip(),
+                str(v.get("company") or "").strip(), bool(v.get("autostart")))
+            if state == "pending":
+                return {"status": "pending"}
+            self._code_sign_in = None
+            if state == "error":
+                return {"status": "error", "ok": False, "message": message, "reason": ""}
+            return {"status": "done", **self._link_active(False)}
         finally:
             self._lock.release()
 

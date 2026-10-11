@@ -17,6 +17,15 @@ import re
 import os
 import sys
 import hashlib
+import logging
+import zipfile
+
+logger = logging.getLogger("app.routers.bank_recon")
+
+# A bank statement is at most a few MB. These bound how much memory one upload can make the server use.
+MAX_STATEMENT_BYTES = 10 * 1024 * 1024
+# An .xlsx is a zip: a small file can unpack to gigabytes (a "zip bomb"), so its unpacked size is checked too
+MAX_STATEMENT_UNPACKED_BYTES = 100 * 1024 * 1024
 
 try:
     import openpyxl
@@ -130,6 +139,16 @@ def compute_row_hash(
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
+def _unpacked_size(content_bytes: bytes) -> int:
+    """What a zip (.xlsx) would unpack to, from its directory, without unpacking it. Not a readable zip: 0, and the
+    Excel reader says what is wrong with it."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content_bytes)) as archive:
+            return sum(entry.file_size for entry in archive.infolist())
+    except zipfile.BadZipFile:
+        return 0
+
+
 def parse_statement_file(
     filename: str,
     content_bytes: bytes,
@@ -179,6 +198,8 @@ def parse_statement_file(
     if is_excel:
         if openpyxl is None:
             raise HTTPException(status_code=500, detail="openpyxl is not installed on the server to read Excel files.")
+        if content_bytes[:2] == b"PK" and _unpacked_size(content_bytes) > MAX_STATEMENT_UNPACKED_BYTES:
+            raise HTTPException(status_code=413, detail="This Excel file is too large to be a bank statement.")
         try:
             wb = openpyxl.load_workbook(io.BytesIO(content_bytes), data_only=True)
         except Exception as e:
@@ -187,9 +208,11 @@ def parse_statement_file(
                     status_code=400,
                     detail="This Excel statement is password-protected. Please enter the file password."
                 )
+            # The parser's own message can name server internals: it goes to the log, the person gets a plain answer
+            logger.warning(f"Bank statement '{filename}' could not be read as Excel: {e}")
             raise HTTPException(
                 status_code=400,
-                detail=f"Unable to read Excel workbook: {str(e)}"
+                detail="Unable to read this Excel workbook. Save it again from Excel (or export it as CSV) and upload that."
             )
 
         sheet = wb.active
@@ -469,7 +492,9 @@ async def upload_bank_statement(
     if not bank_ledger:
         raise HTTPException(status_code=404, detail="Bank ledger not found")
 
-    content_bytes = await file.read()
+    content_bytes = await file.read(MAX_STATEMENT_BYTES + 1)
+    if len(content_bytes) > MAX_STATEMENT_BYTES:
+        raise HTTPException(status_code=413, detail="The statement file is larger than 10 MB.")
     filename = file.filename or "statement.csv"
     file_hash = hashlib.sha256(content_bytes).hexdigest()
 

@@ -3,7 +3,7 @@ none of another's, whichever way they ask for it."""
 from sqlalchemy import func, select
 
 import app.models.portal_core as P
-from app.routers import auth, sync
+from app.routers import admin, auth, sync
 from tests.conftest import bearer, login
 
 
@@ -87,7 +87,7 @@ def test_registration_and_company_creation_from_the_web_are_gone(harness):
     for path in ("/auth/register", "/auth/register-company", "/companies"):
         res = client.post(path, headers=headers, json={"company_name": "Gamma", "name": "Gamma"})
         assert res.status_code == 410, path
-        assert "Desktop Sync Agent" in res.json()["detail"]
+        assert ("Desktop Sync Agent" if path == "/companies" else "mobile number") in res.json()["detail"]
     assert client.get("/auth/bootstrap-status").json() == {"need_bootstrap": False}
     assert harness.scalar(select(func.count()).select_from(P.Company)) == 4
 
@@ -174,22 +174,125 @@ def test_each_account_has_its_own_settings(harness):
     assert client.get(path, headers=two).json()["default_credit_days"] == 30      # the default, untouched
 
 
-def test_the_servers_own_tally_is_used_for_one_named_company_only(harness, monkeypatch):
+def test_the_servers_own_tally_is_used_for_one_company_only(harness, monkeypatch):
+    """The server's own Tally belongs to one customer. Anyone can sign up, so a later account must never be sent
+    to it: not by default, and not by giving a company of theirs the same Tally GUID."""
     from app.core import tally_target
     from app.core.config import settings
     from tests.conftest import run
-    _, _, companies = seed(harness)       # B1 is linked to guid-b1
-    monkeypatch.setattr(settings, "TALLY_URL", "http://tally.test:9000")
+    _, _, companies = seed(harness)       # account One: A1, A2 (first account); account Two: B1 (guid-b1); Legacy
+    url = "http://tally.test:9000"
+    monkeypatch.setattr(settings, "TALLY_URL", url)
+    monkeypatch.setattr(settings, "TALLY_URL_COMPANY_ID", None)
 
-    async def url_for(company_id):
-        async with harness.Session() as db:
-            await tally_target.note_request_company(db, company_id)
-            return tally_target.current_tally_url()
+    def url_for(company):
+        async def go():
+            async with harness.Session() as db:
+                await tally_target.note_request_company(db, company.company_id)
+                return tally_target.current_tally_url()
+        tally_target.forget_direct_companies()
+        return run(go())
 
-    # Not restricted: as on a one-customer server, every company may use it
-    assert run(url_for(companies["a1"].company_id)) == "http://tally.test:9000"
+    # Not pinned: the server's first customer and its companies from before accounts; a later account never
+    assert [url_for(companies[c]) for c in ("a1", "a2", "legacy")] == [url, url, url]
+    assert url_for(companies["b1"]) is None
+    monkeypatch.setattr(settings, "ACCOUNTS_ENFORCED", True)
+    assert url_for(companies["legacy"]) is None          # once enforced, a company of no account belongs to nobody
+    monkeypatch.setattr(settings, "ACCOUNTS_ENFORCED", False)
 
+    # Pinned by GUID
     monkeypatch.setattr(settings, "TALLY_URL_COMPANY_GUID", "guid-b1")
-    tally_target._guid_cache.clear()
-    assert run(url_for(companies["b1"].company_id)) == "http://tally.test:9000"
-    assert run(url_for(companies["a1"].company_id)) is None     # another customer's company waits for its own agent
+    assert url_for(companies["b1"]) == url
+    assert url_for(companies["a1"]) is None              # another customer's company waits for its own agent
+
+    # Someone signs up and gives a company of theirs the same GUID: the company that had it first keeps the Tally
+    copycat = harness.add(P.Account(name="Copycat"))
+    copy = harness.company("Copy")
+    in_account(harness, copycat, company=copy)
+    harness.execute(P.Company.__table__.update().where(P.Company.company_id == copy.company_id).values(tally_guid="guid-b1"))
+    assert url_for(copy) is None
+    assert url_for(companies["b1"]) == url
+
+    # Pinned by id: wins over the GUID, and cannot be copied
+    monkeypatch.setattr(settings, "TALLY_URL_COMPANY_ID", companies["a2"].company_id)
+    assert url_for(companies["a2"]) == url
+    assert url_for(companies["b1"]) is None
+
+
+def test_no_company_recorded_means_no_direct_tally(monkeypatch):
+    """A background job that names no company is never sent to the server's Tally."""
+    from app.core import tally_target
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "TALLY_URL", "http://tally.test:9000")
+    assert tally_target.current_tally_url() is None
+
+
+def roles_world(harness):
+    """Two accounts, each with its own Admin role and admin, and one permission row on each role."""
+    one, two = harness.add(P.Account(name="One"), P.Account(name="Two"))
+    module = harness.add(P.Module(code="vouchers", name="Vouchers"))
+    role_one = harness.add(P.Role(name="Admin", account_id=one.account_id))
+    role_two = harness.add(P.Role(name="Admin", account_id=two.account_id))
+    harness.add(P.Permission(role_id=role_one.role_id, module_id=module.module_id, can_read=True, can_delete=True),
+                P.Permission(role_id=role_two.role_id, module_id=module.module_id, can_read=True, can_delete=True))
+    a1, b1 = harness.company("A1"), harness.company("B1")
+    admin_one, admin_two = harness.user(a1, role_one, "one"), harness.user(b1, role_two, "two")
+    in_account(harness, one, company=a1, user=admin_one)
+    in_account(harness, two, company=b1, user=admin_two)
+    client = harness.app(auth.router, admin.router)
+    return client, module, {"one": role_one, "two": role_two}, {"one": admin_one, "two": admin_two}
+
+
+def permission_row(harness, role):
+    return harness.scalar(select(P.Permission).where(P.Permission.role_id == role.role_id))
+
+
+def lock_out(role, module):
+    return [{"role_id": role.role_id, "module_id": module.module_id,
+             "can_create": False, "can_read": False, "can_update": False, "can_delete": False}]
+
+
+def test_admin_cannot_change_another_accounts_roles(harness):
+    """Anyone who signs up is an Admin; that must not let them rewrite what another business's roles may do."""
+    client, module, roles, admins = roles_world(harness)
+    headers = bearer(login(client, admins["two"].email))
+
+    refused = client.post("/admin/permissions", json=lock_out(roles["one"], module), headers=headers)
+    # One foreign role in an otherwise valid request: nothing at all is written
+    mixed = client.post("/admin/permissions", json=lock_out(roles["two"], module) + lock_out(roles["one"], module),
+                        headers=headers)
+
+    assert refused.status_code == 404 and mixed.status_code == 404
+    untouched = permission_row(harness, roles["one"]), permission_row(harness, roles["two"])
+    assert all(p.can_read and p.can_delete for p in untouched)
+
+
+def test_admin_still_changes_their_own_roles(harness):
+    client, module, roles, admins = roles_world(harness)
+    headers = bearer(login(client, admins["one"].email))
+
+    assert client.post("/admin/permissions", json=lock_out(roles["one"], module), headers=headers).status_code == 200
+    assert not permission_row(harness, roles["one"]).can_read
+    assert permission_row(harness, roles["two"]).can_read
+
+
+def test_permission_without_a_role_is_refused(harness):
+    client, module, _, admins = roles_world(harness)
+    item = {"role_id": None, "module_id": module.module_id,
+            "can_create": True, "can_read": True, "can_update": True, "can_delete": True}
+
+    response = client.post("/admin/permissions", json=[item], headers=bearer(login(client, admins["one"].email)))
+
+    assert response.status_code == 400
+
+
+def test_admin_sees_only_their_own_accounts_permissions_and_users(harness):
+    client, _, roles, admins = roles_world(harness)
+    headers = bearer(login(client, admins["one"].email))
+
+    listed = client.get("/admin/permissions", headers=headers).json()
+    other_user = client.get(f"/admin/users/{admins['two'].user_id}/permissions", headers=headers)
+    own_user = client.get(f"/admin/users/{admins['one'].user_id}/permissions", headers=headers)
+
+    assert {p["role_id"] for p in listed} == {roles["one"].role_id}
+    assert other_user.status_code == 404 and own_user.status_code == 200

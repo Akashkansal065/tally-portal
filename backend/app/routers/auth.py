@@ -20,6 +20,7 @@ from app.core.sessions import (
     live_session_conditions
 )
 from app.core.rate_limiter import limiter
+from app.core.agent_auth import needs_tally_setup
 from app.models.portal_core import Company
 from app.core.permissions import same_account_as_user
 from app.models.portal_core import User, Role, UserSession, UserCompanyAccess
@@ -28,7 +29,7 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-GONE_SIGN_UP = "Accounts are created from the Desktop Sync Agent. To join a business that already has one, ask its admin for an invitation."
+GONE_SIGN_UP = "Create your account in the MyTally app with your mobile number. To join a business that already has one, ask its admin for an invitation."
 
 
 @router.get("/bootstrap-status")
@@ -40,8 +41,8 @@ async def get_bootstrap_status():
 @router.post("/register", status_code=status.HTTP_410_GONE)
 @router.post("/register-company", status_code=status.HTTP_410_GONE)
 async def register_company():
-    """Registration from the web was the way in before accounts existed. An account is now created only from the
-    Desktop Sync Agent (POST /agent/signup), and people join one by invitation."""
+    """Registration from the web was the way in before accounts existed. An account is now created with a mobile
+    number (POST /auth/phone/register), and people join one by invitation."""
     raise HTTPException(status_code=status.HTTP_410_GONE, detail=GONE_SIGN_UP)
 
 
@@ -149,6 +150,8 @@ class UserMeResponse(BaseModel):
     allowedReportCategories: Optional[str] = None
     voucherActionScope: str = "full"
     allowedVoucherTypeIds: Optional[List[int]] = None
+    # The business has no Tally PC yet and this person can connect one: the app holds them at Connect Tally
+    needs_tally_setup: bool = False
 
 @router.get("/me", response_model=UserMeResponse)
 async def get_me(
@@ -193,6 +196,7 @@ async def get_me(
         "allowedReportCategories": user.allowed_report_categories,
         "voucherActionScope": voucher_action_scope,
         "allowedVoucherTypeIds": allowed_vt_ids,
+        "needs_tally_setup": await needs_tally_setup(db, user),
     }
 
 

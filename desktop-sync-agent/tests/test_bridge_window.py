@@ -146,12 +146,28 @@ def test_sign_in_needs_a_server_address(api):
     assert api.sign_in({"server": " ", "email": "a@b.c", "password": "x"})["ok"] is False
 
 
-def test_sign_up_is_checked_before_anything_is_sent(api, monkeypatch):
-    monkeypatch.setattr(core, "request_sign_up_code", lambda *a, **k: pytest.fail("a request was sent"))
-    full = {"server": "https://x.example", "name": "A", "business": "B", "email": "a@b.c", "phone": "1", "password": "12345678", "terms": True}
-    assert "every field" in api.send_code({**full, "phone": ""})["message"]
-    assert "terms" in api.send_code({**full, "terms": False})["message"]
-    assert "code" in api.create_account({**full, "code": "123456"})["message"]   # no code was ever requested
+def test_the_page_never_sees_the_secret_behind_a_sign_in_code(api, monkeypatch):
+    assert api.code_start({"server": " "})["ok"] is False
+    assert api.code_check({})["status"] == "error"   # no code was ever asked for
+    monkeypatch.setattr(core, "start_code_sign_in", lambda url: (True, {"code": "ABCD-2345", "poll_token": "secret", "expires_in_minutes": 10}))
+    assert api.code_start({"server": "https://x.example"}) == {"ok": True, "code": "ABCD-2345", "minutes": 10}
+
+    asked = []
+    monkeypatch.setattr(core, "finish_code_sign_in", lambda host, url, token, *rest: (asked.append((url, token)), ("pending", ""))[1])
+    assert api.code_check({}) == {"status": "pending"}
+    assert asked == [("https://x.example", "secret")]
+
+    monkeypatch.setattr(core, "finish_code_sign_in", lambda *a: ("error", "That code has expired. Ask for a new one."))
+    assert "expired" in api.code_check({})["message"]
+    assert api.code_check({})["message"] == "Ask for a new code."   # the used-up code is forgotten
+
+
+def test_a_code_entered_in_the_app_signs_the_pc_in_and_links_its_company(api, monkeypatch):
+    monkeypatch.setattr(core, "start_code_sign_in", lambda url: (True, {"code": "ABCD-2345", "poll_token": "secret"}))
+    monkeypatch.setattr(core, "finish_code_sign_in", lambda *a: ("approved", ""))
+    monkeypatch.setattr(api, "_link_active", lambda take_over: {"ok": True})
+    api.code_start({"server": "https://x.example"})
+    assert api.code_check({"company": "Demo Traders"}) == {"status": "done", "ok": True}
 
 
 def test_linking_needs_a_company_seen_open_in_tally(api):

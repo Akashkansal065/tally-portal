@@ -22,10 +22,10 @@ from app.core.permissions import ADMIN_ROLE_NAMES
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash
 from app.models.portal_core import (
-    Account, AgentCompanyLink, AgentDevice, Company, Role, User, UserCompanyAccess, UserInvite,
+    Account, AgentCompanyLink, AgentDevice, Company, Role, User, UserCompanyAccess, UserInvite, UserPhone,
 )
 from app.routers.admin import require_admin
-from app.services import alerts, messaging
+from app.services import alerts, firebase_auth, messaging
 
 logger = logging.getLogger("app.routers.team")
 router = APIRouter(prefix="/admin", tags=["Account team"])
@@ -35,7 +35,7 @@ INVITE_TTL_DAYS = 7
 
 
 class InviteCreate(BaseModel):
-    email: str = Field(max_length=120)
+    email: Optional[str] = Field(default=None, max_length=120)   # an email, a mobile number, or both
     role_id: int
     company_ids: List[int] = Field(min_length=1)
     phone: Optional[str] = Field(default=None, max_length=20)
@@ -75,9 +75,20 @@ async def _check_user_limit(db: AsyncSession, account: Account) -> None:
 
 # ─── Invitations ─────────────────────────────────────────────────────────────
 
+def invite_email(invite: UserInvite) -> str:
+    """The invitation's email, or "" for one sent to a mobile number only (which keeps the number there)."""
+    return invite.email if "@" in (invite.email or "") else ""
+
+
+def invite_phone(invite: UserInvite) -> Optional[str]:
+    """The mobile number the invitation names, when it is one a person can confirm with an OTP. Numbers typed
+    on invitations from before mobile number sign-in were kept as typed and are only a contact detail."""
+    return invite.phone if firebase_auth.E164.match(invite.phone or "") else None
+
+
 def _invite_dict(invite: UserInvite) -> dict:
     return {
-        "invite_id": invite.invite_id, "email": invite.email, "phone": invite.phone, "role_id": invite.role_id,
+        "invite_id": invite.invite_id, "email": invite_email(invite), "phone": invite.phone, "role_id": invite.role_id,
         "company_ids": invite.company_ids or [], "expires_at": to_ist_iso(invite.expires_at),
         "status": "accepted" if invite.accepted_at else "open" if invite.is_open and invite.expires_at > get_ist_now() else "closed",
     }
@@ -85,14 +96,31 @@ def _invite_dict(invite: UserInvite) -> dict:
 
 @router.post("/invites")
 async def create_invite(payload: InviteCreate, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)):
-    """Invite someone into the admin's account. A new invitation for the same email replaces the open one."""
+    """Invite someone into the admin's account, by email, by mobile number, or both. A new invitation for the
+    same email or number replaces the open one.
+
+    Either way the person who joins is the one who was invited: an email invitation is a link sent to that
+    address, and a mobile number is confirmed with an OTP when they sign in with it."""
     account = await _account(db, admin)
-    email = messaging.clean_email(payload.email)
-    if not email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter a valid email address.")
-    email = email.lower()
-    if (await db.execute(select(User.user_id).where(func.lower(User.email) == email))).scalars().first() is not None:
+    email = ""
+    if (payload.email or "").strip():
+        email = (messaging.clean_email(payload.email) or "").lower()
+        if not email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter a valid email address.")
+    phone = None
+    if (payload.phone or "").strip():
+        phone = firebase_auth.e164(payload.phone)
+        if phone is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter a valid mobile number, with its country code if it is not Indian.")
+    if not email and not phone:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter an email address or a mobile number.")
+    if phone and not email and not firebase_auth.enabled():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Sign-in with a mobile number is not switched on, so this person could not join. Invite them by email.")
+    if email and (await db.execute(select(User.user_id).where(func.lower(User.email) == email))).scalars().first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists.")
+    if phone and (await db.execute(select(UserPhone.user_id).where(UserPhone.phone == phone))).scalars().first() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user already signs in with this mobile number.")
     if (await db.execute(select(Role.role_id).where(
             Role.role_id == payload.role_id, role_in_account(account.account_id)))).scalars().first() is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Role not found.")
@@ -103,17 +131,22 @@ async def create_invite(payload: InviteCreate, db: AsyncSession = Depends(get_db
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
     await _check_user_limit(db, account)
 
+    key = email or phone
+    same_person = (UserInvite.email == key) if not phone else ((UserInvite.email == key) | (UserInvite.phone == phone))
     for earlier in (await db.execute(select(UserInvite).where(
-            UserInvite.account_id == account.account_id, UserInvite.email == email, UserInvite.is_open == True))).scalars():  # noqa: E712
+            UserInvite.account_id == account.account_id, same_person, UserInvite.is_open == True))).scalars():  # noqa: E712
         earlier.is_open = None
     await db.flush()
     token = secrets.token_urlsafe(32)
-    invite = UserInvite(account_id=account.account_id, email=email, phone=payload.phone, role_id=payload.role_id,
+    invite = UserInvite(account_id=account.account_id, email=key, phone=phone, role_id=payload.role_id,
                         company_ids=sorted(own), token_hash=hash_token(token), is_open=True,
                         expires_at=get_ist_now() + timedelta(days=INVITE_TTL_DAYS), invited_by_user_id=admin.user_id)
     db.add(invite)
     await db.commit()
 
+    if not email:
+        # Nothing to send: they join by signing in to the app with this number, which the OTP confirms
+        return {**_invite_dict(invite), "invite_token": "", "email_sent": False}
     base = (settings.APP_PUBLIC_URL or "").rstrip("/")
     how = f"Open {base}/accept-invite?token={token}" if base else f"Open the app, choose 'Accept invite' and enter this code:\n\n{token}"
     sent = await messaging.send_email(
@@ -151,21 +184,20 @@ async def _open_invite(db: AsyncSession, token: str) -> UserInvite:
     return invite
 
 
-@public_router.get("/{token}")
-@limiter.limit(settings.LOGIN_RATE_LIMIT)
-async def view_invite(request: Request, response: Response, token: str, db: AsyncSession = Depends(get_db)):
-    """What an invitation is for, shown before the person chooses a password."""
-    invite = await _open_invite(db, token)
-    account = (await db.execute(select(Account).where(Account.account_id == invite.account_id))).scalars().first()
-    return {"email": invite.email, "account_name": account.name}
+async def open_phone_invite(db: AsyncSession, phone: str) -> Optional[UserInvite]:
+    """The newest open invitation that names this confirmed mobile number, in any account."""
+    return (await db.execute(select(UserInvite).where(
+        UserInvite.phone == phone, UserInvite.is_open == True, UserInvite.accepted_at.is_(None),  # noqa: E712
+        UserInvite.expires_at > get_ist_now()).order_by(UserInvite.invite_id.desc()).with_for_update())).scalars().first()
 
 
-@public_router.post("/accept")
-@limiter.limit(settings.LOGIN_RATE_LIMIT)
-async def accept_invite(request: Request, response: Response, payload: InviteAccept, db: AsyncSession = Depends(get_db)):
-    """Become a user of the inviting account, with the role and companies the invitation carries."""
-    invite = await _open_invite(db, payload.token)
-    if (await db.execute(select(User.user_id).where(func.lower(User.email) == invite.email))).scalars().first() is not None:
+async def join_from_invite(db: AsyncSession, invite: UserInvite, username: str, password_hash: str,
+                           confirmed: Optional[firebase_auth.VerifiedPhone] = None, email_confirmed: bool = True) -> User:
+    """Make the invited person a user of the inviting account, with the role and companies the invitation
+    carries, and close the invitation. With a confirmed mobile number, that number signs them in from now
+    on. The caller commits."""
+    email = invite_email(invite)
+    if email and (await db.execute(select(User.user_id).where(func.lower(User.email) == email))).scalars().first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists. Sign in.")
     companies = (await db.execute(select(Company.company_id).where(
         Company.account_id == invite.account_id, Company.company_id.in_(invite.company_ids or []), Company.is_active == True  # noqa: E712
@@ -177,15 +209,46 @@ async def accept_invite(request: Request, response: Response, payload: InviteAcc
     await _check_user_limit(db, (await db.execute(select(Account).where(Account.account_id == invite.account_id))).scalars().first())
     role = (await db.execute(select(Role).where(Role.role_id == invite.role_id))).scalars().first()
     is_admin = bool(role and role.name.lower() in ADMIN_ROLE_NAMES)
-    user = User(account_id=invite.account_id, company_id=companies[0], username=payload.username.strip(), email=invite.email,
-                phone=invite.phone, password_hash=get_password_hash(payload.password), role_id=invite.role_id, is_active=True,
-                email_verified_at=get_ist_now(), ledger_scope="full" if is_admin else "none", stock_scope="full" if is_admin else "none")
+    user = User(account_id=invite.account_id, company_id=companies[0], username=username.strip()[:50], email=email,
+                phone=confirmed.phone if confirmed else invite.phone, password_hash=password_hash, role_id=invite.role_id,
+                is_active=True, email_verified_at=get_ist_now() if email and email_confirmed else None,
+                ledger_scope="full" if is_admin else "none", stock_scope="full" if is_admin else "none")
     db.add(user)
     await db.flush()
+    if confirmed is not None:
+        db.add(UserPhone(phone=confirmed.phone, user_id=user.user_id, firebase_uid=confirmed.uid, verified_at=get_ist_now()))
     for company_id in companies:
         db.add(UserCompanyAccess(user_id=user.user_id, company_id=company_id))
     invite.accepted_at = get_ist_now()
     invite.is_open = None
+    await db.flush()
+    return user
+
+
+@public_router.get("/{token}")
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
+async def view_invite(request: Request, response: Response, token: str, db: AsyncSession = Depends(get_db)):
+    """What an invitation is for, shown before the person chooses how they will sign in. With a phone, and
+    mobile number sign-in on, it can only be accepted by confirming that number."""
+    invite = await _open_invite(db, token)
+    account = (await db.execute(select(Account).where(Account.account_id == invite.account_id))).scalars().first()
+    return {"email": invite_email(invite), "account_name": account.name, "phone": invite_phone(invite)}
+
+
+@public_router.post("/accept")
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
+async def accept_invite(request: Request, response: Response, payload: InviteAccept, db: AsyncSession = Depends(get_db)):
+    """Become a user of the inviting account with an email and a password. The link was sent to that email,
+    which is what shows the person is the one invited. (With a mobile number: POST /auth/phone/accept-invite.)"""
+    invite = await _open_invite(db, payload.token)
+    if not invite_email(invite):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="This invitation is for a mobile number. Sign in to the app with that number to join.")
+    if invite_phone(invite) and firebase_auth.enabled():
+        # The admin named a number: only whoever holds it joins, whoever the link reached
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="This invitation is for a mobile number. Confirm that number to join.")
+    user = await join_from_invite(db, invite, payload.username, get_password_hash(payload.password))
     await db.commit()
     return {"detail": "Your account is ready. Sign in with your email and password.", "email": user.email}
 

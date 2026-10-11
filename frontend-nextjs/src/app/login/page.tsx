@@ -6,6 +6,8 @@ import { useAuth } from '@/context/AuthContext'
 import { API_BASE, afterLoginPath } from '@/lib/utils'
 import { getDeviceHeaders } from '@/lib/device'
 import { Eye, EyeOff, LogIn } from 'lucide-react'
+import { PhoneSignIn } from '@/components/auth/PhoneSignIn'
+import { phoneSignInOffered } from '@/lib/phone-auth'
 
 export default function LoginPage() {
   const { user, isLoading, login } = useAuth()
@@ -15,10 +17,23 @@ export default function LoginPage() {
   const [showPw, setShowPw] = useState(false)
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // Mobile number sign-in is shown first where it is switched on; email and password is always there
+  const [phoneOffered, setPhoneOffered] = useState(false)
+  const [way, setWay] = useState<'phone' | 'email'>('email')
 
   useEffect(() => {
     if (!isLoading && user) router.replace(afterLoginPath())
   }, [user, isLoading, router])
+
+  useEffect(() => {
+    let gone = false
+    phoneSignInOffered().then(offered => {
+      if (gone || !offered) return
+      setPhoneOffered(true)
+      setWay('phone')
+    })
+    return () => { gone = true }
+  }, [])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -72,6 +87,15 @@ export default function LoginPage() {
           </p>
         </div>
 
+        {way === 'phone' ? (
+          <div className="bg-card border border-border rounded-3xl p-6 shadow-xl shadow-black/5">
+            <PhoneSignIn />
+            <p className="mt-4 text-center text-xs text-muted-foreground">
+              <button type="button" onClick={() => setWay('email')} className="font-semibold underline cursor-pointer">Sign in with email and password</button>
+              {' · '}Joining a business? <a href="/accept-invite" className="font-semibold underline">Accept your invitation</a>.
+            </p>
+          </div>
+        ) : (
         <div className="bg-card border border-border rounded-3xl p-6 shadow-xl shadow-black/5">
           {error && (
             <div className="mb-4 p-3 rounded-xl bg-destructive/10 text-destructive text-sm flex items-start gap-2">
@@ -133,12 +157,18 @@ export default function LoginPage() {
               {submitting ? 'Processing...' : 'Sign In'}
             </button>
           </form>
-          {/* There is no sign-up here: an account starts in the sync agent, and people join one by invitation */}
+          {/* A new account starts with a mobile number, where that is switched on; people join one by invitation */}
           <p className="mt-4 text-center text-xs text-muted-foreground">
-            New business? Create your account from the Desktop Sync Agent on the PC that runs Tally.
-            Joining one? <a href="/accept-invite" className="font-semibold underline">Accept your invitation</a>.
+            {phoneOffered && (
+              <>
+                <button type="button" onClick={() => setWay('phone')} className="font-semibold underline cursor-pointer">Sign in or sign up with your mobile number</button>
+                {' · '}
+              </>
+            )}
+            Joining a business? <a href="/accept-invite" className="font-semibold underline">Accept your invitation</a>.
           </p>
         </div>
+        )}
       </div>
     </div>
   )
