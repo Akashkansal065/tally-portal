@@ -68,3 +68,75 @@ def test_a_ledger_renamed_in_tally_is_followed_by_its_guid(harness):
     run(go())
 
     assert harness.query(select(MstLedger.ledger_id, MstLedger.name, MstLedger.tally_guid)) == [(ledger.ledger_id, "New Name", "guid-1")]
+
+
+def test_existing_ledger_parent_group_updated_from_tally(harness):
+    company = harness.company("Alpha")
+    admin = harness.user(company, harness.role("Admin"), "owner")
+    suspense_grp = harness.add(MstGroup(company_id=company.company_id, name="Suspense Accounts", nature="Liability"))
+    debtor_grp = harness.add(MstGroup(company_id=company.company_id, name="Sundry Debtors", nature="Asset"))
+    ledger = harness.add(MstLedger(
+        company_id=company.company_id,
+        name="Santusti Electronics",
+        group_id=suspense_grp.group_id,
+        tally_guid="guid-santusti",
+        tally_alter_id=10
+    ))
+
+    # Scenario 1 (Issue 1): Same AlterID (10 == 10), unforced sync.
+    # Healing runs before the AlterID skip so stuck ledgers are corrected without needing higher AlterID.
+    xml_same_alter = (
+        '<ENVELOPE><BODY><DATA><COLLECTION>'
+        '<LEDGER NAME="Santusti Electronics">'
+        '<GUID>guid-santusti</GUID><ALTERID> 10</ALTERID>'
+        '<PARENT>Sundry Debtors</PARENT>'
+        '</LEDGER>'
+        '</COLLECTION></DATA></BODY></ENVELOPE>'
+    )
+    async def go1():
+        async with harness.Session() as db:
+            await import_tally_xml(xml_same_alter, db, admin.user_id, override_company_name="Alpha", force_overwrite=False)
+            await db.commit()
+    run(go1())
+
+    # Group corrected to Sundry Debtors in-place, same row id
+    rows = harness.query(select(MstLedger.ledger_id, MstLedger.group_id, MstLedger.tally_alter_id))
+    assert rows == [(ledger.ledger_id, debtor_grp.group_id, 10)]
+
+    # Scenario 2 (Issue 2): Empty <PARENT/> tag must NOT move existing ledger back to Suspense
+    xml_empty_parent = (
+        '<ENVELOPE><BODY><DATA><COLLECTION>'
+        '<LEDGER NAME="Santusti Electronics">'
+        '<GUID>guid-santusti</GUID><ALTERID> 10</ALTERID>'
+        '<PARENT/>'
+        '</LEDGER>'
+        '</COLLECTION></DATA></BODY></ENVELOPE>'
+    )
+    async def go2():
+        async with harness.Session() as db:
+            await import_tally_xml(xml_empty_parent, db, admin.user_id, override_company_name="Alpha", force_overwrite=True)
+            await db.commit()
+    run(go2())
+
+    rows2 = harness.query(select(MstLedger.ledger_id, MstLedger.group_id))
+    assert rows2 == [(ledger.ledger_id, debtor_grp.group_id)]
+
+    # Scenario 3: Missing <PARENT> tag must NOT move existing ledger back to Suspense
+    xml_no_parent = (
+        '<ENVELOPE><BODY><DATA><COLLECTION>'
+        '<LEDGER NAME="Santusti Electronics">'
+        '<GUID>guid-santusti</GUID><ALTERID> 10</ALTERID>'
+        '</LEDGER>'
+        '</COLLECTION></DATA></BODY></ENVELOPE>'
+    )
+    async def go3():
+        async with harness.Session() as db:
+            await import_tally_xml(xml_no_parent, db, admin.user_id, override_company_name="Alpha", force_overwrite=True)
+            await db.commit()
+    run(go3())
+
+    rows3 = harness.query(select(MstLedger.ledger_id, MstLedger.group_id))
+    assert rows3 == [(ledger.ledger_id, debtor_grp.group_id)]
+
+
+

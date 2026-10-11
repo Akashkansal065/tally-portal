@@ -1809,7 +1809,9 @@ async def import_tally_xml(
         if not name:
             continue
         try:
-            parent_name = ledger_node.findtext("PARENT")
+            parent_raw = ledger_node.findtext("PARENT")
+            parent_name = _trim_marker(parent_raw) if parent_raw else None
+            has_explicit_parent = bool(parent_name)
             if not parent_name:
                 if name == "Profit & Loss A/c":
                     parent_name = "Primary"
@@ -2034,6 +2036,9 @@ async def import_tally_xml(
                 )
                 db.add(ledger)
             else:
+                if group and (has_explicit_parent or not ledger.group_id) and ledger.group_id != group.group_id:
+                    ledger.group_id = group.group_id
+
                 if not force_overwrite and ledger.tally_alter_id and ledger.tally_alter_id >= alter_id:
                     continue
                 ledger.opening_balance = op_bal_val
