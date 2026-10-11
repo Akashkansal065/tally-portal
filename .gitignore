@@ -67,3 +67,4 @@ GoogleService-Info.plist
 /tally_audit/backups
 /tally_audit
 *firebase_web_app*.json
+desktop-sync-agent/SnehDistribuorsSync.spec
