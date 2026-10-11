@@ -139,11 +139,11 @@ class BridgeApp(ctk.CTk):
 
         # Load Configuration
         self.config_file = get_default_config_path()
-        self.config: AgentConfig = load_config(self.config_file)
-        ctk.set_appearance_mode(self.config.theme if self.config.theme in THEMES.values() else "system")
-
-        # Agent & Background Worker
+        # Agent & Background Worker. The window works on the agent's own config, never a copy of its own: a copy
+        # saved from Settings would overwrite a company the agent linked or a folder it was given.
         self.agent = DesktopSyncAgent(config_path=self.config_file)
+        self.config: AgentConfig = self.agent.config
+        ctk.set_appearance_mode(self.config.theme if self.config.theme in THEMES.values() else "system")
         self.worker_thread: Optional[threading.Thread] = None
         self.log_queue = queue.Queue()
         # Kept whichever page is showing, so Activity has the history when it is opened

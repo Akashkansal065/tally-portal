@@ -14,6 +14,9 @@ from collections import deque
 from typing import Optional, Dict, Any, List, Tuple
 
 import bridge_core as core
+import logging
+
+_log = logging.getLogger("MyTallySyncAgent")   # the agent's log: the Activity page and agent.log
 from bridge_core import APP_NAME, APP_SHORT, APP_VERSION
 from config import load_config, save_config, AgentConfig, is_autostart_registered, get_default_config_path
 
@@ -58,7 +61,6 @@ class Session:
     def __init__(self, config_file: Optional[str] = None):
         from agent import DesktopSyncAgent
         self.config_file = config_file or get_default_config_path()
-        self.config: AgentConfig = load_config(self.config_file)
         self.agent = DesktopSyncAgent(config_path=self.config_file)
         self.worker_thread: Optional[threading.Thread] = None
         # Log lines as the Activity page shows them, each with a running number so the page asks only for new ones
@@ -80,6 +82,12 @@ class Session:
     def clear_logs(self):
         with self._log_lock:
             self._logs.clear()
+
+    @property
+    def config(self) -> AgentConfig:
+        """The agent's own config. One copy only: a company linked or a folder chosen by the agent is never
+        overwritten by a stale copy the window saved from Settings."""
+        return self.agent.config
 
     def start_sync(self):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -129,6 +137,9 @@ class Api:
 
     # -- syncing ------------------------------------------------------------
     def sync_now(self) -> Dict[str, Any]:
+        """Sync now / Retry. Starts the sync again if it is not running, rather than waking nothing."""
+        if core.has_credentials(self._session.config):
+            self._session.start_sync()
         self._session.agent.trigger_immediate_sync(force_full=False)
         return {"ok": True}
 
@@ -247,23 +258,34 @@ class Api:
                 self._session, backend_url, str(v.get("email") or "").strip(), str(v.get("password") or ""),
                 str(v.get("tally") or "").strip(), str(v.get("company") or "").strip(), bool(v.get("autostart")))
             if not ok:
+                _log.warning(f"🔑 {message}")
                 return {"ok": False, "message": message, "reason": ""}
             if as_device:
                 return self._link_active(False)
             self._session.start_sync()
             return {"ok": True}
+        except Exception as e:   # an error raised here would leave the page on "Signing in..." with nothing said
+            _log.error(f"🔑 Sign-in stopped: {e}", exc_info=True)
+            return {"ok": False, "message": f"Sign-in stopped: {e}. The details are in agent.log, in the logs folder next to the program.", "reason": ""}
         finally:
             self._lock.release()
 
     def link_active(self, take_over: bool = False) -> Dict[str, Any]:
-        return self._link_active(bool(take_over))
+        try:
+            return self._link_active(bool(take_over))
+        except Exception as e:
+            _log.error(f"🔗 Linking the company stopped: {e}", exc_info=True)
+            return {"ok": False, "message": f"Signed in, but linking the company stopped: {e}.", "reason": ""}
 
     def _link_active(self, take_over: bool) -> Dict[str, Any]:
         """Make this PC the one syncing the chosen company, then start syncing."""
-        ok, message, reason = self._session.agent.link_active_company(take_over=take_over)
+        agent = self._session.agent
+        _log.info(f"🔗 Linking '{agent.active_company_name}' to this PC (asking TallyPrime for it)…")
+        ok, message, reason = agent.link_active_company(take_over=take_over)
         if ok:
             self._session.start_sync()
             return {"ok": True}
+        _log.warning(f"🔗 Not linked: {message}")
         if reason == "linked_to_another_device":
             return {"ok": False, "message": str(message), "reason": reason}
         return {"ok": False, "message": f"Signed in, but the company could not be linked: {message}", "reason": reason or ""}

@@ -92,7 +92,7 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 # Configure sub-client loggers
-for sub_logger_name in ["TallyClient", "CloudClient"]:
+for sub_logger_name in ["TallyClient", "CloudClient", "Backups"]:
     sub_l = logging.getLogger(sub_logger_name)
     sub_l.setLevel(logging.INFO)
     sub_l.handlers.clear()
@@ -154,6 +154,9 @@ class DesktopSyncAgent:
     # Company GUID -> the highest master and voucher ALTERIDs the cloud held at the last cycle, for the state report
     _watermarks: Dict[str, Tuple[int, int]] = {}
     _last_push_error = ""
+    # How often Tally and the server are asked whether they answer, for the window's health line
+    CONNECTION_CHECK_SECONDS = 15
+    _connections_checked = 0.0
 
     def __init__(self, config_path: Optional[str] = None):
         # Default to the file next to the script/.exe (gitignored), never the current working directory
@@ -203,7 +206,7 @@ class DesktopSyncAgent:
         # Hook log handler into logger and sub-client loggers
         self._gui_handler = CallbackLogHandler(self)
         logger.addHandler(self._gui_handler)
-        for sub_name in ["TallyClient", "CloudClient"]:
+        for sub_name in ["TallyClient", "CloudClient", "Backups"]:
             logging.getLogger(sub_name).addHandler(self._gui_handler)
 
     def add_log_listener(self, cb):
@@ -331,6 +334,49 @@ class DesktopSyncAgent:
         self.restoring = running
         if not running:
             self.immediate_sync_requested = True   # send what the restore changed to the server straight away
+
+    def refresh_connections(self, force: bool = False) -> None:
+        """Ask Tally and the server whether they answer. They were measured once at start, so a server that was
+        restarting then (or a Tally opened later) showed as unreachable for good, and Retry changed nothing
+        while no company was linked. Says so in the log when either one changes."""
+        now = time.time()
+        if not force and now - self._connections_checked < self.CONNECTION_CHECK_SECONDS:
+            return
+        self._connections_checked = now
+        tally_ok = self.tally.check_health()[0]
+        cloud_ok, cloud_msg = self.cloud.check_health()
+        if tally_ok != self.tally_connected:
+            (logger.info if tally_ok else logger.warning)(
+                "✅ TallyPrime is answering again." if tally_ok else f"❌ TallyPrime is not answering on {self.config.tally_url}.")
+        if cloud_ok != self.cloud_connected:
+            (logger.info if cloud_ok else logger.warning)(
+                "✅ The server is reachable again." if cloud_ok else f"⚠️ The server is not reachable ({cloud_msg}).")
+        self.tally_connected, self.cloud_connected = tally_ok, cloud_ok
+        if not self.config.auth_halt_reason:
+            self.cloud_message = cloud_msg
+
+    def adopt_server_links(self) -> int:
+        """Add the companies the server says this PC syncs but this PC does not list: a sign-in that linked a
+        company on the server and stopped before saving it here. Returns how many were added."""
+        if not self.cloud.device_mode:
+            return 0
+        ok, rows = self.cloud.list_companies()
+        if not ok or not isinstance(rows, list):
+            return 0
+        linked = [dict(c) for c in (getattr(self.config, "companies", None) or []) if c.get("guid") or c.get("name")]
+        known = {c.get("guid") for c in linked if c.get("guid")}
+        found = [{"guid": r["tally_guid"], "name": r.get("name") or ""} for r in rows
+                 if isinstance(r, dict) and r.get("linked_here") and r.get("tally_guid") and r["tally_guid"] not in known]
+        if not found:
+            return 0
+        self.config.companies = linked + found
+        if not self.config.company_guid:
+            self.config.company_guid, self.config.company_name = found[0]["guid"], found[0]["name"]
+            self.active_company_guid, self.active_company_name = found[0]["guid"], found[0]["name"]
+            self.cloud.company_guid = self.active_company_guid
+        save_config(self.config, self.config_path)
+        logger.info("🔗 Synced from this PC, as the server has it: " + ", ".join(f"'{c['name']}'" for c in found))
+        return len(found)
 
     def tally_company_to_link(self) -> Optional[Dict[str, Any]]:
         """The Tally company this agent is tied to, as the cloud needs it for linking: found among the companies
@@ -460,6 +506,12 @@ class DesktopSyncAgent:
             else:
                 logger.warning(f"⚠️ Authentication failed: {auth_res}. Using cached token.")
         
+        if cloud_ok and not self.config.auth_halt_reason:
+            try:
+                self.adopt_server_links()
+            except Exception as e:   # never stops the start
+                logger.warning(f"Could not ask the server which companies this PC syncs: {e}")
+        self._connections_checked = time.time()
         return tally_info.get("connected", False) and cloud_ok
 
     def linked_companies(self) -> List[Dict[str, str]]:
@@ -1142,11 +1194,19 @@ class DesktopSyncAgent:
         global running
         self.is_running = True
         print_banner()
-        self.discover_and_report()
+        # Before the loop nothing else catches an error: one here ended the sync thread silently, leaving the
+        # window on its first answers and Retry with nothing to wake
+        try:
+            self.discover_and_report()
+        except Exception as e:
+            logger.error(f"Start-up checks failed: {e}", exc_info=True)
 
         # Run initial baseline inbound sync to populate project DB right away
         if not self.is_paused:
-            self.sync_inbound_cycle(is_incremental=False)
+            try:
+                self.sync_inbound_cycle(is_incremental=False)
+            except Exception as e:
+                logger.error(f"The first sync failed; the loop tries again: {e}", exc_info=True)
 
         logger.info(f"🔄 Starting background sync daemon (outbound: {self.config.sync_interval_seconds}s, inbound: {self.config.inbound_interval_seconds}s)...")
         if getattr(self.config, "backups_enabled", True):
@@ -1160,6 +1220,8 @@ class DesktopSyncAgent:
 
         while running and self.is_running:
             try:
+                # The health line's dots: checked again every few seconds, and at once when Retry is pressed
+                self.refresh_connections(force=self.immediate_sync_requested)
                 if not self.is_paused and not self.restoring:
                     # 1. Outbound Sync (Cloud -> Tally)
                     self.sync_outbound_cycle()

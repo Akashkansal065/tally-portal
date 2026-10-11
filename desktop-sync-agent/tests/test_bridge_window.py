@@ -182,3 +182,16 @@ def test_linking_needs_a_company_seen_open_in_tally(api):
 def test_theme_is_saved_and_checked(api):
     assert api.set_theme("dark")["ok"] and load_config(api._session.config_file).theme == "dark"
     assert api.set_theme("<script>")["ok"] is False
+
+
+def test_a_sign_in_that_fails_outright_says_so_instead_of_hanging(api, monkeypatch):
+    """An error raised during sign-in used to leave the page on "Signing in..." with nothing said."""
+    def broken(*args, **kwargs):
+        raise KeyError("device_token")
+    monkeypatch.setattr(core, "sign_in_pc", broken)
+
+    result = api.sign_in({"server": "http://192.168.1.39:8000", "email": "a@b.c", "password": "x"})
+
+    assert result["ok"] is False and "Sign-in stopped" in result["message"] and "device_token" in result["message"]
+    # and the next attempt is not refused as "still signing in"
+    assert "Still signing in" not in api.sign_in({"server": "http://192.168.1.39:8000", "email": "a@b.c", "password": "x"})["message"]

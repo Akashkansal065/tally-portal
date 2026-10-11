@@ -6,6 +6,7 @@ one-sentence sync health. Both windows use it: the web one (webview_app.py) and 
 A "host" below is whatever holds the running agent: it has .config (AgentConfig), .config_file and .agent.
 """
 
+import logging
 import os
 import re
 import sys
@@ -199,6 +200,8 @@ def sign_in_pc(host, backend_url: str, email: str, password: str, tally_url: str
                autostart: bool) -> Tuple[bool, str, bool]:
     """Sign this PC in and save that. Returns (ok, why not, signed in as a device). A PC signed in as a device
     still has its company to link (link_active_company) before syncing starts."""
+    log = logging.getLogger("MyTallySyncAgent")
+    log.info(f"🔑 Signing this PC in to {backend_url} as {email or 'a saved sign-in'}…")
     cloud_client = CloudClient(backend_url=backend_url, email=email, password=password)
     cloud_client.check_health()
 
@@ -236,6 +239,7 @@ def sign_in_pc(host, backend_url: str, email: str, password: str, tally_url: str
             config.company_guid = ""
         config.company_name = company_name
     config.autostart_enabled = autostart
+    log.info("🔑 Signed in" + (" as this PC." if device_token else " with a person's login (an older server)."))
 
     save_config(config, host.config_file)
 
@@ -298,6 +302,10 @@ def companies_overview(agent) -> Dict[str, Any]:
     its name. "open" keeps the full Tally records by GUID, for linking one."""
     if not agent.cloud.device_mode:
         return {"device_mode": False, "linked": [], "unlinked": [], "open": {}, "any_open": False}
+    try:
+        agent.adopt_server_links()   # linked on the server by a sign-in that stopped before saving it here
+    except Exception:
+        pass
     open_cmps = agent.tally.get_open_companies()
     linked = [dict(c) for c in agent.linked_companies() if c.get("guid")]
     open_by_guid = {c.get("guid"): c for c in open_cmps if c.get("guid")}

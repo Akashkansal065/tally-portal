@@ -207,18 +207,29 @@ function needServer() {
   return false;
 }
 
+// A call into Python that fails outright answers like any refusal, so the button never stays on "Signing in..."
+async function attempt(call, what) {
+  try {
+    return await call();
+  } catch (err) {
+    return { ok: false, message: what + " stopped: " + ((err && err.message) || err) + ". The details are in the log." };
+  }
+}
+
 async function signIn() {
   if (!needServer()) return;
   busy("Signing in...");
-  let result = await api.sign_in(F);
+  let result = await attempt(() => api.sign_in(F), "Sign-in");
   if (!result.ok && result.reason === "linked_to_another_device") {
     if (await confirmDialog("Move sync to this PC?", result.message + "\n\nThe other PC will stop syncing this company.", "Move it here")) {
-      result = await api.link_active(true);
+      result = await attempt(() => api.link_active(true), "Linking the company");
     } else {
       result = { ok: false, message: "Not linked: the company is still synced from the other PC." };
     }
   }
-  if (result.ok) return enterMain();
+  if (result.ok) {
+    try { return enterMain(); } catch (err) { result = { ok: false, message: "Signed in, but the window could not open: " + ((err && err.message) || err) }; }
+  }
   busy(null);
   say(result.message, "error");
 }
@@ -234,7 +245,7 @@ async function startCode() {
   if (!needServer()) return;
   stopCode();
   busy("Getting a code...");
-  const result = await api.code_start(F);
+  const result = await attempt(() => api.code_start(F), "Getting a code");
   if (setup.screen !== "code" || view !== "setup") return;
   if (!result.ok) { busy(null); return say(result.message, "error"); }
   pairing.code = result.code;

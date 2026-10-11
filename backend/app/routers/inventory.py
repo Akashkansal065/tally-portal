@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 from typing import List, Optional
 from datetime import datetime, date
 from decimal import Decimal
@@ -309,6 +310,21 @@ async def _validate_stock_group(req: StockGroupCreate, user: User, db: AsyncSess
             current_id = row.parent_id
 
 
+async def _replace_group_aliases(db: AsyncSession, group: MstStockGroup, aliases, held=()) -> list:
+    """Replace the group's aliases. The old rows go in one DELETE, which leaves their objects in the session; they
+    are taken out, with the ones in held (added earlier in this request), so a new alias that gets the same id
+    (SQLite reuses them) is not mistaken for one of them. Returns the new alias objects."""
+    await db.execute(StockGroupAlias.__table__.delete().where(StockGroupAlias.stock_group_id == group.stock_group_id))
+    loaded = list(group.__dict__.get("aliases") or [])
+    set_committed_value(group, "aliases", [])
+    for old in loaded + list(held):
+        if old in db:
+            db.expunge(old)
+    added = [StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias) for alias in aliases]
+    db.add_all(added)
+    return added
+
+
 async def _stock_group_response(db: AsyncSession, group_id: int, result=None):
     final = await db.execute(select(MstStockGroup).options(selectinload(MstStockGroup.aliases))
                              .where(MstStockGroup.stock_group_id == group_id).execution_options(populate_existing=True))
@@ -381,9 +397,7 @@ async def update_stock_group(
     group.is_active = req.is_active
     
     # Update aliases
-    await db.execute(StockGroupAlias.__table__.delete().where(StockGroupAlias.stock_group_id == group_id))
-    for alias in req.aliases:
-        db.add(StockGroupAlias(stock_group_id=group.stock_group_id, alias=alias))
+    added_aliases = await _replace_group_aliases(db, group, req.aliases)
         
     # Kept on the queue row so a later retry or the Desktop Sync Agent still renames instead of creating
     from app.services.group_deletion import queue_sync_event
@@ -402,9 +416,7 @@ async def update_stock_group(
         name, parent_id, is_active, aliases = before
         await db.execute(sa_update(MstStockGroup).where(MstStockGroup.stock_group_id == group_id).values(
             name=name, parent_id=parent_id, is_active=is_active))
-        await db.execute(sa_delete(StockGroupAlias).where(StockGroupAlias.stock_group_id == group_id))
-        for alias in aliases:
-            db.add(StockGroupAlias(stock_group_id=group_id, alias=alias))
+        await _replace_group_aliases(db, group, aliases, held=added_aliases)
         await db.execute(sa_delete(SyncQueue).where(SyncQueue.sync_id == sync_item.sync_id))
         await db.commit()
         raise HTTPException(status_code=400, detail=f"Tally did not accept this change: {result[2]}")
