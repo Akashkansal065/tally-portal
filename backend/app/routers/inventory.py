@@ -1160,13 +1160,6 @@ async def update_stock_item(
 ):
     stmt = (
         select(MstStockItem)
-        .options(
-            selectinload(MstStockItem.aliases),
-            selectinload(MstStockItem.price_lists),
-            selectinload(MstStockItem.opening_balances),
-            selectinload(MstStockItem.boms),
-            selectinload(MstStockItem.price_level_rates)
-        )
         .where(MstStockItem.stock_item_id == item_id, MstStockItem.company_id == user.company_id)
     )
     res = await db.execute(stmt)
