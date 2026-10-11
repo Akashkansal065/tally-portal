@@ -595,3 +595,72 @@ class CloudClient:
             except Exception as e:
                 logger.debug(f"Failed to fetch last alter id from {endpoint}: {e}")
         return 0, 0
+
+    # ── Backups (backups.py; the server side is backend/app/routers/backups.py) ──
+    # An upload chunk is a few MB, so these calls wait longer than the sync calls do
+    BACKUP_TIMEOUT = 180
+
+    def _call_raw(self, method: str, path: str, data: Optional[bytes] = None,
+                  content_type: str = "application/octet-stream") -> Tuple[int, Any, Dict[str, str]]:
+        """Like _call, with a raw body. Returns (HTTP status, decoded JSON body or message, headers)."""
+        headers = {**self._get_headers(), "Content-Type": content_type}
+        req = urllib.request.Request(f"{self.backend_url}{path}", data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=self.BACKUP_TIMEOUT) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8") or "null"), dict(resp.headers or {})
+        except urllib.error.HTTPError as e:
+            try:
+                body = json.loads(e.read().decode("utf-8", errors="ignore"))
+                detail = body.get("detail") if isinstance(body, dict) else body
+            except Exception:
+                detail = f"HTTP {e.code}"
+            return e.code, detail or f"HTTP {e.code}", dict(e.headers or {})
+        except Exception as e:
+            return 0, f"Cannot reach {self.backend_url} ({e})", {}
+
+    def backup_jobs(self) -> Tuple[bool, Any]:
+        """Backups asked for in the app and restores to carry out, for the company this client is pointed at."""
+        status, body, _ = self._call("GET", "/agent/backups/jobs")
+        return status == 200, body
+
+    def backup_announce(self, entry: Dict[str, Any], chunk_size: int) -> Tuple[int, Any]:
+        status, body, _ = self._call_raw("POST", "/agent/backups", json.dumps({
+            "backup_key": entry["key"], "kind": entry["kind"], "taken_at": entry["taken_at"], "size_bytes": entry["size"],
+            "sha256": entry["sha256"], "chunk_size": chunk_size, "company_name": entry.get("company_name"),
+            "fingerprint": entry.get("fingerprint") or None, "record_counts": entry.get("records") or {},
+        }).encode("utf-8"), "application/json")
+        return status, body
+
+    def backup_chunk(self, key: str, index: int, data: bytes) -> Tuple[int, Any, Dict[str, str]]:
+        return self._call_raw("PUT", f"/agent/backups/{urllib.parse.quote(key)}/chunks/{index}", data)
+
+    def backup_complete(self, key: str) -> Tuple[int, Any, Dict[str, str]]:
+        return self._call_raw("POST", f"/agent/backups/{urllib.parse.quote(key)}/complete", b"", "application/json")
+
+    def backup_failed(self, key: str, error: str) -> bool:
+        status, _, _ = self._call("POST", f"/agent/backups/{urllib.parse.quote(key)}/failed", {"error": error[:2000]})
+        return status == 200
+
+    def backup_download(self, key: str, dest_path: str) -> Tuple[bool, str]:
+        """Save a stored backup of this company to dest_path. (ok, why not)."""
+        req = urllib.request.Request(f"{self.backend_url}/agent/backups/{urllib.parse.quote(key)}/download",
+                                     headers={k: v for k, v in self._get_headers().items() if k != "Content-Type"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.BACKUP_TIMEOUT) as resp, open(dest_path, "wb") as out:
+                for block in iter(lambda: resp.read(1024 * 1024), b""):
+                    out.write(block)
+            return True, ""
+        except urllib.error.HTTPError as e:
+            return False, f"the server answered HTTP {e.code}"
+        except Exception as e:
+            return False, f"could not download it ({e})"
+
+    def restore_start(self, restore_id: int, pre_restore_key: str) -> Tuple[int, Any]:
+        status, body, _ = self._call("POST", f"/agent/backups/restores/{int(restore_id)}/start",
+                                     {"pre_restore_backup_key": pre_restore_key})
+        return status, body
+
+    def restore_finish(self, restore_id: int, ok: bool, summary: Dict[str, Dict[str, int]], error: Optional[str]) -> bool:
+        status, _, _ = self._call("POST", f"/agent/backups/restores/{int(restore_id)}/finish",
+                                  {"ok": ok, "summary": summary, "error": (error or None) and error[:4000]})
+        return status == 200

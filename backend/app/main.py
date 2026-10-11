@@ -1,11 +1,11 @@
 import asyncio
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data, ensure_admin_roles_have_every_module
-from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backup_schedule, payroll_masters
+from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backups, payroll_masters
 
 from app.core.logging_config import setup_logging, get_logger, RequestLoggingMiddleware
 
@@ -111,9 +111,6 @@ async def lifespan(app: FastAPI):
     from app.services.reminders import reminder_worker
     reminder_task = asyncio.create_task(reminder_worker())
 
-    # 8. Scheduled Tally backups (every 10 minutes it checks whether today's is due)
-    from app.services.backup_schedule import backup_worker
-    backup_task = asyncio.create_task(backup_worker())
                 
     try:
         yield
@@ -123,8 +120,7 @@ async def lifespan(app: FastAPI):
         daily_cleanup_task.cancel()
         sync_alert_task.cancel()
         reminder_task.cancel()
-        backup_task.cancel()
-        await asyncio.gather(keep_alive_task, attendance_worker_task, daily_cleanup_task, sync_alert_task, reminder_task, backup_task, return_exceptions=True)
+        await asyncio.gather(keep_alive_task, attendance_worker_task, daily_cleanup_task, sync_alert_task, reminder_task, return_exceptions=True)
 
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -200,7 +196,6 @@ app.include_router(edocs.router)
 app.include_router(approvals.router)
 app.include_router(greetings.router)
 app.include_router(books.router)
-app.include_router(backup_schedule.router)
 app.include_router(attendance.router)
 app.include_router(masters.router)
 app.include_router(customers.router)
@@ -208,16 +203,10 @@ app.include_router(notifications.router)
 app.include_router(planner.router)
 app.include_router(bank_recon.router)
 
-# Mount isolated Backup & Restore module
-try:
-    from backup_module.router import backup_router
-    from app.core.permissions import require_platform_admin
-    # The module backs up and restores the server's own Tally with no notion of accounts: every backup of every
-    # customer is listed, downloaded and restored through it. So only the people who run the server may use it.
-    app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"], dependencies=[Depends(require_platform_admin)])
-except Exception as e:
-    import logging
-    logging.getLogger("uvicorn.error").warning(f"Could not load backup_module: {e}")
+# Backups are made by each company's sync agent from the Tally on its own PC and uploaded here
+# (app/routers/backups.py). The server never reaches a customer's Tally for them.
+app.include_router(backups.agent_router)
+app.include_router(backups.router)
 
 @app.get("/")
 def read_root():

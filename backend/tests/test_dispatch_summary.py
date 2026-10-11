@@ -126,3 +126,8 @@ def test_dispatch_summary_aggregation(dispatch_world):
     res_past = client.get("/temporders/dispatch-summary?date=2025-01-01&status=active", headers=owner_token)
     assert res_past.status_code == 200
     assert res_past.json()["total_orders"] == 0
+
+    # 6. Filter by start_date and end_date range covering today
+    res_range = client.get(f"/temporders/dispatch-summary?start_date={today_str}&end_date={today_str}&status=active", headers=owner_token)
+    assert res_range.status_code == 200
+    assert res_range.json()["total_orders"] == 2

@@ -32,6 +32,22 @@ def get_logs_dir() -> str:
         os.makedirs(logs_dir, exist_ok=True)
         return logs_dir
 
+def suggested_backups_dir() -> str:
+    """Where the folder picker for backups starts: a "backups" folder next to the program, or under the user's
+    local app data when the program's folder cannot be written. Nothing is created here: backups are kept only
+    in a folder someone chose (AgentConfig.backups_dir)."""
+    app_dir = get_app_dir()
+    try:
+        probe = os.path.join(app_dir, ".write_test")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+        return os.path.join(app_dir, "backups")
+    except Exception:
+        appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(appdata, "SnehDistribuorsSync", "backups")
+
+
 def get_default_config_path() -> str:
     """Returns absolute path to agent_config.json next to the running .exe or script."""
     return os.path.join(get_app_dir(), "agent_config.json")
@@ -74,6 +90,11 @@ class AgentConfig:
     auth_halt_reason: str = ""
     # The window's colours: "system" follows Windows, or "light" / "dark"
     theme: str = "system"
+    # Backups of each linked company (backups.py): made this often, kept on this PC and uploaded to the server
+    backups_enabled: bool = True
+    backup_interval_minutes: int = 60
+    # The folder this PC keeps its backups in, chosen in Settings. Empty: none chosen yet, and backups wait.
+    backups_dir: str = ""
 
 _single_instance_handle = None   # kept for the life of the process: the hold ends when it does
 

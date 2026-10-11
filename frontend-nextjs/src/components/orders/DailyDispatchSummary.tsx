@@ -22,8 +22,6 @@ import {
   Square,
   RefreshCw,
   SlidersHorizontal,
-  ChevronLeft,
-  ChevronRight,
   ClipboardList,
   Sparkles,
   Info
@@ -108,7 +106,8 @@ function getTodayString(): string {
 
 export function DailyDispatchSummary() {
   const { user, token, permissions } = useAuth()
-  const [selectedDate, setSelectedDate] = useState<string>(getTodayString())
+  const [startDate, setStartDate] = useState<string>(getTodayString())
+  const [endDate, setEndDate] = useState<string>(getTodayString())
   const [statusFilter, setStatusFilter] = useState<'active' | 'pending' | 'done' | 'all'>('active')
   const [salespersonFilter, setSalespersonFilter] = useState<string>('all')
   const [salespersons, setSalespersons] = useState<Salesperson[]>([])
@@ -137,7 +136,9 @@ export function DailyDispatchSummary() {
     setLoading(true)
     try {
       const params = new URLSearchParams()
-      params.set('date', selectedDate)
+      params.set('start_date', startDate)
+      params.set('end_date', endDate)
+      params.set('date', startDate)
       params.set('status', statusFilter)
       if (salespersonFilter !== 'all') {
         params.set('salesperson_id', salespersonFilter)
@@ -157,28 +158,35 @@ export function DailyDispatchSummary() {
     } finally {
       setLoading(false)
     }
-  }, [token, selectedDate, statusFilter, salespersonFilter])
+  }, [token, startDate, endDate, statusFilter, salespersonFilter])
 
   useEffect(() => {
     fetchSummary()
   }, [fetchSummary])
 
-  // Reset packed items when date changes
+  // Reset packed items when date range changes
   useEffect(() => {
     setPackedItems(new Set())
-  }, [selectedDate])
+  }, [startDate, endDate])
 
-  // Date Shift Helpers
-  const shiftDate = (days: number) => {
-    const current = new Date(selectedDate + 'T00:00:00')
-    current.setDate(current.getDate() + days)
-    const yyyy = current.getFullYear()
-    const mm = String(current.getMonth() + 1).padStart(2, '0')
-    const dd = String(current.getDate()).padStart(2, '0')
-    setSelectedDate(`${yyyy}-${mm}-${dd}`)
-  }
-
-  const isToday = selectedDate === getTodayString()
+  const formattedDateRange = useMemo(() => {
+    const formatD = (dStr: string) => {
+      try {
+        const dObj = new Date(dStr + 'T00:00:00')
+        return dObj.toLocaleDateString('en-IN', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        })
+      } catch {
+        return dStr
+      }
+    }
+    if (startDate === endDate) {
+      return formatD(startDate)
+    }
+    return `${formatD(startDate)} to ${formatD(endDate)}`
+  }, [startDate, endDate])
 
   // Filtered items
   const filteredItems = useMemo(() => {
@@ -244,21 +252,13 @@ export function DailyDispatchSummary() {
       return
     }
 
-    const dObj = new Date(selectedDate + 'T00:00:00')
-    const dateFormatted = dObj.toLocaleDateString('en-IN', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    })
-
     const statusTitle =
       statusFilter === 'pending' ? 'Pending Orders' :
       statusFilter === 'done' ? 'Approved Orders' :
       statusFilter === 'all' ? 'All Orders' : 'Active Orders'
 
-    let text = `📦 *DAILY DISPATCH SUMMARY - ${dateFormatted}*\n`
-    text += `🎯 *Status:* ${statusTitle} | *For Tomorrow Dispatch*\n`
+    let text = `📦 *DISPATCH SUMMARY - ${formattedDateRange.toUpperCase()}*\n`
+    text += `🎯 *Status:* ${statusTitle} | *Period:* ${formattedDateRange}\n`
     text += `━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
     text += `📊 *Total Orders:* ${data.total_orders}\n`
     text += `🏷️ *Unique Items:* ${data.total_distinct_items}\n`
@@ -326,7 +326,8 @@ export function DailyDispatchSummary() {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.setAttribute('download', `dispatch_summary_${selectedDate}.csv`)
+    const dateRangeFileStr = startDate === endDate ? startDate : `${startDate}_to_${endDate}`
+    link.setAttribute('download', `dispatch_summary_${dateRangeFileStr}.csv`)
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -420,40 +421,42 @@ export function DailyDispatchSummary() {
           </div>
         </div>
 
-        {/* Date Controls */}
+        {/* Date Controls: From & To Range */}
         <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/50">
-          <div className="flex items-center bg-muted/40 border border-border rounded-xl p-0.5">
-            <button
-              onClick={() => shiftDate(-1)}
-              className="p-1.5 hover:bg-muted text-muted-foreground hover:text-foreground rounded-lg transition-colors cursor-pointer"
-              title="Previous day"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <button
-              onClick={() => setSelectedDate(getTodayString())}
-              className={cn(
-                'px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer',
-                isToday ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              Today
-            </button>
-            <button
-              onClick={() => shiftDate(1)}
-              className="p-1.5 hover:bg-muted text-muted-foreground hover:text-foreground rounded-lg transition-colors cursor-pointer"
-              title="Next day"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
+          <div className="flex items-center gap-1.5 bg-muted/40 border border-border rounded-xl px-2.5 py-1 text-xs">
+            <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">From</span>
+            <input
+              type="date"
+              value={startDate}
+              max={endDate || undefined}
+              onChange={e => {
+                const val = e.target.value
+                if (!val) return
+                setStartDate(val)
+                if (endDate && val > endDate) {
+                  setEndDate(val)
+                }
+              }}
+              className="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer text-foreground"
+            />
           </div>
 
           <div className="flex items-center gap-1.5 bg-muted/40 border border-border rounded-xl px-2.5 py-1 text-xs">
             <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">To</span>
             <input
               type="date"
-              value={selectedDate}
-              onChange={e => e.target.value && setSelectedDate(e.target.value)}
+              value={endDate}
+              min={startDate || undefined}
+              onChange={e => {
+                const val = e.target.value
+                if (!val) return
+                setEndDate(val)
+                if (startDate && val < startDate) {
+                  setStartDate(val)
+                }
+              }}
               className="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer text-foreground"
             />
           </div>
@@ -504,7 +507,9 @@ export function DailyDispatchSummary() {
             <Package className="h-4 w-4 text-amber-500" />
           </div>
           <p className="text-xl font-black text-foreground">{loading ? '...' : data?.total_orders ?? 0}</p>
-          <p className="text-[10px] text-muted-foreground font-semibold">on {selectedDate}</p>
+          <p className="text-[10px] text-muted-foreground font-semibold truncate" title={formattedDateRange}>
+            {startDate === endDate ? `on ${startDate}` : `${startDate} to ${endDate}`}
+          </p>
         </div>
 
         <div className="bg-card border border-border rounded-2xl p-3 shadow-xs">
@@ -638,7 +643,7 @@ export function DailyDispatchSummary() {
             <div>
               <h1 className="text-2xl font-black tracking-tight">DAILY DISPATCH & PACKING SHEET</h1>
               <p className="text-sm text-gray-600 font-semibold">
-                Orders Date: {selectedDate} | For Tomorrow Dispatch
+                Orders Period: {formattedDateRange}
               </p>
             </div>
             <div className="text-right text-xs">
@@ -657,18 +662,10 @@ export function DailyDispatchSummary() {
         ) : filteredItems.length === 0 ? (
           <div className="text-center py-14 bg-card border border-border border-dashed rounded-2xl p-6">
             <Package className="h-12 w-12 mx-auto mb-3 opacity-25 text-muted-foreground" />
-            <h3 className="text-sm font-extrabold text-foreground">No dispatch orders found for {selectedDate}</h3>
+            <h3 className="text-sm font-extrabold text-foreground">No dispatch orders found for {formattedDateRange}</h3>
             <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
-              There are no orders placed on this date matching the status filter ({statusFilter}).
+              There are no orders placed in this date range matching the status filter ({statusFilter}).
             </p>
-            {!isToday && (
-              <button
-                onClick={() => setSelectedDate(getTodayString())}
-                className="mt-4 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all cursor-pointer"
-              >
-                Switch to Today
-              </button>
-            )}
           </div>
         ) : viewMode === 'items' ? (
           /* ======================================================== */

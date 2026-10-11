@@ -58,6 +58,18 @@
 8. **Automated Log Rotation**:
    - System logs (`agent.log` and `tally_traffic.log`) automatically rotate at 5 MB (retaining up to 3 backup archives) to prevent unbounded disk usage.
 
+9. **Backups of each company** (`backups.py`):
+   - Every hour (`backup_interval_minutes` in `agent_config.json`, 60 by default) the agent exports each linked company that is open in Tally into a ZIP: one XML file per kind of master, the vouchers in date ranges, and `manifest.json` with the company and its counts. "Back up now" in the app asks for one at any time.
+   - **Kept in two places:** in the folder chosen under Settings → Backups (**Choose folder…**), one folder per company GUID, and uploaded to the server in 4 MB pieces. Nothing is backed up until a folder is chosen; the health line says so. Choosing another folder moves the backups already made into it. An upload that is cut off carries on where it stopped; a backup made while the server is unreachable is uploaded later.
+   - **How many are kept**, here and on the server: every backup from today, then the last one of each of the previous 7 days. The newest is always kept.
+   - **Only whole backups are kept.** If Tally does not answer an export, exports no groups (the wrong company), or exports fewer vouchers than it lists, the backup fails, and "Back up now" shows why in the app.
+   - Each Tally request is sent on its own, so the 5-second sync carries on between them while a backup is made.
+   - **Restore** (off on the server until it has been checked; see the rollout runbook, section 12):
+     - It writes a backup back into the same company, refusing a different copy of the books.
+     - It backs up the company as it is first, and stores that on the server.
+     - The sync waits while it writes.
+   - Without the window, set `backups_dir` in `agent_config.json` to the folder. `backups_enabled: false` turns backups off on a PC.
+
 ---
 
 ## 🚀 Running the Application

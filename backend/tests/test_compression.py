@@ -20,7 +20,7 @@ def ping():
     return {"success": True, "active": True}
 
 
-@app.get("/backup/1/download")
+@app.get("/backups/1/download")
 def backup():
     return Response(b"PK\x03\x04" + b"0" * 50_000, media_type="application/zip")
 
@@ -40,7 +40,7 @@ def test_small_replies_are_not_compressed():
 
 
 def test_backup_downloads_are_not_recompressed():
-    response = client.get("/backup/1/download", headers=GZIP)
+    response = client.get("/backups/1/download", headers=GZIP)
     assert "content-encoding" not in response.headers
     assert len(response.content) == 50_004
 

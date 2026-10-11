@@ -124,6 +124,7 @@ class Api:
                 "tally_ok": bool(status.get("tally_connected")), "cloud_ok": bool(status.get("cloud_connected")),
                 "halted": bool(status.get("auth_halt_reason")),
                 "syncing_name": status.get("active_company_name") if status.get("is_syncing") else None,
+                "backup_note": core.backup_note(status),
                 "logs": logs, "seq": seq}
 
     # -- syncing ------------------------------------------------------------
@@ -174,7 +175,8 @@ class Api:
                 "force_full_sync": bool(getattr(cfg, "force_full_sync", False)),
                 "autostart": bool(cfg.autostart_enabled or is_autostart_registered()),
                 "theme": cfg.theme if cfg.theme in core.THEMES else "system",
-                "email": cfg.email or cfg.username or ""}
+                "email": cfg.email or cfg.username or "",
+                "backups_dir": getattr(cfg, "backups_dir", "") or ""}
 
     def save_settings(self, values: Dict[str, Any]) -> Dict[str, Any]:
         ok, message = core.apply_settings(self._session, values or {})
@@ -186,6 +188,29 @@ class Api:
         self._session.config.theme = theme
         save_config(self._session.config, self._session.config_file)
         return {"ok": True}
+
+    def choose_backups_folder(self) -> Dict[str, Any]:
+        """Ask, with Windows' own folder picker, where this PC keeps its backups. {"ok", "message", "folder"};
+        ok False with no message when the picker was closed without a choice."""
+        import webview
+        from config import suggested_backups_dir
+        if self._window is None:
+            return {"ok": False, "message": "The window is not ready."}
+        start = getattr(self._session.config, "backups_dir", "") or suggested_backups_dir()
+        while start and not os.path.isdir(start):
+            parent = os.path.dirname(start)
+            start = "" if parent == start else parent      # the picker opens at the nearest folder that exists
+        folder_dialog = getattr(getattr(webview, "FileDialog", None), "FOLDER", None) or webview.FOLDER_DIALOG
+        chosen = self._window.create_file_dialog(folder_dialog, directory=start or "")
+        if not chosen:
+            return {"ok": False, "message": ""}
+        folder = chosen[0] if isinstance(chosen, (list, tuple)) else chosen
+        ok, message = core.set_backups_folder(self._session, folder)
+        return {"ok": ok, "message": message, "folder": getattr(self._session.config, "backups_dir", "")}
+
+    def open_backups_folder(self) -> Dict[str, Any]:
+        ok, message = core.open_backups_folder(self._session)
+        return {"ok": ok, "message": message}
 
     def open_logs(self) -> Dict[str, Any]:
         ok, message = core.open_logs_folder()

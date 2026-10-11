@@ -8,7 +8,7 @@ import PyInstaller.__main__
 
 EXE_NAME = "SnehDistribuorsSync"
 # Read at run time from beside the program, so they travel as files as well as imports
-MODULES = ["security.py", "config.py", "agent.py", "tally_client.py", "cloud_client.py", "bridge_core.py", "webview_app.py"]
+MODULES = ["security.py", "config.py", "agent.py", "tally_client.py", "cloud_client.py", "backups.py", "bridge_core.py", "webview_app.py"]
 
 
 def main() -> None:

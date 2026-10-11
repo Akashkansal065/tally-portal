@@ -356,7 +356,7 @@ async function poll() {
     if (M.page === "activity") appendLog(state.logs);
   }
   M.state = state;
-  const key = JSON.stringify([state.health, state.busy, state.tally_ok, state.cloud_ok, state.halted]);
+  const key = JSON.stringify([state.health, state.busy, state.tally_ok, state.cloud_ok, state.halted, state.backup_note]);
   if (key !== M.key) { M.key = key; drawHealth(state); }
   markSyncing(state.syncing_name);
 }
@@ -366,7 +366,7 @@ function drawHealth(state) {
   e.badge.className = "badge k-" + health.kind;
   e.badge.replaceChildren(icon(health.kind, health.kind === "sync" ? "spin" : ""));
   e.title.textContent = health.title;
-  e.detail.textContent = health.detail;
+  e.detail.textContent = state.backup_note ? `${health.detail} · ${state.backup_note}` : health.detail;
   e.mainBtn.disabled = state.busy;
   e.mainBtn.replaceChildren(...(state.busy ? [icon("sync", "spin"), "Syncing"] : [ACTION_LABEL[health.action] || "Sync now"]));
   e.bar.classList.toggle("on", state.busy);
@@ -475,6 +475,8 @@ async function settingsPage() {
     return h("div", { class: "line" }, button, label);
   };
   const group = (title, hint, ...kids) => h("div", { class: "card group" }, h("h2", null, title), hint ? h("div", { class: "note" }, hint) : null, kids);
+  const folderText = () => v.backups_dir || "No folder chosen yet. Backups wait until you choose one.";
+  const backupsFolder = h("div", { class: "line", id: "s-backups_dir" }, folderText());
   const feedback = h("span", { class: "msg", id: "settings-msg" });
   const tell = (message, kind) => { feedback.textContent = message; feedback.className = "msg c-" + kind; };
   const themes = h("div", { class: "seg", role: "group", "aria-label": "Theme" }, ["system", "light", "dark"].map((name) =>
@@ -502,6 +504,15 @@ async function settingsPage() {
       h("div", { class: "line" }, text("outbound_seconds", { inputmode: "numeric" }), "Send changes made in the app to Tally"),
       h("div", { class: "line" }, text("inbound_seconds", { inputmode: "numeric" }), "Check Tally for new and changed records")),
     group("This PC", null, toggle("autostart", "Start with Windows"), h("div", { class: "line" }, "Theme", themes)),
+    group("Backups", "Every hour each linked company is backed up into this folder and to the server. Today's backups are kept, then the last one of each of the previous 7 days.",
+      backupsFolder,
+      h("div", { class: "row" },
+        h("button", { class: "btn sec", id: "settings-choose-backups", onclick: async () => {
+          const r = await api.choose_backups_folder();
+          if (r.message) tell(r.message, r.ok ? "ok" : "error");
+          if (r.ok) { v.backups_dir = r.folder; backupsFolder.textContent = folderText(); }
+        } }, "Choose folder…"),
+        h("button", { class: "btn sec", id: "settings-open-backups", onclick: async () => { const r = await api.open_backups_folder(); if (!r.ok) tell(r.message, "warn"); } }, "Open folder"))),
     group("Account", null, h("div", { class: "line" }, "Signed in as " + (v.email || "a saved sign-in")),
       h("div", null, h("button", { class: "btn sec", id: "settings-relogin", onclick: () => { F.email = v.email || F.email; showSetup("signin"); } }, "Sign in as someone else"))),
     group("Support", "Support may ask for the log files. Export puts them in one zip file on the Desktop.",

@@ -577,6 +577,66 @@ class CompanySyncState(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class CompanyBackup(Base):
+    """A backup of one company's books, made by the sync agent from the Tally on its PC (app/services/backups.py).
+    The agent keeps a copy on the PC and uploads one here in chunks. backup_key is the agent's name for it, unique
+    per company, so sending the same backup again finds this row instead of making a second one. A backup asked
+    for in the app starts as status "requested", with a key the agent then makes the backup under."""
+    __tablename__ = "company_backups"
+    __table_args__ = (
+        UniqueConstraint("company_id", "backup_key", name="uq_company_backups_company_key"),
+        Index("ix_company_backups_company_status", "company_id", "status"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    backup_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="CASCADE"), nullable=True)
+    backup_key = Column(String(64), nullable=False)
+    kind = Column(String(20), nullable=False)        # hourly / manual / pre_restore
+    status = Column(String(20), nullable=False)      # requested / uploading / stored / failed
+    requested_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    device_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.agent_devices.device_id", ondelete="SET NULL"), nullable=True)
+    taken_at = Column(DateTime, nullable=True)       # when the agent exported it from Tally (IST)
+    stored_at = Column(DateTime, nullable=True)      # when the whole file arrived and its checksum matched
+    size_bytes = Column(BigInteger, nullable=True)
+    sha256 = Column(String(64), nullable=True)
+    chunk_size = Column(Integer, nullable=True)
+    received_bytes = Column(BigInteger, nullable=False, default=0)
+    tally_company_name = Column(String(255), nullable=True)
+    tally_fingerprint = Column(String(200), nullable=True)
+    record_counts = Column(JSON, nullable=True)      # {"ledgers": 412, "vouchers": 9031, ...}
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class CompanyRestore(Base):
+    """A restore of a stored backup into the company's Tally, carried out by the company's sync agent. is_open is
+    True while it is requested or running and NULL once finished or cancelled, so a company has one at a time.
+    Before writing to Tally the agent backs up the company as it is (pre_restore_backup_key)."""
+    __tablename__ = "company_restores"
+    __table_args__ = (
+        UniqueConstraint("company_id", "is_open", name="uq_company_restores_one_open"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    restore_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    backup_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.company_backups.backup_id", ondelete="SET NULL"), nullable=True)
+    backup_key = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False)      # requested / running / completed / failed / cancelled
+    is_open = Column(Boolean, nullable=True, default=True)
+    requested_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    device_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.agent_devices.device_id", ondelete="SET NULL"), nullable=True)
+    pre_restore_backup_key = Column(String(64), nullable=True)
+    summary = Column(JSON, nullable=True)            # per kind of record: sent / created / altered / errors
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
 class UserInvite(Base):
     """An admin's invitation for someone to join their account. is_open is True until the invite is accepted,
     revoked or replaced and NULL afterwards, so an account has one open invite per email.

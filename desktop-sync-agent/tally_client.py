@@ -531,6 +531,17 @@ class TallyClient:
             logger.error(f"❌ [TALLY COMMUNICATION ERROR]: {err_msg}")
             return False, err_msg
 
+    def import_batch(self, envelope: str, timeout: int = 120) -> Tuple[bool, str]:
+        """Send one import (a restore batch) and return (Tally's reply was read, the reply or why not). Unlike
+        send_xml, the payload is not written to the logs: a restore sends the whole of a company's books."""
+        try:
+            req = urllib.request.Request(self.tally_url, data=envelope.encode("utf-8"),
+                                         headers={"Content-Type": "text/xml;charset=utf-8"})
+            with self._urlopen(req, timeout=timeout) as resp:
+                return True, resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            return False, f"{NETWORK_ERROR_PREFIX}: {e}"
+
     def find_voucher_by_master_id(self, company_name: str, master_id: int) -> Optional[Dict[str, Any]]:
         """
         The voucher Tally holds under this master id: its number, GUID and date. Tally numbers its automatic

@@ -10,7 +10,7 @@ class ApiGZipMiddleware(GZipMiddleware):
     them would only tie up the single worker's event loop. Server-sent events are never compressed (Starlette
     excludes text/event-stream)."""
 
-    SKIP_PATH_PREFIXES = ("/backup/",)
+    SKIP_PATH_PREFIXES = ("/backups/", "/agent/backups/")
 
     def __init__(self, app, minimum_size: int = 1000, compresslevel: int = 6) -> None:
         super().__init__(app, minimum_size=minimum_size, compresslevel=compresslevel)

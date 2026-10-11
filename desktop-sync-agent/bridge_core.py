@@ -39,6 +39,28 @@ def log_line(message: str, level: str) -> Tuple[str, str]:
     return _EMOJI.sub("", message), tag
 
 
+def backup_note(status: Dict[str, Any], now=None) -> str:
+    """One short line about the backups (backups.py), shown after the health sentence. '' when there is nothing
+    to say yet."""
+    from datetime import datetime
+    from backups import now_ist
+    backup = status.get("backup") or {}
+    if backup.get("needs_folder"):
+        return "Backups wait: choose a folder for them in Settings"
+    if backup.get("restoring"):
+        return "Restoring a backup into Tally…"
+    if backup.get("running"):
+        return backup.get("message") or "Backing up…"
+    if backup.get("last_error"):
+        return "Last backup failed: " + str(backup["last_error"])[:120]
+    if backup.get("last_backup_at"):
+        taken = datetime.fromisoformat(backup["last_backup_at"])
+        now = now or now_ist()
+        clock = f"{taken:%I:%M %p}".lstrip("0").lower()   # %-I is not available on Windows
+        return f"Last backup {clock}" if taken.date() == now.date() else f"Last backup {taken.day} {taken:%b}, {clock}"
+    return ""
+
+
 def health_from_status(status: Dict[str, Any]) -> Dict[str, str]:
     """The one state the health bar shows: its kind ("idle", "paused", "sync", "ok", "warn" or "error"),
     headline, detail line and what the main button does ("sync", "resume", "retry" or "signin"). The most
@@ -343,18 +365,38 @@ def apply_settings(host, values: Dict[str, Any]) -> Tuple[bool, str]:
     return True, "Saved"
 
 
-def open_logs_folder() -> Tuple[bool, str]:
-    log_dir = get_logs_dir()
+def open_folder(folder: str) -> Tuple[bool, str]:
     try:
         if sys.platform == "win32":
-            os.startfile(log_dir)
+            os.startfile(folder)
         elif sys.platform == "darwin":
-            subprocess.run(["open", log_dir])
+            subprocess.run(["open", folder])
         else:
-            subprocess.run(["xdg-open", log_dir])
+            subprocess.run(["xdg-open", folder])
         return True, ""
     except Exception as e:
         return False, f"Could not open the folder: {e}"
+
+
+def open_logs_folder() -> Tuple[bool, str]:
+    return open_folder(get_logs_dir())
+
+
+def set_backups_folder(host, folder: str) -> Tuple[bool, str]:
+    """Keep this PC's backups in folder. The window holds its own copy of the config, which Settings saves; it
+    gets the folder too, or the next Save would write the file without it."""
+    ok, message = host.agent.set_backups_folder(folder)
+    if ok and host.config is not host.agent.config:
+        host.config.backups_dir = host.agent.config.backups_dir
+        save_config(host.config, host.config_file)
+    return ok, message
+
+
+def open_backups_folder(host) -> Tuple[bool, str]:
+    folder = getattr(host.config, "backups_dir", "") or ""
+    if not folder or not os.path.isdir(folder):
+        return False, "No folder has been chosen for backups yet."
+    return open_folder(folder)
 
 
 def export_logs_zip() -> Tuple[bool, str]:

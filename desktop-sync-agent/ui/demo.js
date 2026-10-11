@@ -41,6 +41,8 @@
     save_settings: (v) => wait(isNaN(Number(v.outbound_seconds)) ? { ok: false, message: "The schedule and vouchers per request must be whole numbers." } : { ok: true, message: "Saved" }),
     set_theme: () => wait({ ok: true }),
     open_logs: () => wait({ ok: true, message: "" }),
+    choose_backups_folder: () => { settings.backups_dir = "D:\\MyTally Backups"; return wait({ ok: true, folder: settings.backups_dir, message: "Backups are kept in D:\\MyTally Backups." }); },
+    open_backups_folder: () => wait(settings.backups_dir ? { ok: true, message: "" } : { ok: false, message: "No folder has been chosen for backups yet." }),
     export_logs: () => wait({ ok: true, message: "Exported to the Desktop: MyTallyBridge_Logs_20261010_224500.zip" }),
     clear_logs: () => wait({ ok: true }),
     detect_tally: () => wait({ company: "Sneh Distributors", kind: "ok", text: "Found in TallyPrime: 'Sneh Distributors'." }, 400),

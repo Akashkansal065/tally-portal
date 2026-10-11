@@ -394,6 +394,20 @@ async def get_dispatch_summary(
         try:
             s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
             e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+            if s_date > e_date:
+                s_date, e_date = e_date, s_date
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    elif start_date:
+        try:
+            s_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            e_date = s_date
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    elif end_date:
+        try:
+            e_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+            s_date = e_date
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     elif date:

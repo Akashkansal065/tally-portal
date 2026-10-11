@@ -21,6 +21,7 @@ from config import (
 )
 from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
 from cloud_client import CloudClient, halt_message, SYNC_BUSY_REASON
+from backups import BackupScheduler, LocalBackups, folder_problem
 from xml.sax.saxutils import unescape
 
 # A full voucher sync is cut into date ranges of about this many vouchers each, so neither Tally nor the
@@ -192,6 +193,13 @@ class DesktopSyncAgent:
         self.total_errors = 0
         self._log_lock = threading.Lock()
         self.log_callbacks = []
+        # Hourly backups beside the sync (backups.py). While a restore writes into Tally the sync waits.
+        self.restoring = False
+        chosen = getattr(self.config, "backups_dir", "") or ""
+        self.backups = BackupScheduler(
+            self.tally, LocalBackups(chosen) if chosen else None, companies=self._companies_to_back_up,
+            cloud_for=self._backup_cloud, interval_minutes=getattr(self.config, "backup_interval_minutes", 60) or 60,
+            range_method=lambda: self._voucher_range_method, on_restore=self._on_restore)
         # Hook log handler into logger and sub-client loggers
         self._gui_handler = CallbackLogHandler(self)
         logger.addHandler(self._gui_handler)
@@ -264,6 +272,7 @@ class DesktopSyncAgent:
             "is_syncing": self.is_syncing,
             "auth_halt_reason": halt_reason,
             "auth_halt_message": halt_message(halt_reason) if halt_reason else "",
+            "backup": dict(self.backups.status, restoring=self.restoring),
         }
 
     def reload_config(self, new_config: Optional[AgentConfig] = None):
@@ -277,6 +286,7 @@ class DesktopSyncAgent:
         self.active_company_guid = getattr(self.config, "company_guid", "") or ""
         self.cloud.company_guid = self.active_company_guid
         self.company_paused = False
+        self.backups.tally = self.tally
         logger.info("🔄 Agent configuration reloaded.")
 
     def _new_cloud_client(self) -> CloudClient:
@@ -291,6 +301,36 @@ class DesktopSyncAgent:
             auth_halt_reason=self.config.auth_halt_reason,
             on_auth_halted=self._on_auth_halted
         )
+
+    def _companies_to_back_up(self) -> List[Dict[str, str]]:
+        """The linked companies as the sync last found them in Tally; none while paused or signed out."""
+        if self.is_paused or self.cloud.auth_halt_reason:
+            return []
+        return [dict(c) for c in (self.company_states or [])]
+
+    def _backup_cloud(self, company: Dict[str, str]) -> CloudClient:
+        """A server client of the backups' own, pointed at one company: the sync's client is re-pointed from
+        company to company as it works, on another thread."""
+        cloud = self._new_cloud_client()
+        cloud.company_guid, cloud.company_fingerprint = company.get("guid", ""), company.get("fingerprint", "")
+        return cloud
+
+    def set_backups_folder(self, path: str) -> Tuple[bool, str]:
+        """Keep this PC's backups in path (chosen in Settings): saved in the config, and the backups already made
+        are moved there. (done, what to tell the person)."""
+        path = os.path.abspath(os.path.expanduser(str(path or "").strip())) if str(path or "").strip() else ""
+        problem = folder_problem(path)
+        if problem:
+            return False, problem
+        message = self.backups.change_folder(path)
+        self.config.backups_dir = path
+        save_config(self.config, self.config_path)
+        return True, message
+
+    def _on_restore(self, running: bool) -> None:
+        self.restoring = running
+        if not running:
+            self.immediate_sync_requested = True   # send what the restore changed to the server straight away
 
     def tally_company_to_link(self) -> Optional[Dict[str, Any]]:
         """The Tally company this agent is tied to, as the cloud needs it for linking: found among the companies
@@ -1109,11 +1149,18 @@ class DesktopSyncAgent:
             self.sync_inbound_cycle(is_incremental=False)
 
         logger.info(f"🔄 Starting background sync daemon (outbound: {self.config.sync_interval_seconds}s, inbound: {self.config.inbound_interval_seconds}s)...")
+        if getattr(self.config, "backups_enabled", True):
+            self.backups.start()
+            if self.backups.store is None:
+                logger.warning("💾 Backups wait until a folder is chosen for them: Settings → Backups in the window, "
+                               "or backups_dir in agent_config.json.")
+            else:
+                logger.info(f"💾 Backups every {self.backups.interval.seconds // 60} minutes, kept in {self.backups.store.root}")
         logger.info("Press Ctrl + C at any time to exit.\n")
 
         while running and self.is_running:
             try:
-                if not self.is_paused:
+                if not self.is_paused and not self.restoring:
                     # 1. Outbound Sync (Cloud -> Tally)
                     self.sync_outbound_cycle()
 
@@ -1132,6 +1179,7 @@ class DesktopSyncAgent:
                 logger.error(f"Error in sync daemon loop: {e}", exc_info=True)
                 time.sleep(5)
 
+        self.backups.stop()
         logger.info("👋 SnehDistribuors Desktop Sync Agent stopped cleanly.")
 
 def install_startup():

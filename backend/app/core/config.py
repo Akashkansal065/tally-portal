@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     # How long after the OTP was confirmed its token is still taken (long enough to fill in the sign-up form)
     PHONE_OTP_MAX_AGE_MINUTES: int = 30
 
+    # Backups made by the sync agents (app/services/backups.py). Empty = a folder beside the project (for a project
+    # in /srv/MyTally: /srv/MyTally-backups), which a redeploy that replaces the project folder leaves alone. Restore
+    # writes into a customer's Tally, so it stays off until a round trip has been checked on a test company.
+    BACKUP_STORAGE_DIR: str = ""
+    BACKUP_MAX_BYTES: int = 2 * 1024 * 1024 * 1024
+    BACKUP_RESTORE_ENABLED: bool = False
+
     # Rate Limiting Settings
     RATE_LIMIT_ENABLED: bool = True
     LOGIN_RATE_LIMIT: str = "5/minute"

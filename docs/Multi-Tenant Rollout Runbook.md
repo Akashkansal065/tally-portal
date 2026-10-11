@@ -41,7 +41,7 @@ mysqldump -u <user> -p --single-transaction --routines tally_sync > tally_sync_b
 - [ ] In `backend/.env`, check the email settings are there: `SMTP_USER` and `SMTP_PASS` (a Gmail app password: 16 letters, made at myaccount.google.com/apppasswords; the normal Gmail password is refused). Sign-up codes and invitations are sent with them. Without them, creating an account fails with "The verification email could not be sent".
 - [ ] In `backend/.env`, add `APP_PUBLIC_URL=` with the address people open the app at (for example `https://app.yourdomain.com`). Invitation emails link to it. Without it the email carries a code to paste instead.
 - [ ] If `TALLY_URL` is set in `backend/.env` (the server reaches Tally directly, for example through a tunnel), pin it to the company it belongs to: add `TALLY_URL_COMPANY_ID=` with that company's MyTally id. The migration script in section 4 lists each company as `#<id> 'name'`; use the number after `#`. Only that company's changes are then sent to this Tally; every other company's wait for its own sync agent. Prefer the id over `TALLY_URL_COMPANY_GUID`: anyone who signs up can give a company of theirs the same GUID, but not the same id. (A GUID pin still works, and only the earliest company with that GUID uses the Tally.) Without either, only the server's first account and the companies from before accounts use it, and the backend log warns once a second account exists.
-- [ ] In `backend/.env`, add `PLATFORM_ADMIN_EMAILS=` with the sign-in email of each person who runs this server, comma-separated (for example `PLATFORM_ADMIN_EMAILS=you@example.com`). Only they can open Backup & Restore and the daily backup schedule, because those act on every customer's books. Being an Admin of an account is no longer enough, since anyone who signs up from the sync agent is the Admin of their own account. Without this line nobody can use backups: the backup page answers "Only the people who run this server can do this", and the Daily backup card does not appear. The scheduled backup itself keeps running with the settings it already has.
+- [ ] In `backend/.env`, add `PLATFORM_ADMIN_EMAILS=` with the sign-in email of each person who runs this server, comma-separated (for example `PLATFORM_ADMIN_EMAILS=you@example.com`). Only they can start a sync against the server's own Tally (`TALLY_URL`, "Sync now" in Admin), because that Tally belongs to one customer. Being an Admin of an account is not enough, since anyone who signs up from the sync agent is the Admin of their own account. Backups no longer depend on it: each company's sync agent makes them (section 12).
 - [ ] In the startup log, look for lines beginning `Auto Schema Synchronizer:`. They list each column and index it adds. New tables (`accounts`, `agent_devices`, `agent_company_links`, `company_sync_state`, `user_invites`, `signup_verifications`) are created silently.
 - [ ] Confirm there is no line beginning `Warning during auto schema sync`.
 - [ ] The first start on this version also prints `Device-session times moved from UTC to IST.` once. It moves the stored sign-in times so they match the rest of the app; nobody is signed out. It must not appear on later starts.
@@ -103,7 +103,7 @@ To give the account a different name than the company's: add `--name "Your Busin
 - [ ] Untick any admin who should not be able to use the sync agent.
 - [ ] Admins now get three kinds of alert in the bell: a company no PC syncs any more, a company not synced for a day, and a request from outside the business that was refused. Each comes at most once a day per company. Sync alerts can be turned off under Notifications → System; the refused-request one cannot.
 - [ ] Invite a test user from that tab, open the link in a private browser window, set a password and sign in. Then try that user's email in the agent's Setup screen: it must be refused.
-- [ ] Signed in as a person listed in `PLATFORM_ADMIN_EMAILS`, open Backup: the list of backups and the Daily backup card appear. Signed in as an Admin who is not listed: the backup page refuses and there is no Daily backup card.
+- [ ] Backups: the checks are in section 12.
 - [ ] If `TALLY_URL` is set: create a test ledger in the company named by `TALLY_URL_COMPANY_ID` and confirm it reaches the server's Tally. If you have a second account (for example the test account from the invitation check), create a ledger there too: it must **not** appear in the server's Tally, and it stays queued for that account's own sync agent. In the backend log there must be no warning beginning `TALLY_URL is set but not pinned to a company`.
 
 - [ ] The company name in the header should have a green dot within a couple of minutes of the agent syncing. Tap the name: the list shows each company with "Synced … ago".
@@ -254,3 +254,65 @@ Editing the company profile in the app (header → company details) now sends th
 | `is_processed = 0` for many syncs | Tally rejected the request outright; the reason is in the agent's log ("Tally Rejected Company"). |
 
 If every field fails, the trial has its answer: make the profile read-only in the app and keep Tally as the only place to change it.
+
+## 12. Backups made by the sync agent
+
+Each company's sync agent backs the company up from the Tally on its own PC: every hour while the company is open in Tally, and when an Admin presses "Back up now" on the Backup page. Each backup is kept in two places, on the Tally PC and on the server. Both keep every backup from today and, for each of the previous 7 days, only the last one of that day; older ones are deleted. The newest backup is always kept, so a PC that was switched off for a fortnight still leaves one. A backup holds every group, currency, ledger, cost category and centre, unit, attendance type, stock group, category and item, godown, voucher type and voucher, as Tally exports them. It is not a copy of Tally's data folder.
+
+The server no longer reaches Tally for backups. The old Backup & Restore module (`backend/backup_module`) and the server-wide daily schedule are no longer part of the app.
+
+### Set it up
+
+- [ ] Where the server keeps uploaded backups: with no setting, in a folder beside the project, named after it. For a project in `/srv/MyTally` that is `/srv/MyTally-backups`; it is made on the first upload. A redeploy that replaces the project folder leaves it alone. To keep them somewhere else, for example a mounted volume, add `BACKUP_STORAGE_DIR=/data/mytally-backups` to `backend/.env`. In a container, the folder beside the project is inside the container and is lost when the container is replaced, so set `BACKUP_STORAGE_DIR` to a mounted volume there. If the server cannot write the folder, the agent's upload is refused with a message naming the folder and this setting.
+- [ ] Space: up to about 31 backups per company (24 from today, 7 earlier days), each about the size of the company's XML export, zipped. Look at the size of the first backup on the Backup page and multiply.
+- [ ] If a proxy sits in front of the backend, it must let through request bodies of at least 5 MB: the agent uploads in 4 MB pieces. In nginx: `client_max_body_size 8m;` on the API's `location`.
+- [ ] Restart the backend. The tables `company_backups` and `company_restores` are made on start.
+- [ ] Update the agent on each Tally PC to a build that includes backups (section 5 for how).
+- [ ] On each Tally PC, choose where it keeps its backups: in the agent, Settings → Backups → **Choose folder…**. A folder on a drive other than the one Windows is on is safest. Until a folder is chosen nothing is backed up, and the health line reads "Backups wait: choose a folder for them in Settings". Choosing another folder later moves the backups already made into it.
+
+### Check it worked
+
+- [ ] Open Backup in the app as an Admin and press "Back up now". Within a few minutes a row appears with today's time, "Backed up now", and the number of ledgers and vouchers. Compare those with the counts in TallyPrime.
+- [ ] In the agent's log: `Backing up 'ABC Corp' (manual)`, then `Backup of 'ABC Corp' made in Ns: … ledgers, … vouchers`, then `Backup … stored on the server`.
+- [ ] Press Download and open the ZIP: `manifest.json` names the company and its counts, with one XML file per kind of master and the vouchers in one or more `vouchers_….xml` files.
+- [ ] Leave the agent running for two hours: two hourly rows appear.
+- [ ] Sign in as an Admin of another account: the Backup page shows only that account's company and none of these backups.
+
+### Restore (off until checked)
+
+Restore writes a backup back into the same company in Tally. Each master and voucher is sent as Tally exported it, with `ACTION="Alter"`. It brings back what the backup holds; it does not remove what was added since. Safeguards:
+- It only goes into the company the backup was taken from.
+- It refuses when the copy of the books open in Tally differs from the one backed up.
+- The person must type the company's name.
+- Before writing anything, the agent backs up the company as it is and stores that backup on the server ("Before a restore"). That backup is the way back.
+
+Tally matches imported records loosely, and an Alter that matches nothing can create a second record. So restore stays off (`BACKUP_RESTORE_ENABLED=false`) until one round trip has been checked on a test company:
+
+- [ ] In TallyPrime, make a test company (not a customer's) with a few ledgers, a stock item and some vouchers. Link it in the agent and let it sync.
+- [ ] Press "Back up now" and wait for the row.
+- [ ] In TallyPrime, change the test company: alter the amount of one voucher, delete another voucher, rename one ledger, and add a new voucher.
+- [ ] On the server only, set `BACKUP_RESTORE_ENABLED=true` and restart. With the test company selected in the app, press Restore on the backup, type the name and confirm.
+- [ ] Within a minute the agent logs `Restore of '…' asked for`, makes the "Before a restore" backup, and writes. When it finishes, the page lists the restore under Recent restores.
+- [ ] In TallyPrime, check the test company record by record:
+  - **Altered voucher:** has its old amount, and there is still only one of it.
+  - **Deleted voucher:** if it is back, note its voucher number.
+  - **Renamed ledger:** see whether Tally now has two ledgers, one under the old name and one under the new. If it does, restore must not be switched on for customers as it is.
+  - **New voucher:** is still there. Restore does not remove what was added since.
+  - **Duplicates:** no voucher appears twice. Compare the voucher count with the backup's count plus the vouchers added since.
+- [ ] Restore the "Before a restore" backup the same way. The company must return to the state after your changes.
+- [ ] Send me what you found. Only if every check holds, keep `BACKUP_RESTORE_ENABLED=true`. Otherwise set it back to `false` and restart.
+
+### If something goes wrong
+
+| What you see | What to do |
+|---|---|
+| A "Back up now" row says "Not made: Tally did not answer the export of …" | Tally was busy or closed. Open the company in TallyPrime and press "Back up now" again. |
+| "Not made: Tally exported no groups for '…'" | The company named was not the one open in Tally. Check the company is open, and only once. |
+| "Not made: Tally exported N of the company's M vouchers" | Tally left vouchers out. Nothing partial was kept. Try again; if it repeats, send me the agent's log. |
+| Rows stay at "Uploading from the Tally PC…" | The PC cannot reach the server or the proxy refuses 4 MB requests (see Set it up). The backup is safe on the PC and uploads when it can. Requests and uploads that never finish are cleared after 2 days. |
+| A restore stays "being written" for hours | The PC stopped part-way (switched off, Tally closed). After 6 hours "Close a stuck restore" closes it as failed. Check the company in TallyPrime; the "Before a restore" backup is kept. |
+| A restore failed with "different copy of the books" | The company open in Tally is a copy or another year's company with the same identity. Open the right one, then ask for the restore again. |
+
+### The old module's files
+
+- [ ] Backups made by the old module are in `backend/backup_module/backups/` on the server (and its records in `backend/backup_module/backup.db`). They are not shown in the app any more. Copy out any you want to keep before deleting that folder.

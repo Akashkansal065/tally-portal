@@ -10,8 +10,8 @@
 
 | ID | Finding | Severity | Status |
 |---|---|---|---|
-| C1 | Cross-tenant backup access (list, download, delete, restore) | Critical | **Fixed** |
-| C2 | Backup schedule hijack (backups emailed to the attacker) | Critical | **Fixed** |
+| C1 | Cross-tenant backup access (list, download, delete, restore) | Critical | **Fixed**; module since retired |
+| C2 | Backup schedule hijack (backups emailed to the attacker) | Critical | **Fixed**; schedule since retired |
 | C3 | Cross-account role tampering via `/admin/permissions` | Critical | **Fixed** |
 | H1 | Login rate limit bypassed with a spoofed `X-Forwarded-For` | High | Open (confirmed live) |
 | H2 | Your Gmail used as a phishing relay; shared email quota exhausted | High | Open |
@@ -51,6 +51,8 @@ So "admin" now means **admin of your own account**. But several features still a
 
 ### C1. Cross-tenant backup access: list, download, delete and restore every customer's books
 
+> **Superseded (2026-10-11):** the app no longer mounts the server-side backup module or the server-wide schedule. Each company's sync agent makes its backups and uploads them; every backup route is scoped to the caller's company (PC token: only companies linked to that PC; app: an Admin of the company). See `backend/app/routers/backups.py` and `backend/tests/test_company_backups.py`, which include another business's PC and Admin being refused.
+>
 > **Status: Fixed (2026-10-10).**
 > * **New setting** `PLATFORM_ADMIN_EMAILS` (`backend/app/core/config.py:62`): comma-separated emails of the people who run the server. Matching ignores case and surrounding spaces. Empty means nobody.
 > * **New check** `require_platform_admin` / `is_platform_admin` (`backend/app/core/permissions.py:277-290`). It refuses with `403 "Only the people who run this server can do this."` and never looks at role names.
@@ -92,6 +94,8 @@ app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"],
 
 ### C2. Backup schedule hijack: the server emails every company's backup to the attacker
 
+> **Superseded (2026-10-11):** the app no longer mounts the server-side backup module or the server-wide schedule. Each company's sync agent makes its backups and uploads them; every backup route is scoped to the caller's company (PC token: only companies linked to that PC; app: an Admin of the company). See `backend/app/routers/backups.py` and `backend/tests/test_company_backups.py`, which include another business's PC and Admin being refused.
+>
 > **Status: Fixed (2026-10-10).**
 > * `GET /backup-schedule`, `PUT /backup-schedule` and `POST /backup-schedule/run-now` now use `require_platform_admin` (`backend/app/routers/backup_schedule.py:14, 33, 38, 51`).
 > * **Web app:** no change needed. The Daily backup card already hides itself when loading fails, so account admins simply don't see it.

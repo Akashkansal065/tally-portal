@@ -1022,6 +1022,7 @@ class SettingsPage(ctk.CTkFrame):
         self._build_connection()
         self._build_schedule()
         self._build_this_pc()
+        self._build_backups()
         self._build_account()
         self._build_support()
         self._build_advanced()
@@ -1092,6 +1093,39 @@ class SettingsPage(ctk.CTkFrame):
                                        command=lambda label: self.app.set_theme(THEMES[label]))
         theme.set(current)
         theme.pack(side="left")
+
+    def _build_backups(self):
+        box = self._group("Backups", "Every hour each linked company is backed up into this folder and to the server. "
+                                     "Today's backups are kept, then the last one of each of the previous 7 days.")
+        self.backups_folder_lbl = ctk.CTkLabel(box, text=self._backups_folder_text(), font=font(13), text_color=TEXT_2,
+                                               wraplength=520, justify="left")
+        self.backups_folder_lbl.pack(anchor="w", padx=16, pady=(0, 10))
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 14))
+        secondary_button(row, "Choose folder…", self._choose_backups_folder).pack(side="left", padx=(0, 8))
+        secondary_button(row, "Open folder", self._open_backups_folder).pack(side="left")
+
+    def _backups_folder_text(self) -> str:
+        return getattr(self.app.config, "backups_dir", "") or "No folder chosen yet. Backups wait until you choose one."
+
+    def _choose_backups_folder(self):
+        from tkinter import filedialog
+        from config import suggested_backups_dir
+        start = getattr(self.app.config, "backups_dir", "") or suggested_backups_dir()
+        while start and not os.path.isdir(start):
+            parent = os.path.dirname(start)
+            start = "" if parent == start else parent      # the picker opens at the nearest folder that exists
+        folder = filedialog.askdirectory(parent=self, initialdir=start or None, title="Where should backups be kept?", mustexist=False)
+        if not folder:
+            return
+        ok, message = core.set_backups_folder(self.app, folder)
+        self._feedback(message, "ok" if ok else "error")
+        self.backups_folder_lbl.configure(text=self._backups_folder_text())
+
+    def _open_backups_folder(self):
+        ok, message = core.open_backups_folder(self.app)
+        if not ok:
+            self._feedback(message, "warn")
 
     def _build_account(self):
         box = self._group("Account")
