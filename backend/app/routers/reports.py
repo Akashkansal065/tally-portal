@@ -4,7 +4,7 @@ Reports Router — comprehensive date-filtered reports with 2-hour in-memory cac
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from pydantic import BaseModel
 from typing import Optional, List, Tuple, Dict, Any, Union
 from datetime import datetime, date
@@ -129,7 +129,7 @@ async def get_daybook(
             "date": v.voucher_date.isoformat() if v.voucher_date else None,
             "type": v.voucher_type.name if v.voucher_type else "Unknown",
             "party_name": party_name,
-            "amount": amount,
+            "amount": float(v.total_amount if v.total_amount is not None else amount),
         })
 
     set_cached_response(user.company_id, cache_key, output)
@@ -144,7 +144,7 @@ async def get_sales_register(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve all Sales vouchers within the period."""
-    cache_key = f"sales_register_{from_date}_{to_date}"
+    cache_key = f"sales_register_v2_{from_date}_{to_date}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -154,7 +154,9 @@ async def get_sales_register(
         selectinload(TrnVoucher.entries).selectinload(TrnAccounting.ledger).selectinload(MstLedger.group)
     ).where(
         TrnVoucher.company_id == user.company_id,
-        MstVoucherType.name == "Sales"
+        or_(MstVoucherType.name == "Sales", MstVoucherType.parent_type == "Sales"),
+        TrnVoucher.is_cancelled.isnot(True),
+        TrnVoucher.is_optional.isnot(True)
     )
     
     if from_date:
@@ -173,7 +175,7 @@ async def get_sales_register(
             "voucher_number": v.voucher_number,
             "date": v.voucher_date.isoformat() if v.voucher_date else None,
             "party_name": party_name,
-            "amount": amount,
+            "amount": float(v.total_amount if v.total_amount is not None else amount),
         })
 
     set_cached_response(user.company_id, cache_key, output)
@@ -412,7 +414,7 @@ async def get_dashboard_summary(
     norm_from = from_date.strip() if from_date and from_date.strip() else None
     norm_to = to_date.strip() if to_date and to_date.strip() else None
 
-    cache_key = f"dashboard_summary_{norm_from}_{norm_to}"
+    cache_key = f"dashboard_summary_v2_{norm_from}_{norm_to}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -508,14 +510,10 @@ async def get_dashboard_summary(
     total_sales = sales_query.scalar() or 0.0
 
     gross_sales_query = await db.execute(text(f"""
-        SELECT SUM(COALESCE(e.debit_amount - e.credit_amount, 0)) as final_bal
-        FROM tally_sync.voucher_entries e
-        JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+        SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
+        FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        JOIN tally_sync.ledgers l ON e.ledger_id = l.ledger_id
-        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
-        WHERE vt.name = 'Sales'
-          AND g.name IN ('Sundry Debtors', 'Cash-in-hand', 'Bank Accounts', 'Sundry Creditors', 'Primary')
+        WHERE (vt.name = 'Sales' OR vt.parent_type = 'Sales')
           AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_sales_gross = gross_sales_query.scalar() or 0.0
@@ -524,19 +522,15 @@ async def get_dashboard_summary(
         SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
         FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        WHERE vt.name = 'Receipt' AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
+        WHERE (vt.name = 'Receipt' OR vt.parent_type = 'Receipt') AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_receipts = receipts_query.scalar() or 0.0
 
     purchases_query = await db.execute(text(f"""
-        SELECT SUM(COALESCE(e.credit_amount - e.debit_amount, 0)) as final_bal
-        FROM tally_sync.voucher_entries e
-        JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+        SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
+        FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        JOIN tally_sync.ledgers l ON e.ledger_id = l.ledger_id
-        JOIN tally_sync.account_groups g ON l.group_id = g.group_id
-        WHERE vt.name = 'Purchase'
-          AND g.name IN ('Sundry Creditors', 'Cash-in-hand', 'Bank Accounts', 'Sundry Debtors', 'Primary')
+        WHERE (vt.name = 'Purchase' OR vt.parent_type = 'Purchase')
           AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_purchases = purchases_query.scalar() or 0.0
@@ -545,7 +539,7 @@ async def get_dashboard_summary(
         SELECT SUM(COALESCE(v.total_amount, 0)) as final_bal
         FROM tally_sync.vouchers v
         JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
-        WHERE vt.name = 'Payment' AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
+        WHERE (vt.name = 'Payment' OR vt.parent_type = 'Payment') AND v.company_id = :comp_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
     """), params)
     total_payments = payments_query.scalar() or 0.0
     

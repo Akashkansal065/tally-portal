@@ -407,6 +407,7 @@ function ReportsPage() {
   // KPI Drilldown Modal State
   const [kpiModalKey, setKpiModalKey] = useState<KpiModalKey>(null)
   const [kpiSearchQuery, setKpiSearchQuery] = useState('')
+  const [kpiModalLoading, setKpiModalLoading] = useState(false)
 
   // Aging Bucket Drilldown Modal State
   const [agingModalBucket, setAgingModalBucket] = useState<string | null>(null)
@@ -717,6 +718,44 @@ function ReportsPage() {
   useEffect(() => {
     loadSection(activeTab)
   }, [loadSection, activeTab])
+
+  // Load data for KPI drilldown modal when clicked from Executive tab if not already loaded
+  useEffect(() => {
+    if (!kpiModalKey || !token) return
+    const periodKey = `${fromDate}|${toDate}`
+    let neededKey: DatasetKey | null = null
+    if (kpiModalKey === 'sales') neededKey = 'salesRegister'
+    else if (['receipts', 'purchases', 'payments'].includes(kpiModalKey)) neededKey = 'daybook'
+    else if (kpiModalKey === 'receivables') neededKey = 'topCustomers'
+
+    if (!neededKey || loadedFor.current[neededKey] === periodKey) return
+
+    let cancelled = false
+    const fetchNeeded = async () => {
+      setKpiModalLoading(true)
+      try {
+        const { path, usesPeriod } = DATASETS[neededKey!]
+        const qParams = new URLSearchParams()
+        if (fromDate) qParams.append('from_date', fromDate)
+        if (toDate) qParams.append('to_date', toDate)
+        const query = usesPeriod ? qParams.toString() : ''
+        const res = await fetch(`${API_BASE}${path}${query ? `?${query}` : ''}`, { headers: authHeaders(token) })
+        if (res.ok && !cancelled) {
+          const data = await res.json()
+          if (neededKey === 'salesRegister') setSalesRegister(data)
+          else if (neededKey === 'daybook') setDaybook(data)
+          else if (neededKey === 'topCustomers') setTopCustomers(data)
+          loadedFor.current[neededKey!] = periodKey
+        }
+      } catch (e) {
+        console.error('Failed to load KPI modal data:', e)
+      } finally {
+        if (!cancelled) setKpiModalLoading(false)
+      }
+    }
+    fetchNeeded()
+    return () => { cancelled = true }
+  }, [kpiModalKey, token, fromDate, toDate])
 
   // Mirror the open section, period and day book filters into the address (replacing the entry, not adding one).
   // Waits for a pause in typing: every address change re-renders this whole page and makes Chrome refetch the icons.
@@ -5309,13 +5348,18 @@ function ReportsPage() {
                 />
               </div>
               <span className="text-[11px] text-muted-foreground font-bold px-2">
-                Showing {kpiModalData.rows.length} entries
+                {kpiModalLoading ? 'Loading...' : `Showing ${kpiModalData.rows.length} entries`}
               </span>
             </div>
 
             {/* Data Table */}
             <div className="p-4 overflow-auto max-h-96">
-              {kpiModalData.rows.length > 0 ? (
+              {kpiModalLoading ? (
+                <div className="py-12 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                  <p className="text-xs font-semibold">Loading itemized vouchers...</p>
+                </div>
+              ) : kpiModalData.rows.length > 0 ? (
                 <table className="report-table w-full text-xs">
                   <thead>
                     <tr className="border-b border-border text-muted-foreground text-left">
