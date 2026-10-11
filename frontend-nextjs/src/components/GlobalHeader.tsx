@@ -230,7 +230,8 @@ export function GlobalHeader() {
     upi_id: ''
   })
 
-  if (!user) return null
+  // No way around Connect Tally: the app's navigation appears once a Tally PC is connected
+  if (!user || user.needs_tally_setup) return null
 
   const isHome = pathname === '/'
   const activeCompany = user.allowedCompanies?.find(c => c.company_id === user.company_id)

@@ -87,9 +87,11 @@ async def company_for_tally_guid(db: AsyncSession, user: User, tally_guid: str) 
 # How often a session's last_active_at is written while it's in use
 LAST_ACTIVE_WRITE_INTERVAL_SECONDS = 300
 
-# In-memory auth and permissions caches with 60s TTL
-AUTH_CACHE_TTL_SECONDS = 300
-PERMISSIONS_CACHE_TTL_SECONDS = 300
+# In-memory auth and permissions caches. A sign-out, deactivation or permission change clears them at once in the
+# worker that made it; another worker keeps its copy until it expires, so this is the longest a revoked session or a
+# removed permission can still be used there. Short enough to matter, long enough that busy screens hit the cache.
+AUTH_CACHE_TTL_SECONDS = 30
+PERMISSIONS_CACHE_TTL_SECONDS = 30
 
 # Cache storage:
 # _auth_cache: token_hash -> {"user": User, "user_id": int, "allowed_company_ids": Set[int], "expires_at": float,
@@ -272,6 +274,21 @@ async def get_optional_current_user(
         return await get_current_user(request, token, db)
     except HTTPException:
         return None
+
+
+def is_platform_admin(user: User) -> bool:
+    """Whether the person runs this server (PLATFORM_ADMIN_EMAILS), as opposed to being an Admin of one account."""
+    allowed = {email.strip().lower() for email in settings.PLATFORM_ADMIN_EMAILS.split(",") if email.strip()}
+    return bool(user.email) and user.email.strip().lower() in allowed
+
+
+async def require_platform_admin(user: User = Depends(get_current_user)) -> User:
+    """For what acts on the whole server rather than the caller's account (the server's Tally backups, the backup
+    schedule). Anyone who signs up is the Admin of their own account, so an account role is never enough here."""
+    if not is_platform_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Only the people who run this server can do this.")
+    return user
 
 
 # (user id, company id) -> when it was last looked at, so a device stuck on a company it lost is checked rarely

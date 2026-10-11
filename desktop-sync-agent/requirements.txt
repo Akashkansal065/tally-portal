@@ -4,7 +4,9 @@
 keyring>=25.0.0
 cryptography>=41.0.0
 
-# Window and tray icon
+# Window and tray icon. pywebview draws the window (ui/) in Edge WebView2; customtkinter is the window
+# used where WebView2 or pywebview is missing.
+pywebview>=5.0
 customtkinter>=5.2.0
 pystray>=0.19.5
 pillow>=9.5.0

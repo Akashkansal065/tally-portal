@@ -13,5 +13,6 @@
     "tally_data_path": null,
     "auto_discover_paths": true,
     "autostart_enabled": false,
-    "force_full_sync": false
+    "force_full_sync": false,
+    "theme": "system"
 }

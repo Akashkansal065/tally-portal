@@ -9,6 +9,8 @@ import { afterLoginPath } from '@/lib/utils'
 // Public pages that someone already signed in may still open: an invitation link is often opened on a device
 // where somebody else (the admin who sent it) is signed in.
 const OPEN_WHEN_SIGNED_IN = ['/accept-invite']
+// Where someone whose business has no Tally PC yet is kept until they have connected one
+const CONNECT_TALLY = '/connect'
 
 export function RouteGuard({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth()
@@ -25,6 +27,8 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
       // Come back here after signing in (e.g. a notification opened while signed out)
       const here = `${pathname}${window.location.search}`
       router.replace(here === '/' ? '/login' : `/login?next=${encodeURIComponent(here)}`)
+    } else if (user?.needs_tally_setup && pathname !== CONNECT_TALLY && !OPEN_WHEN_SIGNED_IN.includes(pathname)) {
+      router.replace(CONNECT_TALLY)
     } else if (user && isPublicPath && !OPEN_WHEN_SIGNED_IN.includes(pathname)) {
       router.replace(afterLoginPath())
     }
@@ -47,6 +51,9 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
     return null
   }
   if (user && isPublicPath && !OPEN_WHEN_SIGNED_IN.includes(pathname)) {
+    return null
+  }
+  if (user?.needs_tally_setup && pathname !== CONNECT_TALLY && !OPEN_WHEN_SIGNED_IN.includes(pathname)) {
     return null
   }
 

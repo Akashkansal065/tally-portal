@@ -794,7 +794,7 @@ async def import_tally_xml(
                     updated = True
 
                 def get_clean_text(elem_name: str) -> Optional[str]:
-                    node = company_node.find(f".//{elem_name}") or company_node.find(elem_name)
+                    node = company_node.find(f".//{elem_name}")   # an element with no children is falsy: no "or" here
                     if node is not None and node.text:
                         val = node.text.strip()
                         if val and val.lower() not in ("none", "null", "n/a", "na", ""):
@@ -809,9 +809,10 @@ async def import_tally_xml(
                         if txt.lower() not in ("none", "null", "n/a", "na", "") and txt not in addr_lines:
                             addr_lines.append(txt)
                 if addr_lines:
-                    company_obj.address_line1 = ", ".join(addr_lines[:2])
-                    if len(addr_lines) > 2:
-                        company_obj.address_line2 = ", ".join(addr_lines[2:])
+                    # Line 1 is Tally's first line and line 2 the rest, so an address edited in the app and sent to
+                    # Tally as these two lines comes back the same
+                    company_obj.address_line1 = addr_lines[0]
+                    company_obj.address_line2 = ", ".join(addr_lines[1:]) or None
                     updated = True
 
                 # Extract state, country, pincode
@@ -825,10 +826,10 @@ async def import_tally_xml(
                 if pincode: company_obj.pincode = pincode; updated = True
 
                 # Extract telephone & mobile
-                telephone = get_clean_text("TELEPHONE") or get_clean_text("BASICCOMPANYPHONE") or get_clean_text("TELEPHONENUMBER") or get_clean_text("PERSONRESPONSIBLEPHONE")
+                telephone = get_clean_text("PHONENUMBER") or get_clean_text("TELEPHONE") or get_clean_text("BASICCOMPANYPHONE") or get_clean_text("TELEPHONENUMBER") or get_clean_text("PERSONRESPONSIBLEPHONE")
                 if telephone: company_obj.telephone = telephone; updated = True
                 
-                mobile = get_clean_text("MOBILE") or get_clean_text("BASICCOMPANYMOBILE") or get_clean_text("MOBILENUMBER") or get_clean_text("COMPANYCONTACTNUMBER") or get_clean_text("PERSONRESPONSIBLEMOBILE")
+                mobile = get_clean_text("MOBILENUMBERS") or get_clean_text("MOBILE") or get_clean_text("BASICCOMPANYMOBILE") or get_clean_text("MOBILENUMBER") or get_clean_text("COMPANYCONTACTNUMBER") or get_clean_text("PERSONRESPONSIBLEMOBILE")
                 if mobile: company_obj.mobile = mobile; updated = True
 
                 # Extract email
@@ -845,6 +846,12 @@ async def import_tally_xml(
 
                 pan = get_clean_text("INCOMETAXNUMBER") or get_clean_text("PAN") or get_clean_text("COMPANYPAN")
                 if pan: company_obj.pan = pan[:10]; updated = True
+
+                from app.services.company_profile_push import check_company_pushes
+                await check_company_pushes(db, company_obj.company_id, {
+                    "address": "".join(addr_lines), "state": state, "country": country, "pincode": pincode,
+                    "telephone": telephone, "mobile": mobile, "email": email, "website": website,
+                    "gstin": gstin, "pan": pan})
 
                 # Extract base currency
                 base_curr = get_clean_text("CURRENCYSYMBOL") or get_clean_text("BASECURRENCY") or get_clean_text("FORMALNAME")

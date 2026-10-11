@@ -1,20 +1,47 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Loader2, UserCheck } from 'lucide-react'
 import { API_BASE } from '@/lib/utils'
 import { LinkParams } from '@/components/LinkParams'
 import { useAuth } from '@/context/AuthContext'
+import { PhoneOtp } from '@/components/auth/PhoneOtp'
+import { phonePost } from '@/components/auth/PhoneSignIn'
+import { forgetOtp, phoneSignInOffered } from '@/lib/phone-auth'
 
 const field = 'h-11 w-full rounded-xl border border-border bg-background px-3 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30'
 
-/** Join a business from an invitation: confirm what it is for, choose a name and password, then sign in. */
+/**
+ * Join a business from an invitation: confirm what it is for, give a name, then either choose a password or,
+ * where mobile number sign-in is on, confirm a mobile number with an OTP and sign in with that from then on.
+ * An invitation that names a mobile number can only be accepted by confirming that number.
+ */
 export default function AcceptInvitePage() {
   const router = useRouter()
-  const { user, logout } = useAuth()
+  const { user, logout, login } = useAuth()
   const [token, setToken] = useState('')
-  const [invite, setInvite] = useState<{ email: string; account_name: string } | null>(null)
+  const [invite, setInvite] = useState<{ email: string; account_name: string; phone?: string | null } | null>(null)
+  const [phoneOffered, setPhoneOffered] = useState(false)
+  const [chosen, setChosen] = useState<'phone' | 'password' | null>(null)
+
+  useEffect(() => {
+    let gone = false
+    phoneSignInOffered().then(offered => { if (!gone) setPhoneOffered(offered) })
+    return () => { gone = true }
+  }, [])
+
+  // A named number must be confirmed; otherwise the person picks, and the mobile number is offered first
+  const mustConfirmPhone = Boolean(invite?.phone) && phoneOffered
+  const way = mustConfirmPhone ? 'phone' : chosen ?? (phoneOffered ? 'phone' : 'password')
+
+  const joinWithPhone = async (idToken: string) => {
+    if (!username.trim()) throw new Error('Enter your name above first.')
+    const signed = await phonePost('/auth/phone/join', { id_token: idToken, full_name: username.trim(), token: token.trim() })
+    await forgetOtp()
+    await login(signed.access_token, signed.phone)
+    router.replace('/')
+  }
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -90,22 +117,39 @@ export default function AcceptInvitePage() {
           </button>
         </form>
       ) : (
-        <form className="mt-4 space-y-3 text-sm" onSubmit={accept}>
-          <p>You are joining <span className="font-semibold">{invite.account_name}</span> as <span className="font-semibold">{invite.email}</span>.</p>
-          {user && user.email !== invite.email && (
-            <p className="text-muted-foreground">This device is signed in as {user.email}. Going on to sign in as {invite.email} signs that person out here.</p>
+        <div className="mt-4 space-y-3 text-sm">
+          <p>You are joining <span className="font-semibold">{invite.account_name}</span>{invite.email && <> as <span className="font-semibold">{invite.email}</span></>}.</p>
+          {user && (
+            <p className="text-muted-foreground">This device is signed in as {user.email || user.username}. Joining signs that person out here.</p>
           )}
           <label className="block"><span className="mb-1 block font-semibold">Your name</span>
             <input value={username} onChange={e => setUsername(e.target.value)} autoComplete="name" maxLength={50} required className={field} /></label>
-          <label className="block"><span className="mb-1 block font-semibold">Choose a password</span>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" minLength={8} required className={field} />
-            <span className="text-xs text-muted-foreground">8 characters or more</span></label>
-          {error && <p role="alert" className="text-rose-700 dark:text-rose-400">{error}</p>}
-          <button type="submit" disabled={busy || !username.trim() || password.length < 8}
-            className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground disabled:opacity-50 cursor-pointer">
-            {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create my account
-          </button>
-        </form>
+
+          {way === 'phone' ? (
+            <div className="space-y-3 pt-1">
+              <p className="font-semibold">Confirm your mobile number</p>
+              <PhoneOtp lockedPhone={invite.phone || undefined} onConfirmed={joinWithPhone}
+                hint={invite.phone ? 'Your admin invited this number. We send it a 6-digit code by SMS.' : 'We send a 6-digit code by SMS. You sign in with this number from now on.'} />
+              {!mustConfirmPhone && invite.email && (
+                <button type="button" onClick={() => setChosen('password')} className="w-full text-center font-semibold underline cursor-pointer">Use a password instead</button>
+              )}
+            </div>
+          ) : (
+            <form className="space-y-3" onSubmit={accept}>
+              <label className="block"><span className="mb-1 block font-semibold">Choose a password</span>
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" minLength={8} required className={field} />
+                <span className="text-xs text-muted-foreground">8 characters or more</span></label>
+              {error && <p role="alert" className="text-rose-700 dark:text-rose-400">{error}</p>}
+              <button type="submit" disabled={busy || !username.trim() || password.length < 8}
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground disabled:opacity-50 cursor-pointer">
+                {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create my account
+              </button>
+              {phoneOffered && (
+                <button type="button" onClick={() => setChosen('phone')} className="w-full text-center font-semibold underline cursor-pointer">Confirm a mobile number instead</button>
+              )}
+            </form>
+          )}
+        </div>
       )}
     </main>
   )

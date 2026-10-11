@@ -39,7 +39,8 @@ export function MobileBottomNav() {
     [permissions, can, user?.role],
   )
 
-  if (!user) return null
+  // No way around Connect Tally: the app's navigation appears once a Tally PC is connected
+  if (!user || user.needs_tally_setup) return null
 
   // More lights up when the current screen has no visible tab at this width
   const shownUpTo = (count: number) =>

@@ -182,6 +182,8 @@ export interface AuthUser {
   allowedCompanies: CompanyInfo[]
   permissions: UserPermissions
   capabilities?: Record<string, ModuleCapability>
+  /** The business has no Tally PC yet and this person can connect one: they are held at Connect Tally. */
+  needs_tally_setup?: boolean
 }
 
 interface AuthContextValue {
@@ -295,7 +297,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user_id: data.user_id ?? data.id,
         allowedCompanies,
         capabilities: data.capabilities || {},
-        username: data.email?.split('@')[0] ?? data.email ?? 'User',
+        // Someone who signed up with a mobile number may have no email: show the name they gave
+        username: data.email ? data.email.split('@')[0] : (data.username || 'User'),
         permissions: {
           showLedger: data.showLedger ?? Boolean(data.capabilities?.ledgers?.can_read),
           showSalesLedgers: data.showSalesLedgers ?? Boolean(data.capabilities?.ledger_customer?.can_read),

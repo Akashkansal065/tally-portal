@@ -1,106 +1,123 @@
 """
-SnehDistribuors Desktop Sync Agent — Modern Windows GUI
-Real-time synchronization bridge between TallyPrime and SnehDistribuors Cloud ERP.
+MyTally Bridge — the Windows window and tray icon of the desktop sync agent.
+Keeps the companies open in TallyPrime on this PC in step with the MyTally cloud.
 """
 
 import os
 import sys
-import time
 import queue
-import logging
+import platform
 import threading
-import subprocess
-from typing import Optional, Dict, Any
+import tkinter as tk
+from collections import deque
+from typing import Optional, Dict, Any, List, Tuple
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
 import pystray
 from pystray import MenuItem as item
 
-from config import (
-    load_config,
-    save_config,
-    AgentConfig,
-    install_startup,
-    uninstall_startup,
-    is_autostart_registered,
-    get_default_config_path,
-    get_logs_dir,
-    hold_single_instance
-)
+from config import load_config, save_config, AgentConfig, is_autostart_registered, get_default_config_path
 from agent import DesktopSyncAgent
-from tally_client import TallyClient
-from cloud_client import CloudClient
+import bridge_core as core
+from bridge_core import APP_NAME, APP_SHORT, APP_VERSION, health_from_status, check_single_instance, get_asset_path
 
 # ---------------------------------------------------------------------------
-# Appearance & Theme Configuration
+# Design tokens: every colour is a (light, dark) pair.
 # ---------------------------------------------------------------------------
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("green")
 
-# Theme Palette (Rich Slate & Vibrant Accents)
-BG_COLOR = "#0F172A"         # Slate 900
-CARD_BG = "#1E293B"          # Slate 800
-CARD_BORDER = "#334155"      # Slate 700
-INPUT_BG = "#0B1329"         # Slate 950
-ACCENT_BLUE = "#2563EB"      # Blue 600
-ACCENT_HOVER = "#1D4ED8"     # Blue 700
-SUCCESS_GREEN = "#10B981"    # Emerald 500
-WARNING_AMBER = "#F59E0B"    # Amber 500
-ERROR_RED = "#EF4444"        # Red 500
-TEXT_MAIN = "#F8FAFC"        # Slate 50
-TEXT_MUTED = "#94A3B8"       # Slate 400
-def check_single_instance() -> bool:
-    """Ensures only one SnehDistribuorsSync runs at a time, window or command line; brings the open window forward."""
-    if hold_single_instance():
-        return True
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            hwnd = user32.FindWindowW(None, "SnehDistribuors — Tally Sync Agent")
-            if hwnd:
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
-    return False
+BG = ("#F8F8FA", "#121212")            # window
+SURFACE = ("#FFFFFF", "#1B1B1B")       # cards, rail, health bar, inputs
+SUBTLE = ("#F0F1F5", "#262626")        # hover, selected nav, progress track
+BORDER = ("#E3E5EC", "#333333")
+BORDER_INPUT = ("#8A8D9C", "#7A7A7A")
+TEXT = ("#1E2032", "#F5F5F5")
+TEXT_2 = ("#44475B", "#B8B8B8")
+TEXT_3 = ("#6B6E80", "#949494")
+PRIMARY = ("#008565", "#0ABB92")       # 4.6:1 under a white label; the brighter brand green is not
+PRIMARY_HOVER = ("#00735A", "#2ACFA6")
+ON_PRIMARY = ("#FFFFFF", "#0B1F19")
 
-def get_asset_path(filename: str) -> str:
-    """Finds asset path in sys._MEIPASS (PyInstaller bundled), next to executable, or in source."""
-    candidates = []
-    
-    # 1. PyInstaller extraction directory
-    if getattr(sys, '_MEIPASS', None):
-        candidates.append(os.path.join(sys._MEIPASS, "assets", filename))
-        candidates.append(os.path.join(sys._MEIPASS, filename))
-        
-    # 2. Executable or script base directory
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-        
-    candidates.append(os.path.join(base, "assets", filename))
-    candidates.append(os.path.join(base, filename))
-    
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-    return candidates[0] if candidates else filename
+# One entry per sync state: text/icon, solid (dots, progress, tray badge), tinted fill, outline
+STATE = {
+    "idle":   {"fg": ("#44475B", "#B8B8B8"), "solid": ("#8A8D9C", "#7A7A7A"), "bg": ("#F0F1F5", "#262626"), "border": ("#E3E5EC", "#333333"), "glyph": "○"},
+    "paused": {"fg": ("#44475B", "#B8B8B8"), "solid": ("#8A8D9C", "#7A7A7A"), "bg": ("#F0F1F5", "#262626"), "border": ("#E3E5EC", "#333333"), "glyph": "II"},
+    "sync":   {"fg": ("#3D4FD9", "#9AA6FF"), "solid": ("#5367FF", "#6B7CFF"), "bg": ("#EEF0FF", "#1B1F42"), "border": ("#CBD1FF", "#2E3570"), "glyph": "↻"},
+    "ok":     {"fg": ("#00735A", "#4CD9B4"), "solid": ("#00B386", "#0ABB92"), "bg": ("#E6F7F2", "#0E2B24"), "border": ("#B0E6D7", "#17493C"), "glyph": "✓"},
+    "warn":   {"fg": ("#8A5A00", "#F2C14E"), "solid": ("#E5A100", "#E0A82E"), "bg": ("#FFF5D6", "#33270C"), "border": ("#F2D98A", "#5C4514"), "glyph": "!"},
+    "error":  {"fg": ("#B93217", "#FF8F75"), "solid": ("#EB5B3C", "#EB5B3C"), "bg": ("#FDEEEA", "#3A1810"), "border": ("#F7C6BA", "#6B2A1B"), "glyph": "✕"},
+}
+
+RADIUS_CONTROL = 6
+RADIUS_CARD = 10
+UI_FONT = "Segoe UI" if sys.platform == "win32" else None
+MONO_FONT = "Consolas" if sys.platform == "win32" else "Courier"
+THEMES = {"System": "system", "Light": "light", "Dark": "dark"}
+
+
+def font(size: int = 13, bold: bool = False) -> ctk.CTkFont:
+    kwargs: Dict[str, Any] = {"size": size, "weight": "bold" if bold else "normal"}
+    if UI_FONT:
+        kwargs["family"] = UI_FONT
+    return ctk.CTkFont(**kwargs)
+
+
+def card(parent, **kwargs) -> ctk.CTkFrame:
+    return ctk.CTkFrame(parent, fg_color=SURFACE, corner_radius=RADIUS_CARD, border_width=1, border_color=BORDER, **kwargs)
+
+
+def primary_button(parent, text: str, command, height: int = 32, **kwargs) -> ctk.CTkButton:
+    return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=RADIUS_CONTROL, font=font(13, True),
+                         fg_color=PRIMARY, hover_color=PRIMARY_HOVER, text_color=ON_PRIMARY, text_color_disabled=ON_PRIMARY, **kwargs)
+
+
+def secondary_button(parent, text: str, command, height: int = 32, **kwargs) -> ctk.CTkButton:
+    return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=RADIUS_CONTROL, font=font(13, True),
+                         fg_color=SURFACE, hover_color=SUBTLE, text_color=TEXT, border_width=1, border_color=BORDER_INPUT, **kwargs)
+
+
+def danger_button(parent, text: str, command, height: int = 32, **kwargs) -> ctk.CTkButton:
+    return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=RADIUS_CONTROL, font=font(13, True),
+                         fg_color=SURFACE, hover_color=STATE["error"]["bg"], text_color=STATE["error"]["fg"],
+                         border_width=1, border_color=STATE["error"]["border"], **kwargs)
+
+
+def link_button(parent, text: str, command) -> ctk.CTkButton:
+    return ctk.CTkButton(parent, text=text, command=command, height=24, width=0, corner_radius=RADIUS_CONTROL,
+                         font=ctk.CTkFont(family=UI_FONT, size=12, underline=True) if UI_FONT else ctk.CTkFont(size=12, underline=True),
+                         fg_color="transparent", hover_color=SUBTLE, text_color=TEXT_2)
+
+
+def entry(parent, variable: Optional[tk.Variable] = None, secret: bool = False, **kwargs) -> ctk.CTkEntry:
+    return ctk.CTkEntry(parent, textvariable=variable, show="•" if secret else "", height=34, corner_radius=RADIUS_CONTROL,
+                        border_width=1, border_color=BORDER_INPUT, fg_color=SURFACE, text_color=TEXT, font=font(13), **kwargs)
+
+
+def field(parent, label: str, variable: Optional[tk.Variable] = None, help_text: str = "", secret: bool = False,
+          padx: int = 24) -> ctk.CTkEntry:
+    """A labelled input: label above, optional helper line below."""
+    ctk.CTkLabel(parent, text=label, font=font(12, True), text_color=TEXT_2).pack(anchor="w", padx=padx, pady=(0, 2))
+    box = entry(parent, variable, secret)
+    box.pack(fill="x", padx=padx, pady=(0, 2 if help_text else 10))
+    if help_text:
+        ctk.CTkLabel(parent, text=help_text, font=font(11), text_color=TEXT_3).pack(anchor="w", padx=padx, pady=(0, 10))
+    return box
+
+
 
 
 # ---------------------------------------------------------------------------
 # Main Application Window
 # ---------------------------------------------------------------------------
-class SnehDistribuorsApp(ctk.CTk):
+class BridgeApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("SnehDistribuors — Tally Sync Agent")
-        self.geometry("640x780")
-        self.minsize(580, 700)
-        self.configure(fg_color=BG_COLOR)
+        self.title(APP_NAME)
+        self.geometry("920x600")   # landscape: fits a 1366x768 laptop with the taskbar showing
+        self.minsize(760, 520)
+        self.configure(fg_color=BG)
 
         # App Icon
         self.icon_path_ico = get_asset_path("icon.ico")
@@ -123,11 +140,14 @@ class SnehDistribuorsApp(ctk.CTk):
         # Load Configuration
         self.config_file = get_default_config_path()
         self.config: AgentConfig = load_config(self.config_file)
+        ctk.set_appearance_mode(self.config.theme if self.config.theme in THEMES.values() else "system")
 
         # Agent & Background Worker
         self.agent = DesktopSyncAgent(config_path=self.config_file)
         self.worker_thread: Optional[threading.Thread] = None
         self.log_queue = queue.Queue()
+        # Kept whichever page is showing, so Activity has the history when it is opened
+        self.log_history: deque = deque(maxlen=1000)
 
         # Connect Agent Logger to Queue
         self.agent.add_log_listener(self._on_agent_log)
@@ -135,20 +155,18 @@ class SnehDistribuorsApp(ctk.CTk):
         # System Tray State
         self.tray_icon: Optional[pystray.Icon] = None
         self.is_minimized_to_tray = False
+        self._tray_notice_shown = False
+        self._tray_state: Tuple[str, str] = ("", "")
         self._init_system_tray()
 
         # Handle Window Close
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
-        # Main Container
-        self.container = ctk.CTkFrame(self, fg_color=BG_COLOR)
-        self.container.pack(fill="both", expand=True, padx=16, pady=16)
-
         # Current view tracking
         self.current_frame: Optional[ctk.CTkFrame] = None
 
         # Determine start screen
-        has_credentials = bool(self.config.backend_url and (self.config.device_token or self.config.auth_token or (self.config.email and self.config.password)))
+        has_credentials = core.has_credentials(self.config)
         start_minimized = ("--tray" in sys.argv or "--minimized" in sys.argv)
 
         if has_credentials:
@@ -165,28 +183,44 @@ class SnehDistribuorsApp(ctk.CTk):
     # -----------------------------------------------------------------------
     # System Tray Integration
     # -----------------------------------------------------------------------
+    def _tray_image(self, kind: str = "idle") -> Image.Image:
+        return core.tray_image(self.pil_icon, kind)
+
     def _init_system_tray(self):
         """Initializes pystray icon for background operation."""
         try:
-            icon_img = self.pil_icon or Image.new('RGBA', (64, 64), (37, 99, 235, 255))
             tray_menu = (
-                item("Open SnehDistribuors", self._tray_restore_window, default=True),
-                item("Sync Delta Now", self._tray_sync_now),
-                item("Sync All (Full Refresh)", self._tray_sync_all),
-                item("Pause / Resume Sync", self._tray_toggle_pause),
+                item(f"Open {APP_SHORT}", self._tray_restore_window, default=True),
+                item("Sync now", self._tray_sync_now),
+                item("Full re-sync", self._tray_sync_all),
+                item("Pause or resume syncing", self._tray_toggle_pause),
                 pystray.Menu.SEPARATOR,
-                item("Exit", self._tray_exit_app)
+                item(f"Quit {APP_SHORT}", self._tray_exit_app)
             )
             self.tray_icon = pystray.Icon(
                 "SnehDistribuorsSync",
-                icon_img,
-                "SnehDistribuors Tally Sync",
+                self._tray_image(),
+                APP_NAME,
                 tray_menu
             )
             tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
             tray_thread.start()
         except Exception as e:
-            print(f"⚠️ System tray initialization notice: {e}")
+            print(f"System tray initialization notice: {e}")
+
+    def _update_tray(self, health: Dict[str, str]):
+        """The tray icon is the whole interface most of the day: it carries the same state as the health bar."""
+        if not self.tray_icon:
+            return
+        state = (health["kind"], health["title"])
+        if state == self._tray_state:
+            return
+        self._tray_state = state
+        try:
+            self.tray_icon.icon = self._tray_image(health["kind"])
+            self.tray_icon.title = f"{APP_NAME}: {health['title']}"[:120]   # Windows cuts tooltips at 127
+        except Exception:
+            pass
 
     def _tray_restore_window(self, icon=None, item=None):
         self.after(0, self._restore_from_tray)
@@ -206,12 +240,10 @@ class SnehDistribuorsApp(ctk.CTk):
     def minimize_to_tray(self):
         self.withdraw()
         self.is_minimized_to_tray = True
-        if self.tray_icon:
+        if self.tray_icon and not self._tray_notice_shown:
+            self._tray_notice_shown = True
             try:
-                self.tray_icon.notify(
-                    "SnehDistribuors Sync is running silently in the background.",
-                    "Minimized to System Tray"
-                )
+                self.tray_icon.notify(f"{APP_SHORT} keeps syncing in the background.", APP_NAME)
             except Exception:
                 pass
 
@@ -263,675 +295,625 @@ class SnehDistribuorsApp(ctk.CTk):
         self.worker_thread = threading.Thread(target=self.agent.run_daemon, daemon=True)
         self.worker_thread.start()
 
+    def set_theme(self, theme: str):
+        self.config.theme = theme
+        save_config(self.config, self.config_file)
+        ctk.set_appearance_mode(theme)
+        if isinstance(self.current_frame, MainView):
+            self.current_frame.theme_changed()
+
     # -----------------------------------------------------------------------
     # Screen Switching Helpers
     # -----------------------------------------------------------------------
-    def show_setup(self):
+    def _show(self, frame: ctk.CTkFrame):
         if self.current_frame:
             self.current_frame.destroy()
-        self.current_frame = SetupView(self.container, self)
-        self.current_frame.pack(fill="both", expand=True)
+        self.current_frame = frame
+        frame.pack(fill="both", expand=True)
 
-    def show_dashboard(self):
-        if self.current_frame:
-            self.current_frame.destroy()
-        self.current_frame = DashboardView(self.container, self)
-        self.current_frame.pack(fill="both", expand=True)
+    def show_setup(self):
+        self._show(SetupView(self, self))
+
+    def show_dashboard(self, page: str = "companies"):
+        self._show(MainView(self, self, page))
 
     def show_settings(self):
-        if self.current_frame:
-            self.current_frame.destroy()
-        self.current_frame = SettingsView(self.container, self)
-        self.current_frame.pack(fill="both", expand=True)
+        self.show_dashboard("settings")
 
     # -----------------------------------------------------------------------
     # Status Polling Loop
     # -----------------------------------------------------------------------
     def _periodic_status_refresh(self):
-        # 1. Update logs in dashboard if active
-        if isinstance(self.current_frame, DashboardView):
-            while not self.log_queue.empty():
-                try:
-                    msg, level = self.log_queue.get_nowait()
-                    self.current_frame.append_log(msg, level)
-                except queue.Empty:
-                    break
+        fresh: List[Tuple[str, str]] = []
+        while True:
+            try:
+                fresh.append(self.log_queue.get_nowait())
+            except queue.Empty:
+                break
+        self.log_history.extend(fresh)
 
-            # 2. Update dashboard indicators
+        if isinstance(self.current_frame, MainView):
             status = self.agent.get_status()
-            self.current_frame.update_status(status)
+            health = health_from_status(status)
+            self._update_tray(health)
+            self.current_frame.refresh(status, health, fresh)
 
         self.after(1000, self._periodic_status_refresh)
 
 
 # ---------------------------------------------------------------------------
-# VIEW 1: Setup & Login Screen (Single-Page Unified Setup)
+# VIEW 1: First run. Welcome, then sign in with a code from the app or with email and password, all in one card
 # ---------------------------------------------------------------------------
 class SetupView(ctk.CTkFrame):
-    def __init__(self, parent, app: SnehDistribuorsApp):
+    CARD_WIDTH = 372
+
+    def __init__(self, parent, app: BridgeApp):
         super().__init__(parent, fg_color="transparent")
         self.app = app
+        cfg = app.config
+
+        # What has been typed lives here, not in the widgets, so moving between screens loses nothing
+        self.v_server = tk.StringVar(value=cfg.backend_url or "")
+        self.v_tally = tk.StringVar(value=cfg.tally_url or core.DEFAULT_TALLY_URL)
+        self.v_email = tk.StringVar(value=cfg.email or cfg.username or "")
+        self.v_password = tk.StringVar(value=cfg.password or "")
+        self.v_company = tk.StringVar(value=cfg.company_name or "")
+        self.v_autostart = tk.BooleanVar(value=cfg.autostart_enabled or is_autostart_registered())
+        self.advanced_open = False
+        self.tally_note: Tuple[str, str] = ("Looking for TallyPrime...", "idle")
+        self.pair_code = ""                             # the sign-in code on screen, if one was asked for
+        self.pair: Optional[Tuple[str, str]] = None     # its server and the secret it is collected with
+        self._sending = False
 
         # Scrollable container for smaller screens
         self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True)
+        self.card = card(self.scroll)
+        self.card.pack(pady=24)
 
-        self._build_header()
-        self._build_cloud_card()
-        self._build_tally_card()
-        self._build_options_card()
-        self._build_action_bar()
+        self.msg: Optional[ctk.CTkLabel] = None
+        self.note_lbl: Optional[ctk.CTkLabel] = None
+        self.main_btn: Optional[ctk.CTkButton] = None
+        self.screen = ""
+        # Someone who has signed in before is coming back to sign in again, not to choose
+        self._show("signin" if self.v_email.get() else "welcome")
+        self._detect_tally_company()
 
-    def _build_header(self):
-        header_box = ctk.CTkFrame(self.scroll, fg_color="transparent")
-        header_box.pack(fill="x", pady=(8, 16))
+    # -- shared pieces ------------------------------------------------------
+    def _show(self, screen: str):
+        for child in self.card.winfo_children():
+            child.destroy()
+        if screen != "code":
+            self.pair_code, self.pair = "", None   # leaving the code screen gives the code up
+        self.screen = screen
+        self.msg = self.note_lbl = self.main_btn = None
+        ctk.CTkFrame(self.card, fg_color="transparent", height=14, width=self.CARD_WIDTH + 48).pack()
+        getattr(self, f"_build_{screen}")()
+        ctk.CTkFrame(self.card, fg_color="transparent", height=14).pack()
 
-        # Brand Icon & Title
-        title_row = ctk.CTkFrame(header_box, fg_color="transparent")
-        title_row.pack()
+    def _title(self, title: str, text: str = ""):
+        ctk.CTkLabel(self.card, text=title, font=font(20, True), text_color=TEXT).pack(anchor="w", padx=24, pady=(4, 2))
+        if text:
+            ctk.CTkLabel(self.card, text=text, font=font(13), text_color=TEXT_2, wraplength=self.CARD_WIDTH,
+                         justify="left").pack(anchor="w", padx=24, pady=(0, 12))
 
-        if self.app.pil_icon:
-            logo_img = ctk.CTkImage(light_image=self.app.pil_icon, dark_image=self.app.pil_icon, size=(44, 44))
-            logo_label = ctk.CTkLabel(title_row, text="", image=logo_img)
-            logo_label.pack(side="left", padx=(0, 12))
+    def _message_line(self):
+        self.msg = ctk.CTkLabel(self.card, text="", font=font(12), text_color=TEXT_3, wraplength=self.CARD_WIDTH, justify="left")
+        self.msg.pack(anchor="w", padx=24, pady=(6, 0))
 
-        brand_lbl = ctk.CTkLabel(
-            title_row,
-            text="SnehDistribuors",
-            font=ctk.CTkFont(size=24, weight="bold"),
-            text_color=TEXT_MAIN
-        )
-        brand_lbl.pack(side="left")
+    def _say(self, text: str, kind: str = "idle"):
+        if self.msg is not None and self.msg.winfo_exists():
+            self.msg.configure(text=text, text_color=STATE[kind]["fg"])
 
-        subtitle_lbl = ctk.CTkLabel(
-            header_box,
-            text="TallyPrime Real-Time Cloud Synchronization Agent",
-            font=ctk.CTkFont(size=13),
-            text_color=TEXT_MUTED
-        )
-        subtitle_lbl.pack(pady=(4, 0))
+    def _busy(self, text: Optional[str], idle_text: str = ""):
+        """The screen's main button while a request runs: disabled with what is happening, then back."""
+        if self.main_btn is not None and self.main_btn.winfo_exists():
+            self.main_btn.configure(text=text or idle_text, state="disabled" if text else "normal")
 
-    def _build_cloud_card(self):
-        card = ctk.CTkFrame(self.scroll, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        card.pack(fill="x", pady=(0, 14), padx=4)
+    def _tally_line(self):
+        text, kind = self.tally_note
+        self.note_lbl = ctk.CTkLabel(self.card, text=text, font=font(11), text_color=STATE[kind]["fg"],
+                                     wraplength=self.CARD_WIDTH, justify="left")
+        self.note_lbl.pack(anchor="w", padx=24, pady=(0, 10))
 
-        title = ctk.CTkLabel(
-            card,
-            text="☁️  Cloud ERP Backend Connection",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=TEXT_MAIN
-        )
-        title.pack(anchor="w", padx=16, pady=(14, 10))
+    def _password_field(self, label: str, help_text: str = ""):
+        ctk.CTkLabel(self.card, text=label, font=font(12, True), text_color=TEXT_2).pack(anchor="w", padx=24, pady=(0, 2))
+        row = ctk.CTkFrame(self.card, fg_color="transparent")
+        row.pack(fill="x", padx=24, pady=(0, 2 if help_text else 10))
+        box = entry(row, self.v_password, secret=True)
+        box.pack(side="left", fill="x", expand=True)
+        toggle = secondary_button(row, "Show", None, height=34, width=58)
+        toggle.configure(command=lambda: (box.configure(show="" if box.cget("show") else "•"),
+                                          toggle.configure(text="Show" if box.cget("show") else "Hide")))
+        toggle.pack(side="left", padx=(8, 0))
+        if help_text:
+            ctk.CTkLabel(self.card, text=help_text, font=font(11), text_color=TEXT_3).pack(anchor="w", padx=24, pady=(0, 10))
 
-        # Cloud Backend URL
-        ctk.CTkLabel(card, text="Cloud Server URL:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16)
-        self.backend_url_entry = ctk.CTkEntry(
-            card,
-            placeholder_text="http://MacBook-Air.local:8000",
-            fg_color=INPUT_BG,
-            border_color=CARD_BORDER,
-            height=36
-        )
-        self.backend_url_entry.insert(0, self.app.config.backend_url or "http://MacBook-Air.local:8000")
-        self.backend_url_entry.pack(fill="x", padx=16, pady=(4, 10))
+    def _advanced(self):
+        """Where the server and TallyPrime are. Almost nobody needs to change these, so they stay folded away."""
+        if not self.advanced_open:
+            return
+        field(self.card, "Server address", self.v_server)
+        field(self.card, "TallyPrime address", self.v_tally, "TallyPrime's default is http://127.0.0.1:9000")
+        self.test_btn = secondary_button(self.card, "Test connection", self._run_connection_test)
+        self.test_btn.pack(anchor="w", padx=24, pady=(0, 6))
 
-        # Email / Username
-        ctk.CTkLabel(card, text="Account Email / Username:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16)
-        self.email_entry = ctk.CTkEntry(
-            card,
-            placeholder_text="admin@snehdistributors.com",
-            fg_color=INPUT_BG,
-            border_color=CARD_BORDER,
-            height=36
-        )
-        self.email_entry.insert(0, self.app.config.email or self.app.config.username or "")
-        self.email_entry.pack(fill="x", padx=16, pady=(4, 10))
+    def _toggle_advanced(self):
+        self.advanced_open = not self.advanced_open
+        self._show(self.screen)
 
-        # Password
-        ctk.CTkLabel(card, text="Password:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16)
-        pass_row = ctk.CTkFrame(card, fg_color="transparent")
-        pass_row.pack(fill="x", padx=16, pady=(4, 16))
+    # -- screens ------------------------------------------------------------
+    def _build_welcome(self):
+        self._title("Connect TallyPrime to MyTally",
+                    f"{APP_SHORT} runs on this PC and keeps your Tally companies in step with the MyTally app.")
+        primary_button(self.card, "Connect with a code from the app", lambda: self._show("code"), height=40).pack(fill="x", padx=24, pady=(4, 8))
+        secondary_button(self.card, "Sign in with email and password", lambda: self._show("signin"), height=40).pack(fill="x", padx=24, pady=(0, 14))
+        ctk.CTkFrame(self.card, fg_color=BORDER, height=1).pack(fill="x", padx=24)
+        ctk.CTkLabel(self.card, text="New to MyTally? Create your account in the MyTally app first, then come back here. "
+                                     f"Invited by your admin? You don't need {APP_SHORT}. Accept the invitation in the app.",
+                     font=font(12), text_color=TEXT_3, wraplength=self.CARD_WIDTH, justify="left").pack(anchor="w", padx=24, pady=(12, 0))
 
-        self.password_entry = ctk.CTkEntry(
-            pass_row,
-            placeholder_text="••••••••",
-            show="•",
-            fg_color=INPUT_BG,
-            border_color=CARD_BORDER,
-            height=36
-        )
-        self.password_entry.insert(0, self.app.config.password or "")
-        self.password_entry.pack(side="left", fill="x", expand=True)
-
-        self.show_pass_btn = ctk.CTkButton(
-            pass_row,
-            text="👁",
-            width=36,
-            height=36,
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            command=self._toggle_password
-        )
-        self.show_pass_btn.pack(side="left", padx=(8, 0))
-
-    def _toggle_password(self):
-        if self.password_entry.cget("show") == "•":
-            self.password_entry.configure(show="")
-        else:
-            self.password_entry.configure(show="•")
-
-    def _build_tally_card(self):
-        card = ctk.CTkFrame(self.scroll, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        card.pack(fill="x", pady=(0, 14), padx=4)
-
-        title = ctk.CTkLabel(
-            card,
-            text="📊  TallyPrime Configuration",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=TEXT_MAIN
-        )
-        title.pack(anchor="w", padx=16, pady=(14, 10))
-
-        # Tally URL
-        ctk.CTkLabel(card, text="Tally XML Server URL (Local Port):", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16)
-        self.tally_url_entry = ctk.CTkEntry(
-            card,
-            placeholder_text="http://127.0.0.1:9000",
-            fg_color=INPUT_BG,
-            border_color=CARD_BORDER,
-            height=36
-        )
-        self.tally_url_entry.insert(0, self.app.config.tally_url or "http://127.0.0.1:9000")
-        self.tally_url_entry.pack(fill="x", padx=16, pady=(4, 10))
-
-        # Company Name with Auto-Detect Button
-        ctk.CTkLabel(card, text="Target Company Name (or auto-detect):", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16)
-        cmp_row = ctk.CTkFrame(card, fg_color="transparent")
-        cmp_row.pack(fill="x", padx=16, pady=(4, 16))
-
-        self.company_entry = ctk.CTkEntry(
-            cmp_row,
-            placeholder_text="Bhrama Enterprises",
-            fg_color=INPUT_BG,
-            border_color=CARD_BORDER,
-            height=36
-        )
-        self.company_entry.insert(0, self.app.config.company_name or "")
-        self.company_entry.pack(side="left", fill="x", expand=True)
-
-        self.detect_btn = ctk.CTkButton(
-            cmp_row,
-            text="🔍 Auto-Detect",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=ACCENT_BLUE,
-            height=36,
-            command=self._detect_tally_company
-        )
+    def _company_field(self):
+        ctk.CTkLabel(self.card, text="Company", font=font(12, True), text_color=TEXT_2).pack(anchor="w", padx=24, pady=(0, 2))
+        row = ctk.CTkFrame(self.card, fg_color="transparent")
+        row.pack(fill="x", padx=24, pady=(0, 2))
+        entry(row, self.v_company).pack(side="left", fill="x", expand=True)
+        self.detect_btn = secondary_button(row, "Detect", self._detect_tally_company, height=34, width=70)
         self.detect_btn.pack(side="left", padx=(8, 0))
+        self._tally_line()
+        ctk.CTkCheckBox(self.card, text="Start with Windows", variable=self.v_autostart, font=font(13), text_color=TEXT_2,
+                        fg_color=PRIMARY, hover_color=PRIMARY_HOVER, border_color=BORDER_INPUT, checkmark_color=ON_PRIMARY,
+                        checkbox_width=18, checkbox_height=18, border_width=1, corner_radius=4).pack(anchor="w", padx=24, pady=(0, 14))
 
-    def _build_options_card(self):
-        card = ctk.CTkFrame(self.scroll, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        card.pack(fill="x", pady=(0, 14), padx=4)
+    def _foot_links(self, label: str, screen: str):
+        links = ctk.CTkFrame(self.card, fg_color="transparent")
+        links.pack(fill="x", padx=20, pady=(8, 6))
+        link_button(links, label, lambda: self._show(screen)).pack(side="left")
+        link_button(links, "Hide advanced" if self.advanced_open else "Advanced", self._toggle_advanced).pack(side="right")
+        self._advanced()
 
-        self.autostart_var = ctk.BooleanVar(value=self.app.config.autostart_enabled or is_autostart_registered())
-        self.autostart_chk = ctk.CTkCheckBox(
-            card,
-            text="Start automatically with Windows boot",
-            variable=self.autostart_var,
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MAIN,
-            fg_color=ACCENT_BLUE,
-            hover_color=ACCENT_HOVER
-        )
-        self.autostart_chk.pack(anchor="w", padx=16, pady=14)
+    def _build_signin(self):
+        self._title("Sign in to link this PC", "Use an account that can manage the sync agent. Admins can by default.")
+        field(self.card, "Email", self.v_email)
+        self._password_field("Password")
+        self._company_field()
+        self.main_btn = primary_button(self.card, "Sign in and start syncing", self._connect_and_launch, height=40)
+        self.main_btn.pack(fill="x", padx=24)
+        self._message_line()
+        self._foot_links("Connect with a code instead", "code")
 
-    def _build_action_bar(self):
-        # Status feedback label
-        self.status_lbl = ctk.CTkLabel(
-            self.scroll,
-            text="Configure your credentials and click Connect to start real-time syncing.",
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MUTED,
-            wraplength=540
-        )
-        self.status_lbl.pack(pady=(4, 10))
+    def _build_code(self):
+        if self.pair_code:
+            self._title("Connect with a code", "Open the MyTally app on your phone or browser, go to Connect Tally and enter "
+                                               "this code. This PC is signed in as soon as you do.")
+            ctk.CTkLabel(self.card, text=self.pair_code, font=font(28, True), text_color=TEXT).pack(padx=24, pady=(2, 14))
+        else:
+            self._title("Connect with a code", "You get a code to enter in the MyTally app, signed in as someone who can "
+                                               "manage the sync agent. No password is typed on this PC.")
+            self._company_field()
+        self.main_btn = primary_button(self.card, "Get a new code" if self.pair_code else "Get a code", self._start_code, height=40)
+        self.main_btn.pack(fill="x", padx=24)
+        self._message_line()
+        self._foot_links("Sign in with email and password", "signin")
 
-        btn_row = ctk.CTkFrame(self.scroll, fg_color="transparent")
-        btn_row.pack(fill="x", pady=(0, 12))
-
-        self.test_btn = ctk.CTkButton(
-            btn_row,
-            text="🧪 Test Connection",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=42,
-            corner_radius=8,
-            command=self._run_connection_test
-        )
-        self.test_btn.pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-        self.connect_btn = ctk.CTkButton(
-            btn_row,
-            text="🚀 Connect & Start Sync",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            fg_color=ACCENT_BLUE,
-            hover_color=ACCENT_HOVER,
-            height=42,
-            corner_radius=8,
-            command=self._connect_and_launch
-        )
-        self.connect_btn.pack(side="left", fill="x", expand=True, padx=(8, 0))
-
-        self.create_account_btn = ctk.CTkButton(
-            self.scroll,
-            text="New here? Create an account for your business",
-            font=ctk.CTkFont(size=12, underline=True),
-            fg_color="transparent",
-            hover_color=CARD_BG,
-            text_color=TEXT_MUTED,
-            height=28,
-            command=self._open_create_account
-        )
-        self.create_account_btn.pack(pady=(0, 12))
-
+    # -- TallyPrime ---------------------------------------------------------
     def _detect_tally_company(self):
-        t_url = self.tally_url_entry.get().strip() or "http://127.0.0.1:9000"
-        self.detect_btn.configure(text="Detecting...", state="disabled")
-        self.update()
+        t_url = self.v_tally.get().strip()
+        self._set_tally_note("Looking for TallyPrime...", "idle")
 
         def worker():
-            client = TallyClient(tally_url=t_url)
-            info = client.discover_tally_host()
-            self.after(0, lambda: self._on_detect_finish(info))
+            found = core.detect_tally(t_url)
+            self.after(0, lambda: self._on_detect_finish(found))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_detect_finish(self, info: Dict[str, Any]):
-        self.detect_btn.configure(text="🔍 Auto-Detect", state="normal")
-        if info.get("connected"):
-            cmp_name = info.get("company_name", "")
-            if cmp_name:
-                self.company_entry.delete(0, "end")
-                self.company_entry.insert(0, cmp_name)
-                self.status_lbl.configure(
-                    text=f"✅ Connected to Tally! Active company: '{cmp_name}' (Release: {info.get('release')})",
-                    text_color=SUCCESS_GREEN
-                )
-            else:
-                self.status_lbl.configure(
-                    text="⚠️ Tally is active on port 9000, but no company is currently open.",
-                    text_color=WARNING_AMBER
-                )
-        else:
-            self.status_lbl.configure(
-                text=f"❌ Could not connect to Tally XML server at {self.tally_url_entry.get()}. Ensure TallyPrime is open with port 9000 enabled.",
-                text_color=ERROR_RED
-            )
+    def _set_tally_note(self, text: str, kind: str):
+        self.tally_note = (text, kind)
+        if self.note_lbl is not None and self.note_lbl.winfo_exists():
+            self.note_lbl.configure(text=text, text_color=STATE[kind]["fg"])
+
+    def _on_detect_finish(self, found: Dict[str, str]):
+        if not self.winfo_exists():
+            return
+        if found["company"]:
+            self.v_company.set(found["company"])
+        self._set_tally_note(found["text"], found["kind"])
 
     def _run_connection_test(self):
         self.test_btn.configure(text="Testing...", state="disabled")
-        self.status_lbl.configure(text="🔍 Verifying Tally and Cloud connections...", text_color=TEXT_MUTED)
-
-        backend_url = self.backend_url_entry.get().strip()
-        email = self.email_entry.get().strip()
-        password = self.password_entry.get()
-        tally_url = self.tally_url_entry.get().strip()
+        self._say("Checking TallyPrime and the server...")
+        args = (self.v_server.get().strip(), self.v_email.get().strip(), self.v_password.get(), self.v_tally.get().strip())
 
         def test_worker():
-            # Test Tally
-            t_client = TallyClient(tally_url=tally_url)
-            t_info = t_client.discover_tally_host()
-
-            # Test Cloud
-            c_client = CloudClient(backend_url=backend_url, email=email, password=password)
-            cloud_ok, cloud_msg = c_client.check_health()
-            auth_ok, auth_msg = False, ""
-            if email and password:
-                auth_ok, auth_msg = c_client.authenticate(email, password)
-
-            self.after(0, lambda: self._on_test_done(t_info, cloud_ok, cloud_msg, auth_ok, auth_msg))
+            result = core.test_connection(*args)
+            self.after(0, lambda: self._on_test_done(result))
 
         threading.Thread(target=test_worker, daemon=True).start()
 
-    def _on_test_done(self, t_info, cloud_ok, cloud_msg, auth_ok, auth_msg):
-        self.test_btn.configure(text="🧪 Test Connection", state="normal")
-        t_ok = t_info.get("connected", False)
+    def _on_test_done(self, result: Dict[str, str]):
+        if not self.winfo_exists():
+            return
+        if self.advanced_open and self.test_btn.winfo_exists():
+            self.test_btn.configure(text="Test connection", state="normal")
+        self._say(result["text"], result["kind"])
 
-        lines = []
-        if t_ok:
-            lines.append(f"✅ Tally: Connected ({t_info.get('company_name') or 'No company open'})")
-        else:
-            lines.append("❌ Tally: Inactive on port 9000")
-
-        if cloud_ok:
-            if auth_ok:
-                lines.append("✅ Cloud: Authenticated successfully")
-            else:
-                lines.append(f"⚠️ Cloud: Reachable, but auth failed ({auth_msg})")
-        else:
-            lines.append(f"❌ Cloud: Cannot connect to {self.backend_url_entry.get()}")
-
-        overall_ok = t_ok and cloud_ok and (auth_ok or not self.password_entry.get())
-        color = SUCCESS_GREEN if overall_ok else (WARNING_AMBER if (t_ok or cloud_ok) else ERROR_RED)
-        self.status_lbl.configure(text=" | ".join(lines), text_color=color)
+    # -- sign in ------------------------------------------------------------
+    def _need_server(self) -> str:
+        backend_url = self.v_server.get().strip()
+        if not backend_url:
+            if not self.advanced_open:
+                self._toggle_advanced()
+            self._say("Enter the server address under Advanced.", "error")
+        return backend_url
 
     def _connect_and_launch(self):
-        backend_url = self.backend_url_entry.get().strip()
-        email = self.email_entry.get().strip()
-        password = self.password_entry.get()
-        tally_url = self.tally_url_entry.get().strip()
-        company_name = self.company_entry.get().strip()
-        autostart = self.autostart_var.get()
-
+        backend_url = self._need_server()
         if not backend_url:
-            self.status_lbl.configure(text="❌ Please enter your Cloud Server URL.", text_color=ERROR_RED)
             return
-
-        self.connect_btn.configure(text="Authenticating...", state="disabled")
+        args = (backend_url, self.v_email.get().strip(), self.v_password.get(), self.v_tally.get().strip(),
+                self.v_company.get().strip(), self.v_autostart.get())
+        self._busy("Signing in...")
 
         def connect_worker():
-            cloud_client = CloudClient(backend_url=backend_url, email=email, password=password)
-            cloud_ok, _ = cloud_client.check_health()
-            
-            token = ""
-            device_token = ""
-            if email and password:
-                # Sign this PC in. A server from before PC sign-in answers 404: use the person's login as before.
-                signed_in, sign_res, sign_status = cloud_client.sign_in_device(email, password)
-                if signed_in:
-                    device_token = sign_res["device_token"]
-                elif sign_status == 404:
-                    auth_ok, auth_res = cloud_client.authenticate(email, password)
-                    if auth_ok:
-                        token = auth_res
-                    else:
-                        self.after(0, lambda: self._on_connect_failed(f"Authentication failed: {auth_res}"))
-                        return
-                else:
-                    self.after(0, lambda: self._on_connect_failed(f"Sign-in failed: {sign_res}"))
-                    return
-
-            # Update Config
-            self.app.config.backend_url = backend_url
-            self.app.config.email = email
-            self.app.config.username = email
-            # A signed-in PC keeps no password: its device token is the sign-in
-            self.app.config.password = "" if device_token else password
-            self.app.config.auth_token = token
-            self.app.config.device_token = device_token
-            # Re-entering credentials resumes an agent an admin had signed out (a blocked PC still can't sign in)
-            self.app.config.auth_halt_reason = ""
-            self.app.config.tally_url = tally_url
-            if company_name:
-                if company_name != self.app.config.company_name:
-                    # A different company: drop the old pin, or the agent keeps waiting for the previous one.
-                    # The new company's GUID is pinned the first time it's seen open in Tally.
-                    self.app.config.company_guid = ""
-                self.app.config.company_name = company_name
-            self.app.config.autostart_enabled = autostart
-
-            save_config(self.app.config, self.app.config_file)
-
-            # Handle autostart registry
-            if autostart:
-                install_startup()
-            else:
-                uninstall_startup()
-
-            # Reload agent
-            self.app.agent.reload_config(self.app.config)
-
-            if device_token:
+            ok, message, as_device = core.sign_in_pc(self.app, *args)
+            if not ok:
+                self.after(0, lambda: self._on_connect_failed(message))
+            elif as_device:
                 self._link_company_then_launch()
             else:
                 self.after(0, self._on_connect_success)
 
         threading.Thread(target=connect_worker, daemon=True).start()
 
-    def _link_company_then_launch(self, take_over: bool = False):
+    def _link_company_then_launch(self, take_over: bool = False, open_anyway: bool = False):
         """Worker thread: make this PC the one syncing the chosen company, then open the dashboard. If another PC
-        syncs it, ask before moving it here."""
+        syncs it, ask before moving it here. open_anyway: the PC was signed in with a code and that screen is
+        gone, so the dashboard opens even when the company could not be linked; its Companies page says why."""
         ok, message, reason = self.app.agent.link_active_company(take_over=take_over)
         if ok:
             self.after(0, self._on_connect_success)
         elif reason == "linked_to_another_device":
-            self.after(0, lambda: self._ask_to_move_company(message))
+            self.after(0, lambda: self._ask_to_move_company(message, open_anyway))
+        elif open_anyway:
+            self.after(0, self._on_connect_success)
         else:
             self.after(0, lambda: self._on_connect_failed(f"Signed in, but the company could not be linked: {message}"))
 
-    def _ask_to_move_company(self, message: str):
+    def _ask_to_move_company(self, message: str, open_anyway: bool = False):
         from tkinter import messagebox
         if messagebox.askyesno("Move sync to this PC?", f"{message}\n\nThe other PC will stop syncing this company."):
-            threading.Thread(target=lambda: self._link_company_then_launch(take_over=True), daemon=True).start()
+            threading.Thread(target=lambda: self._link_company_then_launch(take_over=True, open_anyway=open_anyway), daemon=True).start()
+        elif open_anyway:
+            self._on_connect_success()
         else:
             self._on_connect_failed("Not linked: the company is still synced from the other PC.")
 
-    def _open_create_account(self):
-        backend_url = self.backend_url_entry.get().strip()
-        if not backend_url:
-            self.status_lbl.configure(text="❌ Please enter your Cloud Server URL.", text_color=ERROR_RED)
-            return
-        CreateAccountDialog(self, backend_url, self.email_entry.get().strip(), self.password_entry.get(),
-                            self.tally_url_entry.get().strip(), self.company_entry.get().strip())
-
-    def _on_account_created(self, backend_url: str, email: str, tally_url: str, signed: Dict[str, Any]):
-        """Main thread: the account exists and this PC is signed in to it with its first company linked."""
-        cfg = self.app.config
-        cfg.backend_url, cfg.email, cfg.username, cfg.tally_url = backend_url, email, email, tally_url
-        cfg.password, cfg.auth_token, cfg.auth_halt_reason = "", "", ""
-        cfg.device_token = signed["device_token"]
-        cfg.company_name = signed["company"]["name"]
-        cfg.company_guid = signed["company"]["tally_guid"]
-        cfg.autostart_enabled = self.autostart_var.get()
-        save_config(cfg, self.app.config_file)
-        if cfg.autostart_enabled:
-            install_startup()
-        self.app.agent.reload_config(cfg)
-        self._on_connect_success()
-
     def _on_connect_failed(self, msg: str):
-        self.connect_btn.configure(text="🚀 Connect & Start Sync", state="normal")
-        self.status_lbl.configure(text=f"❌ {msg}", text_color=ERROR_RED)
+        self._busy(None, "Sign in and start syncing")
+        self._say(msg, "error")
 
     def _on_connect_success(self):
         self.app.show_dashboard()
         self.app.start_sync_thread()
 
-
-class CreateAccountDialog(ctk.CTkToplevel):
-    """Create a new account from this PC: details, then the code emailed to confirm them. The company open in
-    Tally becomes the account's first company. For joining an existing business there is no form here: an admin
-    of that business sends an invitation from the app."""
-
-    def __init__(self, setup: "SetupView", backend_url: str, email: str, password: str, tally_url: str, company_name: str):
-        super().__init__(setup)
-        self.setup, self.backend_url, self.tally_url, self.company_name = setup, backend_url, tally_url, company_name
-        self.cloud = CloudClient(backend_url=backend_url)
-        self.company: Optional[Dict[str, Any]] = None
-        self.title("Create your account")
-        self.geometry("460x640")
-        self.configure(fg_color=BG_COLOR)
-        self.transient(setup.winfo_toplevel())
-        self.grab_set()
-
-        ctk.CTkLabel(self, text="Create your account", font=ctk.CTkFont(size=18, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(18, 2))
-        ctk.CTkLabel(self, text="Joining a business that already uses this? Ask its admin for an invitation instead.",
-                     font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, wraplength=420, justify="left").pack(anchor="w", padx=20, pady=(0, 10))
-
-        self.entries: Dict[str, ctk.CTkEntry] = {}
-        for key, label, value, secret in (
-            ("full_name", "Your name", "", False),
-            ("business_name", "Business name", company_name, False),
-            ("email", "Email", email, False),
-            ("phone", "Mobile number", "", False),
-            ("password", "Password (8 characters or more)", password, True),
-        ):
-            ctk.CTkLabel(self, text=label, font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=20)
-            entry = ctk.CTkEntry(self, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34, show="•" if secret else "")
-            if value:
-                entry.insert(0, value)
-            entry.pack(fill="x", padx=20, pady=(2, 8))
-            self.entries[key] = entry
-
-        self.terms_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(self, text="I accept the terms of service", variable=self.terms_var,
-                        font=ctk.CTkFont(size=12), text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(2, 10))
-
-        self.send_btn = ctk.CTkButton(self, text="Email me a code", fg_color=ACCENT_BLUE, hover_color=ACCENT_HOVER,
-                                      height=38, command=self._send_code)
-        self.send_btn.pack(fill="x", padx=20, pady=(0, 10))
-
-        ctk.CTkLabel(self, text="Code from the email", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=20)
-        self.code_entry = ctk.CTkEntry(self, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34, state="disabled")
-        self.code_entry.pack(fill="x", padx=20, pady=(2, 8))
-        self.create_btn = ctk.CTkButton(self, text="Create account", fg_color=SUCCESS_GREEN, hover_color=ACCENT_HOVER,
-                                        height=38, state="disabled", command=self._create)
-        self.create_btn.pack(fill="x", padx=20, pady=(0, 8))
-
-        self.status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED, wraplength=420, justify="left")
-        self.status.pack(anchor="w", padx=20, pady=(0, 12))
-
-    def _say(self, text: str, color: str = TEXT_MUTED):
-        self.status.configure(text=text, text_color=color)
-
-    def _send_code(self):
-        details = {key: entry.get().strip() if key != "password" else entry.get() for key, entry in self.entries.items()}
-        if not all(details.values()):
-            self._say("Fill in every field.", ERROR_RED)
+    # -- sign in with a code ------------------------------------------------
+    # The PC shows a code; someone signed in to the MyTally app enters it there, and this PC is signed in.
+    # Accounts are created in the app, not here.
+    def _start_code(self):
+        backend_url = self._need_server()
+        if not backend_url or self._sending:
             return
-        if not self.terms_var.get():
-            self._say("Accept the terms to create an account.", ERROR_RED)
-            return
-        details["accept_terms"] = True
-        self.send_btn.configure(state="disabled", text="Sending...")
+        self._sending = True
+        self.pair_code, self.pair = "", None
+        self._busy("Getting a code...")
 
         def worker():
-            # The account's first company is the one open in Tally: without it there is nothing to sync
-            open_cmps = TallyClient(tally_url=self.tally_url).get_open_companies()
-            match = next((c for c in open_cmps if c.get("name") == self.company_name), None) or (open_cmps[0] if open_cmps else None)
-            if match is None or not match.get("guid"):
-                self.after(0, lambda: self._code_sent(False, "Open your company in TallyPrime first, then try again."))
-                return
-            self.company = {"tally_guid": match["guid"], "name": match["name"],
-                            "books_from": match.get("starting_from") or None, "tally_url": self.tally_url,
-                            "fingerprint": match.get("fingerprint") or None}
-            ok, message = self.cloud.sign_up(details)
-            self.after(0, lambda: self._code_sent(ok, message))
+            ok, body = core.start_code_sign_in(backend_url)
+            self.after(0, lambda: self._code_started(ok, body, backend_url))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _code_sent(self, ok: bool, message: str):
-        self.send_btn.configure(state="normal", text="Email me a code" if not ok else "Send the code again")
+    def _code_started(self, ok: bool, body: Any, backend_url: str):
+        self._sending = False
+        if not self.winfo_exists() or self.screen != "code":
+            return
         if not ok:
-            self._say(message, ERROR_RED)
+            self._busy(None, "Get a code")
+            self._say(str(body), "error")
             return
-        self.code_entry.configure(state="normal")
-        self.create_btn.configure(state="normal")
-        self._say(f"We emailed a 6-digit code to {self.entries['email'].get().strip()}. It is valid for 10 minutes. "
-                  f"Your first company will be '{self.company['name']}'.", SUCCESS_GREEN)
+        self.pair_code, self.pair = body["code"], (backend_url, body["poll_token"])
+        self._show("code")
+        self._say(f"Waiting for the code to be entered in the app. It is valid for {body.get('expires_in_minutes') or 10} minutes.")
+        self.after(3000, lambda: self._check_code(self.pair))
 
-    def _create(self):
-        code = self.code_entry.get().strip()
-        if not code or self.company is None:
-            self._say("Enter the code from the email.", ERROR_RED)
+    def _check_code(self, pair: Optional[Tuple[str, str]]):
+        """Every few seconds while this code is on screen: has it been entered in the app?"""
+        if not self.winfo_exists() or pair is None or self.pair != pair:
             return
-        email = self.entries["email"].get().strip()
-        self.create_btn.configure(state="disabled", text="Creating...")
+        args = (*pair, self.v_tally.get().strip(), self.v_company.get().strip(), self.v_autostart.get())
 
         def worker():
-            ok, body = self.cloud.verify_sign_up(email, code, self.company)
-            self.after(0, lambda: self._created(ok, body, email))
+            state, message = core.finish_code_sign_in(self.app, *args)
+            if state == "approved":
+                self.pair = None
+                self._link_company_then_launch(open_anyway=True)
+            else:
+                self.after(0, lambda: self._code_checked(state, message, pair))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _created(self, ok: bool, body: Any, email: str):
-        if not ok:
-            self.create_btn.configure(state="normal", text="Create account")
-            self._say(str(body), ERROR_RED)
+    def _code_checked(self, state: str, message: str, pair: Tuple[str, str]):
+        if not self.winfo_exists() or self.pair != pair:
             return
-        self.grab_release()
-        self.destroy()
-        self.setup._on_account_created(self.backend_url, email, self.tally_url, body)
+        if state == "pending":
+            self.after(3000, lambda: self._check_code(pair))
+            return
+        self.pair_code, self.pair = "", None
+        self._show("code")
+        self._say(message, "error")
 
 
-class CompaniesDialog(ctk.CTkToplevel):
+# ---------------------------------------------------------------------------
+# VIEW 2: The signed-in window. Navigation rail, the health bar, and one page
+# ---------------------------------------------------------------------------
+class MainView(ctk.CTkFrame):
+    PAGES = (("companies", "Companies"), ("activity", "Activity"), ("settings", "Settings"))
+
+    def __init__(self, parent, app: BridgeApp, page: str = "companies"):
+        super().__init__(parent, fg_color="transparent")
+        self.app = app
+        self.page: Optional[ctk.CTkFrame] = None
+        self.page_name = ""
+        self._health_key: Tuple = ()
+        self._action = "sync"
+        self._bar_running = False
+
+        self._build_rail()
+        ctk.CTkFrame(self, fg_color=BORDER, width=1).pack(side="left", fill="y")
+        self.column = ctk.CTkFrame(self, fg_color="transparent")
+        self.column.pack(side="left", fill="both", expand=True)
+        self._build_health_bar()
+        ctk.CTkFrame(self.column, fg_color=BORDER, height=1).pack(fill="x")
+        self.body = ctk.CTkFrame(self.column, fg_color="transparent")
+        self.body.pack(fill="both", expand=True, padx=20, pady=16)
+
+        self.show_page(page)
+        status = app.agent.get_status()
+        self.refresh(status, health_from_status(status), [])
+
+    # -- navigation ---------------------------------------------------------
+    def _build_rail(self):
+        rail = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, width=176)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+
+        brand = ctk.CTkFrame(rail, fg_color="transparent")
+        brand.pack(fill="x", padx=14, pady=(16, 14))
+        if self.app.pil_icon:
+            logo = ctk.CTkImage(light_image=self.app.pil_icon, dark_image=self.app.pil_icon, size=(24, 24))
+            ctk.CTkLabel(brand, text="", image=logo).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(brand, text=APP_SHORT, font=font(16, True), text_color=TEXT).pack(side="left")
+
+        self.nav: Dict[str, ctk.CTkButton] = {}
+        for name, label in self.PAGES:
+            self.nav[name] = ctk.CTkButton(rail, text=label, anchor="w", height=32, corner_radius=RADIUS_CONTROL, font=font(13),
+                                           fg_color="transparent", hover_color=SUBTLE, text_color=TEXT_2,
+                                           command=lambda n=name: self.show_page(n))
+            self.nav[name].pack(fill="x", padx=10, pady=1)
+
+        ctk.CTkLabel(rail, text=f"{platform.node() or 'This PC'}\nVersion {APP_VERSION}", font=font(11), text_color=TEXT_3,
+                     justify="left").pack(side="bottom", anchor="w", padx=18, pady=12)
+
+    def show_page(self, name: str):
+        if self.page is not None:
+            self.page.destroy()
+        self.page_name = name
+        for key, button in self.nav.items():
+            button.configure(fg_color=SUBTLE if key == name else "transparent", text_color=TEXT if key == name else TEXT_2,
+                             font=font(13, key == name))
+        self.page = {"companies": CompaniesPage, "activity": ActivityPage, "settings": SettingsPage}[name](self.body, self.app)
+        self.page.pack(fill="both", expand=True)
+
+    def theme_changed(self):
+        self._health_key = ()   # the tray badge and the log colours are fixed colours, not pairs
+        if isinstance(self.page, ActivityPage):
+            self.page.apply_tag_colors()
+
+    # -- health bar ---------------------------------------------------------
+    def _build_health_bar(self):
+        bar = ctk.CTkFrame(self.column, fg_color=SURFACE, corner_radius=0)
+        bar.pack(fill="x")
+        top = ctk.CTkFrame(bar, fg_color="transparent")
+        top.pack(fill="x", padx=20, pady=(14, 8))
+
+        self.badge = ctk.CTkLabel(top, text="", width=36, height=36, corner_radius=18, font=font(15, True))
+        self.badge.pack(side="left", padx=(0, 12))
+
+        # Buttons first, so a long sentence wraps beside them and never pushes them off the window
+        self.more_btn = secondary_button(top, "More", self._open_more_menu, width=58)
+        self.more_btn.pack(side="right", padx=(8, 0))
+        self.main_btn = primary_button(top, "Sync now", self._on_main_action, width=108)
+        self.main_btn.pack(side="right")
+
+        words = ctk.CTkFrame(top, fg_color="transparent")
+        words.pack(side="left", fill="x", expand=True)
+        self.title_lbl = ctk.CTkLabel(words, text="", font=font(16, True), text_color=TEXT, anchor="w")
+        self.title_lbl.pack(fill="x")
+        self.detail_lbl = ctk.CTkLabel(words, text="", font=font(12), text_color=TEXT_2, anchor="w", justify="left", wraplength=470)
+        self.detail_lbl.pack(fill="x")
+
+        self.progress = ctk.CTkProgressBar(bar, height=4, corner_radius=2, fg_color=SUBTLE, progress_color=STATE["sync"]["solid"],
+                                           mode="indeterminate")
+        self.progress_slot = ctk.CTkFrame(bar, fg_color="transparent", height=4)
+        self.progress_slot.pack(fill="x", padx=20)
+
+        chips = ctk.CTkFrame(bar, fg_color="transparent")
+        chips.pack(fill="x", padx=20, pady=(8, 12))
+        self.tally_dot = ctk.CTkLabel(chips, text="●", font=font(11), text_color=STATE["idle"]["solid"])
+        self.tally_dot.pack(side="left")
+        self.tally_chip = ctk.CTkLabel(chips, text="TallyPrime", font=font(12), text_color=TEXT_2)
+        self.tally_chip.pack(side="left", padx=(5, 16))
+        self.cloud_dot = ctk.CTkLabel(chips, text="●", font=font(11), text_color=STATE["idle"]["solid"])
+        self.cloud_dot.pack(side="left")
+        self.cloud_chip = ctk.CTkLabel(chips, text="Server", font=font(12), text_color=TEXT_2)
+        self.cloud_chip.pack(side="left", padx=(5, 0))
+
+    def _on_main_action(self):
+        agent = self.app.agent
+        if self._action == "resume":
+            agent.resume()
+        elif self._action == "signin":
+            self.app.show_setup()
+        else:
+            agent.trigger_immediate_sync(force_full=False)
+
+    def _open_more_menu(self):
+        agent = self.app.agent
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Full re-sync...", command=self._full_resync)
+        menu.add_command(label="Resume syncing" if agent.is_paused else "Pause syncing",
+                         command=agent.resume if agent.is_paused else agent.pause)
+        menu.add_separator()
+        menu.add_command(label="Hide to tray", command=self.app.minimize_to_tray)
+        menu.tk_popup(self.more_btn.winfo_rootx(), self.more_btn.winfo_rooty() + self.more_btn.winfo_height() + 2)
+
+    def _full_resync(self):
+        from tkinter import messagebox
+        if messagebox.askyesno("Run a full re-sync?", "Every record of every linked company is checked again, not just what "
+                               "changed. This can take a long time for a large company.\n\nNothing is deleted."):
+            self.app.agent.trigger_immediate_sync(force_full=True)
+
+    def refresh(self, status: Dict[str, Any], health: Dict[str, str], fresh_logs: List[Tuple[str, str]]):
+        """Once a second. Widgets are only touched when what they show has changed."""
+        agent = self.app.agent
+        # A requested sync shows as busy from the click until the agent has picked it up and finished it
+        busy = bool(status.get("is_syncing") or (agent.immediate_sync_requested and health["action"] in ("sync", "retry")))
+        t_ok, c_ok, halted = status.get("tally_connected", False), status.get("cloud_connected", False), bool(status.get("auth_halt_reason"))
+        key = (health["kind"], health["title"], health["detail"], busy, t_ok, c_ok, halted, ctk.get_appearance_mode())
+        if key != self._health_key:
+            self._health_key = key
+            look = STATE[health["kind"]]
+            self._action = health["action"]
+            self.badge.configure(text=look["glyph"], fg_color=look["bg"], text_color=look["fg"])
+            self.title_lbl.configure(text=health["title"])
+            self.detail_lbl.configure(text=health["detail"])
+            label = {"resume": "Resume", "retry": "Retry", "signin": "Sign in again"}.get(health["action"], "Sync now")
+            self.main_btn.configure(text="Syncing..." if busy else label, state="disabled" if busy else "normal")
+
+            if busy and not self._bar_running:
+                self.progress.pack(in_=self.progress_slot, fill="x")
+                self.progress.start()
+            elif not busy and self._bar_running:
+                self.progress.stop()
+                self.progress.pack_forget()
+            self._bar_running = busy
+
+            self.tally_dot.configure(text_color=STATE["ok" if t_ok else "error"]["solid"])
+            self.tally_chip.configure(text="TallyPrime connected" if t_ok else "TallyPrime not running")
+            self.cloud_dot.configure(text_color=STATE["ok" if c_ok and not halted else "error"]["solid"])
+            self.cloud_chip.configure(text="Signed out" if halted else ("Server connected" if c_ok else "Server offline"))
+
+        if isinstance(self.page, ActivityPage):
+            for message, level in fresh_logs:
+                self.page.append_log(message, level)
+        elif isinstance(self.page, CompaniesPage):
+            self.page.tick(status)
+
+
+class CompaniesPage(ctk.CTkFrame):
     """The companies this PC syncs, and the ones open in Tally that it could. Linking is always a choice made
     here: the agent never starts syncing a company just because it is open."""
 
-    def __init__(self, parent, app: "SnehDistribuorsApp"):
-        super().__init__(parent)
+    def __init__(self, parent, app: BridgeApp):
+        super().__init__(parent, fg_color="transparent")
         self.app = app
-        self.title("Companies synced from this PC")
-        self.geometry("560x520")
-        self.configure(fg_color=BG_COLOR)
-        self.transient(parent.winfo_toplevel())
+        self._syncing_name: Optional[str] = None
+        self._notes: Dict[str, Tuple[ctk.CTkLabel, str, str]] = {}   # company name -> its status line, text, kind
+        self._open: Dict[str, Dict[str, Any]] = {}                  # what is open in Tally, by GUID
 
-        ctk.CTkLabel(self, text="Companies synced from this PC", font=ctk.CTkFont(size=17, weight="bold"),
-                     text_color=TEXT_MAIN).pack(anchor="w", padx=20, pady=(18, 2))
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", pady=(0, 2))
+        ctk.CTkLabel(head, text="Companies", font=font(20, True), text_color=TEXT).pack(side="left")
+        secondary_button(head, "Refresh", self.refresh, width=76).pack(side="right")
         ctk.CTkLabel(self, text="Open a company in TallyPrime to link it. A company is synced from one PC at a time.",
-                     font=ctk.CTkFont(size=11), text_color=TEXT_MUTED, wraplength=520, justify="left").pack(anchor="w", padx=20, pady=(0, 8))
+                     font=font(12), text_color=TEXT_3).pack(anchor="w", pady=(0, 8))
+        self.status = ctk.CTkLabel(self, text="", font=font(12), text_color=TEXT_3, wraplength=640, justify="left")
+        self.status.pack(side="bottom", anchor="w", pady=(6, 0))
         self.rows = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        self.rows.pack(fill="both", expand=True, padx=12)
-        self.status = ctk.CTkLabel(self, text="", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED, wraplength=520, justify="left")
-        self.status.pack(anchor="w", padx=20, pady=(6, 4))
-        ctk.CTkButton(self, text="Refresh", fg_color=CARD_BORDER, hover_color=CARD_BG, height=34, command=self.refresh).pack(
-            fill="x", padx=20, pady=(0, 14))
+        self.rows.pack(fill="both", expand=True)
         self.refresh()
 
-    def _say(self, text: str, color: str = TEXT_MUTED):
-        self.status.configure(text=text, text_color=color)
+    def _say(self, text: str, kind: str = "idle"):
+        if self.winfo_exists():
+            self.status.configure(text=text, text_color=STATE[kind]["fg"])
 
     def refresh(self):
         agent = self.app.agent
-        if not agent.cloud.device_mode:
-            self._draw([], [])
-            self._say("Sign this PC in from Setup first: press Connect & Start Sync with an admin's email and password.", WARNING_AMBER)
-            return
-        self._say("Checking TallyPrime...")
+        if agent.cloud.device_mode:
+            self._say("Checking TallyPrime...")
 
         def worker():
-            open_cmps = agent.tally.get_open_companies()
-            linked = [dict(c) for c in agent.linked_companies() if c.get("guid")]
-            self.after(0, lambda: (self._draw(linked, open_cmps), self._say("" if open_cmps else "No company is open in TallyPrime.")))
+            overview = core.companies_overview(agent)
+            self.after(0, lambda: self._drawn(overview))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _draw(self, linked, open_cmps):
+    def _drawn(self, overview: Dict[str, Any]):
+        if not self.winfo_exists():
+            return
+        self._open = overview["open"]
+        self._render_rows(overview)
+        if not overview["device_mode"]:
+            self._say("This PC is not signed in as a sync device yet. Sign in again from Settings to manage companies here.", "warn")
+        else:
+            self._say("" if overview["any_open"] else "No company is open in TallyPrime.")
+
+    def _section(self, text: str):
+        ctk.CTkLabel(self.rows, text=text.upper(), font=font(11, True), text_color=TEXT_3).pack(anchor="w", padx=6, pady=(10, 2))
+
+    def _render_rows(self, overview: Dict[str, Any]):
         for child in self.rows.winfo_children():
             child.destroy()
-        open_by_guid = {c.get("guid"): c for c in open_cmps if c.get("guid")}
-        linked_guids = {c["guid"] for c in linked}
-        names_open = [c.get("name") for c in open_cmps]
-        for company in linked:
-            now = open_by_guid.get(company["guid"])
-            if now is None:
-                note, color = "Linked · closed in Tally", TEXT_MUTED
-            elif names_open.count(now["name"]) > 1:
-                note, color = "Linked · two open companies share this name, so it is not syncing", WARNING_AMBER
-            else:
-                note, color = "Linked · syncing", SUCCESS_GREEN
-            self._row((now or company)["name"], note, color, "Unlink", lambda c=company: self._unlink(c))
-        for company in open_cmps:
-            if company.get("guid") and company["guid"] not in linked_guids:
-                self._row(company["name"], "Open in Tally · not synced", TEXT_MUTED, "Link", lambda c=company: self._link(c))
+        self._notes, self._syncing_name = {}, None
+        if overview["linked"]:
+            self._section("Linked to this PC")
+        for company in overview["linked"]:
+            self._row(company["name"], company["note"], company["kind"], "Unlink", lambda c=company: self._unlink(c))
+        if overview["unlinked"]:
+            self._section("Open in Tally, not linked")
+        for company in overview["unlinked"]:
+            self._row(company["name"], company["note"], company["kind"], "Link", lambda c=company: self._link(self._open[c["guid"]]))
+        if overview["device_mode"] and not overview["linked"] and not overview["unlinked"]:
+            ctk.CTkLabel(self.rows, text="No companies yet. Open one in TallyPrime, then press Refresh.",
+                         font=font(13), text_color=TEXT_2).pack(anchor="w", padx=6, pady=16)
 
-    def _row(self, name: str, note: str, color: str, action: str, command):
-        row = ctk.CTkFrame(self.rows, fg_color=CARD_BG, corner_radius=10, border_width=1, border_color=CARD_BORDER)
+    def _row(self, name: str, note: str, kind: str, action: str, command):
+        row = card(self.rows)
         row.pack(fill="x", pady=4, padx=4)
+        make = danger_button if action == "Unlink" else secondary_button
+        make(row, action, command, width=76).pack(side="right", padx=12, pady=10)
         text = ctk.CTkFrame(row, fg_color="transparent")
-        text.pack(side="left", fill="x", expand=True, padx=12, pady=8)
-        ctk.CTkLabel(text, text=name, font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w")
-        ctk.CTkLabel(text, text=note, font=ctk.CTkFont(size=11), text_color=color).pack(anchor="w")
-        ctk.CTkButton(row, text=action, width=84, height=32, fg_color=ACCENT_BLUE if action == "Link" else CARD_BORDER,
-                      hover_color=ACCENT_HOVER if action == "Link" else INPUT_BG, command=command).pack(side="right", padx=12)
+        text.pack(side="left", fill="x", expand=True, padx=14, pady=9)
+        ctk.CTkLabel(text, text=name, font=font(14, True), text_color=TEXT, anchor="w").pack(fill="x")
+        note_lbl = ctk.CTkLabel(text, text=note, font=font(12), text_color=STATE[kind]["fg"], anchor="w")
+        note_lbl.pack(fill="x")
+        if action == "Unlink":
+            self._notes[name] = (note_lbl, note, kind)
+
+    def tick(self, status: Dict[str, Any]):
+        """Show which linked company is being synced right now, from what the agent already knows."""
+        name = status.get("active_company_name") if status.get("is_syncing") else None
+        if name == self._syncing_name:
+            return
+        for company, (label, note, kind) in self._notes.items():
+            if label.winfo_exists():
+                syncing = company == name
+                label.configure(text="Syncing now..." if syncing else note, text_color=STATE["sync" if syncing else kind]["fg"])
+        self._syncing_name = name
 
     def _link(self, company, take_over: bool = False):
         self._say(f"Linking '{company['name']}'...")
-        details = {"tally_guid": company["guid"], "name": company["name"],
-                   "books_from": company.get("starting_from") or None, "tally_url": self.app.config.tally_url,
-                   "fingerprint": company.get("fingerprint") or None}
+        details = core.company_details(company, self.app.config.tally_url)
 
         def worker():
             ok, message, reason = self.app.agent.link_company(details, take_over=take_over)
@@ -949,7 +931,7 @@ class CompaniesDialog(ctk.CTkToplevel):
             if messagebox.askyesno("Move sync to this PC?", f"{message}\n\nThe other PC will stop syncing this company.", parent=self):
                 self._link(company, take_over=True)
                 return
-        self._say(message, ERROR_RED)
+        self._say(message, "error")
 
     def _unlink(self, company):
         from tkinter import messagebox
@@ -959,314 +941,46 @@ class CompaniesDialog(ctk.CTkToplevel):
 
         def worker():
             ok = self.app.agent.unlink_company(company["guid"])
-            self.after(0, lambda: (self.refresh() if ok else self._say("Could not unlink. Check the connection and try again.", ERROR_RED)))
+            self.after(0, lambda: (self.refresh() if ok else self._say("Could not unlink. Check the connection and try again.", "error")))
 
         threading.Thread(target=worker, daemon=True).start()
 
 
-# ---------------------------------------------------------------------------
-# VIEW 2: Dashboard Screen (Live Synchronization Dashboard)
-# ---------------------------------------------------------------------------
-class DashboardView(ctk.CTkFrame):
-    def __init__(self, parent, app: SnehDistribuorsApp):
+class ActivityPage(ctk.CTkFrame):
+    """What the agent has been doing, newest at the bottom."""
+
+    def __init__(self, parent, app: BridgeApp):
         super().__init__(parent, fg_color="transparent")
         self.app = app
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", pady=(0, 2))
+        ctk.CTkLabel(head, text="Activity", font=font(20, True), text_color=TEXT).pack(side="left")
+        secondary_button(head, "Clear", self.clear_logs, width=64).pack(side="right")
+        ctk.CTkLabel(self, text="Everything the agent has done since it started. Support may ask for this.",
+                     font=font(12), text_color=TEXT_3).pack(anchor="w", pady=(0, 8))
 
-        self._build_top_bar()
-        self._build_connection_cards()
-        self._build_metric_cards()
-        self._build_status_banner()
-        self._build_log_console()
-        self._build_toolbar()
+        self.log_textbox = ctk.CTkTextbox(self, fg_color=SURFACE, text_color=TEXT_2, border_width=1, border_color=BORDER,
+                                          font=ctk.CTkFont(family=MONO_FONT, size=11), wrap="word", corner_radius=RADIUS_CARD)
+        self.log_textbox.pack(fill="both", expand=True)
+        self.apply_tag_colors()
+        for message, level in list(app.log_history):
+            self.append_log(message, level, scroll=False)
+        self.log_textbox.see("end")
 
-    def _build_top_bar(self):
-        top_row = ctk.CTkFrame(self, fg_color="transparent")
-        top_row.pack(fill="x", pady=(0, 12))
-
-        # Brand on left
-        brand_box = ctk.CTkFrame(top_row, fg_color="transparent")
-        brand_box.pack(side="left")
-
-        if self.app.pil_icon:
-            logo_img = ctk.CTkImage(light_image=self.app.pil_icon, dark_image=self.app.pil_icon, size=(32, 32))
-            logo_lbl = ctk.CTkLabel(brand_box, text="", image=logo_img)
-            logo_lbl.pack(side="left", padx=(0, 8))
-
-        brand_lbl = ctk.CTkLabel(
-            brand_box,
-            text="SnehDistribuors",
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color=TEXT_MAIN
-        )
-        brand_lbl.pack(side="left")
-
-        # Live Status Pill on right
-        self.status_pill = ctk.CTkFrame(top_row, fg_color="#064E3B", corner_radius=16)
-        self.status_pill.pack(side="right")
-
-        self.status_dot = ctk.CTkLabel(
-            self.status_pill,
-            text="●",
-            font=ctk.CTkFont(size=14),
-            text_color=SUCCESS_GREEN
-        )
-        self.status_dot.pack(side="left", padx=(10, 4), pady=4)
-
-        self.status_text_lbl = ctk.CTkLabel(
-            self.status_pill,
-            text="ONLINE",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color="#A7F3D0"
-        )
-        self.status_text_lbl.pack(side="left", padx=(0, 12), pady=4)
-
-    def _build_connection_cards(self):
-        cards_row = ctk.CTkFrame(self, fg_color="transparent")
-        cards_row.pack(fill="x", pady=(0, 10))
-
-        # 1. Tally Card
-        self.tally_card = ctk.CTkFrame(cards_row, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        self.tally_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
-
-        tally_top = ctk.CTkFrame(self.tally_card, fg_color="transparent")
-        tally_top.pack(fill="x", padx=12, pady=(10, 2))
-
-        ctk.CTkLabel(tally_top, text="📊 TallyPrime", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(side="left")
-        self.tally_badge = ctk.CTkLabel(tally_top, text="● Connected", font=ctk.CTkFont(size=11, weight="bold"), text_color=SUCCESS_GREEN)
-        self.tally_badge.pack(side="right")
-
-        self.tally_company_lbl = ctk.CTkLabel(
-            self.tally_card,
-            text="Company: Detecting...",
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MUTED
-        )
-        self.tally_company_lbl.pack(anchor="w", padx=12, pady=(2, 10))
-
-        # 2. Cloud Card
-        self.cloud_card = ctk.CTkFrame(cards_row, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        self.cloud_card.pack(side="left", fill="both", expand=True, padx=(6, 0))
-
-        cloud_top = ctk.CTkFrame(self.cloud_card, fg_color="transparent")
-        cloud_top.pack(fill="x", padx=12, pady=(10, 2))
-
-        ctk.CTkLabel(cloud_top, text="☁️ Cloud ERP", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(side="left")
-        self.cloud_badge = ctk.CTkLabel(cloud_top, text="● Connected", font=ctk.CTkFont(size=11, weight="bold"), text_color=SUCCESS_GREEN)
-        self.cloud_badge.pack(side="right")
-
-        user_display = self.app.config.email or "Active"
-        self.cloud_user_lbl = ctk.CTkLabel(
-            self.cloud_card,
-            text=f"User: {user_display}",
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MUTED
-        )
-        self.cloud_user_lbl.pack(anchor="w", padx=12, pady=(2, 10))
-
-    def _build_metric_cards(self):
-        grid = ctk.CTkFrame(self, fg_color="transparent")
-        grid.pack(fill="x", pady=(0, 10))
-
-        # 4 Metric Boxes: Vouchers, Ledgers, Stock Items, Errors
-        self.vouchers_box = self._create_metric_tile(grid, "📦 Vouchers", "0", 0)
-        self.ledgers_box = self._create_metric_tile(grid, "📒 Ledgers", "0", 1)
-        self.items_box = self._create_metric_tile(grid, "🏷️ Items", "0", 2)
-        self.errors_box = self._create_metric_tile(grid, "⚠️ Errors", "0", 3, is_error=True)
-
-    def _create_metric_tile(self, parent, title: str, val: str, col: int, is_error: bool = False):
-        card = ctk.CTkFrame(parent, fg_color=CARD_BG, corner_radius=10, border_width=1, border_color=CARD_BORDER)
-        card.grid(row=0, column=col, sticky="ew", padx=4)
-        parent.grid_columnconfigure(col, weight=1)
-
-        ctk.CTkLabel(card, text=title, font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(pady=(8, 2))
-        val_lbl = ctk.CTkLabel(
-            card,
-            text=val,
-            font=ctk.CTkFont(size=18, weight="bold"),
-            text_color=ERROR_RED if is_error else TEXT_MAIN
-        )
-        val_lbl.pack(pady=(0, 8))
-        return val_lbl
-
-    def _build_status_banner(self):
-        self.status_card = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=10, border_width=1, border_color=CARD_BORDER)
-        self.status_card.pack(fill="x", pady=(0, 10))
-
-        row = ctk.CTkFrame(self.status_card, fg_color="transparent")
-        row.pack(fill="x", padx=12, pady=8)
-
-        self.last_sync_lbl = ctk.CTkLabel(
-            row,
-            text="⏳ Last Sync: Initializing...",
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MUTED
-        )
-        self.last_sync_lbl.pack(side="left")
-
-        self.sync_progress = ctk.CTkProgressBar(row, height=8, width=120, fg_color=INPUT_BG, progress_color=ACCENT_BLUE)
-        self.sync_progress.pack(side="right", padx=(8, 0))
-        self.sync_progress.set(0)
-
-    def _build_log_console(self):
-        console_frame = ctk.CTkFrame(self, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        console_frame.pack(fill="both", expand=True, pady=(0, 12))
-
-        # Console Header
-        hdr = ctk.CTkFrame(console_frame, fg_color="transparent")
-        hdr.pack(fill="x", padx=12, pady=(8, 4))
-
-        ctk.CTkLabel(
-            hdr,
-            text="📋 Activity Log",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=TEXT_MAIN
-        ).pack(side="left")
-
-        clear_btn = ctk.CTkButton(
-            hdr,
-            text="Clear",
-            font=ctk.CTkFont(size=11),
-            width=48,
-            height=24,
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            command=self.clear_logs
-        )
-        clear_btn.pack(side="right")
-
-        # Monospace Text Box
-        self.log_textbox = ctk.CTkTextbox(
-            console_frame,
-            fg_color=INPUT_BG,
-            text_color=TEXT_MAIN,
-            font=ctk.CTkFont(family="Consolas" if sys.platform == "win32" else "Courier", size=11),
-            wrap="word",
-            corner_radius=8
-        )
-        self.log_textbox.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-
+    def apply_tag_colors(self):
         try:
             tb = getattr(self.log_textbox, "_textbox", None)
             if tb:
-                tb.tag_config("error", foreground="#F87171")
-                tb.tag_config("warning", foreground="#FBBF24")
-                tb.tag_config("success", foreground="#34D399")
-                tb.tag_config("info", foreground="#CBD5E1")
+                dark = 1 if ctk.get_appearance_mode() == "Dark" else 0
+                tb.tag_config("error", foreground=STATE["error"]["fg"][dark])
+                tb.tag_config("warning", foreground=STATE["warn"]["fg"][dark])
+                tb.tag_config("success", foreground=STATE["ok"]["fg"][dark])
+                tb.tag_config("info", foreground=TEXT_2[dark])
         except Exception:
             pass
 
-    def _build_toolbar(self):
-        toolbar = ctk.CTkFrame(self, fg_color="transparent")
-        toolbar.pack(fill="x", pady=(0, 4))
-
-        # 1. Sync Delta (Incremental)
-        self.sync_now_btn = ctk.CTkButton(
-            toolbar,
-            text="🔄 Sync Delta",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=ACCENT_BLUE,
-            hover_color=ACCENT_HOVER,
-            height=38,
-            corner_radius=8,
-            command=self._on_sync_now
-        )
-        self.sync_now_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
-
-        # 2. Sync All (Full baseline)
-        self.sync_all_btn = ctk.CTkButton(
-            toolbar,
-            text="⚡ Sync All",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#0D9488",
-            hover_color="#0F766E",
-            height=38,
-            corner_radius=8,
-            command=self._on_sync_all
-        )
-        self.sync_all_btn.pack(side="left", fill="x", expand=True, padx=4)
-
-        # 3. Pause / Resume
-        self.pause_btn = ctk.CTkButton(
-            toolbar,
-            text="⏸ Pause",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=38,
-            corner_radius=8,
-            command=self._on_toggle_pause
-        )
-        self.pause_btn.pack(side="left", fill="x", expand=True, padx=4)
-
-        # Companies synced from this PC
-        self.companies_btn = ctk.CTkButton(
-            toolbar,
-            text="🏢 Companies",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=38,
-            corner_radius=8,
-            command=lambda: CompaniesDialog(self, self.app)
-        )
-        self.companies_btn.pack(side="left", fill="x", expand=True, padx=4)
-
-        # 3. Settings
-        self.settings_btn = ctk.CTkButton(
-            toolbar,
-            text="⚙ Settings",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=38,
-            corner_radius=8,
-            command=self.app.show_settings
-        )
-        self.settings_btn.pack(side="left", fill="x", expand=True, padx=4)
-
-        # 4. Minimize to Tray
-        self.tray_btn = ctk.CTkButton(
-            toolbar,
-            text="📥 To Tray",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=38,
-            corner_radius=8,
-            command=self.app.minimize_to_tray
-        )
-        self.tray_btn.pack(side="left", fill="x", expand=True, padx=(4, 0))
-
-    def _on_sync_now(self):
-        self.sync_now_btn.configure(text="Syncing...", state="disabled")
-        self.sync_progress.configure(mode="indeterminate")
-        self.sync_progress.start()
-        self.app.agent.trigger_immediate_sync(force_full=False)
-        self.after(3000, lambda: self.sync_now_btn.configure(text="🔄 Sync Delta", state="normal"))
-
-    def _on_sync_all(self):
-        self.sync_all_btn.configure(text="Syncing All...", state="disabled")
-        self.sync_progress.configure(mode="indeterminate")
-        self.sync_progress.start()
-        self.app.agent.trigger_immediate_sync(force_full=True)
-        self.after(3000, lambda: self.sync_all_btn.configure(text="⚡ Sync All", state="normal"))
-
-    def _on_toggle_pause(self):
-        if self.app.agent.is_paused:
-            self.app.agent.resume()
-            self.pause_btn.configure(text="⏸ Pause")
-        else:
-            self.app.agent.pause()
-            self.pause_btn.configure(text="▶ Resume")
-
-    def append_log(self, message: str, level: str):
-        tag = "info"
-        if level in ("ERROR", "CRITICAL") or "❌" in message:
-            tag = "error"
-        elif level == "WARNING" or "⚠️" in message:
-            tag = "warning"
-        elif "✅" in message or "🎉" in message or "SUCCESS" in message:
-            tag = "success"
+    def append_log(self, message: str, level: str, scroll: bool = True):
+        message, tag = core.log_line(message, level)
 
         try:
             tb = getattr(self.log_textbox, "_textbox", None)
@@ -1275,7 +989,8 @@ class DashboardView(ctk.CTkFrame):
                 line_count = int(tb.index('end-1c').split('.')[0])
                 if line_count > 1500:
                     tb.delete("1.0", f"{line_count - 1000}.0")
-                tb.see("end")
+                if scroll:
+                    tb.see("end")
             else:
                 self.log_textbox.insert("end", f"{message}\n")
                 self.log_textbox.see("end")
@@ -1284,384 +999,148 @@ class DashboardView(ctk.CTkFrame):
             self.log_textbox.see("end")
 
     def clear_logs(self):
+        self.app.log_history.clear()
         self.log_textbox.delete("1.0", "end")
 
-    def update_status(self, status: Dict[str, Any]):
-        # Update top badge
-        st_text = status.get("status", "STANDBY")
-        if st_text == "ONLINE":
-            self.status_pill.configure(fg_color="#064E3B")
-            self.status_dot.configure(text_color=SUCCESS_GREEN)
-            self.status_text_lbl.configure(text="LIVE SYNCING", text_color="#A7F3D0")
-            self.sync_progress.stop()
-            self.sync_progress.configure(mode="determinate")
-            self.sync_progress.set(1.0)
-        elif st_text == "SYNCING":
-            self.status_pill.configure(fg_color="#1E3A8A")
-            self.status_dot.configure(text_color="#60A5FA")
-            self.status_text_lbl.configure(text="SYNCING...", text_color="#BFDBFE")
-            self.sync_progress.configure(mode="indeterminate")
-            self.sync_progress.start()
-        elif st_text == "PAUSED":
-            self.status_pill.configure(fg_color="#78350F")
-            self.status_dot.configure(text_color=WARNING_AMBER)
-            self.status_text_lbl.configure(text="PAUSED", text_color="#FDE68A")
-            self.pause_btn.configure(text="▶ Resume")
-        else:
-            self.status_pill.configure(fg_color="#7F1D1D")
-            self.status_dot.configure(text_color=ERROR_RED)
-            self.status_text_lbl.configure(text=st_text, text_color="#FECACA")
 
-        # Tally card
-        t_ok = status.get("tally_connected", False)
-        if t_ok:
-            self.tally_badge.configure(text="● Connected", text_color=SUCCESS_GREEN)
-            cmp_str = status.get("active_company_name") or "No company open"
-            open_cnt = status.get("open_companies_count", 0)
-            linked_cnt = status.get("linked_companies_count", 1)
-            if linked_cnt > 1:
-                self.tally_company_lbl.configure(text=f"Companies: {cmp_str} +{linked_cnt - 1} more synced")
-            elif open_cnt > 1:
-                self.tally_company_lbl.configure(text=f"Company: {cmp_str} (+{open_cnt - 1} open)")
-            else:
-                self.tally_company_lbl.configure(text=f"Company: {cmp_str}")
-        else:
-            self.tally_badge.configure(text="● Disconnected", text_color=ERROR_RED)
-            self.tally_company_lbl.configure(text="Company: Tally not running")
-
-        # Cloud card
-        c_ok = status.get("cloud_connected", False)
-        halt_reason = status.get("auth_halt_reason")
-        if halt_reason:
-            label = "● Blocked by admin" if halt_reason in ("blocked", "device_blocked") else "● Signed out by admin"
-            self.cloud_badge.configure(text=label, text_color=ERROR_RED)
-        elif c_ok:
-            self.cloud_badge.configure(text="● Connected", text_color=SUCCESS_GREEN)
-        else:
-            self.cloud_badge.configure(text="● Offline", text_color=ERROR_RED)
-
-        # Metric Tiles
-        self.vouchers_box.configure(text=str(status.get("total_vouchers", 0)))
-        self.ledgers_box.configure(text=str(status.get("total_ledgers", 0)))
-        self.items_box.configure(text=str(status.get("total_items", 0)))
-        self.errors_box.configure(text=str(status.get("total_errors", 0)))
-
-        # Last Sync
-        last_t = status.get("last_sync_timestr", "Never")
-        last_s = status.get("last_sync_status", "Ready")
-        self.last_sync_lbl.configure(text=f"⏳ Last Sync: {last_t} — {last_s}")
-
-
-# ---------------------------------------------------------------------------
-# VIEW 3: Settings Screen (LiveKeeping-Style Connection Settings)
-# ---------------------------------------------------------------------------
-class SettingsView(ctk.CTkFrame):
-    def __init__(self, parent, app: SnehDistribuorsApp):
+class SettingsPage(ctk.CTkFrame):
+    def __init__(self, parent, app: BridgeApp):
         super().__init__(parent, fg_color="transparent")
         self.app = app
+
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(head, text="Settings", font=font(20, True), text_color=TEXT).pack(side="left")
+        self.save_btn = primary_button(head, "Save", self._save_settings, width=76)
+        self.save_btn.pack(side="right")
+        self.feedback_lbl = ctk.CTkLabel(head, text="", font=font(12), text_color=TEXT_3)
+        self.feedback_lbl.pack(side="right", padx=12)
 
         self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True)
 
-        self._build_header()
-        self._build_settings_form()
-        self._build_footer()
+        self._build_connection()
+        self._build_schedule()
+        self._build_this_pc()
+        self._build_account()
+        self._build_support()
+        self._build_advanced()
+        self._build_quit()
 
-    def _build_header(self):
-        hdr = ctk.CTkFrame(self.scroll, fg_color="transparent")
-        hdr.pack(fill="x", pady=(4, 14))
+    def _group(self, title: str, text: str = "") -> ctk.CTkFrame:
+        box = card(self.scroll)
+        box.pack(fill="x", pady=(0, 12), padx=4)
+        ctk.CTkLabel(box, text=title, font=font(14, True), text_color=TEXT).pack(anchor="w", padx=16, pady=(12, 2 if text else 8))
+        if text:
+            ctk.CTkLabel(box, text=text, font=font(12), text_color=TEXT_3, wraplength=600, justify="left").pack(anchor="w", padx=16, pady=(0, 10))
+        return box
 
-        back_btn = ctk.CTkButton(
-            hdr,
-            text="← Back to Dashboard",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=32,
-            width=160,
-            command=self.app.show_dashboard
-        )
-        back_btn.pack(side="left")
+    def _number_row(self, parent, label: str, value: Any, help_text: str = "") -> ctk.CTkEntry:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 10))
+        box = entry(row, width=70)
+        box.insert(0, str(value))
+        box.pack(side="left")
+        ctk.CTkLabel(row, text=label, font=font(13), text_color=TEXT_2).pack(side="left", padx=(10, 0))
+        if help_text:
+            ctk.CTkLabel(row, text=help_text, font=font(11), text_color=TEXT_3).pack(side="left", padx=(10, 0))
+        return box
 
-        title_lbl = ctk.CTkLabel(
-            hdr,
-            text="⚙ Connection Settings",
-            font=ctk.CTkFont(size=18, weight="bold"),
-            text_color=TEXT_MAIN
-        )
-        title_lbl.pack(side="right")
+    def _switch(self, parent, text: str, variable: tk.BooleanVar, last: bool = False):
+        ctk.CTkSwitch(parent, text=text, variable=variable, font=font(13), text_color=TEXT_2, progress_color=PRIMARY,
+                      fg_color=BORDER_INPUT, button_color=SURFACE, button_hover_color=SUBTLE).pack(anchor="w", padx=16, pady=(0, 14 if last else 10))
 
-    def _build_settings_form(self):
-        card = ctk.CTkFrame(self.scroll, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        card.pack(fill="x", pady=(0, 14), padx=4)
+    def _build_connection(self):
+        box = self._group("Connection")
 
-        # 1. Tally Host & Port
-        ctk.CTkLabel(card, text="Tally Host Name:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16, pady=(12, 2))
-        
-        host_port_row = ctk.CTkFrame(card, fg_color="transparent")
-        host_port_row.pack(fill="x", padx=16, pady=(0, 10))
+        host_part, port_part = core.split_tally_url(self.app.config.tally_url)
 
-        # Parse host & port from config.tally_url
-        t_url = self.app.config.tally_url or "http://127.0.0.1:9000"
-        host_part = "localhost"
-        port_part = "9000"
-        if "//" in t_url:
-            raw = t_url.split("//", 1)[1]
-            if ":" in raw:
-                host_part, port_part = raw.split(":", 1)
-                port_part = port_part.split("/")[0]
-
-        self.host_entry = ctk.CTkEntry(host_port_row, placeholder_text="localhost", fg_color=INPUT_BG, border_color=CARD_BORDER, height=36)
+        ctk.CTkLabel(box, text="TallyPrime computer and port", font=font(12, True), text_color=TEXT_2).pack(anchor="w", padx=16, pady=(0, 2))
+        host_port_row = ctk.CTkFrame(box, fg_color="transparent")
+        host_port_row.pack(fill="x", padx=16, pady=(0, 2))
+        self.host_entry = entry(host_port_row, placeholder_text="localhost")
         self.host_entry.insert(0, host_part)
         self.host_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-        ctk.CTkLabel(host_port_row, text="Port:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(side="left", padx=(0, 6))
-        self.port_entry = ctk.CTkEntry(host_port_row, placeholder_text="9000", width=80, fg_color=INPUT_BG, border_color=CARD_BORDER, height=36)
+        self.port_entry = entry(host_port_row, placeholder_text="9000", width=80)
         self.port_entry.insert(0, port_part)
         self.port_entry.pack(side="left")
+        ctk.CTkLabel(box, text="Use localhost when TallyPrime runs on this PC. Its default port is 9000.",
+                     font=font(11), text_color=TEXT_3).pack(anchor="w", padx=16, pady=(0, 10))
 
-        # 2. Cloud URL
-        ctk.CTkLabel(card, text="Cloud Backend URL:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16, pady=(4, 2))
-        self.backend_url_entry = ctk.CTkEntry(card, fg_color=INPUT_BG, border_color=CARD_BORDER, height=36)
+        self.backend_url_entry = field(box, "Server address", padx=16)
         self.backend_url_entry.insert(0, self.app.config.backend_url or "")
-        self.backend_url_entry.pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkFrame(box, fg_color="transparent", height=4).pack()
 
-        # 3. Advanced Intervals
-        ctk.CTkLabel(card, text="⏱ Advanced Sync Intervals", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=16, pady=(4, 8))
+    def _build_schedule(self):
+        box = self._group("Schedule", "How often Bridge looks for changes, in seconds.")
+        self.outbound_entry = self._number_row(box, "Send changes made in the app to Tally", self.app.config.sync_interval_seconds or 5)
+        self.inbound_entry = self._number_row(box, "Check Tally for new and changed records", self.app.config.inbound_interval_seconds or 60)
+        ctk.CTkFrame(box, fg_color="transparent", height=4).pack()
 
-        int_row = ctk.CTkFrame(card, fg_color="transparent")
-        int_row.pack(fill="x", padx=16, pady=(0, 12))
+    def _build_this_pc(self):
+        box = self._group("This PC")
+        self.autostart_var = tk.BooleanVar(value=self.app.config.autostart_enabled or is_autostart_registered())
+        self._switch(box, "Start with Windows", self.autostart_var)
 
-        ctk.CTkLabel(int_row, text="Outbound Check (sec):", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(side="left")
-        self.outbound_entry = ctk.CTkEntry(int_row, width=70, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34)
-        self.outbound_entry.insert(0, str(self.app.config.sync_interval_seconds or 5))
-        self.outbound_entry.pack(side="left", padx=(8, 16))
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 14))
+        ctk.CTkLabel(row, text="Theme", font=font(13), text_color=TEXT_2).pack(side="left", padx=(0, 12))
+        current = next((label for label, value in THEMES.items() if value == self.app.config.theme), "System")
+        theme = ctk.CTkSegmentedButton(row, values=list(THEMES), font=font(12, True), corner_radius=RADIUS_CONTROL,
+                                       fg_color=SUBTLE, unselected_color=SUBTLE, unselected_hover_color=BORDER,
+                                       selected_color=PRIMARY, selected_hover_color=PRIMARY_HOVER, text_color=TEXT,
+                                       command=lambda label: self.app.set_theme(THEMES[label]))
+        theme.set(current)
+        theme.pack(side="left")
 
-        ctk.CTkLabel(int_row, text="Inbound Delta (sec):", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(side="left")
-        self.inbound_entry = ctk.CTkEntry(int_row, width=70, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34)
-        self.inbound_entry.insert(0, str(self.app.config.inbound_interval_seconds or 60))
-        self.inbound_entry.pack(side="left", padx=(8, 0))
+    def _build_account(self):
+        box = self._group("Account")
+        user_str = self.app.config.email or self.app.config.username or "a saved sign-in"
+        ctk.CTkLabel(box, text=f"Signed in as {user_str}", font=font(13), text_color=TEXT_2).pack(anchor="w", padx=16, pady=(0, 10))
+        secondary_button(box, "Sign in as someone else", self.app.show_setup).pack(anchor="w", padx=16, pady=(0, 14))
 
-        range_row = ctk.CTkFrame(card, fg_color="transparent")
-        range_row.pack(fill="x", padx=16, pady=(0, 12))
+    def _build_support(self):
+        box = self._group("Support", "Support may ask for the log files. Export puts them in one zip file on the Desktop.")
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 14))
+        secondary_button(row, "Open logs folder", self._open_logs_folder).pack(side="left", padx=(0, 8))
+        secondary_button(row, "Export logs", self._export_logs_zip).pack(side="left")
 
-        ctk.CTkLabel(range_row, text="Vouchers per Full Sync Range:", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(side="left")
-        self.range_entry = ctk.CTkEntry(range_row, width=70, fg_color=INPUT_BG, border_color=CARD_BORDER, height=34)
-        self.range_entry.insert(0, str(self.app.config.vouchers_per_range or 25))
-        self.range_entry.pack(side="left", padx=(8, 8))
-        ctk.CTkLabel(range_row, text="Lower it if a full sync times out.", font=ctk.CTkFont(size=11), text_color=TEXT_MUTED).pack(side="left")
+    def _build_advanced(self):
+        box = self._group("Advanced", "Change these only if support asks you to.")
+        self.range_entry = self._number_row(box, "Vouchers sent per request in a full re-sync", self.app.config.vouchers_per_range or 25,
+                                            "Lower it if a full re-sync times out.")
+        self.auto_discover_var = tk.BooleanVar(value=self.app.config.auto_discover_paths)
+        self._switch(box, "Find the TallyPrime program and data folders automatically", self.auto_discover_var)
+        self.force_full_sync_var = tk.BooleanVar(value=getattr(self.app.config, "force_full_sync", False))
+        self._switch(box, "Re-check every record on each sync (slower)", self.force_full_sync_var, last=True)
 
-        # 4. Toggles
-        self.auto_discover_var = ctk.BooleanVar(value=self.app.config.auto_discover_paths)
-        self.auto_discover_switch = ctk.CTkSwitch(
-            card,
-            text="Auto-discover Tally Application & Data Paths",
-            variable=self.auto_discover_var,
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MAIN,
-            progress_color=ACCENT_BLUE
-        )
-        self.auto_discover_switch.pack(anchor="w", padx=16, pady=(4, 10))
+    def _build_quit(self):
+        box = self._group(f"Quit {APP_SHORT}", "Syncing stops until Bridge is opened again. Closing the window only hides it to the tray.")
+        danger_button(box, f"Quit {APP_SHORT}", self.app._shutdown_app).pack(anchor="w", padx=16, pady=(0, 14))
 
-        self.force_full_sync_var = ctk.BooleanVar(value=getattr(self.app.config, "force_full_sync", False))
-        self.force_full_sync_switch = ctk.CTkSwitch(
-            card,
-            text="Always Sync All Records (Bypass Tally Alter ID Filter)",
-            variable=self.force_full_sync_var,
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MAIN,
-            progress_color=ACCENT_BLUE
-        )
-        self.force_full_sync_switch.pack(anchor="w", padx=16, pady=(0, 10))
-
-        self.autostart_var = ctk.BooleanVar(value=self.app.config.autostart_enabled or is_autostart_registered())
-        self.autostart_switch = ctk.CTkSwitch(
-            card,
-            text="Start Automatically on Windows Boot",
-            variable=self.autostart_var,
-            font=ctk.CTkFont(size=12),
-            text_color=TEXT_MAIN,
-            progress_color=ACCENT_BLUE
-        )
-        self.autostart_switch.pack(anchor="w", padx=16, pady=(0, 16))
-
-        # 5. Account Switch / Reconfigure Section
-        acct_card = ctk.CTkFrame(self.scroll, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        acct_card.pack(fill="x", pady=(0, 14), padx=4)
-
-        ctk.CTkLabel(acct_card, text="👤 Account & Authentication", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=16, pady=(12, 6))
-        user_str = self.app.config.email or self.app.config.username or "Configured via Token"
-        ctk.CTkLabel(acct_card, text=f"Logged in as: {user_str}", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16, pady=(0, 10))
-
-        relogin_btn = ctk.CTkButton(
-            acct_card,
-            text="🔐 Re-login / Switch User",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=34,
-            command=self.app.show_setup
-        )
-        relogin_btn.pack(anchor="w", padx=16, pady=(0, 12))
-
-        # 6. Diagnostic Logs Section
-        diag_card = ctk.CTkFrame(self.scroll, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        diag_card.pack(fill="x", pady=(0, 14), padx=4)
-
-        ctk.CTkLabel(diag_card, text="📋 Diagnostic Logs & Support", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=16, pady=(12, 4))
-        ctk.CTkLabel(diag_card, text="Inspect synchronization logs (agent.log, tally_traffic.log) or export a support archive.", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16, pady=(0, 10))
-
-        log_btn_row = ctk.CTkFrame(diag_card, fg_color="transparent")
-        log_btn_row.pack(fill="x", padx=16, pady=(0, 12))
-
-        open_logs_btn = ctk.CTkButton(
-            log_btn_row,
-            text="📂 Open Logs Folder",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=34,
-            width=160,
-            command=self._open_logs_folder
-        )
-        open_logs_btn.pack(side="left", padx=(0, 8))
-
-        export_logs_btn = ctk.CTkButton(
-            log_btn_row,
-            text="📦 Export Logs (.zip)",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_BORDER,
-            hover_color=CARD_BG,
-            height=34,
-            width=160,
-            command=self._export_logs_zip
-        )
-        export_logs_btn.pack(side="left")
-
-        # 7. Exit Application Section
-        exit_card = ctk.CTkFrame(self.scroll, fg_color=CARD_BG, corner_radius=12, border_width=1, border_color=CARD_BORDER)
-        exit_card.pack(fill="x", pady=(0, 14), padx=4)
-
-        ctk.CTkLabel(exit_card, text="🛑 Exit Application", font=ctk.CTkFont(size=13, weight="bold"), text_color=TEXT_MAIN).pack(anchor="w", padx=16, pady=(12, 4))
-        ctk.CTkLabel(exit_card, text="Stop all background sync processes and completely quit SnehDistribuors.", font=ctk.CTkFont(size=12), text_color=TEXT_MUTED).pack(anchor="w", padx=16, pady=(0, 10))
-
-        exit_btn = ctk.CTkButton(
-            exit_card,
-            text="❌ Exit SnehDistribuors",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#7F1D1D",
-            hover_color="#991B1B",
-            height=34,
-            command=self.app._shutdown_app
-        )
-        exit_btn.pack(anchor="w", padx=16, pady=(0, 12))
-
-        # Actions
-        self.feedback_lbl = ctk.CTkLabel(self.scroll, text="", font=ctk.CTkFont(size=12))
-        self.feedback_lbl.pack(pady=(0, 8))
-
-        btn_row = ctk.CTkFrame(self.scroll, fg_color="transparent")
-        btn_row.pack(fill="x", pady=(0, 12))
-
-        self.save_btn = ctk.CTkButton(
-            btn_row,
-            text="💾 Save Settings",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color=ACCENT_BLUE,
-            hover_color=ACCENT_HOVER,
-            height=40,
-            command=self._save_settings
-        )
-        self.save_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+    def _feedback(self, text: str, kind: str = "idle"):
+        self.feedback_lbl.configure(text=text, text_color=STATE[kind]["fg"])
 
     def _save_settings(self):
-        host = self.host_entry.get().strip() or "localhost"
-        port = self.port_entry.get().strip() or "9000"
-        backend_url = self.backend_url_entry.get().strip()
-        autostart = self.autostart_var.get()
-        auto_disc = self.auto_discover_var.get()
-        force_full = self.force_full_sync_var.get()
-
-        try:
-            out_sec = int(self.outbound_entry.get().strip() or "5")
-            in_sec = int(self.inbound_entry.get().strip() or "60")
-            per_range = int(self.range_entry.get().strip() or "25")
-        except ValueError:
-            self.feedback_lbl.configure(text="❌ Intervals and vouchers per range must be numbers.", text_color=ERROR_RED)
-            return
-
-        tally_url = f"http://{host}:{port}"
-        self.app.config.tally_url = tally_url
-        self.app.config.backend_url = backend_url
-        self.app.config.sync_interval_seconds = max(1, out_sec)
-        self.app.config.inbound_interval_seconds = max(5, in_sec)
-        self.app.config.vouchers_per_range = max(1, per_range)
-        self.app.config.auto_discover_paths = auto_disc
-        self.app.config.force_full_sync = force_full
-        self.app.config.autostart_enabled = autostart
-
-        save_config(self.app.config, self.app.config_file)
-
-        if autostart:
-            install_startup()
-        else:
-            uninstall_startup()
-
-        # Reload agent
-        self.app.agent.reload_config(self.app.config)
-
-        self.feedback_lbl.configure(text="✅ Settings saved successfully!", text_color=SUCCESS_GREEN)
-        self.after(1500, self.app.show_dashboard)
+        ok, message = core.apply_settings(self.app, {
+            "tally_host": self.host_entry.get(), "tally_port": self.port_entry.get(), "backend_url": self.backend_url_entry.get(),
+            "outbound_seconds": self.outbound_entry.get(), "inbound_seconds": self.inbound_entry.get(),
+            "vouchers_per_range": self.range_entry.get(), "auto_discover_paths": self.auto_discover_var.get(),
+            "force_full_sync": self.force_full_sync_var.get(), "autostart": self.autostart_var.get()})
+        self._feedback(message, "ok" if ok else "error")
+        if ok:
+            self.after(3000, lambda: self.winfo_exists() and self._feedback(""))
 
     def _open_logs_folder(self):
-        log_dir = get_logs_dir()
-        try:
-            if sys.platform == "win32":
-                os.startfile(log_dir)
-            elif sys.platform == "darwin":
-                subprocess.run(["open", log_dir])
-            else:
-                subprocess.run(["xdg-open", log_dir])
-        except Exception as e:
-            self.feedback_lbl.configure(text=f"⚠️ Could not open folder: {e}", text_color=WARNING_AMBER)
+        ok, message = core.open_logs_folder()
+        if not ok:
+            self._feedback(message, "warn")
 
     def _export_logs_zip(self):
-        import zipfile
-        from datetime import datetime
-        log_dir = get_logs_dir()
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        if not os.path.exists(desktop):
-            desktop = log_dir
+        ok, message = core.export_logs_zip()
+        self._feedback(message, "ok" if ok else "error")
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        zip_path = os.path.join(desktop, f"SnehDistribuors_Logs_{ts}.zip")
-        try:
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for fn in ["agent.log", "tally_traffic.log"]:
-                    fp = os.path.join(log_dir, fn)
-                    if os.path.exists(fp):
-                        zf.write(fp, arcname=fn)
-            self.feedback_lbl.configure(text=f"✅ Exported logs to Desktop: {os.path.basename(zip_path)}", text_color=SUCCESS_GREEN)
-        except Exception as e:
-            self.feedback_lbl.configure(text=f"❌ Failed to export logs: {e}", text_color=ERROR_RED)
-
-    def _build_footer(self):
-        footer = ctk.CTkFrame(self.scroll, fg_color="transparent")
-        footer.pack(fill="x", pady=(10, 8))
-
-        ctk.CTkLabel(
-            footer,
-            text="SnehDistribuors Tally Sync Connector • v1.0.0 (Build 2026.09.21)",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=TEXT_MUTED
-        ).pack()
-
-        ctk.CTkLabel(
-            footer,
-            text="TallyPrime XML Connector (Port 9000) • AES-128 Machine Vault • SnehDistribuors Cloud ERP",
-            font=ctk.CTkFont(size=10),
-            text_color=TEXT_MUTED
-        ).pack(pady=(2, 0))
 
 
 # ---------------------------------------------------------------------------
@@ -1670,7 +1149,17 @@ class SettingsView(ctk.CTkFrame):
 def main():
     if not check_single_instance():
         sys.exit(0)
-    app = SnehDistribuorsApp()
+    # The web window where Edge WebView2 is there to draw it; this CustomTkinter one everywhere else, and
+    # always with --classic.
+    if "--classic" not in sys.argv:
+        try:
+            import webview_app
+            if webview_app.available():
+                webview_app.run()
+                return
+        except Exception as e:
+            print(f"The web window could not open ({e}); opening the classic one.")
+    app = BridgeApp()
     app.mainloop()
 
 if __name__ == "__main__":

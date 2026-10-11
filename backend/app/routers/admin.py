@@ -808,7 +808,10 @@ async def get_permissions(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    query = await db.execute(select(Permission))
+    # Only the roles of the admin's own account: another account's roles are none of its business
+    query = await db.execute(
+        select(Permission).join(Role, Role.role_id == Permission.role_id).where(role_in_account(admin.account_id))
+    )
     return query.scalars().all()
 
 @router.post("/permissions")
@@ -817,6 +820,18 @@ async def update_permissions(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
+    # Every role named must be one of the admin's account. Anyone who signs up is the Admin of their own account,
+    # so without this they could rewrite what another business's roles may do. Nothing is written unless all are.
+    wanted_role_ids = {item.role_id for item in payload}
+    if None in wanted_role_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Every permission must name a role.")
+    own_role_ids = set((await db.execute(
+        select(Role.role_id).where(Role.role_id.in_(wanted_role_ids), role_in_account(admin.account_id))
+    )).scalars().all())
+    if own_role_ids != wanted_role_ids:
+        # Another account's role and a role that does not exist get the same answer
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
+
     for item in payload:
         # Find existing permission or create new one
         perm_q = await db.execute(
@@ -843,9 +858,11 @@ async def update_permissions(
             db.add(new_perm)
             
     # Clean up stale toggle overrides for affected roles
-    role_ids = list(set([item.role_id for item in payload if item.role_id]))
+    role_ids = list(own_role_ids)
     if role_ids:
-        user_ids_q = await db.execute(select(User.user_id).where(User.role_id.in_(role_ids)))
+        user_ids_q = await db.execute(select(User.user_id).where(
+            User.role_id.in_(role_ids),
+            User.account_id.is_(None) if admin.account_id is None else User.account_id == admin.account_id))
         user_ids = user_ids_q.scalars().all()
         if user_ids:
             updated_module_ids = list(set([item.module_id for item in payload]))
@@ -981,8 +998,9 @@ async def get_user_permissions(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
+    target = await _company_user(db, admin, user_id)   # 404 for a user outside the admin's company
     query = await db.execute(
-        select(UserPermissionOverride).where(UserPermissionOverride.user_id == user_id)
+        select(UserPermissionOverride).where(UserPermissionOverride.user_id == target.user_id)
     )
     overrides = query.scalars().all()
     return overrides

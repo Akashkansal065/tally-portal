@@ -1,39 +1,39 @@
-# SnehDistribuors Desktop Sync Agent (TallyPrime Connector)
+# MyTally Bridge: Desktop Sync Agent (TallyPrime Connector)
 
-The **SnehDistribuors Desktop Sync Agent** is a modern Windows desktop application (and background daemon) that runs on the Windows computer or virtual machine where **TallyPrime** is installed. It connects local Tally on `http://127.0.0.1:9000/` with your **SnehDistribuors Cloud ERP** backend in real time.
+**MyTally Bridge** (the desktop sync agent) is a Windows desktop application (and background daemon) that runs on the Windows computer or virtual machine where **TallyPrime** is installed. It connects local Tally on `http://127.0.0.1:9000/` with your **SnehDistribuors Cloud ERP** backend in real time.
 
 ---
 
 ## 🌟 Key Features
 
-1. **Premium Modern GUI Interface**:
-   - Built with **CustomTkinter** featuring a sleek dark-themed interface.
-   - Live status indicators for both **TallyPrime** and **Cloud ERP**.
-   - Metric cards displaying synced **Vouchers**, **Ledgers**, **Stock Items**, and **Errors**.
-   - Real-time scrolling activity log console with color-coded events.
-   - Quick action controls: **🔄 Sync Delta**, **⚡ Sync All (Full Baseline)**, **⏸ Pause / Resume**, **🏢 Companies**, **⚙ Settings**, and **📥 Minimize to System Tray**.
+1. **The MyTally Bridge window**:
+   - A web page (`ui/`) drawn by **pywebview** in Edge WebView2, in light and dark (follows Windows; change it under Settings, This PC). The window title is **MyTally Bridge**; the `.exe` is still `SnehDistribuorsSync.exe`.
+   - Where WebView2 or pywebview is missing (some Windows 10 PCs), the same screens open in a **CustomTkinter** window instead. `--classic` forces that window. Both share their logic in `bridge_core.py`, so sign-in, companies and settings behave the same.
+   - The page loads nothing from the network and never holds a sign-in token or stored password; it asks the Python side (`webview_app.Api`) for everything.
+   - A **health bar** on every page says in one sentence whether sync is working (Up to date, Syncing, Synced just now, something to check, can't reach TallyPrime or the server, paused), with dots for **TallyPrime** and the **Server**. Its button follows the agent's real state: **Sync now**, **Syncing...**, **Retry**, **Resume** or **Sign in again**. **More** holds **Full re-sync...** (asks first), **Pause syncing** and **Hide to tray**.
+   - Three pages on the left: **Companies** (the home page), **Activity** (the log) and **Settings**.
 
-2. **Single-Page Setup: Sign Up or Sign This PC In**:
-   - Enter the Cloud Server URL and the Tally host, with the company open in TallyPrime.
-   - **New business**: press **New here? Create an account for your business**, fill in your details, press **Email me a code**, and enter the code. This creates the account, its first admin, this PC's device and the first company (the one open in Tally) in one step.
-   - **Existing account**: enter the email and password of someone who holds the **Manage sync agent** permission (admins do by default) and press **🚀 Connect & Start Sync**. Everyone else joins the business by invitation from the web app, not from the agent.
+2. **First run: sign this PC in**:
+   - Open the company in TallyPrime first; the agent looks for it by itself and shows what it found.
+   - Accounts are not created here. A new business signs up in the MyTally app with a mobile number, then comes back to this PC.
+   - **Connect with a code from the app**: press **Get a code**, then enter the code shown on the app's **Connect Tally** screen (signed in as someone who holds the **Manage sync agent** permission) and confirm the PC's name there. No password is typed on this PC. A code lasts 10 minutes. This is the way for someone who signs in with a mobile number.
+   - **Sign in with email and password**: enter the email and password of someone who holds the **Manage sync agent** permission (admins do by default) and press **Sign in and start syncing**. Everyone else joins the business by invitation from the web app, not from the agent.
    - Either way the PC is signed in **as a device**: it gets its own token and stores no password afterwards. The PC is listed in the web app under Admin → Sync agent & team, where an admin can sign it out.
-   - **🔍 Auto-Detect**: 1-click discovery that queries Tally XML server and automatically detects open company names and release version.
-   - **🧪 Test Connection**: Live diagnostic test verifying connectivity to both Tally and Cloud before saving.
+   - **Advanced** (a link under the button) holds the server address, the TallyPrime address and **Test connection**.
 
-3. **LiveKeeping-Style Connection Settings**:
-   - Customize Tally host, port, cloud backend URL, sync intervals, and vouchers per full sync range.
-   - Auto-discover Tally application and data paths.
-   - Toggle **"Always Sync All Records (Bypass Tally Alter ID Filter)"** for complete baseline synchronizations.
-   - **🔐 Re-login / Switch User** returns to Setup to sign the PC in again.
+3. **Settings**:
+   - **Connection**: the TallyPrime computer and port, and the server address. **Schedule**: how often to send app changes to Tally and to check Tally for changes.
+   - **This PC**: start with Windows, and the theme. **Account**: **Sign in as someone else** returns to the sign-in screen. **Support**: open the logs folder or export the logs as a zip.
+   - **Advanced**: vouchers sent per request in a full re-sync, finding the Tally program and data folders automatically, and **Re-check every record on each sync (slower)**.
+   - **Save** applies the changes and stays on the page.
 
 4. **System Tray & Windows Boot Auto-Start**:
-   - Minimizes cleanly to the Windows system tray (`pystray`) for uninterrupted background syncing.
-   - System tray right-click menu: **Open**, **Sync Delta Now**, **Sync All (Full Refresh)**, **Pause / Resume**, and **Exit**.
+   - Closing the window hides it to the Windows system tray (`pystray`); syncing continues. The tray icon carries a coloured dot for the sync state and its tooltip repeats the health sentence.
+   - System tray right-click menu: **Open Bridge**, **Sync now**, **Full re-sync**, **Pause or resume syncing**, and **Quit Bridge**.
    - Toggle switch in Settings or 1-click batch script to automatically start with Windows boot.
 
 5. **Several Companies, Each Bound to Its Tally Identity**:
-   - One agent syncs every company linked to this PC. **🏢 Companies** lists them; a company open in Tally but not yet linked shows as "Open in Tally · not synced" with a **Link** button, and **Unlink** stops syncing one from this PC (its data in the app stays).
+   - One agent syncs every company linked to this PC. The **Companies** page lists them; a company open in Tally but not yet linked shows under "Open in Tally, not linked" with a **Link** button, and **Unlink** stops syncing one from this PC (its data in the app stays).
    - Each company is tied to its Tally GUID, not its name, and every request names that GUID. Opening, closing or switching companies in TallyPrime never redirects a sync to a different company: a linked company that is not open is skipped ("is not open in Tally") while the others keep syncing.
    - A company is synced from one PC at a time. Linking one that another PC holds asks **"Move sync to this PC?"** first.
    - A copy or restored backup of a synced company is refused as "a different copy of the books". If two companies with the same name are open, neither is synced until one is closed.
@@ -62,11 +62,19 @@ The **SnehDistribuors Desktop Sync Agent** is a modern Windows desktop applicati
 
 ## 🚀 Running the Application
 
+### For the people who use it: one `.exe`
+Nobody who uses the agent needs Python or any of the commands below. They get one file, `SnehDistribuorsSync.exe`, and double-click it; it opens as **MyTally Bridge**. There are two ways to make that file:
+- **On GitHub (no Windows PC needed)**: the "Sync agent exe" workflow builds it on every pull request that touches this folder and when run by hand from the Actions tab; download it from the run's Artifacts. Pushing a tag such as `agent-v2.0.0` also attaches it to a GitHub Release, which gives a link to send to people.
+- **On a Windows PC**: double-click `installer\build_windows_exe.bat`. The file appears in `dist\`.
+
+The `.exe` is not code-signed, so the first time it runs Windows SmartScreen says "Windows protected your PC": press **More info**, then **Run anyway**.
+
 ### 1. Launch Modern GUI
 ```bash
 python gui_app.py
 ```
-*(On first launch, open the company in TallyPrime, enter your Cloud URL, then either create an account or sign the PC in with an admin's email and password. Once connected, settings are saved to `agent_config.json` and the dashboard appears automatically.)*
+Add `--classic` for the CustomTkinter window. To look at the page alone with made-up data, serve this folder (`python -m http.server 8765`) and open `http://localhost:8765/ui/index.html?demo` (`?demo=sync`, `warn`, `error`, `paused` or `setup`; add `&theme=dark`).
+*(On first launch, open the company in TallyPrime, then sign the PC in with a code from the MyTally app or with an admin's email and password (the server address is under Advanced). Once connected, settings are saved to `agent_config.json` and the Companies page appears.)*
 
 The company's name in Tally must match its name in the app the first time an existing company is linked, otherwise a second company is added.
 

@@ -72,6 +72,8 @@ class AgentConfig:
     # Set when the server signed this PC out on purpose or blocked it (see cloud_client.AUTO_RELOGIN_REASONS).
     # Kept across restarts so autostart doesn't silently sign back in; cleared when credentials are re-entered.
     auth_halt_reason: str = ""
+    # The window's colours: "system" follows Windows, or "light" / "dark"
+    theme: str = "system"
 
 _single_instance_handle = None   # kept for the life of the process: the hold ends when it does
 

@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 
 import app.models.portal_core as P
+from app.core.config import settings
 from app.routers import auth, backup_schedule as router
 from app.services import backup_schedule as svc
 from tests.conftest import bearer, login, run
@@ -47,6 +48,8 @@ def world(harness, monkeypatch):
     admin_role = h.role("Admin")
     h.user(alpha, admin_role, "owner")
     partner = h.user(alpha, admin_role, "partner")
+    # The schedule is the whole server's: the owner runs this server, the partner is only an Admin of the account
+    monkeypatch.setattr(settings, "PLATFORM_ADMIN_EMAILS", "owner@example.com")
     client = h.app(auth.router, router.router)
     return dict(h=h, client=client, headers=bearer(login(client, "owner@example.com")), backups=backups, tally=tally, partner=partner)
 
@@ -82,3 +85,16 @@ def test_schedule_runs_once_a_day_keeps_last_n_and_reports_problems(world):
 def test_off_and_idle_writes_nothing(world):
     run(_tick(world["h"], datetime(2026, 10, 6, 22, 0)))
     assert world["h"].query(select(P.AppSetting.key)) == []
+
+
+def test_only_the_people_who_run_the_server_may_see_or_change_it(world):
+    """An account Admin (anyone who signs up) could otherwise send every company's backup to their own email."""
+    c, partner = world["client"], world["partner"]
+    headers = bearer(login(c, partner.email))
+
+    assert c.get("/backup-schedule", headers=headers).status_code == 403
+    assert c.put("/backup-schedule", json={"enabled": True, "time": "21:00", "email_to": "thief@example.com"},
+                 headers=headers).status_code == 403
+    assert c.post("/backup-schedule/run-now", headers=headers).status_code == 403
+    assert world["backups"].records == {}
+    assert c.get("/backup-schedule", headers=world["headers"]).json()["email_to"] == ""

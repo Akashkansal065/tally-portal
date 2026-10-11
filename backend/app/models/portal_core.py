@@ -322,6 +322,21 @@ class User(Base):
     granted_overrides = relationship("UserPermissionOverride", back_populates="granter", foreign_keys="[UserPermissionOverride.granted_by]")
     company_access = relationship("UserCompanyAccess", back_populates="user", cascade="all, delete-orphan")
 
+class UserPhone(Base):
+    """The mobile number a person signs in with, confirmed by an OTP. One number signs in one person, which
+    the unique key holds to even when the same sign-up arrives twice. users.phone stays a contact detail
+    anyone may type; only a number here can sign in."""
+    __tablename__ = "user_phones"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    user_phone_id = Column(Integer, primary_key=True, index=True)
+    phone = Column(String(20), nullable=False, unique=True)   # E.164: +919900000001
+    user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=False, unique=True)
+    firebase_uid = Column(String(128), nullable=True)
+    verified_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class Module(Base):
     __tablename__ = "modules"
     __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
@@ -467,6 +482,9 @@ class Company(Base):
     features = Column(JSON, nullable=True)
     einvoice_env = Column(String(20), default='mock')
     tally_guid = Column(String(100), nullable=True, index=True)
+    # True on the company an account signed up from the app starts with, until its first Tally company is
+    # linked and takes its place. It has no Tally data, so no name has to match for that.
+    awaiting_tally = Column(Boolean, nullable=True)
     einvoice_username = Column(String(100), nullable=True)
     einvoice_password = Column(String(255), nullable=True)
     einvoice_gsp_client_id = Column(String(100), nullable=True)
@@ -520,6 +538,26 @@ class AgentCompanyLink(Base):
     unlinked_at = Column(DateTime, nullable=True)
 
 
+class AgentPairing(Base):
+    """A PC waiting to be signed in with a code. The sync agent shows the code; someone signed in to the app
+    types it there, and the PC then collects its device token with the secret only it holds. Only hashes of
+    the code and the secret are kept."""
+    __tablename__ = "agent_pairings"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+
+    pairing_id = Column(Integer, primary_key=True, index=True)
+    code_hash = Column(String(64), nullable=False, unique=True)
+    poll_hash = Column(String(64), nullable=False, unique=True)
+    machine_id = Column(String(128), nullable=False)
+    device_name = Column(String(150), nullable=True)
+    account_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.accounts.account_id", ondelete="CASCADE"), nullable=True)
+    approved_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="CASCADE"), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    device_id = Column(Integer, nullable=True)   # set once the PC has collected its sign-in
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class CompanySyncState(Base):
     """What the agent last reported for a company: the source of "Last synced" in the app."""
     __tablename__ = "company_sync_state"
@@ -541,7 +579,11 @@ class CompanySyncState(Base):
 
 class UserInvite(Base):
     """An admin's invitation for someone to join their account. is_open is True until the invite is accepted,
-    revoked or replaced and NULL afterwards, so an account has one open invite per email."""
+    revoked or replaced and NULL afterwards, so an account has one open invite per email.
+
+    An invitation is for an email, a mobile number, or both. One for a mobile number only keeps the number
+    (+919900000001) in the email column as well: the column takes no NULL, and it is what the one-open-invite
+    key is made of. Such a person joins by signing in with that number; there is no link to send."""
     __tablename__ = "user_invites"
     __table_args__ = (
         UniqueConstraint("account_id", "email", "is_open", name="uq_user_invites_one_open"),

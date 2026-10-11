@@ -6,6 +6,8 @@ from typing import Union, Any
 from app.core.config import settings
 
 ALGORITHM = "HS256"
+# Stored as the password of someone who signs in with a mobile number only. No password matches it.
+NO_PASSWORD = "!"
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:

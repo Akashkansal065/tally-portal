@@ -167,6 +167,8 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+from app.routers import phone_auth
+app.include_router(phone_auth.router)
 app.include_router(companies.router)
 app.include_router(ledgers.router)
 app.include_router(vouchers.router)
@@ -209,9 +211,10 @@ app.include_router(bank_recon.router)
 # Mount isolated Backup & Restore module
 try:
     from backup_module.router import backup_router
-    from app.routers.admin import require_admin
-    # A backup holds a company's full Tally data and a restore writes into Tally, so every route is admin-only
-    app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"], dependencies=[Depends(require_admin)])
+    from app.core.permissions import require_platform_admin
+    # The module backs up and restores the server's own Tally with no notion of accounts: every backup of every
+    # customer is listed, downloaded and restored through it. So only the people who run the server may use it.
+    app.include_router(backup_router, prefix="/backup", tags=["Backup & Restore"], dependencies=[Depends(require_platform_admin)])
 except Exception as e:
     import logging
     logging.getLogger("uvicorn.error").warning(f"Could not load backup_module: {e}")

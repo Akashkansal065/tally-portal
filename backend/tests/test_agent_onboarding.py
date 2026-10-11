@@ -180,7 +180,7 @@ def test_invited_user_joins_the_inviters_account_and_cannot_use_the_agent(harnes
 
     invite = client.post("/admin/invites", headers=owner, json={
         "email": "Rep@Example.com", "role_id": sales_role_id, "company_ids": [signed["company"]["company_id"]]}).json()
-    assert client.get(f"/auth/invites/{invite['invite_token']}").json() == {"email": "rep@example.com", "account_name": "ABC Group"}
+    assert client.get(f"/auth/invites/{invite['invite_token']}").json() == {"email": "rep@example.com", "account_name": "ABC Group", "phone": None}
     accepted = client.post("/auth/invites/accept", json={"token": invite["invite_token"], "username": "Rep", "password": "pw-7654321"})
     assert accepted.status_code == 200
 

@@ -114,25 +114,22 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM The web window (Edge WebView2). Kept apart from the packages above: without it the agent still builds,
+REM and opens its classic window instead.
+"%PYTHON_EXE%" -m pip install pywebview
+if errorlevel 1 (
+    echo.
+    echo  NOTE: pywebview could not be installed on this Python, so this build will open the classic
+    echo  window. The sync itself is the same. To get the new window, build with Python %PY_VERSION% 64-bit.
+)
+
 echo.
 echo ===========================================================================
 echo  [3/3] Bundling SnehDistribuorsSync.exe...
 echo ===========================================================================
 cd /d "%~dp0\.."
 
-"%PYTHON_EXE%" -m PyInstaller --noconfirm --onefile --windowed --name "SnehDistribuorsSync" ^
-    --icon "assets\icon.ico" ^
-    --collect-all customtkinter ^
-    --copy-metadata customtkinter ^
-    --collect-submodules keyring ^
-    --copy-metadata keyring ^
-    --add-data "assets;assets" ^
-    --add-data "security.py;." ^
-    --add-data "config.py;." ^
-    --add-data "agent.py;." ^
-    --add-data "tally_client.py;." ^
-    --add-data "cloud_client.py;." ^
-    gui_app.py
+"%PYTHON_EXE%" installer\build_exe.py
 if errorlevel 1 (
     echo.
     echo  BUILD FAILED while bundling. Find your case in the messages above:

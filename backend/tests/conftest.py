@@ -20,6 +20,8 @@ os.environ.update(
     RATE_LIMIT_ENABLED="false",
     RAZORPAY_WEBHOOK_SECRET="",
     TALLY_URL="",
+    TALLY_URL_COMPANY_GUID="",
+    PLATFORM_ADMIN_EMAILS="",
     LOG_LEVEL="WARNING",
 )
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -47,6 +49,7 @@ def _bigint_as_integer(type_, compiler, **kw):
 from app.core.database import Base, get_db  # noqa: E402
 from app.core.cache import clear_all_cache  # noqa: E402
 from app.core.permissions import clear_all_auth_and_permission_caches  # noqa: E402
+from app.core.tally_target import forget_direct_companies  # noqa: E402
 from app.core.security import create_access_token, get_password_hash  # noqa: E402
 import app.models.portal_core as P  # noqa: E402
 import app.models.tally_core  # noqa: E402,F401
@@ -157,9 +160,11 @@ class Harness:
 def harness(tmp_path):
     clear_all_auth_and_permission_caches()
     clear_all_cache()
+    forget_direct_companies()
     yield Harness(tmp_path)
     clear_all_auth_and_permission_caches()
     clear_all_cache()
+    forget_direct_companies()
 
 
 # ── device header presets ──

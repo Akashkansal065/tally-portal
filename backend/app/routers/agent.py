@@ -1,8 +1,12 @@
-"""Desktop Sync Agent onboarding: the only place an account is created, and where a PC is signed in and
-companies are linked to it.
+"""Desktop Sync Agent onboarding: where a PC is signed in and companies are linked to it.
 
-Sign-up always makes a new account with its first admin and first company. It never joins an existing one:
-everyone else is invited from the app.
+A PC is signed in with an admin's email and password (/agent/signin), or with a code the agent shows and
+someone signed in to the app types there (/agent/pair), which is how a person with no password signs it in.
+
+Accounts are created in the app with a mobile number (routers/phone_auth.py). Sign-up from the agent
+(/agent/signup) is no longer offered by the agent and stays here for the versions still installed. It always
+makes a new account with its first admin and first company and never joins an existing one: everyone else is
+invited from the app.
 """
 import hashlib
 import logging
@@ -26,7 +30,7 @@ from app.core.permissions import get_current_user, invalidate_auth_cache
 from app.core.rate_limiter import limiter
 from app.core.security import get_password_hash, verify_password
 from app.models.portal_core import (
-    Account, AgentCompanyLink, AgentDevice, Company, SignupVerification, User, UserCompanyAccess,
+    Account, AgentCompanyLink, AgentDevice, AgentPairing, Company, SignupVerification, User, UserCompanyAccess,
 )
 from app.services import alerts, messaging
 
@@ -35,6 +39,10 @@ router = APIRouter(prefix="/agent", tags=["Desktop Sync Agent"])
 
 CODE_TTL_MINUTES = 10
 MAX_CODE_ATTEMPTS = 5
+PAIRING_TTL_MINUTES = 10
+# Letters and digits that are not mistaken for one another when read off a screen and typed on a phone
+PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+PAIRING_CODE_LENGTH = 8
 
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
@@ -70,6 +78,14 @@ class SignupVerifyRequest(DeviceIn):
 class SigninRequest(DeviceIn):
     email: str
     password: str
+
+
+class PairingCodeRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=20)
+
+
+class PairingClaimRequest(DeviceIn):
+    poll_token: str = Field(min_length=20, max_length=200)
 
 
 class LinkRequest(TallyCompanyIn):
@@ -132,6 +148,15 @@ async def _company_from_before_accounts(db: AsyncSession, account: Account, name
     return matches[0] if len(matches) == 1 else None
 
 
+async def _company_awaiting_tally(db: AsyncSession, account: Account) -> Optional[Company]:
+    """The company an account signed up from the app was given to start with, while it still has no Tally
+    company. The first company linked takes its place, so the people already in it are in the real one."""
+    rows = (await db.execute(select(Company).where(
+        Company.account_id == account.account_id, Company.awaiting_tally == True,  # noqa: E712
+        (Company.tally_guid.is_(None)) | (Company.tally_guid == "")))).scalars().all()
+    return rows[0] if len(rows) == 1 else None
+
+
 async def _link_company(db: AsyncSession, account: Account, device: AgentDevice, user: User,
                         info: TallyCompanyIn, take_over: bool = False) -> Company:
     """Make the Tally company a company of the account (found by GUID; by name only for a company from
@@ -144,6 +169,13 @@ async def _link_company(db: AsyncSession, account: Account, device: AgentDevice,
         if company is not None:
             company.tally_guid = guid
             company.tally_fingerprint = info.fingerprint or company.tally_fingerprint
+    if company is None:
+        company = await _company_awaiting_tally(db, account)
+        if company is not None:
+            company.tally_guid = guid
+            company.tally_fingerprint = info.fingerprint
+            company.books_begin_date = _books_from(info.books_from)
+            company.awaiting_tally = None
     if company is None:
         if account.max_companies is not None:
             held = (await db.execute(select(func.count()).select_from(Company).where(
@@ -328,6 +360,105 @@ async def signin(request: Request, response: Response, req: SigninRequest, db: A
     device, token = await _register_device(db, account, user, req)
     await db.commit()
     return _signed_in(account, user, device, token)
+
+
+# ─── Sign-in with a code ─────────────────────────────────────────────────────
+
+def _pairing_code_hash(code: str) -> str:
+    """The hash kept for a code, however it was typed: lower case, with the dash, with spaces."""
+    cleaned = "".join(ch for ch in (code or "").upper() if ch.isalnum())
+    return hashlib.sha256(f"pair:{cleaned}".encode()).hexdigest()
+
+
+async def _open_pairing(db: AsyncSession, code: str) -> AgentPairing:
+    pairing = (await db.execute(select(AgentPairing).where(
+        AgentPairing.code_hash == _pairing_code_hash(code)).with_for_update())).scalars().first()
+    if pairing is None or pairing.expires_at < get_ist_now():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="That code is wrong or has expired. Check the code shown on the PC.")
+    return pairing
+
+
+async def _pairing_approver(request: Request, user: User, db: AsyncSession) -> Account:
+    """Who may sign a PC in with a code: a person signed in to the app (never a PC with its own token) who
+    holds "Manage sync agent"."""
+    if agent_device(request) is not None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Enter the code in the MyTally app, signed in as yourself.")
+    if user.account_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This server's data has not been moved into an account yet. Ask your administrator.")
+    if not await can_manage_sync_agent(db, user.user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You are not allowed to use the sync agent. Ask an admin who can for the 'Manage sync agent' permission.")
+    account = (await db.execute(select(Account).where(Account.account_id == user.account_id))).scalars().first()
+    if account is None or account.status != "active":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is closed.")
+    return account
+
+
+@router.post("/pair/start")
+@limiter.limit(settings.REGISTER_RATE_LIMIT)
+async def pair_start(request: Request, response: Response, req: DeviceIn, db: AsyncSession = Depends(get_db)):
+    """A PC asks to be signed in with a code. It shows the code; the secret it also gets is what it later
+    collects its sign-in with. Nothing is signed in until someone approves the code in the app."""
+    code = "".join(secrets.choice(PAIRING_ALPHABET) for _ in range(PAIRING_CODE_LENGTH))
+    poll_token = secrets.token_urlsafe(32)
+    db.add(AgentPairing(code_hash=_pairing_code_hash(code), poll_hash=hashlib.sha256(poll_token.encode()).hexdigest(),
+                        machine_id=req.machine_id, device_name=req.device_name,
+                        expires_at=get_ist_now() + timedelta(minutes=PAIRING_TTL_MINUTES)))
+    await db.commit()
+    return {"code": f"{code[:4]}-{code[4:]}", "poll_token": poll_token, "expires_in_minutes": PAIRING_TTL_MINUTES}
+
+
+@router.post("/pair/lookup")
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
+async def pair_lookup(request: Request, response: Response, req: PairingCodeRequest,
+                      user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Which PC a code belongs to, shown to the person before they approve it."""
+    account = await _pairing_approver(request, user, db)
+    pairing = await _open_pairing(db, req.code)
+    return {"device_name": pairing.device_name or "A PC", "account_name": account.name,
+            "approved": pairing.account_id == account.account_id}
+
+
+@router.post("/pair/approve")
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
+async def pair_approve(request: Request, response: Response, req: PairingCodeRequest,
+                       user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Sign the PC showing this code in to the caller's account. Approving it again changes nothing."""
+    account = await _pairing_approver(request, user, db)
+    pairing = await _open_pairing(db, req.code)
+    if pairing.account_id is not None and pairing.account_id != account.account_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="That code has already been used. Ask the PC for a new one.")
+    if pairing.account_id is None:
+        pairing.account_id = account.account_id
+        pairing.approved_by_user_id = user.user_id
+        pairing.approved_at = get_ist_now()
+        await db.commit()
+        logger.info(f"PC '{pairing.device_name}' approved for account #{account.account_id} by user #{user.user_id}.")
+    return {"status": "approved", "device_name": pairing.device_name or "A PC"}
+
+
+@router.post("/pair/claim")
+@limiter.limit("40/minute")
+async def pair_claim(request: Request, response: Response, req: PairingClaimRequest, db: AsyncSession = Depends(get_db)):
+    """The PC asks whether its code has been approved, and once it has, is signed in. Asked again after
+    that, it is the same PC in the same account with a fresh token."""
+    pairing = (await db.execute(select(AgentPairing).where(
+        AgentPairing.poll_hash == hashlib.sha256(req.poll_token.encode()).hexdigest()).with_for_update())).scalars().first()
+    if pairing is None or pairing.machine_id != req.machine_id or pairing.expires_at < get_ist_now():
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="That code has expired. Ask for a new one.")
+    if pairing.account_id is None:
+        return {"status": "pending"}
+    account = (await db.execute(select(Account).where(Account.account_id == pairing.account_id))).scalars().first()
+    user = (await db.execute(select(User).where(
+        User.user_id == pairing.approved_by_user_id, User.is_active == True))).scalars().first()  # noqa: E712
+    if account is None or account.status != "active" or user is None or user.account_id != account.account_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is closed.")
+    device, token = await _register_device(db, account, user, req)
+    pairing.device_id = device.device_id
+    await db.commit()
+    return {"status": "approved", **_signed_in(account, user, device, token)}
 
 
 @router.post("/token/refresh")

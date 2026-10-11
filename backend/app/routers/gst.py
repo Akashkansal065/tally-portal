@@ -793,11 +793,19 @@ async def upload_gstr2b_json(
 ):
     """Upload and parse GSTR-2B JSON file from GST portal to populate reconciliation entries"""
     import json
+    # A month's GSTR-2B download is well under this; it bounds how much memory one upload can make the server use
+    max_bytes = 20 * 1024 * 1024
+    contents = await file.read(max_bytes + 1)
+    if len(contents) > max_bytes:
+        raise HTTPException(status_code=413, detail="The GSTR-2B file is larger than 20 MB.")
     try:
-        contents = await file.read()
         data = json.loads(contents)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse JSON file: {str(e)}")
+        # The parser's message goes to the log; the person gets a plain answer
+        logger.warning(f"GSTR-2B upload '{file.filename}' is not valid JSON: {e}")
+        raise HTTPException(status_code=400, detail="That file is not a valid GSTR-2B JSON download from the GST portal.")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="That file is not a valid GSTR-2B JSON download from the GST portal.")
 
     # Resolve root object & rtnprd
     data_obj = data.get("data", data) if isinstance(data.get("data"), dict) else data

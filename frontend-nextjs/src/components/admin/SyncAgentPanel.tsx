@@ -4,12 +4,13 @@ import { useEffect, useState } from 'react'
 import { Copy, Loader2, MonitorCog, Trash2, UserPlus } from 'lucide-react'
 import { toast } from 'sonner'
 import { API_BASE, authHeaders } from '@/lib/utils'
+import { phoneSignInOffered } from '@/lib/phone-auth'
 
 const field = 'h-10 w-full rounded-xl border border-border bg-background px-3 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30'
 
 type Device = { device_id: number; name: string | null; signed_in: boolean; last_seen_at: string | null; companies: { company_id: number; name: string }[] }
 type AdminAccess = { user_id: number; username: string; email: string; allowed: boolean }
-type Invite = { invite_id: number; email: string; role_id: number; company_ids: number[]; expires_at: string; status: 'open' | 'accepted' | 'closed' }
+type Invite = { invite_id: number; email: string; phone?: string | null; role_id: number; company_ids: number[]; expires_at: string; status: 'open' | 'accepted' | 'closed' }
 type Company = { company_id: number; name: string }
 
 async function call<T>(token: string, path: string, init?: RequestInit): Promise<T> {
@@ -30,7 +31,11 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
   const [roleId, setRoleId] = useState('')
   const [companyIds, setCompanyIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
-  const [newInvite, setNewInvite] = useState<{ email: string; token: string; emailed: boolean } | null>(null)
+  const [newInvite, setNewInvite] = useState<{ email: string; phone: string; token: string; emailed: boolean } | null>(null)
+  const [phone, setPhone] = useState('')
+  // A mobile number can be invited only where people can sign in with one
+  const [phoneOffered, setPhoneOffered] = useState(false)
+  useEffect(() => { phoneSignInOffered().then(setPhoneOffered) }, [])
 
   useEffect(() => {
     if (!token) return
@@ -70,11 +75,12 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
   const invite = async () => {
     setSaving(true)
     try {
-      const created = await call<{ invite_token: string; email: string; email_sent: boolean }>(token, '/admin/invites', {
-        method: 'POST', body: JSON.stringify({ email, role_id: Number(roleId), company_ids: companyIds }),
+      const created = await call<{ invite_token: string; email: string; phone: string | null; email_sent: boolean }>(token, '/admin/invites', {
+        method: 'POST', body: JSON.stringify({ email: email.trim() || null, phone: phone.trim() || null, role_id: Number(roleId), company_ids: companyIds }),
       })
-      setNewInvite({ email: created.email, token: created.invite_token, emailed: created.email_sent })
+      setNewInvite({ email: created.email, phone: created.phone || '', token: created.invite_token, emailed: created.email_sent })
       setEmail('')
+      setPhone('')
       setReload(k => k + 1)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not send the invitation')
@@ -92,6 +98,7 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
         <h2 className="flex items-center gap-1.5 text-sm font-extrabold uppercase tracking-wider"><MonitorCog className="h-4 w-4" /> Sync agent PCs</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Each PC running the Desktop Sync Agent signs in here once. A company is synced from one PC at a time.
+          {' '}<a href="/connect" className="font-semibold underline">Connect a PC with a code</a>.
         </p>
         {devices === null ? <Loader2 className="mt-3 h-5 w-5 animate-spin text-primary" /> : devices.length === 0 ? (
           <p className="mt-3 text-sm text-muted-foreground">No PC has signed in to the sync agent yet.</p>
@@ -141,11 +148,17 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
       <section className="rounded-2xl border border-border bg-card p-5">
         <h3 className="flex items-center gap-1.5 text-sm font-bold"><UserPlus className="h-4 w-4" /> Invite someone</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          People join your business by invitation. They choose their own password; the invitation works once and expires in 7 days.
+          People join your business by invitation. {phoneOffered
+            ? 'Invite an email, a mobile number, or both: an email gets a link, and a mobile number joins by signing in to the app with it, confirmed by an SMS code.'
+            : 'They choose their own password.'} The invitation works once and expires in 7 days.
         </p>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className="text-sm"><span className="mb-1 block font-semibold">Email</span>
             <input type="email" autoComplete="off" value={email} onChange={e => setEmail(e.target.value)} className={field} /></label>
+          {phoneOffered && (
+            <label className="text-sm"><span className="mb-1 block font-semibold">Mobile number</span>
+              <input type="tel" inputMode="tel" autoComplete="off" placeholder="98765 43210" value={phone} onChange={e => setPhone(e.target.value)} className={field} /></label>
+          )}
           <label className="text-sm"><span className="mb-1 block font-semibold">Role</span>
             <select value={roleId} onChange={e => setRoleId(e.target.value)} className={field}>
               <option value="">Choose a role</option>
@@ -163,17 +176,23 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
             ))}
           </div>
         </fieldset>
-        <button type="button" onClick={invite} disabled={saving || !email || !roleId || companyIds.length === 0}
+        <button type="button" onClick={invite} disabled={saving || (!email.trim() && !phone.trim()) || !roleId || companyIds.length === 0}
           className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground disabled:opacity-50 cursor-pointer">
           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Send invitation
         </button>
 
-        {newInvite && (
+        {newInvite && !newInvite.token && (
+          <div className="mt-3 rounded-xl border border-border bg-background p-3 text-sm">
+            <p>{newInvite.phone} is invited. Ask them to open the app and sign in with that mobile number: the SMS code confirms it is them, and they join your business. There is no link to send.</p>
+          </div>
+        )}
+        {newInvite && newInvite.token && (
           <div className="mt-3 rounded-xl border border-border bg-background p-3 text-sm">
             <p>
               {newInvite.emailed
                 ? `Invitation emailed to ${newInvite.email}. You can also pass this link on yourself.`
                 : `The email to ${newInvite.email} could not be sent. Pass this link on yourself.`} It is shown only now.
+              {newInvite.phone && ` It can only be accepted by confirming ${newInvite.phone}; they can also just sign in to the app with that number.`}
             </p>
             <div className="mt-2 flex items-center gap-2">
               <code className="min-w-0 flex-1 truncate rounded-lg bg-muted px-2 py-1 text-xs">{inviteLink}</code>
@@ -191,10 +210,10 @@ export function SyncAgentPanel({ token, companies }: { token: string | null; com
             {openInvites.map(i => (
               <li key={i.invite_id} className="flex items-center justify-between gap-3 py-2 text-sm">
                 <span>
-                  <span className="font-semibold">{i.email}</span>
+                  <span className="font-semibold">{[i.email, i.phone].filter(Boolean).join(' · ')}</span>
                   <span className="text-muted-foreground"> · waiting · expires {new Date(i.expires_at).toLocaleDateString('en-IN')}</span>
                 </span>
-                <button type="button" aria-label={`Cancel the invitation for ${i.email}`}
+                <button type="button" aria-label={`Cancel the invitation for ${i.email || i.phone}`}
                   onClick={() => run(() => call(token, `/admin/invites/${i.invite_id}`, { method: 'DELETE' }), 'Invitation cancelled')}
                   className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-xl text-rose-700 hover:bg-rose-500/10 dark:text-rose-400 cursor-pointer">
                   <Trash2 className="h-4 w-4" />

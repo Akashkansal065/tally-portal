@@ -81,8 +81,11 @@ def setup(harness, monkeypatch):
 
 
 async def _replay(harness):
+    """As the sync run does it: each item for its own company, which decides whether the server's Tally may be used."""
+    from app.core.tally_target import note_request_company
     async for db in harness._get_db():
         for item in (await db.execute(select(SyncQueue).where(SyncQueue.is_processed == False))).scalars().all():  # noqa: E712
+            await note_request_company(db, item.company_id)
             await pm.replay_queued(db, item)
 
 
