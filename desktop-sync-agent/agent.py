@@ -82,14 +82,28 @@ file_handler = RotatingFileHandler(
 )
 file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
 
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+# A log line must never stop the work that wrote it. By default a handler that fails reports the failure on
+# stderr and, when that fails too, the error escapes from logger.info() into the caller. In the windowed .exe
+# stdout is None and stderr encodes cp1252, so every line with an emoji ("🔑 Signing this PC in…") raised
+# UnicodeEncodeError: sign-in stopped at its first line, and the sync thread died at start-up.
+logging.raiseExceptions = False
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")   # a Windows console prints emoji instead of failing
+    except Exception:
+        pass
 
 logger = logging.getLogger("MyTallySyncAgent")
 logger.setLevel(logging.INFO)
 logger.handlers.clear()
 logger.addHandler(file_handler)
-logger.addHandler(console_handler)
+
+# The console only when there is one (the windowed .exe has none)
+console_handler = None
+if sys.stdout is not None:
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(console_handler)
 
 # Configure sub-client loggers
 for sub_logger_name in ["TallyClient", "CloudClient", "Backups"]:
@@ -97,7 +111,8 @@ for sub_logger_name in ["TallyClient", "CloudClient", "Backups"]:
     sub_l.setLevel(logging.INFO)
     sub_l.handlers.clear()
     sub_l.addHandler(file_handler)
-    sub_l.addHandler(console_handler)
+    if console_handler is not None:
+        sub_l.addHandler(console_handler)
 
 class CallbackLogHandler(logging.Handler):
     """Custom logging handler to route log records to GUI listeners in real-time."""
