@@ -61,7 +61,7 @@ def backup_note(status: Dict[str, Any], now=None) -> str:
     return ""
 
 
-def health_from_status(status: Dict[str, Any]) -> Dict[str, str]:
+def health_from_status(status: Dict[str, Any], now: Optional[float] = None) -> Dict[str, str]:
     """The one state the health bar shows: its kind ("idle", "paused", "sync", "ok", "warn" or "error"),
     headline, detail line and what the main button does ("sync", "resume", "retry" or "signin"). The most
     urgent condition wins."""
@@ -88,7 +88,8 @@ def health_from_status(status: Dict[str, Any]) -> Dict[str, str]:
     synced_at = status.get("last_sync_time")
     if not synced_at:
         return {"kind": "idle", "title": "Ready", "detail": "Waiting for the first sync.", "action": "sync"}
-    if time.time() - synced_at < 6:
+    current_time = now if now is not None else time.time()
+    if current_time - synced_at < 6:
         return {"kind": "ok", "title": "Synced just now", "detail": last, "action": "sync"}
     return {"kind": "idle", "title": "Up to date", "detail": f"Last synced {status.get('last_sync_timestr', '')}", "action": "sync"}
 

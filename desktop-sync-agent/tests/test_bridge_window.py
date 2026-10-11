@@ -15,10 +15,10 @@ BASE = {"status": "ONLINE", "last_sync_status": "Up-to-date", "last_sync_time": 
 
 @pytest.mark.parametrize("over, kind, action", [
     ({"last_sync_time": None}, "idle", "sync"),
-    ({"last_sync_time": time.time() - 600}, "idle", "sync"),
-    ({"last_sync_time": time.time()}, "ok", "sync"),
-    ({"last_sync_time": time.time(), "last_sync_status": "Up-to-date | 'X' is not open in Tally"}, "warn", "sync"),
-    ({"last_sync_time": time.time(), "last_sync_status": "Sync failed: timeout"}, "warn", "sync"),
+    ({"synced_ago": 600}, "idle", "sync"),
+    ({"synced_ago": 0}, "ok", "sync"),
+    ({"synced_ago": 0, "last_sync_status": "Up-to-date | 'X' is not open in Tally"}, "warn", "sync"),
+    ({"synced_ago": 0, "last_sync_status": "Sync failed: timeout"}, "warn", "sync"),
     ({"status": "SYNCING"}, "sync", "sync"),
     ({"status": "PAUSED"}, "paused", "resume"),
     ({"status": "TALLY OFFLINE"}, "error", "retry"),
@@ -26,7 +26,11 @@ BASE = {"status": "ONLINE", "last_sync_status": "Up-to-date", "last_sync_time": 
     ({"status": "SIGNED OUT", "auth_halt_reason": "admin_revoke", "auth_halt_message": "Signed out by an administrator."}, "error", "signin"),
 ])
 def test_health_shows_the_most_urgent_state(over, kind, action):
-    health = core.health_from_status({**BASE, **over})
+    now = time.time()
+    payload = {**BASE, **over}
+    if "synced_ago" in payload:
+        payload["last_sync_time"] = now - payload.pop("synced_ago")
+    health = core.health_from_status(payload, now=now)
     assert (health["kind"], health["action"]) == (kind, action)
     assert health["title"]
 
