@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 import {
   CLIENT_LABELS,
   REVOKE_REASON_LABELS,
+  isSessionExpired,
   lastActiveLabel,
   relativeTime,
   type DeviceSession,
@@ -54,7 +55,8 @@ export function DeviceList({ sessions, showUser = false, actions, emptyText = 'N
   return (
     <ul className="divide-y divide-border/70 rounded-xl border border-border/80 bg-card">
       {sessions.map((s) => {
-        const signedOut = Boolean(s.revoked_at)
+        const expired = isSessionExpired(s)
+        const signedOut = Boolean(s.revoked_at) || expired
         const details = [
           s.legacy ? 'Signed in before device tracking' : s.client_type ? CLIENT_LABELS[s.client_type] ?? s.client_type : null,
           s.os_name,
@@ -76,13 +78,13 @@ export function DeviceList({ sessions, showUser = false, actions, emptyText = 'N
                 <p className="text-sm font-bold text-foreground truncate">{s.device_name}</p>
                 {s.is_current && <Badge tone="sky">This device</Badge>}
                 {s.is_blocked && <Badge tone="red">Blocked</Badge>}
-                {signedOut && <Badge tone="muted">{REVOKE_REASON_LABELS[s.revoke_reason ?? ''] ?? 'Signed out'}</Badge>}
+                {signedOut && <Badge tone="muted">{expired ? 'Session expired' : REVOKE_REASON_LABELS[s.revoke_reason ?? ''] ?? 'Signed out'}</Badge>}
               </div>
               {showUser && s.username && <p className="text-xs font-semibold text-foreground/80">{s.username}</p>}
               {details.length > 0 && <p className="text-[11px] text-muted-foreground break-words">{details.join(' · ')}</p>}
               <p className="text-[11px] text-muted-foreground">
                 {signedOut ? (
-                  <>Signed out {relativeTime(s.revoked_at) ?? ''}</>
+                  expired ? <>Expired {relativeTime(s.expires_at) ?? ''}</> : <>Signed out {relativeTime(s.revoked_at) ?? ''}</>
                 ) : (
                   <>
                     <span className={cn(s.is_active_now && 'text-emerald-700 dark:text-emerald-400 font-bold')}>{lastActiveLabel(s)}</span>

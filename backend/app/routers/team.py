@@ -118,7 +118,9 @@ async def create_invite(payload: InviteCreate, db: AsyncSession = Depends(get_db
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Sign-in with a mobile number is not switched on, so this person could not join. Invite them by email.")
     if email and (await db.execute(select(User.user_id).where(func.lower(User.email) == email))).scalars().first() is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user with this email already exists.")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="A user with this email already exists, so there is nothing to join. They can sign in with "
+                                   "this email and their password; an invitation will not change that.")
     if phone and (await db.execute(select(UserPhone.user_id).where(UserPhone.phone == phone))).scalars().first() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A user already signs in with this mobile number.")
     if (await db.execute(select(Role.role_id).where(

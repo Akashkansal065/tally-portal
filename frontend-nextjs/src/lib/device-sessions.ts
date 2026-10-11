@@ -150,3 +150,7 @@ export const REVOKE_REASON_LABELS: Record<string, string> = {
   replaced: 'Signed in again on this device',
   device_limit: 'Device limit reached',
 }
+
+/** A session nobody ended but whose lifetime has run out: the server refuses it, so it is not signed in. */
+export const isSessionExpired = (s: Pick<DeviceSession, 'revoked_at' | 'expires_at'>) =>
+  !s.revoked_at && Boolean(s.expires_at) && new Date(s.expires_at as string).getTime() <= Date.now()

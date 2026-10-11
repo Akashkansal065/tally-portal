@@ -10,6 +10,7 @@ import {
   adminRevokeAllSessions,
   adminRevokeSession,
   listBlockedDevices,
+  isSessionExpired,
   listUserSessions,
   relativeTime,
   unblockDevice,
@@ -50,10 +51,10 @@ export function DeviceSessionsModal({ user, token, onClose, onChanged }: DeviceS
   const sessions = useMemo(() => data?.sessions ?? [], [data])
   const blocked = data?.blocked ?? []
 
-  const live = useMemo(() => sessions.filter((s) => !s.revoked_at), [sessions])
+  const live = useMemo(() => sessions.filter((s) => !s.revoked_at && !isSessionExpired(s)), [sessions])
   const older = useMemo(() => live.filter((s) => s.legacy && !s.last_active_at), [live])
   const inUse = useMemo(() => live.filter((s) => !(s.legacy && !s.last_active_at)), [live])
-  const history = useMemo(() => sessions.filter((s) => s.revoked_at), [sessions])
+  const history = useMemo(() => sessions.filter((s) => s.revoked_at || isSessionExpired(s)), [sessions])
 
   const run = async (action: () => Promise<string>) => {
     setBusy(true)
