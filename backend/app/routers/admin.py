@@ -31,6 +31,7 @@ from app.models.portal_core import (
     User, Role, Permission, Module, UserPermissionOverride, UserDataScope, AuditLog,
     Company, UserCompanyAccess, UserSession, BlockedDevice
 )
+from app.services import firebase_auth
 
 router = APIRouter(prefix="/admin", tags=["Admin Panel"])
 
@@ -39,6 +40,10 @@ class AdminUserResponse(BaseModel):
     user_id: int
     username: str
     email: str
+    phone: Optional[str] = None
+    designation: Optional[str] = None
+    employee_code: Optional[str] = None
+    alternate_phone: Optional[str] = None
     is_active: bool
     role_id: int
     role_name: str
@@ -71,12 +76,20 @@ class AdminUserResponse(BaseModel):
 class AdminUserCreate(BaseModel):
     username: str
     email: str
+    phone: str
     password: str
     role_id: int
+    designation: Optional[str] = None
+    employee_code: Optional[str] = None
+    alternate_phone: Optional[str] = None
 
 class AdminUserUpdate(BaseModel):
     username: Optional[str] = None
     email: Optional[str] = None
+    phone: Optional[str] = None
+    designation: Optional[str] = None
+    employee_code: Optional[str] = None
+    alternate_phone: Optional[str] = None
     role_id: Optional[int] = None
     is_active: Optional[bool] = None
     password: Optional[str] = None
@@ -175,6 +188,10 @@ async def get_users(
             user_id=u.user_id,
             username=u.username,
             email=u.email,
+            phone=u.phone,
+            designation=getattr(u, "designation", None),
+            employee_code=getattr(u, "employee_code", None),
+            alternate_phone=getattr(u, "alternate_phone", None),
             is_active=u.is_active,
             role_id=u.role_id,
             role_name=r_name,
@@ -218,6 +235,26 @@ async def create_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A user with this email already exists."
         )
+
+    # Validate mandatory phone number
+    phone_raw = (payload.phone or "").strip()
+    if not phone_raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phone number is mandatory."
+        )
+    clean_phone = firebase_auth.e164(phone_raw)
+    if not clean_phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a valid 10-digit mobile number."
+        )
+    phone_exists_query = await db.execute(select(User).where(User.phone == clean_phone))
+    if phone_exists_query.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this phone number already exists."
+        )
         
     # Check if role exists
     role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id, role_in_account(admin.account_id)))
@@ -228,6 +265,11 @@ async def create_user(
             detail="Role not found."
         )
         
+    # Clean alternate phone if provided
+    clean_alt_phone = None
+    if payload.alternate_phone and payload.alternate_phone.strip():
+        clean_alt_phone = firebase_auth.e164(payload.alternate_phone.strip())
+
     password_hash = get_password_hash(payload.password)
     is_new_admin = role.name == "Admin"
     user = User(
@@ -235,6 +277,10 @@ async def create_user(
         company_id=admin.company_id,
         username=payload.username,
         email=payload.email,
+        phone=clean_phone,
+        designation=(payload.designation or "").strip() or None,
+        employee_code=(payload.employee_code or "").strip() or None,
+        alternate_phone=clean_alt_phone,
         password_hash=password_hash,
         role_id=payload.role_id,
         is_active=True,
@@ -256,6 +302,10 @@ async def create_user(
         user_id=user.user_id,
         username=user.username,
         email=user.email,
+        phone=user.phone,
+        designation=user.designation,
+        employee_code=user.employee_code,
+        alternate_phone=user.alternate_phone,
         is_active=user.is_active,
         role_id=user.role_id,
         role_name=role.name,
@@ -315,11 +365,47 @@ async def update_user(
                 )
             user.email = new_email
 
-    # 2. Update username if changed
+    # 2. Update phone if changed
+    if payload.phone is not None:
+        p_raw = payload.phone.strip()
+        if not p_raw:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number cannot be empty."
+            )
+        clean_phone = firebase_auth.e164(p_raw)
+        if not clean_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Enter a valid 10-digit mobile number."
+            )
+        if clean_phone != user.phone:
+            phone_exists_query = await db.execute(
+                select(User).where(User.phone == clean_phone, User.user_id != user_id)
+            )
+            if phone_exists_query.scalars().first():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A user with this phone number already exists."
+                )
+            user.phone = clean_phone
+
+    # 3. Update designation, employee_code, alternate_phone if provided
+    if payload.designation is not None:
+        user.designation = payload.designation.strip() or None
+    if payload.employee_code is not None:
+        user.employee_code = payload.employee_code.strip() or None
+    if payload.alternate_phone is not None:
+        if payload.alternate_phone.strip():
+            user.alternate_phone = firebase_auth.e164(payload.alternate_phone.strip())
+        else:
+            user.alternate_phone = None
+
+    # 4. Update username if changed
     if payload.username is not None and payload.username.strip():
         user.username = payload.username.strip()
 
-    # 3. Update role_id if changed
+    # 5. Update role_id if changed
     if payload.role_id is not None and payload.role_id != user.role_id:
         if user_id == admin.user_id:
             target_role_q = await db.execute(select(Role).where(Role.role_id == payload.role_id, role_in_account(admin.account_id)))
@@ -339,7 +425,7 @@ async def update_user(
                 )
             user.role_id = payload.role_id
 
-    # 4. Update active status if changed
+    # 6. Update active status if changed
     if payload.is_active is not None:
         if user_id == admin.user_id and not payload.is_active:
             raise HTTPException(
@@ -348,7 +434,7 @@ async def update_user(
             )
         user.is_active = payload.is_active
 
-    # 5. Update password if provided
+    # 7. Update password if provided
     password_changed = False
     if payload.password and payload.password.strip():
         if len(payload.password.strip()) < 6:
@@ -384,6 +470,10 @@ async def update_user(
         user_id=user.user_id,
         username=user.username,
         email=user.email,
+        phone=user.phone,
+        designation=user.designation,
+        employee_code=user.employee_code,
+        alternate_phone=user.alternate_phone,
         is_active=user.is_active,
         role_id=user.role_id,
         role_name=r_name,

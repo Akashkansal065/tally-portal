@@ -42,6 +42,7 @@ import {
   PlugZap,
   ReceiptText,
   ClipboardCheck,
+  Phone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { LinkParams, idParam } from '@/components/LinkParams'
@@ -60,6 +61,10 @@ type UserItem = {
   user_id: number
   username: string
   email: string
+  phone?: string | null
+  designation?: string | null
+  employee_code?: string | null
+  alternate_phone?: string | null
   is_active: boolean
   role_id: number
   role_name: string
@@ -480,7 +485,16 @@ export default function AdminPage() {
   const [availableVoucherTypes, setAvailableVoucherTypes] = useState<{ voucher_type_id: number; name: string; parent_type?: string }[]>([])
   
   // Create user form state
-  const [newUser, setNewUser] = useState({ username: '', email: '', password: '', role_id: 2 })
+  const [newUser, setNewUser] = useState({
+    username: '',
+    email: '',
+    phone: '',
+    designation: '',
+    employee_code: '',
+    alternate_phone: '',
+    password: '',
+    role_id: 2
+  })
   const [createUserError, setCreateUserError] = useState('')
   const [createUserLoading, setCreateUserLoading] = useState(false)
 
@@ -489,6 +503,10 @@ export default function AdminPage() {
   const [editUserData, setEditUserData] = useState({
     username: '',
     email: '',
+    phone: '',
+    designation: '',
+    employee_code: '',
+    alternate_phone: '',
     role_id: 2,
     is_active: true,
     password: '',
@@ -824,6 +842,15 @@ export default function AdminPage() {
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault()
     setCreateUserError('')
+    if (!newUser.phone.trim()) {
+      setCreateUserError('Phone number is mandatory.')
+      return
+    }
+    const cleanDigits = newUser.phone.replace(/[^0-9]/g, '')
+    if (cleanDigits.length < 10) {
+      setCreateUserError('Please enter a valid 10-digit mobile number.')
+      return
+    }
     setCreateUserLoading(true)
     try {
       const res = await fetch(`${API_BASE}/admin/users`, {
@@ -838,7 +865,16 @@ export default function AdminPage() {
       const data = await res.json()
       setUsers([...users, data])
       setShowCreateUser(false)
-      setNewUser({ username: '', email: '', password: '', role_id: roles[0]?.role_id || 2 })
+      setNewUser({
+        username: '',
+        email: '',
+        phone: '',
+        designation: '',
+        employee_code: '',
+        alternate_phone: '',
+        password: '',
+        role_id: roles[0]?.role_id || 2
+      })
     } catch (err: any) {
       setCreateUserError(err.message)
     } finally {
@@ -851,6 +887,10 @@ export default function AdminPage() {
     setEditUserData({
       username: u.username || '',
       email: u.email || '',
+      phone: u.phone || '',
+      designation: u.designation || '',
+      employee_code: u.employee_code || '',
+      alternate_phone: u.alternate_phone || '',
       role_id: u.role_id,
       is_active: u.is_active,
       password: '',
@@ -862,11 +902,24 @@ export default function AdminPage() {
     e.preventDefault()
     if (!editUserModal) return
     setEditUserError('')
+    if (!editUserData.phone.trim()) {
+      setEditUserError('Phone number is mandatory.')
+      return
+    }
+    const cleanDigits = editUserData.phone.replace(/[^0-9]/g, '')
+    if (cleanDigits.length < 10) {
+      setEditUserError('Please enter a valid 10-digit mobile number.')
+      return
+    }
     setEditUserLoading(true)
     try {
       const payload: any = {
         username: editUserData.username.trim(),
         email: editUserData.email.trim(),
+        phone: editUserData.phone.trim(),
+        designation: editUserData.designation.trim() || null,
+        employee_code: editUserData.employee_code.trim() || null,
+        alternate_phone: editUserData.alternate_phone.trim() || null,
         role_id: editUserData.role_id,
         is_active: editUserData.is_active,
       }
@@ -1187,6 +1240,20 @@ const handleSavePermissions = async () => {
                               </button>
                             </div>
                             <p className="text-[11px] text-muted-foreground truncate">{u.email}</p>
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                              {u.phone && (
+                                <p className="text-[11px] text-muted-foreground flex items-center gap-1 font-mono">
+                                  <Phone className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                  <span>{u.phone}</span>
+                                </p>
+                              )}
+                              {u.alternate_phone && (
+                                <p className="text-[10px] text-muted-foreground/80 flex items-center gap-0.5 font-mono">
+                                  <span className="text-[9px] font-bold uppercase text-muted-foreground/60">Alt:</span>
+                                  <span>{u.alternate_phone}</span>
+                                </p>
+                              )}
+                            </div>
                           </div>
                         </div>
 
@@ -1204,10 +1271,20 @@ const handleSavePermissions = async () => {
                         </button>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-[10px] font-bold px-2 py-0.5 bg-muted text-muted-foreground rounded-lg uppercase tracking-wider">
                           Role: {u.role_name}
                         </span>
+                        {u.designation && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 rounded-lg">
+                            {u.designation}
+                          </span>
+                        )}
+                        {u.employee_code && (
+                          <span className="text-[10px] font-mono font-semibold px-2 py-0.5 bg-muted/80 text-muted-foreground rounded-lg">
+                            #{u.employee_code}
+                          </span>
+                        )}
                         <button
                           onClick={() => setDevicesUser(u)}
                           className={cn(
@@ -2136,8 +2213,8 @@ const handleSavePermissions = async () => {
       {/* Create User Modal */}
       {showCreateUser && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-card w-full max-w-sm rounded-3xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="px-6 py-5 border-b border-border flex justify-between items-center">
+          <div className="bg-card w-full max-w-md max-h-[92vh] rounded-3xl shadow-xl border border-border/80 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
+            <div className="px-6 py-5 border-b border-border flex justify-between items-center shrink-0">
               <div>
                 <h3 className="font-black text-lg text-foreground">Create New User</h3>
                 <p className="text-xs text-muted-foreground mt-0.5">Add a new team member to your organization.</p>
@@ -2150,23 +2227,45 @@ const handleSavePermissions = async () => {
               </button>
             </div>
             
-            <form onSubmit={handleCreateUser} className="p-6 space-y-4">
+            <form onSubmit={handleCreateUser} className="p-6 space-y-4 overflow-y-auto">
               {createUserError && (
-                <div className="p-3 bg-destructive/10 text-destructive text-xs font-bold rounded-xl">
-                  {createUserError}
+                <div className="p-3 bg-destructive/10 text-destructive text-xs font-bold rounded-xl flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{createUserError}</span>
                 </div>
               )}
               
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-foreground ml-1">Username</label>
+                <label className="text-xs font-bold text-foreground ml-1">Username / Full Name</label>
                 <input 
                   type="text" 
                   required
                   value={newUser.username}
                   onChange={e => setNewUser({...newUser, username: e.target.value})}
-                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
+                  className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium" 
                   placeholder="e.g. Rahul Sharma"
                 />
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between ml-1">
+                  <label className="text-xs font-bold text-foreground">Mobile Phone Number</label>
+                  <span className="text-[10px] font-bold text-emerald-600 bg-emerald-500/10 px-1.5 py-0.5 rounded">Mandatory</span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-xs font-bold text-muted-foreground">
+                    +91
+                  </div>
+                  <input 
+                    type="tel" 
+                    required
+                    value={newUser.phone}
+                    onChange={e => setNewUser({...newUser, phone: e.target.value.replace(/[^0-9]/g, '')})}
+                    className="w-full pl-12 pr-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono" 
+                    placeholder="9876543210"
+                    maxLength={10}
+                  />
+                </div>
               </div>
 
               <div className="space-y-1.5">
@@ -2179,6 +2278,52 @@ const handleSavePermissions = async () => {
                   className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all" 
                   placeholder="rahul@example.com"
                 />
+              </div>
+
+              {/* Designation & Employee Code in 2 columns */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-foreground ml-1">Designation / Role</label>
+                  <input 
+                    type="text" 
+                    value={newUser.designation}
+                    onChange={e => setNewUser({...newUser, designation: e.target.value})}
+                    className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium" 
+                    placeholder="e.g. Sales Executive"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-foreground ml-1">Employee Code / ID</label>
+                  <input 
+                    type="text" 
+                    value={newUser.employee_code}
+                    onChange={e => setNewUser({...newUser, employee_code: e.target.value})}
+                    className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono" 
+                    placeholder="e.g. EMP-101"
+                  />
+                </div>
+              </div>
+
+              {/* Alternate / WhatsApp Number */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between ml-1">
+                  <label className="text-xs font-bold text-foreground">Alternate / WhatsApp No.</label>
+                  <span className="text-[10px] text-muted-foreground font-semibold">Optional</span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-xs font-bold text-muted-foreground">
+                    +91
+                  </div>
+                  <input 
+                    type="tel" 
+                    value={newUser.alternate_phone}
+                    onChange={e => setNewUser({...newUser, alternate_phone: e.target.value.replace(/[^0-9]/g, '')})}
+                    className="w-full pl-12 pr-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono" 
+                    placeholder="9876543210 (Optional)"
+                    maxLength={10}
+                  />
+                </div>
               </div>
 
               <div className="space-y-1.5">
@@ -2274,6 +2419,73 @@ const handleSavePermissions = async () => {
                   className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium" 
                   placeholder="name@example.com"
                 />
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between ml-1">
+                  <label className="text-xs font-bold text-foreground">Mobile Phone Number</label>
+                  <span className="text-[10px] font-bold text-emerald-600 bg-emerald-500/10 px-1.5 py-0.5 rounded">Mandatory</span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-xs font-bold text-muted-foreground">
+                    +91
+                  </div>
+                  <input 
+                    type="tel" 
+                    required
+                    value={editUserData.phone}
+                    onChange={e => setEditUserData({ ...editUserData, phone: e.target.value.replace(/[^0-9]/g, '') })}
+                    className="w-full pl-12 pr-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono" 
+                    placeholder="9876543210"
+                    maxLength={10}
+                  />
+                </div>
+              </div>
+
+              {/* Designation & Employee Code in 2 columns */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-foreground ml-1">Designation / Role</label>
+                  <input 
+                    type="text" 
+                    value={editUserData.designation}
+                    onChange={e => setEditUserData({ ...editUserData, designation: e.target.value })}
+                    className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium" 
+                    placeholder="e.g. Sales Executive"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-foreground ml-1">Employee Code / ID</label>
+                  <input 
+                    type="text" 
+                    value={editUserData.employee_code}
+                    onChange={e => setEditUserData({ ...editUserData, employee_code: e.target.value })}
+                    className="w-full px-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono" 
+                    placeholder="e.g. EMP-101"
+                  />
+                </div>
+              </div>
+
+              {/* Alternate / WhatsApp Number */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between ml-1">
+                  <label className="text-xs font-bold text-foreground">Alternate / WhatsApp No.</label>
+                  <span className="text-[10px] text-muted-foreground font-semibold">Optional</span>
+                </div>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-xs font-bold text-muted-foreground">
+                    +91
+                  </div>
+                  <input 
+                    type="tel" 
+                    value={editUserData.alternate_phone}
+                    onChange={e => setEditUserData({ ...editUserData, alternate_phone: e.target.value.replace(/[^0-9]/g, '') })}
+                    className="w-full pl-12 pr-4 py-3 bg-muted/50 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-mono" 
+                    placeholder="9876543210 (Optional)"
+                    maxLength={10}
+                  />
+                </div>
               </div>
 
               <div className="space-y-1.5">

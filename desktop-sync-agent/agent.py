@@ -199,6 +199,9 @@ class DesktopSyncAgent:
         self.is_syncing = False
         self.immediate_sync_requested = False
         self.force_full_sync_next = False
+        # A full sync paused at the end of its time slice and is owed more: the loop carries on at once, after
+        # the outbound queue has had its turn, instead of waiting a whole inbound interval for each slice
+        self._resume_full_sync = False
         self._watermarks = {}
         self.last_sync_time = None
         self.last_sync_timestr = "Never"
@@ -767,6 +770,7 @@ class DesktopSyncAgent:
 
     def sync_inbound_cycle(self, is_incremental: bool = False):
         """Pulls masters and vouchers from Tally and pushes them into MyTally Cloud database with deep diagnostics."""
+        self._resume_full_sync = False   # set again below only when this pass ends clean with a full sync still owed
         if self.cloud.auth_halt_reason:
             return
         workable = self._companies_to_work_on()
@@ -807,6 +811,8 @@ class DesktopSyncAgent:
         skipped = [self._why_skipped(c) for c in self.company_states if c["state"] != "open"]
         self.last_sync_status = " | ".join(statuses + skipped)
         self._report_company_states(outcomes)
+        owed = {c["guid"] or c["name"] for c in workable if outcomes.get(c["guid"], (False, ""))[0]}
+        self._resume_full_sync = bool(owed & set((self.config.full_sync_cursors or {}).keys()))
 
     def _report_company_states(self, outcomes: Dict[str, Tuple[bool, str]]) -> None:
         """Tell the cloud how each linked company stands, closed ones included: the app's "Last synced"."""
@@ -1176,7 +1182,7 @@ class DesktopSyncAgent:
             self._drop_full_sync_cursor(company_key)
             logger.info(f"   🎉 Full voucher sync of '{self.active_company_name}' finished ({len(ranges)} ranges).")
         else:
-            logger.info(f"   ⏸️ Full sync paused at {cursor['next']} of {len(ranges)} ranges; it carries on in the next cycle.")
+            logger.info(f"   ⏸️ Full sync paused at {cursor['next']} of {len(ranges)} ranges; it carries on straight after the pending entries are sent.")
         return True, imported
 
     def _update_inbound_retry_floor(self, company_key: str, cycle_min_alter: int, failed: bool):
@@ -1242,7 +1248,7 @@ class DesktopSyncAgent:
                     self.sync_outbound_cycle()
 
                     # 2. Periodic Incremental Inbound Sync (Tally -> Cloud DB)
-                    if self.immediate_sync_requested or (time.time() - self.last_inbound_time) >= self.config.inbound_interval_seconds:
+                    if self.immediate_sync_requested or self._resume_full_sync or (time.time() - self.last_inbound_time) >= self.config.inbound_interval_seconds:
                         self.immediate_sync_requested = False
                         self.sync_inbound_cycle(is_incremental=True)
 
