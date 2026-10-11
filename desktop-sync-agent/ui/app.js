@@ -344,7 +344,14 @@ function showMain(page) {
   e.page = h("div", { class: "page" });
   $app.replaceChildren(h("div", { class: "shell" },
     h("nav", { class: "rail" },
-      h("div", { class: "brand" }, h("img", { src: "../assets/icon.png", alt: "" }), boot.app.short),
+      h("div", { class: "brand" },
+        h("img", {
+          src: (boot && boot.app && boot.app.icon) || "icon.png",
+          alt: "",
+          onerror: (e) => { e.currentTarget.style.display = "none"; }
+        }),
+        boot.app.short
+      ),
       navButton("companies", "Companies"), navButton("activity", "Activity"), navButton("settings", "Settings"),
       h("div", { class: "foot" }, boot.app.pc, h("br"), versionText())),
     h("div", { class: "main" },

@@ -152,6 +152,9 @@ if exist "%~dp0\..\dist\agent_config.json" del /q "%~dp0\..\dist\agent_config.js
 if exist "%~dp0\..\assets" (
     xcopy /e /i /y "%~dp0\..\assets" "%~dp0\..\dist\assets" >nul 2>&1
 )
+if exist "%~dp0\..\ui" (
+    xcopy /e /i /y "%~dp0\..\ui" "%~dp0\..\dist\ui" >nul 2>&1
+)
 
 echo.
 echo ===========================================================================

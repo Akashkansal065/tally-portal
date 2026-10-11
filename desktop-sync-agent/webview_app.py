@@ -116,9 +116,20 @@ class Api:
     # -- start and state ----------------------------------------------------
     def boot(self) -> Dict[str, Any]:
         cfg = self._session.config
+        icon_data = ""
+        try:
+            icon_file = core.get_asset_path("icon.png", "ui")
+            if not os.path.exists(icon_file):
+                icon_file = core.get_asset_path("icon.png", "assets")
+            if os.path.exists(icon_file):
+                import base64
+                with open(icon_file, "rb") as f:
+                    icon_data = "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
+        except Exception:
+            pass
         return {
             "app": {"name": APP_NAME, "short": APP_SHORT, "version": APP_VERSION, "pc": platform.node() or "This PC",
-                    "built": core.built_at()},
+                    "built": core.built_at(), "icon": icon_data},
             "signed_in": core.has_credentials(cfg),
             "theme": cfg.theme if cfg.theme in core.THEMES else "system",
             "setup": {"server": cfg.backend_url or "", "tally": cfg.tally_url or core.DEFAULT_TALLY_URL,

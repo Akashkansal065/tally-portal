@@ -23,7 +23,7 @@
   const settings = { tally_host: "localhost", tally_port: "9000", backend_url: "https://app.example.com", outbound_seconds: 5, inbound_seconds: 60,
     vouchers_per_range: 50, auto_discover_paths: true, force_full_sync: false, autostart: true, theme: params.get("theme") || "system", email: "accounts@snehdistributors.in" };
   window.pywebview = { api: {
-    boot: () => wait({ app: { name: "MyTally Bridge", short: "Bridge", version: "2.0.0", pc: "ACCOUNTS-PC", built: "11 Oct 2026, 12:40" }, signed_in: kind !== "setup", theme: settings.theme,
+    boot: () => wait({ app: { name: "MyTally Bridge", short: "Bridge", version: "2.0.0", pc: "ACCOUNTS-PC", built: "11 Oct 2026, 12:40", icon: "icon.png" }, signed_in: kind !== "setup", theme: settings.theme,
       setup: { server: "https://app.example.com", tally: "http://127.0.0.1:9000", email: "", company: "", autostart: true } }),
     state: (since) => wait({ health: HEALTH[kind] || HEALTH.idle, busy: kind === "sync", paused: kind === "paused", tally_ok: kind !== "error", cloud_ok: true, halted: false,
       syncing_name: kind === "sync" ? "Sneh Distributors" : null, logs: since ? [] : logs, seq: logs.length }, 20),
