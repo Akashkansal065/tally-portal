@@ -180,7 +180,8 @@ function showSetup(screen) {
   if (screen !== "code") stopCode();
   setup.screen = screen;
   setup.msgEl = setup.noteEl = setup.mainBtn = null;
-  $app.replaceChildren(h("div", { class: "setup" }, h("div", { class: "card" }, SCREENS[screen]())));
+  $app.replaceChildren(h("div", { class: "setup" }, h("div", { class: "card" }, SCREENS[screen](),
+    h("div", { class: "note", id: "setup-build" }, versionText()))));
   if (!setup.detected) { setup.detected = true; detectTally(); }
   const first = $app.querySelector("input.inp");
   if (first && screen !== "welcome") first.focus();
@@ -216,10 +217,47 @@ async function attempt(call, what) {
   }
 }
 
+// While a call waits, show what the agent is doing (the latest log line), and after a while say it is still waiting
+function watchProgress() {
+  const started = Date.now();
+  const seen = { line: "" };
+  const timer = setInterval(async () => {
+    let line = "";
+    try { line = ((await api.progress()) || {}).line || ""; } catch (err) { return; }
+    if (!line) return;
+    seen.line = line;
+    const waited = Math.round((Date.now() - started) / 1000);
+    say(waited >= 30 ? `Still waiting after ${waited}s on: ${line}` : line, waited >= 30 ? "warn" : "idle");
+  }, 1000);
+  return { stop: () => clearInterval(timer), last: () => seen.line };
+}
+
+function versionText() {
+  return "Version " + boot.app.version + (boot.app.built ? " · built " + boot.app.built : "");
+}
+
+// How long the page waits for the agent before giving the button back. The agent may still finish afterwards;
+// if it does, the page moves on then.
+const SIGN_IN_WAIT_MS = 60000;
+
 async function signIn() {
   if (!needServer()) return;
+  if (!(F.email || "").trim() || !F.password) return say("Enter your email and password.", "error");
   busy("Signing in...");
-  let result = await attempt(() => api.sign_in(F), "Sign-in");
+  const watch = watchProgress();
+  let timedOut = false;
+  const answer = attempt(() => api.sign_in(F), "Sign-in");
+  let result;
+  try {
+    result = await Promise.race([answer, new Promise((done) => setTimeout(() => {
+      timedOut = true;
+      done({ ok: false, message: "No answer from the agent after a minute." + (watch.last() ? " Its last step: " + watch.last() : "") +
+        " The details are in agent.log, in the logs folder next to the program." });
+    }, SIGN_IN_WAIT_MS))]);
+  } finally {
+    watch.stop();
+  }
+  if (timedOut) answer.then((late) => { if (late && late.ok && view === "setup") enterMain(); });
   if (!result.ok && result.reason === "linked_to_another_device") {
     if (await confirmDialog("Move sync to this PC?", result.message + "\n\nThe other PC will stop syncing this company.", "Move it here")) {
       result = await attempt(() => api.link_active(true), "Linking the company");
@@ -308,7 +346,7 @@ function showMain(page) {
     h("nav", { class: "rail" },
       h("div", { class: "brand" }, h("img", { src: "../assets/icon.png", alt: "" }), boot.app.short),
       navButton("companies", "Companies"), navButton("activity", "Activity"), navButton("settings", "Settings"),
-      h("div", { class: "foot" }, boot.app.pc, h("br"), "Version " + boot.app.version)),
+      h("div", { class: "foot" }, boot.app.pc, h("br"), versionText())),
     h("div", { class: "main" },
       h("div", { class: "health" },
         h("div", { class: "top" }, e.badge, h("div", { class: "txt" }, e.title, e.detail), e.split),
@@ -558,6 +596,13 @@ if (new URLSearchParams(location.search).has("demo")) {
   demo.src = "demo.js";
   demo.onload = start;
   document.head.appendChild(demo);
+  // Made-up answers look real: say so on every screen
+  document.body.appendChild(Object.assign(document.createElement("div"), {
+    id: "demo-banner", role: "note",
+    textContent: "Design preview with made-up data. Nothing here talks to TallyPrime or the server.",
+    style: "position:fixed;top:0;left:0;right:0;z-index:1000;padding:6px 12px;text-align:center;font:600 13px system-ui,sans-serif;" +
+           "background:#b45309;color:#fff",
+  }));
 } else if (window.pywebview && window.pywebview.api) {
   start();
 } else {

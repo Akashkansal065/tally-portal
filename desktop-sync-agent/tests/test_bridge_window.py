@@ -195,3 +195,35 @@ def test_a_sign_in_that_fails_outright_says_so_instead_of_hanging(api, monkeypat
     assert result["ok"] is False and "Sign-in stopped" in result["message"] and "device_token" in result["message"]
     # and the next attempt is not refused as "still signing in"
     assert "Still signing in" not in api.sign_in({"server": "http://192.168.1.39:8000", "email": "a@b.c", "password": "x"})["message"]
+
+
+def test_signing_in_shows_what_it_is_waiting_on(api):
+    import logging
+    logging.getLogger("MyTallySyncAgent").info("🔑 Asking the server to sign this PC in…")
+    assert "Asking the server to sign this PC in" in api.progress()["line"]
+
+
+def test_another_build_already_running_is_named_instead_of_shown(monkeypatch):
+    told = []
+    monkeypatch.setattr(core, "hold_single_instance", lambda: False)
+    monkeypatch.setattr(core, "_tell", told.append)
+    monkeypatch.setattr(core, "build_stamp", lambda: r"C:\new\SnehDistribuorsSync.exe|200|2")
+    monkeypatch.setattr(core, "running_instance_build", lambda: r"C:\old\SnehDistribuorsSync.exe|100|1")
+
+    assert core.check_single_instance() is False
+    assert len(told) == 1 and r"C:\old\SnehDistribuorsSync.exe" in told[0] and "Quit it first" in told[0]
+
+    told.clear()
+    monkeypatch.setattr(core, "running_instance_build", lambda: r"C:\new\SnehDistribuorsSync.exe|200|2")
+    assert core.check_single_instance() is False and told == []      # the same build: its window is brought forward
+
+
+def test_signing_in_without_an_email_or_password_says_so(api):
+    for missing in ({"email": "", "password": "x"}, {"email": "a@b.c", "password": ""}):
+        result = api.sign_in({"server": "http://192.168.1.39:8000", **missing})
+        assert result == {"ok": False, "message": "Enter your email and password.", "reason": ""}
+
+
+def test_the_window_shows_when_this_build_was_made():
+    built = core.built_at()
+    assert built and any(month in built for month in ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))

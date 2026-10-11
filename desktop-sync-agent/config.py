@@ -99,6 +99,40 @@ class AgentConfig:
 _single_instance_handle = None   # kept for the life of the process: the hold ends when it does
 
 
+def build_stamp() -> str:
+    """Which build this process runs: the program file's path, size and time. A rebuilt .exe differs."""
+    target = os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__)
+    try:
+        st = os.stat(target)
+        return f"{target}|{st.st_size}|{int(st.st_mtime)}"
+    except OSError:
+        return target
+
+
+def _running_instance_file() -> str:
+    # One fixed place for every copy of the agent, wherever its program folder is
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "SnehDistribuorsSync", "running_instance.json")
+
+
+def running_instance_build() -> str:
+    """The build of the agent that holds this PC's one sync agent slot, as it recorded it; '' when not known."""
+    try:
+        with open(_running_instance_file(), "r", encoding="utf-8") as f:
+            return str(json.load(f).get("build") or "")
+    except Exception:
+        return ""
+
+
+def _record_running_instance() -> None:
+    try:
+        os.makedirs(os.path.dirname(_running_instance_file()), exist_ok=True)
+        with open(_running_instance_file(), "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "build": build_stamp()}, f)
+    except Exception:
+        pass
+
+
 def hold_single_instance() -> bool:
     """Claim this PC's one sync agent slot for this process, whichever way the agent was started (window or
     command line). False when another agent process already holds it. Two agents would sync the same
@@ -125,6 +159,7 @@ def hold_single_instance() -> bool:
             _single_instance_handle = handle
     except Exception:
         pass   # the check itself failing must not keep the agent from starting
+    _record_running_instance()
     return True
 
 

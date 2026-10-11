@@ -75,6 +75,10 @@ class Session:
             self._log_seq += 1
             self._logs.append((self._log_seq, text, tag))
 
+    def last_log(self) -> str:
+        with self._log_lock:
+            return self._logs[-1][1] if self._logs else ""
+
     def logs_since(self, seq: int) -> Tuple[List[Dict[str, str]], int]:
         with self._log_lock:
             return [{"text": text, "tag": tag} for n, text, tag in self._logs if n > seq], self._log_seq
@@ -113,7 +117,8 @@ class Api:
     def boot(self) -> Dict[str, Any]:
         cfg = self._session.config
         return {
-            "app": {"name": APP_NAME, "short": APP_SHORT, "version": APP_VERSION, "pc": platform.node() or "This PC"},
+            "app": {"name": APP_NAME, "short": APP_SHORT, "version": APP_VERSION, "pc": platform.node() or "This PC",
+                    "built": core.built_at()},
             "signed_in": core.has_credentials(cfg),
             "theme": cfg.theme if cfg.theme in core.THEMES else "system",
             "setup": {"server": cfg.backend_url or "", "tally": cfg.tally_url or core.DEFAULT_TALLY_URL,
@@ -251,6 +256,8 @@ class Api:
         backend_url = str(v.get("server") or "").strip()
         if not backend_url:
             return {"ok": False, "message": "Enter the server address under Advanced.", "reason": ""}
+        if not str(v.get("email") or "").strip() or not str(v.get("password") or ""):
+            return {"ok": False, "message": "Enter your email and password.", "reason": ""}
         if not self._lock.acquire(blocking=False):
             return {"ok": False, "message": "Still signing in. Give it a moment.", "reason": ""}
         try:
@@ -269,6 +276,11 @@ class Api:
             return {"ok": False, "message": f"Sign-in stopped: {e}. The details are in agent.log, in the logs folder next to the program.", "reason": ""}
         finally:
             self._lock.release()
+
+    def progress(self) -> Dict[str, str]:
+        """The latest line of the log, shown under the button while signing in, so a sign-in that waits shows on
+        what. Answered at once even while sign_in() is still running (each call has its own thread)."""
+        return {"line": self._session.last_log()}
 
     def link_active(self, take_over: bool = False) -> Dict[str, Any]:
         try:

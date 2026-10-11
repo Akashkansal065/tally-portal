@@ -14,7 +14,8 @@ import time
 import subprocess
 from typing import Optional, Dict, Any, List, Tuple
 
-from config import save_config, install_startup, uninstall_startup, get_logs_dir, hold_single_instance
+from config import (save_config, install_startup, uninstall_startup, get_logs_dir, hold_single_instance, build_stamp,
+                    running_instance_build)
 from tally_client import TallyClient
 from cloud_client import CloudClient
 
@@ -95,10 +96,49 @@ def health_from_status(status: Dict[str, Any], now: Optional[float] = None) -> D
     return {"kind": "idle", "title": "Up to date", "detail": f"Last synced {status.get('last_sync_timestr', '')}", "action": "sync"}
 
 
+def built_at() -> str:
+    """When this build was made (its program file's time), shown beside the version so the window in use can be
+    told apart from an older copy: "11 Oct 2026, 12:40"."""
+    from datetime import datetime
+    try:
+        stamp = float(build_stamp().rsplit("|", 1)[1])
+    except (IndexError, ValueError):
+        return ""
+    when = datetime.fromtimestamp(stamp)
+    return f"{when.day} {when:%b %Y}, {when:%H:%M}"
+
+
+def other_build_running() -> str:
+    """The program path of another build of the agent that is running, or '' when it is this build (or not known).
+    After a rebuild the old copy usually still runs in the tray, and opening the new one only showed the old window."""
+    other = running_instance_build()
+    if not other or other == build_stamp():
+        return ""
+    return other.split("|", 1)[0]
+
+
+def _tell(text: str) -> None:
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, 0x40)   # MB_ICONINFORMATION
+            return
+        except Exception:
+            pass
+    print(text)
+
+
 def check_single_instance() -> bool:
-    """Ensures only one sync agent runs at a time, window or command line; brings the open window forward."""
+    """Ensures only one sync agent runs at a time, window or command line. Opening it again brings the open window
+    forward; a different build already running is named, so the person quits it instead of using it unknowingly."""
     if hold_single_instance():
         return True
+    other = other_build_running()
+    if other:
+        _tell(f"Another copy of {APP_NAME} is already running, so this one cannot start:\n\n{other}\n\n"
+              "Quit it first: right-click its icon by the clock (in the system tray) and choose Quit. "
+              "Then open this one again.")
+        return False
     if sys.platform == "win32":
         try:
             import ctypes
@@ -203,12 +243,14 @@ def sign_in_pc(host, backend_url: str, email: str, password: str, tally_url: str
     log = logging.getLogger("MyTallySyncAgent")
     log.info(f"🔑 Signing this PC in to {backend_url} as {email or 'a saved sign-in'}…")
     cloud_client = CloudClient(backend_url=backend_url, email=email, password=password)
+    log.info("🔑 Checking the server answers…")
     cloud_client.check_health()
 
     token = ""
     device_token = ""
     if email and password:
         # Sign this PC in. A server from before PC sign-in answers 404: use the person's login as before.
+        log.info("🔑 Asking the server to sign this PC in…")
         signed_in, sign_res, sign_status = cloud_client.sign_in_device(email, password)
         if signed_in:
             device_token = sign_res["device_token"]
@@ -239,16 +281,19 @@ def sign_in_pc(host, backend_url: str, email: str, password: str, tally_url: str
             config.company_guid = ""
         config.company_name = company_name
     config.autostart_enabled = autostart
-    log.info("🔑 Signed in" + (" as this PC." if device_token else " with a person's login (an older server)."))
+    log.info("🔑 Signed in" + (" as this PC." if device_token else " with a person's login (an older server).")
+             + " Saving the sign-in on this PC…")
 
     save_config(config, host.config_file)
 
     # Handle autostart registry
+    log.info("🔑 " + ("Setting" if autostart else "Clearing") + " Start with Windows…")
     if autostart:
         install_startup()
     else:
         uninstall_startup()
 
+    log.info("🔑 Switching the sync over to this sign-in…")
     host.agent.reload_config(config)
     return True, "", bool(device_token)
 
