@@ -3,6 +3,9 @@ raise UnicodeEncodeError out of logger.info(), stopping sign-in at its first lin
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+import agent
 
 AGENT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -23,3 +26,11 @@ def test_logging_an_emoji_never_raises_without_a_console(tmp_path):
     run = subprocess.run([sys.executable, "-c", LIKE_THE_EXE], cwd=AGENT_DIR, env=env, capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr[-2000:]
     assert "logged without raising" in run.stdout
+
+
+def test_agent_log_handler_uses_the_test_temp_directory():
+    log_path = Path(agent.file_handler.baseFilename)
+
+    assert log_path.name == "agent.log"
+    assert log_path.parent.name.startswith("mytally-agent-tests-")
+    assert log_path.parent != Path(__file__).parents[1] / "logs"
