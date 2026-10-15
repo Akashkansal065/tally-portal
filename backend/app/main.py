@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import text
 from app.core.config import settings
-from app.core.database import engine, Base, AsyncSessionLocal
+from app.core.database import engine, AsyncSessionLocal
 from app.core.seed import seed_global_data, ensure_admin_roles_have_every_module
 from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backups, payroll_masters, billing, platform_billing, platform_auth, platform_users, platform_roles, platform_admins, platform_audit
 import app.models.billing   # noqa: F401  – registers billing tables with Base.metadata before create_all
@@ -29,27 +29,14 @@ async def db_keep_alive_task(interval_seconds: int = 60):
         except Exception as e:
             logger.warning(f"DB Keep-Alive ping encountered an error: {e}")
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Initialize database schemas, seed defaults, and start background workers."""
-    # Database setup is intentionally completed before yielding the app so every
-    # request sees the same schema and default permission data.
-    from app.core.database import create_databases_if_not_exist, auto_sync_all_model_schemas
-    await create_databases_if_not_exist()
-    
-    # 2. Create tables if they do not exist
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        
-    # 3. Dynamically sync all model schemas & missing columns automatically
-    await auto_sync_all_model_schemas()
-
-    # Indexes added to existing tables after they were created (create_all skips existing tables)
-    from app.core.database import ensure_table_indexes
+def startup_index_specs() -> list:
+    """Indexes added to existing tables after they were created (create_all skips existing tables): a list of
+    (table, index names) for ensure_indexes."""
+    from app.core.database import Base
     from app.models import portal_core as portal
     from app.routers import attendance as attendance_models
     from app.routers import orders as orders_models, visits as visits_models, expenses as expenses_models
-    for table, index_names in (
+    index_specs = [
         (portal.UserSession.__table__, ["ix_user_sessions_token", "ix_user_sessions_active", "ix_user_sessions_device"]),
         (portal.SyncTrafficLog.__table__, ["ix_sync_traffic_company_status", "ix_sync_traffic_company_created"]),
         (portal.SyncQueue.__table__, ["ix_sync_queue_company_processed"]),
@@ -66,8 +53,67 @@ async def lifespan(app: FastAPI):
         (orders_models.TempOrder.__table__, ["ix_temp_orders_company"]),
         (visits_models.SalesVisit.__table__, ["ix_sales_visits_company"]),
         (expenses_models.Expense.__table__, ["ix_expenses_company"]),
-    ):
-        await ensure_table_indexes(table, index_names)
+    ]
+
+    # Single-column indexes (index=True) declared on tables that already existed, so never built. Named by
+    # table and column: the generated index names carry the configured schema name.
+    def declared_on(schema: str, table_name: str, *columns: str):
+        table = Base.metadata.tables[f"{schema}.{table_name}"]
+        names = []
+        for column in columns:
+            matches = [index.name for index in table.indexes if [c.name for c in index.columns] == [column]]
+            if not matches:
+                raise ValueError(f"{schema}.{table_name} declares no index on {column}")
+            names.append(matches[0])
+        return table, names
+
+    tally_db, portal_db = settings.TALLY_DATABASE_NAME, settings.PORTAL_DATABASE_NAME
+    index_specs += [
+        declared_on(tally_db, "vouchers", "voucher_date", "effective_date", "tally_master_id", "tally_remote_id", "created_at"),
+        declared_on(tally_db, "bills", "bill_date", "due_date"),
+        declared_on(tally_db, "bill_allocations", "created_at"),
+        declared_on(tally_db, "ledgers", "tally_master_id"),
+        declared_on(tally_db, "account_groups", "tally_master_id", "tally_alter_id"),
+        declared_on(tally_db, "voucher_types", "tally_guid"),
+        declared_on(tally_db, "stock_items", "tally_guid", "tally_master_id", "tally_alter_id"),
+        declared_on(tally_db, "stock_groups", "tally_guid", "tally_master_id", "tally_alter_id"),
+        declared_on(tally_db, "stock_categories", "tally_alter_id"),
+        declared_on(tally_db, "units_of_measure", "tally_guid", "tally_master_id", "tally_alter_id"),
+        declared_on(tally_db, "godowns", "tally_alter_id"),
+        declared_on(tally_db, "cost_centres", "tally_guid"),
+        declared_on(tally_db, "attendance_types", "tally_guid"),
+        declared_on(tally_db, "pay_heads", "ledger_id"),
+        declared_on(tally_db, "trn_payhead", "voucher_id"),
+        declared_on(tally_db, "trn_attendance", "voucher_id"),
+        declared_on(portal_db, "approval_requests", "requested_at", "acted_at"),
+        declared_on(portal_db, "shop_payments", "created_at", "cheque_date"),
+        declared_on(portal_db, "notifications", "category"),
+        declared_on(portal_db, "push_subscriptions", "device_id"),
+        declared_on(portal_db, "bank_statements", "file_hash"),
+        declared_on(portal_db, "bank_statement_transactions", "row_hash"),
+    ]
+    return index_specs
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize database schemas, seed defaults, and start background workers."""
+    # Database setup is intentionally completed before yielding the app so every
+    # request sees the same schema and default permission data.
+    from app.core.database import create_databases_if_not_exist, auto_sync_all_model_schemas
+    await create_databases_if_not_exist()
+    
+    # 2. Create tables if they do not exist
+    from app.core.database import create_missing_tables
+    async with engine.begin() as conn:
+        await create_missing_tables(conn)
+        
+    # 3. Dynamically sync all model schemas & missing columns automatically
+    await auto_sync_all_model_schemas()
+
+    # Indexes added to existing tables after they were created (create_all skips existing tables)
+    from app.core.database import ensure_indexes
+    await ensure_indexes(startup_index_specs())
         
     # Device-session times were stored in UTC; move them to IST once (it records that it has)
     from app.services.session_times import ensure_session_times_ist
