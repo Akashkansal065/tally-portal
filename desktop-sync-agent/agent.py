@@ -176,8 +176,10 @@ class DesktopSyncAgent:
     def __init__(self, config_path: Optional[str] = None):
         # Default to the file next to the script/.exe (gitignored), never the current working directory
         self.config_path = config_path or get_default_config_path()
-        self.config: AgentConfig = load_config(config_path)
+        self.config: AgentConfig = load_config(self.config_path)
         self.tally = TallyClient(tally_url=self.config.tally_url)
+        self.tally.on_wait_progress = self._on_tally_wait_progress
+        self.sync_detail = ""
         self.cloud = self._new_cloud_client()
         self.last_inbound_time = 0
         self.active_company_name = self.config.company_name
@@ -289,6 +291,7 @@ class DesktopSyncAgent:
             "last_sync_time": self.last_sync_time,
             "last_sync_timestr": self.last_sync_timestr,
             "last_sync_status": self.last_sync_status,
+            "sync_detail": getattr(self, "sync_detail", ""),
             "is_paused": self.is_paused,
             "is_syncing": self.is_syncing,
             "auth_halt_reason": halt_reason,
@@ -296,12 +299,20 @@ class DesktopSyncAgent:
             "backup": dict(self.backups.status, restoring=self.restoring),
         }
 
+    def _on_tally_wait_progress(self, label: str, elapsed: float, timeout: int, attempt: int, total_attempts: int, finished: bool = False):
+        if finished:
+            self.sync_detail = ""
+        else:
+            attempt_str = f" (try {attempt}/{total_attempts})" if total_attempts > 1 else ""
+            self.sync_detail = f"Waiting for Tally ('{label}') · {int(elapsed)}s (timeout {timeout}s){attempt_str}"
+
     def reload_config(self, new_config: Optional[AgentConfig] = None):
         if new_config:
             self.config = new_config
         else:
             self.config = load_config(self.config_path)
         self.tally = TallyClient(tally_url=self.config.tally_url)
+        self.tally.on_wait_progress = self._on_tally_wait_progress
         self.cloud = self._new_cloud_client()
         self.active_company_name = self.config.company_name
         self.active_company_guid = getattr(self.config, "company_guid", "") or ""
@@ -993,8 +1004,9 @@ class DesktopSyncAgent:
         for idx, (label, xml_data) in enumerate(collections, 1):
             size_kb = len(xml_data.encode("utf-8")) / 1024.0
             logger.info(f"   • [{idx}/{len(collections)}] Exported '{label}' from Tally ({size_kb:.1f} KB). Pushing to cloud...")
-            
+            self.sync_detail = f"Uploading '{label}' to server ({size_kb:.1f} KB)..."
             ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=force_all)
+            self.sync_detail = ""
             dur = res.get("duration_seconds", 0.0)
             
             if ok:
@@ -1017,6 +1029,11 @@ class DesktopSyncAgent:
                 total_errors += 1
                 self._last_push_error = SERVER_BUSY_MESSAGE
                 logger.warning(f"   ⏳ '{label}' not sent: {SERVER_BUSY_MESSAGE} It is sent again next cycle.")
+                break
+            elif res.get("reason") == "subscription_locked" or res.get("status_code") == 402:
+                total_errors += 1
+                self._last_push_error = "Subscription expired. Please renew on https://app.mytally.in to resume sync."
+                logger.warning(f"   🔒 '{label}': Subscription expired (HTTP 402). Sync paused until account renewal.")
                 break
             else:
                 total_errors += 1
@@ -1064,7 +1081,7 @@ class DesktopSyncAgent:
             return ""
         return f"Full sync {cursor.get('next', 0)} of {len(cursor['ranges'])}"
 
-    def _export_voucher_range(self, date_from: str, date_to: str, expected: int):
+    def _export_voucher_range(self, date_from: str, date_to: str, expected: int, label: Optional[str] = None):
         """The vouchers of one range, checked: every voucher returned is dated inside the range and none the
         plan counted is missing. Returns the export, None when Tally did not answer (try again later), or
         False when Tally does not honour a date range at all (the caller exports everything in one go)."""
@@ -1072,7 +1089,7 @@ class DesktopSyncAgent:
         methods = [self._voucher_range_method] if self._voucher_range_method else list(VOUCHER_RANGE_METHODS)
         recounted = False
         for method in methods:
-            xml_data = self.tally.export_vouchers_between(self.active_company_name, date_from, date_to, method)
+            xml_data = self.tally.export_vouchers_between(self.active_company_name, date_from, date_to, method, label=label)
             if xml_data is None:
                 return None
             got = voucher_dates(xml_data)
@@ -1153,7 +1170,8 @@ class DesktopSyncAgent:
         while cursor["next"] < len(ranges):
             date_from, date_to, expected = ranges[cursor["next"]]
             label = f"Vouchers {date_from}–{date_to} ({cursor['next'] + 1}/{len(ranges)})"
-            xml_data = self._export_voucher_range(date_from, date_to, expected)
+            logger.info(f"   ⏳ Exporting '{label}' from Tally ({expected} vouchers)...")
+            xml_data = self._export_voucher_range(date_from, date_to, expected, label=label)
             if xml_data is False:
                 logger.warning("   ⚠️ This Tally does not return vouchers by date range; exporting them in one go instead.")
                 self._voucher_ranges_work = False
@@ -1162,7 +1180,9 @@ class DesktopSyncAgent:
             if xml_data is None:
                 logger.error(f"   ❌ Could not export '{label}' from Tally; the full sync carries on from here next cycle.")
                 return False, imported
+            self.sync_detail = f"Uploading '{label}' to server..."
             ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=bool(cursor.get("force")))
+            self.sync_detail = ""
             if not ok and res.get("reason") == SYNC_BUSY_REASON:
                 logger.warning(f"   ⏳ '{label}' not sent: {SERVER_BUSY_MESSAGE} The full sync carries on from here next cycle.")
                 return False, imported

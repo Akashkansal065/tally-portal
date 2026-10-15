@@ -61,6 +61,13 @@ async def login(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect email or password"
         )
+
+    if getattr(user, "deleted_at", None) is not None or getattr(user, "status", "active") != "active":
+        detail = "Account is suspended." if getattr(user, "status", "active") == "suspended" else "Account unavailable."
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=detail
+        )
         
     # Session with device details; refuses blocked devices, applies device limits (commits)
     access_token = await create_user_session(db, user, request)
@@ -85,6 +92,13 @@ async def swagger_login(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect email or password"
+        )
+
+    if getattr(user, "deleted_at", None) is not None or getattr(user, "status", "active") != "active":
+        detail = "Account is suspended." if getattr(user, "status", "active") == "suspended" else "Account unavailable."
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=detail
         )
         
     # Session with device details; refuses blocked devices, applies device limits (commits)

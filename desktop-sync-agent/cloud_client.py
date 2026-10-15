@@ -472,6 +472,8 @@ class CloudClient:
                 err_type = "HTTP_ERROR"
                 if e.code == 401:
                     err_type = "AUTH_ERROR (HTTP 401)"
+                elif e.code == 402:
+                    err_type = "SUBSCRIPTION_EXPIRED (HTTP 402)"
                 elif e.code == 403:
                     err_type = "PERMISSION_DENIED (HTTP 403)"
                 elif e.code == 413:
@@ -481,10 +483,14 @@ class CloudClient:
                 elif e.code in (502, 503, 504):
                     err_type = f"GATEWAY_OR_TUNNEL_ERROR (HTTP {e.code})"
 
+                reason = e.headers.get("X-Sync-Reason") if e.headers else None
+                if e.code == 402 or (e.headers and e.headers.get("X-Billing-State") == "locked"):
+                    reason = "subscription_locked"
+
                 last_diag = {
                     "error_type": err_type,
                     "error": f"HTTP {e.code}: {detail}",
-                    "reason": (e.headers.get("X-Sync-Reason") if e.headers else None),
+                    "reason": reason,
                     "status_code": e.code,
                     "duration_seconds": dur,
                     "endpoint": endpoint,

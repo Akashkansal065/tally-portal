@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import time
 import threading
 from contextlib import contextmanager
@@ -7,7 +8,7 @@ import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 import logging
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Callable
 
 from config import get_logs_dir
 
@@ -127,12 +128,98 @@ _PING_XML_PAYLOAD = (
     b"</DESC></BODY></ENVELOPE>"
 )
 
+class TallyWaitTimer:
+    """
+    Live elapsed timer while waiting for TallyPrime to respond to an HTTP request.
+    Displays live seconds in interactive terminal, logs heartbeats periodically,
+    and invokes an optional progress callback for GUI / status bar updates.
+    """
+    def __init__(
+        self,
+        label: str,
+        timeout: int,
+        attempt: int = 1,
+        total_attempts: int = 1,
+        callback: Optional[Callable] = None,
+        log_interval: float = 10.0,
+    ):
+        self.label = label
+        self.timeout = timeout
+        self.attempt = attempt
+        self.total_attempts = total_attempts
+        self.callback = callback
+        self.log_interval = log_interval
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.start_time: float = 0.0
+        self.elapsed: float = 0.0
+
+    def start(self) -> "TallyWaitTimer":
+        self.start_time = time.time()
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name=f"TallyWaitTimer-{self.label}"
+        )
+        self._thread.start()
+        return self
+
+    def stop(self) -> float:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+        if self.start_time:
+            self.elapsed = time.time() - self.start_time
+        # Clear interactive terminal in-place line if applicable
+        if sys.stdout and hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+            try:
+                sys.stdout.write("\r" + " " * 85 + "\r")
+                sys.stdout.flush()
+            except Exception:
+                pass
+        if self.callback:
+            try:
+                self.callback(self.label, self.elapsed, self.timeout, self.attempt, self.total_attempts, finished=True)
+            except Exception:
+                pass
+        return self.elapsed
+
+    def _run(self) -> None:
+        last_logged = self.start_time
+        while not self._stop_event.wait(1.0):
+            self.elapsed = time.time() - self.start_time
+            sec = int(self.elapsed)
+
+            # 1. Callback for live status updates in GUI / webview
+            if self.callback:
+                try:
+                    self.callback(self.label, self.elapsed, self.timeout, self.attempt, self.total_attempts, finished=False)
+                except Exception:
+                    pass
+
+            # 2. Interactive terminal live timer
+            if sys.stdout and hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+                try:
+                    attempt_str = f" [try {self.attempt}/{self.total_attempts}]" if self.total_attempts > 1 else ""
+                    sys.stdout.write(f"\r   ⏳ Waiting for Tally ('{self.label}'): {sec}s / {self.timeout}s{attempt_str}... ")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+
+            # 3. Activity Log & file logger periodic heartbeat (every 10s by default)
+            if (time.time() - last_logged) >= self.log_interval:
+                last_logged = time.time()
+                attempt_str = f" [try {self.attempt}/{self.total_attempts}]" if self.total_attempts > 1 else ""
+                logger.info(f"   ⏳ Waiting for Tally ('{self.label}'): {sec}s elapsed (max {self.timeout}s){attempt_str}...")
+
+
 class TallyClient:
     def __init__(self, tally_url: str = "http://127.0.0.1:9000", timeout: int = 15):
         self.tally_url = tally_url.rstrip("/") + "/"
         self.timeout = timeout
         # Labels of collections the last export_full_collections() call could not export
         self.last_export_failures: List[str] = []
+        self.on_wait_progress: Optional[Callable] = None
 
     @contextmanager
     def _urlopen(self, req: urllib.request.Request, timeout: Optional[int] = None):
@@ -391,30 +478,13 @@ class TallyClient:
   </BODY>
 </ENVELOPE>"""
             max_retries = 2
-            exported = False
-            for attempt in range(max_retries + 1):
-                try:
-                    req = urllib.request.Request(
-                        self.tally_url,
-                        data=xml_req.encode("utf-8"),
-                        headers={"Content-Type": "text/xml;charset=utf-8"}
-                    )
-                    with self._urlopen(req, timeout=120) as resp:
-                        resp_xml = resp.read().decode("utf-8", errors="replace")
-                        if "<ENVELOPE>" in resp_xml:
-                            exported = True
-                            # On incremental passes, check if any actual objects exist in collection to avoid sending empty payloads
-                            if min_alter_id > 0 and not has_collection_records(resp_xml, obj_type):
-                                break
-                            results.append((label, resp_xml))
-                            break
-                except Exception as e:
-                    if attempt < max_retries:
-                        logger.debug(f"Retrying export '{label}' from Tally (attempt {attempt + 1}/{max_retries}): {e}")
-                        time.sleep(1)
-                    else:
-                        logger.warning(f"Failed to export collection '{label}' from Tally after {max_retries + 1} attempts: {e}")
-            if not exported:
+            resp_xml = self._export(xml_req, label, timeout=120, retries=max_retries)
+            if resp_xml is not None:
+                # On incremental passes, check if any actual objects exist in collection to avoid sending empty payloads
+                if min_alter_id > 0 and not has_collection_records(resp_xml, obj_type):
+                    continue
+                results.append((label, resp_xml))
+            else:
                 # Either every attempt raised or Tally never returned an ENVELOPE: the caller must not
                 # treat this cycle as complete, or these records would fall behind the sync watermark.
                 self.last_export_failures.append(label)
@@ -422,22 +492,34 @@ class TallyClient:
         return results
 
     def _export(self, xml_req: str, label: str, timeout: int = 120, retries: int = 2) -> Optional[str]:
-        """Post one export request to Tally. The reply, or None when Tally did not answer with an export."""
+        """Post one export request to Tally with a live progress timer. The reply, or None when Tally did not answer with an export."""
         for attempt in range(retries + 1):
+            timer = TallyWaitTimer(
+                label=label,
+                timeout=timeout,
+                attempt=attempt + 1,
+                total_attempts=retries + 1,
+                callback=getattr(self, "on_wait_progress", None)
+            )
+            timer.start()
             try:
                 req = urllib.request.Request(self.tally_url, data=xml_req.encode("utf-8"),
                                              headers={"Content-Type": "text/xml;charset=utf-8"})
                 with self._urlopen(req, timeout=timeout) as resp:
                     resp_xml = resp.read().decode("utf-8", errors="replace")
+                    elapsed = timer.stop()
+                    if elapsed >= 2.0:
+                        logger.info(f"   ⏱️ Tally answered '{label}' in {elapsed:.1f}s.")
                     if "<ENVELOPE>" in resp_xml:
                         return resp_xml
                     return None
             except Exception as e:
+                elapsed = timer.stop()
                 if attempt < retries:
-                    logger.debug(f"Retrying export '{label}' from Tally (attempt {attempt + 1}/{retries}): {e}")
+                    logger.info(f"   ⏳ Tally did not respond to '{label}' after {elapsed:.1f}s ({e}). Retrying ({attempt + 2}/{retries + 1})...")
                     time.sleep(1)
                 else:
-                    logger.warning(f"Failed to export '{label}' from Tally after {retries + 1} attempts: {e}")
+                    logger.warning(f"Failed to export '{label}' from Tally after {retries + 1} attempts ({elapsed:.1f}s): {e}")
         return None
 
     def _voucher_request(self, company_name: Optional[str], label: str, fetch: str, date_from: str = "20000101",
@@ -472,13 +554,14 @@ class TallyClient:
         return [d for d in voucher_dates(resp_xml) if d]
 
     def export_vouchers_between(self, company_name: Optional[str], date_from: str, date_to: str,
-                                method: str = "sv") -> Optional[str]:
+                                method: str = "sv", label: Optional[str] = None) -> Optional[str]:
         """The vouchers dated date_from..date_to (YYYYMMDD, both included), asked for by one of
         VOUCHER_RANGE_METHODS. The caller must check the answer really is that range: a Tally that ignores
         the range returns every voucher. None when Tally did not answer."""
         request = self._voucher_request(company_name, "MyTallyVouchersInRange", VOUCHER_FETCH, date_from, date_to,
                                         filter_on_date=(method == "filter"))
-        return self._export(request, f"Vouchers {date_from}-{date_to}")
+        lbl = label or f"Vouchers {date_from}-{date_to}"
+        return self._export(request, lbl)
 
     def _log_traffic(self, direction: str, title: str, content: str):
         """Logs exact traffic to a dedicated rotating log file and console logger."""
@@ -508,10 +591,16 @@ class TallyClient:
     def send_xml(self, xml_payload: str, timeout: int = 60) -> Tuple[bool, str]:
         """
         Sends an XML payload (Voucher, Ledger, Master) to TallyPrime and returns (success, response_string_or_reason).
-        Logs full request and response to tally_traffic.log and console.
+        Logs full request and response to tally_traffic.log and console with a live progress timer.
         """
         self._log_traffic("📤 [REQUEST SENT TO TALLY]", f"POST {self.tally_url}", xml_payload)
         logger.info(f"\n=======================================================\n📤 [OUTBOUND REQUEST TO TALLY]\nURL: {self.tally_url}\nPAYLOAD:\n{xml_payload}\n=======================================================")
+        timer = TallyWaitTimer(
+            label="Outbound Voucher",
+            timeout=timeout,
+            callback=getattr(self, "on_wait_progress", None)
+        )
+        timer.start()
         try:
             req = urllib.request.Request(
                 self.tally_url,
@@ -520,12 +609,16 @@ class TallyClient:
             )
             with self._urlopen(req, timeout=timeout) as resp:
                 resp_str = resp.read().decode("utf-8", errors="replace")
+                elapsed = timer.stop()
+                if elapsed >= 2.0:
+                    logger.info(f"   ⏱️ Tally answered outbound request in {elapsed:.1f}s.")
                 self._log_traffic("📥 [RESPONSE RECEIVED FROM TALLY]", f"STATUS {resp.status}", resp_str)
                 logger.info(f"\n=======================================================\n📥 [INBOUND RESPONSE FROM TALLY]\nSTATUS: {resp.status}\nRESPONSE:\n{resp_str}\n=======================================================")
                 
                 ok, reason = parse_import_result(resp_str)
                 return ok, (resp_str if ok else reason)
         except Exception as e:
+            timer.stop()
             err_msg = f"{NETWORK_ERROR_PREFIX}: {str(e)}"
             self._log_traffic("❌ [REQUEST FAILED / ERROR]", f"URL: {self.tally_url}", err_msg)
             logger.error(f"❌ [TALLY COMMUNICATION ERROR]: {err_msg}")

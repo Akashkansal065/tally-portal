@@ -7,8 +7,10 @@ import { Loader2 } from 'lucide-react'
 import { afterLoginPath } from '@/lib/utils'
 
 // Public pages that someone already signed in may still open: an invitation link is often opened on a device
-// where somebody else (the admin who sent it) is signed in.
-const OPEN_WHEN_SIGNED_IN = ['/accept-invite']
+// where somebody else (the admin who sent it) is signed in, or pricing / plans comparison.
+const OPEN_WHEN_SIGNED_IN = ['/accept-invite', '/pricing']
+// Pages anyone may open without signing in
+const PUBLIC_PATHS = ['/login', '/signup', '/accept-invite', '/pricing']
 // Where someone whose business has no Tally PC yet is kept until they have connected one
 const CONNECT_TALLY = '/connect'
 
@@ -16,12 +18,13 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
+  // The operator console has its own sign-in; customer sessions do not guard it. Checked after every hook has
+  // run, so moving between the console and the app keeps the same hooks.
+  const isConsole = pathname?.startsWith('/console') ?? false
+  const isPublicPath = PUBLIC_PATHS.includes(pathname)
 
   useEffect(() => {
-    if (isLoading) return
-
-    const publicPaths = ['/login', '/signup', '/accept-invite']
-    const isPublicPath = publicPaths.includes(pathname)
+    if (isConsole || isLoading) return
 
     if (!user && !isPublicPath) {
       // Come back here after signing in (e.g. a notification opened while signed out)
@@ -32,7 +35,11 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
     } else if (user && isPublicPath && !OPEN_WHEN_SIGNED_IN.includes(pathname)) {
       router.replace(afterLoginPath())
     }
-  }, [user, isLoading, pathname, router])
+  }, [user, isLoading, pathname, router, isConsole, isPublicPath])
+
+  if (isConsole) {
+    return <>{children}</>
+  }
 
   if (isLoading) {
     return (
@@ -42,9 +49,6 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
       </div>
     )
   }
-
-  const publicPaths = ['/login', '/signup', '/accept-invite']
-  const isPublicPath = publicPaths.includes(pathname)
 
   // Prevent rendering protected content before redirect completes
   if (!user && !isPublicPath) {

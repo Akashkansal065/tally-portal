@@ -1,6 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { usePathname } from 'next/navigation'
 import { toast } from 'sonner'
 import { API_BASE, authHeaders } from '@/lib/utils'
 import { noteCompanySwitch, setCurrentCompany } from '@/lib/current-company'
@@ -97,6 +98,10 @@ function installSessionEndedInterceptor() {
   fetchPatched = true
   const originalFetch = window.fetch.bind(window)
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const rawUrl = requestUrl(input)
+    if (rawUrl.includes('/console-api') || (typeof window !== 'undefined' && window.location.pathname.startsWith('/console'))) {
+      return originalFetch(input, init)
+    }
     init = withIdempotencyKey(input, init)
     init = withCompanyHeader(input, init)
     const response = await originalFetch(input, init)
@@ -106,17 +111,35 @@ function installSessionEndedInterceptor() {
         onSessionEnded(response.headers.get('X-Auth-Reason'))
       }
     }
+    if (response.status === 402) {
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/billing/locked') && !window.location.pathname.startsWith('/pricing') && !window.location.pathname.startsWith('/login')) {
+        window.location.href = '/billing/locked'
+      }
+    }
+    if (response.status === 403) {
+      const reason = response.headers.get('X-Billing-Reason')
+      if (reason === 'feature') {
+        const featureKey = response.headers.get('X-Billing-Required-Feature') || ''
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('billing:upgrade-required', {
+              detail: { featureKey },
+            })
+          )
+        }
+      }
+    }
     return response
   }
 }
 
-/** Remove everything that belongs to the signed-in session on this device. */
 function clearLocalSession() {
   activeToken = ''
   activeCompanyId = null
   localStorage.removeItem(COMPANY_KEY)
   localStorage.removeItem('mytally_token')
   localStorage.removeItem('mytally_email')
+  localStorage.removeItem('mytally_cached_user')
   // Don't let the next person on a shared phone inherit an "active shift"
   localStorage.removeItem('mytally_shift_active')
   stopHeadlessNativeTracking().catch(() => {})
@@ -196,6 +219,26 @@ interface AuthContextValue {
   switchCompany: (company_id: number, to?: string) => Promise<void>
   permissions: UserPermissions
   can: (module: string, action: 'create' | 'read' | 'update' | 'delete') => boolean
+  isImpersonating: boolean
+  isReadOnlyImpersonation: boolean
+}
+
+function parseJwtClaims(token: string): Record<string, any> | null {
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return null
+    const base64Url = parts[1]
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    )
+    return JSON.parse(jsonPayload)
+  } catch {
+    return null
+  }
 }
 
 const DEFAULT_PERMISSIONS: UserPermissions = {
@@ -229,23 +272,35 @@ const AuthContext = createContext<AuthContextValue>({
   switchCompany: async () => { },
   permissions: DEFAULT_PERMISSIONS,
   can: () => false,
+  isImpersonating: false,
+  isReadOnlyImpersonation: false,
 })
 
 /** Provide authenticated user state, company switching, and permission checks. */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [token, setToken] = useState<string>('')
-  const [isLoading, setIsLoading] = useState(true)
+  const [isLoading, setIsLoading] = useState<boolean>(true)
+  const pathname = usePathname()
+  // Only crossing into or out of the operator console matters to the session bootstrap, not every page change
+  const onConsole = pathname?.startsWith('/console') ?? false
 
   const fetchMe = useCallback(async (tok: string) => {
     try {
       // Name this device's company here rather than rely on the request interceptor: this is the first request
       // of a page load, and the answer decides which company the device stays in.
       const deviceCompanyId = activeCompanyId ?? rememberedCompanyId()
-      const res = await fetch(`${API_BASE}/auth/me`, {
-        headers: { ...authHeaders(tok), ...(deviceCompanyId ? { 'X-Company-ID': String(deviceCompanyId) } : {}) },
-        cache: 'no-store',
-      })
+      const [res, compRes] = await Promise.all([
+        fetch(`${API_BASE}/auth/me`, {
+          headers: { ...authHeaders(tok), ...(deviceCompanyId ? { 'X-Company-ID': String(deviceCompanyId) } : {}) },
+          cache: 'no-store',
+        }),
+        fetch(`${API_BASE}/auth/me/companies`, {
+          headers: authHeaders(tok),
+          cache: 'no-store',
+        }).catch(() => null),
+      ])
+
       const contentType = res.headers.get('content-type') || ''
       if (!res.ok) {
         let errorDetail = `HTTP ${res.status} (${res.statusText || 'Error'})`
@@ -274,24 +329,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // The server answers with the company this device asked for when it may open it, else the person's own
       if (typeof data.company_id === 'number') rememberCompany(data.company_id)
 
-      let allowedCompanies = []
-      try {
-        const compRes = await fetch(`${API_BASE}/auth/me/companies`, {
-          headers: authHeaders(tok),
-          cache: 'no-store',
-        })
+      let allowedCompanies: CompanyInfo[] = []
+      if (compRes && compRes.ok) {
         const compContentType = compRes.headers.get('content-type') || ''
-        if (compRes.ok && compContentType.includes('application/json')) {
-          allowedCompanies = await compRes.json()
+        if (compContentType.includes('application/json')) {
+          try {
+            allowedCompanies = await compRes.json()
+          } catch {}
         }
-      } catch (e) { }
+      }
 
       const isAdmin = data.isAdmin ?? (
         typeof data.role === 'string' && ['admin', 'superadmin', 'owner'].includes(data.role.toLowerCase())
       )
       const here = (allowedCompanies as { company_id: number; name: string }[]).find(c => c.company_id === data.company_id)
       setCurrentCompany(here?.name ?? '', allowedCompanies.length, data.company_id)
-      setUser({
+      const userData: AuthUser = {
         ...data,
         id: data.user_id ?? data.id,
         user_id: data.user_id ?? data.id,
@@ -320,16 +373,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           allowedVoucherTypeIds: data.allowedVoucherTypeIds ?? null,
           isAdmin,
         },
-      })
-    } catch (err: any) {
+      }
+      setUser(userData)
+      try {
+        localStorage.setItem('mytally_cached_user', JSON.stringify(userData))
+      } catch {}
+    } catch (err: unknown) {
+      const errorObj = err as (Error & { status?: number }) | undefined
       // Only clear storage and state if it is an actual authentication error (HTTP 401 / 403 or invalid credentials),
       // NEVER clear the token on transient network errors (like TypeError: Failed to fetch)
       const isAuthError =
-        err?.status === 401 ||
-        err?.status === 403 ||
-        err?.message?.toLowerCase().includes('unauthorized') ||
-        err?.message?.toLowerCase().includes('session expired') ||
-        err?.message?.toLowerCase().includes('could not validate credentials')
+        errorObj?.status === 401 ||
+        errorObj?.status === 403 ||
+        errorObj?.message?.toLowerCase().includes('unauthorized') ||
+        errorObj?.message?.toLowerCase().includes('session expired') ||
+        errorObj?.message?.toLowerCase().includes('could not validate credentials')
 
       if (isAuthError) {
         // Graceful session expiry: clear stale token without triggering dev error overlay
@@ -351,15 +409,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Before the first request: every call after this one carries the device's company
     installSessionEndedInterceptor()
+    // The operator console has its own cookie-based auth provider. Do not bootstrap the
+    // customer session (or call /auth/me) on console routes.
+    if (onConsole) return
     const saved = localStorage.getItem('mytally_token')
     if (saved) {
       activeToken = saved
-      setToken(saved)
-      fetchMe(saved).catch(() => {})
+      queueMicrotask(() => {
+        setToken(saved)
+        const cachedUser = localStorage.getItem('mytally_cached_user')
+        if (cachedUser) {
+          try {
+            const parsed = JSON.parse(cachedUser)
+            if (parsed) {
+              setUser(parsed)
+              setIsLoading(false)
+            }
+          } catch {}
+        }
+        fetchMe(saved).catch(() => {})
+      })
     } else {
-      setIsLoading(false)
+      queueMicrotask(() => {
+        setIsLoading(false)
+      })
     }
-  }, [fetchMe])
+  }, [fetchMe, onConsole])
 
   // Keep the interceptor pointed at the current token and handler
   useEffect(() => {
@@ -433,8 +508,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     bom: 'inventory',
   }
 
+  const claims = React.useMemo(() => (token ? parseJwtClaims(token) : null), [token])
+  const isImpersonating = Boolean(claims?.is_impersonation)
+  const isReadOnlyImpersonation = Boolean(claims?.is_impersonation && !claims?.is_write)
+
   const can = useCallback((module: string, action: 'create' | 'read' | 'update' | 'delete'): boolean => {
     if (!user) return false
+    // Operators during read-only impersonation cannot execute mutating operations
+    if (isReadOnlyImpersonation && action !== 'read') return false
     // Zero admin bypass: evaluate capabilities directly with hierarchical parent fallback
     let cap = user.capabilities?.[module]
     if (!cap && SUB_MODULE_PARENT_MAP[module]) {
@@ -443,12 +524,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!cap) return false
     const field = `can_${action}` as keyof typeof cap
     return Boolean(cap[field])
-  }, [user])
+  }, [user, isReadOnlyImpersonation])
 
   const permissions = user?.permissions ?? DEFAULT_PERMISSIONS
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, logout, permissions, switchCompany, can }}>
+    <AuthContext.Provider value={{ user, token, isLoading, login, logout, permissions, switchCompany, can, isImpersonating, isReadOnlyImpersonation }}>
       {children}
     </AuthContext.Provider>
   )

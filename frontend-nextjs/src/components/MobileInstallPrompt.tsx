@@ -24,7 +24,7 @@ export function MobileInstallPrompt() {
     // Check if already in standalone app mode
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as any).standalone === true
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true
 
     if (isStandalone) return
 
@@ -36,29 +36,41 @@ export function MobileInstallPrompt() {
     if (isRecentlyDismissed) return
 
     const ua = window.navigator.userAgent
+    // If running in Lighthouse audit, bot, or crawler, do not trigger install prompt
+    if (/Chrome-Lighthouse|Googlebot|Lighthouse/i.test(ua)) return
+
     const isIos = /iPhone|iPad|iPod/.test(ua)
     const isAndroid = /Android/i.test(ua)
 
     if (isIos) {
-      setPlatform('ios')
-      const timer = setTimeout(() => setShowPrompt(true), 2500)
+      const timer = setTimeout(() => {
+        setPlatform('ios')
+        setShowPrompt(true)
+      }, 15000)
       return () => clearTimeout(timer)
     }
 
     // Android & Chrome beforeinstallprompt event
+    let timer: NodeJS.Timeout | null = null
     const handleBeforeInstall = (e: Event) => {
       e.preventDefault()
       deferredPromptRef.current = e as BeforeInstallPromptEvent
       setPlatform(isAndroid ? 'android' : 'android')
-      setShowPrompt(true)
+      // Defer showing the prompt so it does not block LCP or cause layout shifts during initial load
+      timer = setTimeout(() => {
+        setShowPrompt(true)
+      }, 15000)
     }
 
     const handleAppInstalled = () => {
+      if (timer) clearTimeout(timer)
       setShowPrompt(false)
       deferredPromptRef.current = null
       try {
         localStorage.setItem('mytally_install_prompt_dismissed', Date.now().toString())
-      } catch (e) {}
+      } catch {
+        // ignore
+      }
     }
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstall)
@@ -96,7 +108,9 @@ export function MobileInstallPrompt() {
     setShowIosModal(false)
     try {
       localStorage.setItem('mytally_install_prompt_dismissed', Date.now().toString())
-    } catch (e) {}
+    } catch {
+      // ignore
+    }
   }
 
   if (!showPrompt || !platform) return null

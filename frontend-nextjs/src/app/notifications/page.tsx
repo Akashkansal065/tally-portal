@@ -36,7 +36,7 @@ const DELIVERY_OPTIONS: { id: Delivery; label: string }[] = [
 
 export default function NotificationsPage() {
   const router = useRouter()
-  const { user, token, isLoading } = useAuth()
+  const { user, token, isLoading, isReadOnlyImpersonation } = useAuth()
   const openNotification = useOpenNotification()
 
   const [filter, setFilter] = useState<NotificationFilter>('all')
@@ -108,23 +108,40 @@ export default function NotificationsPage() {
 
   const readAll = async () => {
     if (!token) return
+    if (isReadOnlyImpersonation) {
+      toast.info('Notifications cannot be modified in read-only impersonation mode.')
+      return
+    }
     try {
       await markAllNotificationsRead(token)
       setItems(prev => prev.map(x => ({ ...x, is_read: true })))
       announceNotificationsChanged()
-    } catch {
+    } catch (e: any) {
+      if (e?.message?.includes('read-only')) {
+        toast.info('Impersonation session is strictly read-only.')
+        return
+      }
       toast.error('Could not mark all as read')
     }
   }
 
   const clearAll = async () => {
-    if (!token || !confirm('Delete all notifications? This can’t be undone.')) return
+    if (!token) return
+    if (isReadOnlyImpersonation) {
+      toast.info('Notifications cannot be deleted in read-only impersonation mode.')
+      return
+    }
+    if (!confirm('Delete all notifications? This can’t be undone.')) return
     try {
       await clearAllNotifications(token)
       setItems([])
       setHasMore(false)
       announceNotificationsChanged()
-    } catch {
+    } catch (e: any) {
+      if (e?.message?.includes('read-only')) {
+        toast.info('Impersonation session is strictly read-only.')
+        return
+      }
       toast.error('Could not clear notifications')
     }
   }

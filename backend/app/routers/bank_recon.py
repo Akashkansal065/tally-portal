@@ -47,8 +47,13 @@ from app.models.tally_core import (
 )
 from app.core.config import settings
 from app.core.datetime_utils import get_ist_now, get_ist_date, to_ist_iso
+from app.services.billing.entitlements import require_feature
 
-router = APIRouter(prefix="/bank-recon", tags=["Bank Reconciliation"])
+router = APIRouter(
+    prefix="/bank-recon",
+    tags=["Bank Reconciliation"],
+    dependencies=[Depends(require_feature("bank_reconciliation"))],
+)
 
 
 # ─── Helper Functions ────────────────────────────────────────────────────────

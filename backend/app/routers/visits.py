@@ -19,8 +19,13 @@ from app.models.portal_core import User, CustomerProfile
 from app.core.permissions import get_current_user, require_permission
 from app.core.datetime_utils import get_ist_now, get_ist_date, to_ist_iso
 from app.services.notifications import location_alert_link, visit_log_link
+from app.services.billing.entitlements import require_feature
 
-router = APIRouter(prefix="/visits", tags=["visits"])
+router = APIRouter(
+    prefix="/visits",
+    tags=["visits"],
+    dependencies=[Depends(require_feature("salesman_checkin_orders"))],
+)
 
 # ─── Model ───────────────────────────────────────────────────────────────────
 

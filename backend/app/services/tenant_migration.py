@@ -69,6 +69,8 @@ async def migrate_to_single_account(db: AsyncSession, account_name: Optional[str
         account = Account(name=(account_name or companies[0].name).strip(), status="active")
         db.add(account)
         await db.flush()
+        from app.services.billing.subscriptions import ensure_legacy_subscription
+        await ensure_legacy_subscription(db, account.account_id)
         changed["account"] = f"created #{account.account_id} {account.name!r}"
     account_id = account.account_id
     changed["account_id"] = account_id

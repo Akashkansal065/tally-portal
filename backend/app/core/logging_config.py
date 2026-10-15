@@ -103,6 +103,17 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         start_time = time.perf_counter()
         is_silent = request.url.path in ("/health", "/healthz", "/")
 
+        from app.core.rate_limiter import get_client_ip
+        client_ip = get_client_ip(request)
+        ua = request.headers.get("user-agent", "")
+
+        from app.core.platform_audit import audit_context_var
+        audit_token = audit_context_var.set({
+            "request_id": req_id,
+            "ip_address": client_ip,
+            "user_agent": ua,
+        })
+
         try:
             response = await call_next(request)
             duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
@@ -114,11 +125,6 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 response.headers["Expires"] = "0"
 
             if not is_silent:
-                client_ip = request.client.host if request.client else "unknown"
-                forwarded = request.headers.get("x-forwarded-for")
-                if forwarded:
-                    client_ip = forwarded.split(",")[0].strip()
-
                 logger.info(
                     f"{request.method} {request.url.path} -> {response.status_code} [{duration_ms}ms] (ip: {client_ip})"
                 )
@@ -131,4 +137,5 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             )
             raise
         finally:
+            audit_context_var.reset(audit_token)
             request_id_ctx.reset(token)

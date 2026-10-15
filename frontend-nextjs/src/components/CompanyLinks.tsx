@@ -16,7 +16,7 @@ export function CompanyLinks() {
   const { user, isLoading, switchCompany } = useAuth()
 
   useEffect(() => {
-    if (isLoading || !user) return
+    if (isLoading || !user || pathname?.startsWith('/console')) return
     const notice = takeCompanySwitchNotice()
     if (notice?.name) toast.info(notice.forALink ? `Switched to ${notice.name} to open this` : `Now in ${notice.name}`)
 

@@ -43,6 +43,7 @@ import {
   ReceiptText,
   ClipboardCheck,
   Phone,
+  Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { LinkParams, idParam } from '@/components/LinkParams'
@@ -54,6 +55,7 @@ import { IntegrationsPanel } from '@/components/admin/IntegrationsPanel'
 import { InvoiceDesignPanel } from '@/components/admin/InvoiceDesignPanel'
 import { ApprovalRulesPanel } from '@/components/admin/ApprovalRulesPanel'
 import { SyncAgentPanel } from '@/components/admin/SyncAgentPanel'
+import { SubscriptionBillingPanel } from '@/components/admin/SubscriptionBillingPanel'
 import { relativeTime } from '@/lib/device-sessions'
 import rolesConfig from '@/lib/roles.json'
 
@@ -160,7 +162,7 @@ export default function AdminPage() {
   const { user, token, permissions } = useAuth()
   const router = useRouter()
   
-  const [tab, setTab] = useState<'users' | 'roles' | 'sessions' | 'sync' | 'logs' | 'integrations' | 'invoice' | 'approvals' | 'agent' | 'cache'>('users')
+  const [tab, setTab] = useState<'users' | 'roles' | 'sessions' | 'sync' | 'logs' | 'integrations' | 'invoice' | 'approvals' | 'agent' | 'cache' | 'billing'>('users')
   const [devicesUser, setDevicesUser] = useState<UserItem | null>(null)
   const [users, setUsers] = useState<UserItem[]>([])
   const [logs, setLogs] = useState<AuditLog[]>([])
@@ -178,7 +180,7 @@ export default function AdminPage() {
   }
   const applyLink = (params: URLSearchParams) => {
     const tabParam = params.get('tab')
-    if (tabParam === 'users' || tabParam === 'roles' || tabParam === 'sync' || tabParam === 'logs' || tabParam === 'integrations' || tabParam === 'invoice' || tabParam === 'approvals' || tabParam === 'agent' || tabParam === 'cache') {
+    if (tabParam === 'users' || tabParam === 'roles' || tabParam === 'sync' || tabParam === 'logs' || tabParam === 'integrations' || tabParam === 'invoice' || tabParam === 'approvals' || tabParam === 'agent' || tabParam === 'cache' || tabParam === 'billing') {
       setTab(tabParam)
     } else if (tabParam === 'einvoice') {
       // Old links to the e-invoice settings tab, now under Integrations
@@ -1202,6 +1204,15 @@ const handleSavePermissions = async () => {
           >
             <Zap className="h-4 w-4" /> Cache Control
           </button>
+          <button
+            onClick={() => setTab('billing')}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-2xs',
+              tab === 'billing' ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-amber-500/25' : 'bg-card text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-50 dark:hover:bg-amber-950/30 hover:text-amber-700'
+            )}
+          >
+            <Sparkles className="h-4 w-4" /> Subscription & Plans
+          </button>
         </div>
 
         {/* Directory/Logs Render Grid */}
@@ -2103,6 +2114,8 @@ const handleSavePermissions = async () => {
             <ApprovalRulesPanel token={token} />
           ) : tab === 'agent' ? (
             <SyncAgentPanel token={token} companies={user?.allowedCompanies ?? []} />
+          ) : tab === 'billing' ? (
+            <SubscriptionBillingPanel />
           ) : (
             <div className="space-y-4 font-sans">
               <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-3">

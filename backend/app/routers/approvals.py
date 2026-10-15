@@ -16,8 +16,13 @@ from app.models.portal_core import ApprovalRequest, ApprovalRule, AuditLog, Role
 from app.models.tally_core import MstLedger, MstVoucherType, TrnVoucher
 from app.routers.admin import require_admin
 from app.services import approvals as svc
+from app.services.billing.entitlements import require_feature
 
-router = APIRouter(prefix="/approvals", tags=["Voucher approval"])
+router = APIRouter(
+    prefix="/approvals",
+    tags=["Voucher approval"],
+    dependencies=[Depends(require_feature("approval_rules_matrix"))],
+)
 
 
 class RuleIn(BaseModel):

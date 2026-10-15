@@ -65,12 +65,14 @@ async def _require_sync_agent(db: AsyncSession, admin: User) -> None:
 
 
 async def _check_user_limit(db: AsyncSession, account: Account) -> None:
-    if account.max_users is None:
+    from app.services.billing.entitlements import get_entitlements
+    ent = await get_entitlements(db, account.account_id)
+    if ent.max_users is None:
         return
     users = (await db.execute(select(func.count()).select_from(User).where(
         User.account_id == account.account_id, User.is_active == True))).scalar() or 0  # noqa: E712
-    if users >= account.max_users:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"This account's plan allows {account.max_users} user(s).")
+    if users >= ent.max_users:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"This account's plan allows {ent.max_users} user(s).")
 
 
 # ─── Invitations ─────────────────────────────────────────────────────────────

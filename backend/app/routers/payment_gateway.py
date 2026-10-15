@@ -20,6 +20,7 @@ from app.models.tally_core import TrnBill, BillAllocation, MstLedger
 from app.models.tally_core import TrnVoucher, TrnAccounting, MstVoucherType
 from app.models.portal_core import PaymentGatewayConfig, PaymentLink, GatewayTransaction, WebhookEvent
 from app.services.integrations import not_available_yet, require_integration
+from app.services.billing.entitlements import require_feature
 from app.schemas.payment_gateway import (
     PaymentGatewayConfigCreate, PaymentGatewayConfigResponse,
     PaymentLinkCreate, PaymentLinkResponse
@@ -50,7 +51,7 @@ async def recalculate_bill_settlement(db: AsyncSession, bill_id: int):
             bill.status = "Open"
         await db.commit()
 
-@router.post("/config", response_model=PaymentGatewayConfigResponse)
+@router.post("/config", response_model=PaymentGatewayConfigResponse, dependencies=[Depends(require_feature("payment_links_collect"))])
 async def create_gateway_config(
     req: PaymentGatewayConfigCreate,
     user: User = Depends(require_permission("settings", "update")),
@@ -81,7 +82,7 @@ async def create_gateway_config(
     await db.refresh(config)
     return config
 
-@router.get("/config", response_model=List[PaymentGatewayConfigResponse])
+@router.get("/config", response_model=List[PaymentGatewayConfigResponse], dependencies=[Depends(require_feature("payment_links_collect"))])
 async def get_gateway_configs(
     user: User = Depends(require_permission("settings", "read")),
     db: AsyncSession = Depends(get_db),
@@ -91,7 +92,7 @@ async def get_gateway_configs(
     res = await db.execute(stmt)
     return res.scalars().all()
 
-@router.post("/payment-links", response_model=PaymentLinkResponse)
+@router.post("/payment-links", response_model=PaymentLinkResponse, dependencies=[Depends(require_feature("payment_links_collect"))])
 async def create_payment_link(
     req: PaymentLinkCreate,
     user: User = Depends(require_permission("payments", "create")),

@@ -26,6 +26,7 @@ import {
   Coins,
   Receipt,
   PartyPopper,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react'
 import type { UserPermissions } from '@/context/AuthContext'
@@ -149,6 +150,8 @@ export const NAV_MODULES: NavModule[] = [
     visible: ({ can }) => can('payroll', 'read') },
 
   // Admin & tools
+  { id: 'pricing', href: '/pricing', label: 'Plans & Pricing', icon: Sparkles, group: 'admin', keywords: 'pricing plans upgrade subscription renew silver gold diamond billing',
+    visible: () => true },
   { id: 'notifications', href: '/notifications', label: 'Notifications', icon: Bell, group: 'admin', keywords: 'alerts approvals settings push',
     visible: () => true },
   { id: 'admin', href: '/admin', label: 'Admin', icon: Shield, group: 'admin', keywords: 'users roles permissions devices sync',

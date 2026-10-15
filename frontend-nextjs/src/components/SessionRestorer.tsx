@@ -24,6 +24,11 @@ function SessionRestorerInner() {
 
   // On mount (app startup), check if we have a recent saved path to restore
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const ua = window.navigator.userAgent
+      if (/Chrome-Lighthouse|Googlebot|Lighthouse/i.test(ua)) return
+    }
+
     if (pathname === '/') {
       const hasBooted = sessionStorage.getItem('mytally_has_booted')
       

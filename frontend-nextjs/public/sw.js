@@ -13,6 +13,14 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Explicit exclusion: service worker must never intercept or cache operator console routes or APIs
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  if (url.pathname.startsWith('/console') || url.pathname.startsWith('/console-api')) {
+    return; // Pass through to network
+  }
+});
+
 // Push notification event listener
 self.addEventListener('push', (event) => {
   if (!event.data) return;

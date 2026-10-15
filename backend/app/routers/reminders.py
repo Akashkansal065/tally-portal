@@ -17,9 +17,11 @@ from app.models.portal_core import Company, ReminderLog, ReminderSchedule, User
 from app.models.tally_core import MstLedger
 from app.services import messaging
 from app.services import reminders as svc
+from app.services.billing.entitlements import require_feature
 from app.services.receivables import BUCKETS, receivables_ageing
 
 router = APIRouter(prefix="/reminders", tags=["Payment Reminders"])
+_feature_dep = [Depends(require_feature("auto_payment_reminders"))]
 
 
 # ── shapes ───────────────────────────────────────────────────────────────────
@@ -100,7 +102,7 @@ async def own_company(db: AsyncSession, user: User) -> Company:
 
 # ── routes ───────────────────────────────────────────────────────────────────
 
-@router.get("/channels")
+@router.get("/channels", dependencies=_feature_dep)
 async def channels(user: User = Depends(require_permission("outstanding", "read")), db: AsyncSession = Depends(get_db)):
     readiness = await svc.channel_readiness(db, user.company_id)
     now = get_ist_now()
@@ -114,7 +116,7 @@ async def channels(user: User = Depends(require_permission("outstanding", "read"
     }
 
 
-@router.get("/summary")
+@router.get("/summary", dependencies=_feature_dep)
 async def summary(user: User = Depends(require_permission("outstanding", "read")), db: AsyncSession = Depends(get_db)):
     now = get_ist_now()
     cid = user.company_id
@@ -132,7 +134,7 @@ async def summary(user: User = Depends(require_permission("outstanding", "read")
     }
 
 
-@router.get("/preview/{ledger_id}")
+@router.get("/preview/{ledger_id}", dependencies=_feature_dep)
 async def preview(ledger_id: int, user: User = Depends(require_permission("outstanding", "read")), db: AsyncSession = Depends(get_db)):
     ledger = await own_ledger(db, user, ledger_id)
     company = await own_company(db, user)
@@ -152,7 +154,7 @@ async def preview(ledger_id: int, user: User = Depends(require_permission("outst
     }
 
 
-@router.post("/send-now")
+@router.post("/send-now", dependencies=_feature_dep)
 async def send_now(req: SendNow, user: User = Depends(require_permission("outstanding", "create")), db: AsyncSession = Depends(get_db)):
     await own_ledger(db, user, req.ledger_id)
     if not req.channels or any(c not in svc.CHANNELS for c in req.channels):
@@ -167,7 +169,7 @@ async def send_now(req: SendNow, user: User = Depends(require_permission("outsta
     return [log_out(log, names) for log in logs]
 
 
-@router.get("/schedules")
+@router.get("/schedules", dependencies=_feature_dep)
 async def list_schedules(
     ledger_id: Optional[int] = None,
     include_stopped: bool = False,
@@ -184,7 +186,7 @@ async def list_schedules(
     return [schedule_out(r, names) for r in rows]
 
 
-@router.post("/schedules")
+@router.post("/schedules", dependencies=_feature_dep)
 async def create_schedules(req: ScheduleIn, user: User = Depends(require_permission("outstanding", "create")), db: AsyncSession = Depends(get_db)):
     try:
         svc.validate_schedule(req.frequency, req.send_time, req.channels, req.weekday, req.month_day)
@@ -215,7 +217,7 @@ async def create_schedules(req: ScheduleIn, user: User = Depends(require_permiss
     return [schedule_out(s, names) for s in schedules]
 
 
-@router.put("/schedules/{schedule_id}")
+@router.put("/schedules/{schedule_id}", dependencies=_feature_dep)
 async def change_schedule(schedule_id: int, req: ScheduleChange, user: User = Depends(require_permission("outstanding", "update")),
                           db: AsyncSession = Depends(get_db)):
     schedule = (await db.execute(select(ReminderSchedule).where(
@@ -241,7 +243,7 @@ async def change_schedule(schedule_id: int, req: ScheduleChange, user: User = De
     return schedule_out(schedule, names)
 
 
-@router.delete("/schedules/{schedule_id}")
+@router.delete("/schedules/{schedule_id}", dependencies=_feature_dep)
 async def stop_schedule(schedule_id: int, user: User = Depends(require_permission("outstanding", "update")), db: AsyncSession = Depends(get_db)):
     schedule = (await db.execute(select(ReminderSchedule).where(
         ReminderSchedule.id == schedule_id, ReminderSchedule.company_id == user.company_id))).scalars().first()
@@ -252,7 +254,7 @@ async def stop_schedule(schedule_id: int, user: User = Depends(require_permissio
     return {"detail": "Reminders stopped."}
 
 
-@router.get("/log")
+@router.get("/log", dependencies=_feature_dep)
 async def reminder_log(
     ledger_id: Optional[int] = None,
     limit: int = Query(50, ge=1, le=500),
@@ -267,7 +269,7 @@ async def reminder_log(
     return [log_out(r, names) for r in rows]
 
 
-@router.put("/contact/{ledger_id}")
+@router.put("/contact/{ledger_id}", dependencies=_feature_dep)
 async def save_contact(ledger_id: int, req: ContactIn, user: User = Depends(require_permission("outstanding", "create")),
                        db: AsyncSession = Depends(get_db)):
     await own_ledger(db, user, ledger_id)
@@ -284,7 +286,7 @@ async def save_contact(ledger_id: int, req: ContactIn, user: User = Depends(requ
 MAX_PDF_BYTES = 5 * 1024 * 1024
 
 
-@router.post("/email-document")
+@router.post("/email-document", dependencies=_feature_dep)
 async def email_document(
     ledger_id: int = Form(...),
     to: str = Form(...),

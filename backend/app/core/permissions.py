@@ -28,6 +28,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login")
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/swagger-login", auto_error=False)
 
 ADMIN_ROLE_NAMES = ("admin", "superadmin", "owner")
+# What an operator impersonating a customer may never do, even with write access (see get_current_user):
+# whole areas, by the path's first segment...
+IMPERSONATION_FORBIDDEN_ROOTS = frozenset({"billing", "platform"})
+# ...and any path with one of these segments (plus anything about passwords)
+IMPERSONATION_FORBIDDEN_SEGMENTS = frozenset({"delete", "archive", "purge", "revoke", "deactivate"})
 
 def same_account_as_user(user_id: int):
     """SQL condition: the company belongs to this user's account.
@@ -185,19 +190,76 @@ async def get_current_user(
     except ValueError:
         raise credentials_exception
         
+    # Check if this token was issued for tenant impersonation
+    is_impersonation = bool(payload.get("is_impersonation"))
+    if is_impersonation:
+        from app.models.platform import PlatformImpersonationSession
+        imp_sess_id = payload.get("impersonation_session_id")
+        imp_res = await db.execute(
+            select(PlatformImpersonationSession).where(
+                PlatformImpersonationSession.impersonation_id == imp_sess_id,
+                PlatformImpersonationSession.terminated_at.is_(None),
+            )
+        )
+        imp_sess = imp_res.scalars().first()
+        now_utc = datetime.now(timezone.utc)
+        if not imp_sess:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Impersonation session has ended or been revoked.",
+                headers={"WWW-Authenticate": "Bearer", "X-Auth-Reason": "impersonation_ended"},
+            )
+        exp_time = imp_sess.expires_at.replace(tzinfo=timezone.utc) if imp_sess.expires_at.tzinfo is None else imp_sess.expires_at
+        if exp_time < now_utc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Impersonation session has expired.",
+                headers={"WWW-Authenticate": "Bearer", "X-Auth-Reason": "impersonation_expired"},
+            )
+
+        # Prohibit sensitive tenant actions, even with write access. Matched on whole path segments (not
+        # substrings) and by method: nothing can be deleted, archived or purged while impersonating.
+        req_path = request.url.path.lower()
+        segments = [seg for seg in req_path.split("/") if seg]
+        first = segments[1] if segments[:1] == ["api"] and len(segments) > 1 else (segments[0] if segments else "")
+        if (
+            request.method == "DELETE"
+            or first in IMPERSONATION_FORBIDDEN_ROOTS
+            or any(seg in IMPERSONATION_FORBIDDEN_SEGMENTS or "password" in seg for seg in segments)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Action forbidden during operator impersonation session.",
+            )
+
+        # Enforce read-only if is_write is False
+        is_write = bool(payload.get("is_write", False))
+        if not is_write and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            if not req_path.endswith("/logout"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Impersonation session is strictly read-only.",
+                )
+
+        request.state.is_impersonation = True
+        request.state.impersonated_by_admin_id = payload.get("impersonated_by_admin_id")
+        request.state.impersonator_email = payload.get("impersonator_email")
+        request.state.impersonation_write = is_write
+
     # Hash the token to compare with database token_hash
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     
     now = time.time()
     _prune_expired_caches(now)
 
-    # 1. Check in-memory auth cache (0 DB queries on cache hit)
-    cached_entry = _auth_cache.get(token_hash)
-    if cached_entry and cached_entry.get("expires_at", 0) > now:
-        if cached_entry.get("session_id") and now - cached_entry.get("last_active_written", 0) >= LAST_ACTIVE_WRITE_INTERVAL_SECONDS:
-            cached_entry["last_active_written"] = now
-            await _touch_session(db, cached_entry["session_id"])
-        return await _request_user(db, request, cached_entry["user"], cached_entry["allowed_company_ids"])
+    # 1. Check in-memory auth cache (0 DB queries on cache hit) - bypassed for impersonation
+    if not is_impersonation:
+        cached_entry = _auth_cache.get(token_hash)
+        if cached_entry and cached_entry.get("expires_at", 0) > now:
+            if cached_entry.get("session_id") and now - cached_entry.get("last_active_written", 0) >= LAST_ACTIVE_WRITE_INTERVAL_SECONDS:
+                cached_entry["last_active_written"] = now
+                await _touch_session(db, cached_entry["session_id"])
+            return await _request_user(db, request, cached_entry["user"], cached_entry["allowed_company_ids"])
 
     # 2. Cache miss: Validate active session from DB
     session_query = await db.execute(
@@ -249,16 +311,24 @@ async def get_current_user(
     if user.role is not None:
         db.expunge(user.role)
     db.expunge(user)
-    _auth_cache[token_hash] = {
-        "user": user,
-        "user_id": user.user_id,
-        "allowed_company_ids": allowed_company_ids,
-        "expires_at": cache_expiry,
-        "session_id": db_session.session_id,
-        "last_active_written": last_active_epoch,
-    }
 
-    return await _request_user(db, request, user, allowed_company_ids)
+    if not is_impersonation:
+        _auth_cache[token_hash] = {
+            "user": user,
+            "user_id": user.user_id,
+            "allowed_company_ids": allowed_company_ids,
+            "expires_at": cache_expiry,
+            "session_id": db_session.session_id,
+            "last_active_written": last_active_epoch,
+        }
+
+    req_user = await _request_user(db, request, user, allowed_company_ids)
+    if is_impersonation:
+        setattr(req_user, "is_impersonated", True)
+        setattr(req_user, "impersonated_by_admin_id", payload.get("impersonated_by_admin_id"))
+        setattr(req_user, "impersonator_email", payload.get("impersonator_email"))
+        setattr(req_user, "impersonation_write", payload.get("is_write", False))
+    return req_user
 
 
 async def get_optional_current_user(
@@ -333,6 +403,28 @@ async def _request_user(db: AsyncSession, request: Request, snapshot: User, allo
         elif h_cid is not None and h_cid != user.company_id:
             await _note_company_outside_account(db, user, h_cid)
     await note_request_company(db, user.company_id)
+
+    # 402 Full Lock for accounts past trial & grace period
+    if user.account_id:
+        from app.services.billing.entitlements import get_entitlements
+        ent = await get_entitlements(db, user.account_id)
+        if ent.is_locked and not is_platform_admin(user):
+            path = request.url.path
+            is_exempt = (
+                path.startswith("/auth/")
+                or path.startswith("/billing/")
+                or path.startswith("/platform/")
+                or path == "/health"
+                or path.startswith("/health")
+                or "unread-count" in path
+            )
+            if not is_exempt:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="Your subscription has expired. Please renew your plan to continue using MyTally.",
+                    headers={"X-Billing-State": "locked"},
+                )
+
     return user
 
 

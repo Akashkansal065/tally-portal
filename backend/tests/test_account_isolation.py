@@ -293,6 +293,78 @@ def test_admin_sees_only_their_own_accounts_permissions_and_users(harness):
     listed = client.get("/admin/permissions", headers=headers).json()
     other_user = client.get(f"/admin/users/{admins['two'].user_id}/permissions", headers=headers)
     own_user = client.get(f"/admin/users/{admins['one'].user_id}/permissions", headers=headers)
-
     assert {p["role_id"] for p in listed} == {roles["one"].role_id}
     assert other_user.status_code == 404 and own_user.status_code == 200
+
+
+def test_company_archive_delete_account_isolation(harness):
+    """Admins can archive their own companies, cannot archive other accounts' companies,
+    and cannot delete the last remaining active company."""
+    from app.routers import companies as companies_router
+    client, admins, companies = seed(harness)
+    client = harness.app(auth.router, companies_router.router)
+    one_headers = bearer(login(client, admins["one"].email))
+    two_headers = bearer(login(client, admins["two"].email))
+
+    # 1. Admin One attempts to delete/archive Admin Two's company (b1) -> Refused (404 / cross-tenant blocked)
+    b1_id = companies["b1"].company_id
+    cross_attempt = client.post(f"/companies/{b1_id}/archive", json={"action": "archive"}, headers=one_headers)
+    assert cross_attempt.status_code in (403, 404), cross_attempt.json()
+
+    # 2. Admin Two attempts to delete their ONLY active company (b1) -> Refused (400 - last company protection)
+    last_attempt = client.post(f"/companies/{b1_id}/archive", json={"action": "archive"}, headers=two_headers)
+    assert last_attempt.status_code == 400
+    assert "at least one active company" in last_attempt.json()["detail"]
+
+    # 3. Admin One archives one of their own companies (a2) -> Succeeded
+    a2_id = companies["a2"].company_id
+    success_archive = client.post(f"/companies/{a2_id}/archive", json={"action": "archive"}, headers=one_headers)
+    assert success_archive.status_code == 200
+    assert success_archive.json()["ok"] is True
+    assert success_archive.json()["action"] == "archive"
+
+    # Verify a2 is no longer active
+    assert harness.scalar(select(P.Company.is_active).where(P.Company.company_id == a2_id)) is False
+
+
+def test_company_archive_never_deletes_and_delete_needs_the_name(harness):
+    """/archive only archives, whatever the body says; a delete is refused unless the exact name is typed."""
+    from app.routers import companies as companies_router
+    _, admins, companies = seed(harness)
+    client = harness.app(auth.router, companies_router.router)
+    headers = bearer(login(client, admins["one"].email))
+    a2_id = companies["a2"].company_id
+
+    archived = client.post(f"/companies/{a2_id}/archive", json={"action": "delete"}, headers=headers)
+    assert archived.status_code == 200 and archived.json()["action"] == "archive"
+    assert harness.scalar(select(P.Company.company_id).where(P.Company.company_id == a2_id)) == a2_id
+
+    harness.execute(P.Company.__table__.update().where(P.Company.company_id == a2_id).values(is_active=True))
+    assert client.request("DELETE", f"/companies/{a2_id}", headers=headers).status_code == 400
+    assert client.request("DELETE", f"/companies/{a2_id}", json={"confirmation_name": "A1"}, headers=headers).status_code == 400
+    assert harness.scalar(select(P.Company.company_id).where(P.Company.company_id == a2_id)) == a2_id
+
+    deleted = client.request("DELETE", f"/companies/{a2_id}", json={"confirmation_name": "a2"}, headers=headers)
+    assert deleted.status_code == 200 and deleted.json()["action"] == "delete"
+    assert harness.scalar(select(P.Company.company_id).where(P.Company.company_id == a2_id)) is None
+
+
+def test_company_archive_moves_people_only_to_companies_they_already_had(harness):
+    """Someone whose home company is archived goes to a company they were granted, never to one they were not;
+    with none, the archive is refused."""
+    from app.routers import companies as companies_router
+    _, admins, companies = seed(harness)
+    one_account = harness.scalar(select(P.User.account_id).where(P.User.user_id == admins["one"].user_id))
+    sales = harness.user(companies["a2"], harness.role("Sales"), "sales")
+    harness.execute(P.User.__table__.update().where(P.User.user_id == sales.user_id).values(account_id=one_account))
+    client = harness.app(auth.router, companies_router.router)
+    headers = bearer(login(client, admins["one"].email))
+    a1_id, a2_id = companies["a1"].company_id, companies["a2"].company_id
+
+    refused = client.post(f"/companies/{a2_id}/archive", headers=headers)
+    assert refused.status_code == 400 and "no other company" in refused.json()["detail"]
+    assert harness.scalar(select(P.Company.is_active).where(P.Company.company_id == a2_id)) is True
+
+    harness.add(P.UserCompanyAccess(user_id=sales.user_id, company_id=a1_id))
+    assert client.post(f"/companies/{a2_id}/archive", headers=headers).status_code == 200
+    assert harness.scalar(select(P.User.company_id).where(P.User.user_id == sales.user_id)) == a1_id

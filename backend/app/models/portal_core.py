@@ -292,6 +292,10 @@ class User(Base):
     # Indexes on columns added to an existing table are created at startup (ensure_table_indexes)
     __table_args__ = (
         Index("ix_users_account", "account_id"),
+        Index("ix_users_deleted", "deleted_at"),
+        Index("ix_users_account_status", "account_id", "status", "deleted_at"),
+        Index("ix_users_created", "created_at", "user_id"),
+        Index("ix_users_last_login", "last_login", "user_id"),
         {"schema": settings.PORTAL_DATABASE_NAME},
     )
     
@@ -310,6 +314,18 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+
+    # Platform operator administration & compliance columns
+    status = Column(String(20), nullable=False, server_default="active", default="active")
+    suspended_at = Column(DateTime, nullable=True)
+    suspended_reason = Column(String(255), nullable=True)
+    must_change_password = Column(Boolean, nullable=False, server_default="0", default=False)
+    temp_password_expires = Column(DateTime, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)
+    deleted_by_admin_id = Column(BigInteger, nullable=True)
+    purge_after = Column(DateTime, nullable=True)
+    purged_at = Column(DateTime, nullable=True)
+    version = Column(Integer, nullable=False, server_default="1", default=1)
     
 
     ledger_scope = Column(String(64), default='dr_only')
