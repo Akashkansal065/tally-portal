@@ -246,20 +246,25 @@ def test_an_upload_cut_off_carries_on_where_it_stopped(tmp_path):
 
 # ── The schedule ─────────────────────────────────────────────────────────────
 
-def test_hourly_backups_are_made_once_an_hour_and_kept_until_they_reach_the_server(tmp_path):
+def test_hourly_backups_are_made_once_an_hour_and_kept_until_they_reach_the_server(tmp_path, monkeypatch):
     tally, cloud = FakeTally(many_vouchers(10)), FakeCloud()
     sched = scheduler(tmp_path, tally, cloud)
     cloud.down = True
-    start = B.now_ist()
+    start = datetime(2026, 4, 15, 10, 0, tzinfo=B.IST)
+    current = start
+    monkeypatch.setattr(B, "now_ist", lambda: current)
 
     sched.tick(start)
-    sched.tick(start + timedelta(minutes=30))           # not due again yet
+    current = start + timedelta(minutes=30)
+    sched.tick(current)           # not due again yet
     assert len(sched.store.entries("guid-alpha")) == 1 and not cloud.stored
     cloud.down = False
-    sched.tick(start + timedelta(minutes=31))           # back online: the waiting one goes up
+    current = start + timedelta(minutes=31)
+    sched.tick(current)           # back online: the waiting one goes up
     assert len(cloud.stored) == 1 and sched.store.pending_uploads("guid-alpha") == []
 
-    sched.tick(start + timedelta(minutes=61))
+    current = start + timedelta(minutes=61)
+    sched.tick(current)
     assert len(sched.store.entries("guid-alpha")) == 2 and len(cloud.stored) == 2
 
 
