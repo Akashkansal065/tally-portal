@@ -1,4 +1,4 @@
-"""ensure_table_indexes creates only the listed indexes that MySQL doesn't have yet."""
+"""ensure_table_indexes / ensure_indexes create only the listed indexes that MySQL doesn't have yet."""
 from contextlib import asynccontextmanager
 
 import pytest
@@ -15,8 +15,9 @@ class FakeConnection:
 
     async def execute(self, statement, params=None):
         sql = str(statement)
-        if sql.startswith("SELECT DISTINCT INDEX_NAME"):
-            return FakeResult([(name,) for name in self.existing])
+        if sql.startswith("SELECT DISTINCT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME"):
+            table = P.SyncTrafficLog.__table__
+            return FakeResult([(table.schema, table.name, name) for name in self.existing])
         self.created.append(sql)
 
 

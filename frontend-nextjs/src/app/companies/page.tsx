@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Building, Check, Loader2, Trash2, AlertTriangle, ShieldAlert, X, AlertCircle } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { cn, API_BASE } from '@/lib/utils'
-import { companyIdentity, describeFreshness, pendingText, useCompanySyncStatus } from '@/lib/sync-status'
+import { CompanySyncStatus, companyIdentity, describeFreshness, pendingText, useCompanySyncStatus } from '@/lib/sync-status'
 import { isAdminUser } from '@/lib/navigation'
 import { toast } from 'sonner'
 
@@ -15,7 +15,7 @@ export default function CompaniesPage() {
   const companies = useCompanySyncStatus(token)
   const isAdmin = isAdminUser(permissions, user?.role)
 
-  const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<CompanySyncStatus | null>(null)
   const [deleteAction, setDeleteAction] = useState<'archive' | 'delete'>('archive')
   const [deleteConfirmName, setDeleteConfirmName] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
@@ -50,8 +50,9 @@ export default function CompaniesPage() {
       setTimeout(() => {
         window.location.assign('/')
       }, 500)
-    } catch (err: any) {
-      setDeleteError(err.message || `An error occurred while attempting to ${deleteAction} company.`)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      setDeleteError(message || `An error occurred while attempting to ${deleteAction} company.`)
     } finally {
       setIsDeleting(false)
     }

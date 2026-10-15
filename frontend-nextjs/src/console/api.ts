@@ -341,14 +341,15 @@ export function formatApiErrorDetail(detail: unknown, fallback: string = 'API re
   }
   if (Array.isArray(detail)) {
     const formatted = detail
-      .map((item: any) => {
+      .map((item: unknown) => {
         if (typeof item === 'string') return item
         if (item && typeof item === 'object') {
-          const loc = Array.isArray(item.loc)
-            ? item.loc.filter((p: any) => p !== 'body').join('.')
+          const dict = item as Record<string, unknown>
+          const loc = Array.isArray(dict.loc)
+            ? dict.loc.filter((p: unknown) => p !== 'body').join('.')
             : ''
-          const msg = item.msg || item.message || JSON.stringify(item)
-          return loc ? `${loc}: ${msg}` : msg
+          const msg = dict.msg || dict.message || JSON.stringify(item)
+          return loc ? `${loc}: ${msg}` : String(msg)
         }
         return String(item)
       })
@@ -357,8 +358,9 @@ export function formatApiErrorDetail(detail: unknown, fallback: string = 'API re
     return formatted || fallback
   }
   if (detail && typeof detail === 'object') {
-    const obj = detail as Record<string, any>
-    return obj.message || obj.msg || obj.detail || JSON.stringify(detail) || fallback
+    const obj = detail as Record<string, unknown>
+    const msg = obj.message || obj.msg || obj.detail
+    return (typeof msg === 'string' ? msg : JSON.stringify(detail)) || fallback
   }
   return detail ? String(detail) : fallback
 }
@@ -435,7 +437,8 @@ export async function consoleFetch<T = unknown>(
         if ('detail' in errJson) {
           errorDetail = errJson.detail
         } else if ('message' in errJson || 'error' in errJson) {
-          errorDetail = (errJson as any).message || (errJson as any).error
+          const dict = errJson as Record<string, unknown>
+          errorDetail = dict.message || dict.error
         }
       }
     } catch {

@@ -161,8 +161,8 @@ export function GlobalHeader() {
       await markAllNotificationsRead(token)
       setNotifications(prev => prev.map(n => ({ ...n, is_read: true })))
       setUnreadNotifCount(0)
-    } catch (e: any) {
-      if (e?.message?.includes('read-only')) {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes('read-only')) {
         toast.info('Impersonation session is strictly read-only.')
         return
       }
@@ -393,8 +393,9 @@ export function GlobalHeader() {
       setTimeout(() => {
         window.location.assign('/')
       }, 500)
-    } catch (err: any) {
-      setDeleteError(err.message || `An error occurred while attempting to ${deleteAction} company.`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setDeleteError(msg || `An error occurred while attempting to ${deleteAction} company.`)
     } finally {
       setIsDeletingCompany(false)
     }

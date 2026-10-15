@@ -223,7 +223,7 @@ interface AuthContextValue {
   isReadOnlyImpersonation: boolean
 }
 
-function parseJwtClaims(token: string): Record<string, any> | null {
+function parseJwtClaims(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split('.')
     if (parts.length < 2) return null

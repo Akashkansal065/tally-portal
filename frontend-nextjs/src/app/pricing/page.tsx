@@ -29,7 +29,7 @@ import {
   Database
 } from 'lucide-react'
 import { PlanCheckoutModal } from '@/components/pricing/PlanCheckoutModal'
-import { loadPublicCatalog, salesTelUrl, salesWhatsAppUrl } from '@/lib/billing'
+import { BillingPlan, BillingAddon, loadPublicCatalog, salesTelUrl, salesWhatsAppUrl } from '@/lib/billing'
 import { useSalesContact } from '@/hooks/useSalesContact'
 
 type DurationKey = '1_year' | '2_year' | '3_year'
@@ -65,14 +65,14 @@ export default function PricingPage() {
   const [durationKey, setDurationKey] = useState<DurationKey>('3_year')
   const [extraUsers, setExtraUsers] = useState(0)
   const [extraCompanies, setExtraCompanies] = useState(0)
-  const [selectedPlanForModal, setSelectedPlanForModal] = useState<any>(null)
+  const [selectedPlanForModal, setSelectedPlanForModal] = useState<BillingPlan | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0)
   const [isComparisonOpen, setIsComparisonOpen] = useState(false)
 
   // Catalog from API (replaces hardcoded PLANS / ADDONS_DATA)
-  const [catalogPlans, setCatalogPlans] = useState<any[]>([])
-  const [catalogAddons, setCatalogAddons] = useState<any[]>([])
+  const [catalogPlans, setCatalogPlans] = useState<BillingPlan[]>([])
+  const [catalogAddons, setCatalogAddons] = useState<BillingAddon[]>([])
   const [catalogLoaded, setCatalogLoaded] = useState(false)
   const salesContact = useSalesContact()
 
@@ -94,14 +94,14 @@ export default function PricingPage() {
   const years = durationKey === '1_year' ? 1 : durationKey === '2_year' ? 2 : 3
 
   // Add-on unit prices from the catalog
-  const userAddon = catalogAddons.find((a: any) => a.id === 'extra_user')
-  const companyAddon = catalogAddons.find((a: any) => a.id === 'extra_company')
+  const userAddon = catalogAddons.find((a: BillingAddon) => a.id === 'extra_user')
+  const companyAddon = catalogAddons.find((a: BillingAddon) => a.id === 'extra_company')
   const unitUserCost: number = userAddon?.price_per_year ?? 0
   const unitCompanyCost: number = companyAddon?.price_per_year ?? 0
   const extraUsersCost = extraUsers * unitUserCost * years
   const extraCompaniesCost = extraCompanies * unitCompanyCost * years
 
-  const handleOpenCheckout = (plan: any) => {
+  const handleOpenCheckout = (plan: BillingPlan) => {
     setSelectedPlanForModal(plan)
     setIsModalOpen(true)
   }
@@ -281,9 +281,9 @@ export default function PricingPage() {
                     <span className="font-bold text-emerald-600 dark:text-emerald-400">
                       ₹{pricing.per_month}/month
                     </span>
-                    {pricing.savings > 0 && (
+                    {Boolean(pricing.savings && pricing.savings > 0) && (
                       <span className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 font-bold">
-                        Save ₹{pricing.savings.toLocaleString()}
+                        Save ₹{(pricing.savings ?? 0).toLocaleString()}
                       </span>
                     )}
                   </div>

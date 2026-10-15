@@ -116,8 +116,8 @@ export default function NotificationsPage() {
       await markAllNotificationsRead(token)
       setItems(prev => prev.map(x => ({ ...x, is_read: true })))
       announceNotificationsChanged()
-    } catch (e: any) {
-      if (e?.message?.includes('read-only')) {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes('read-only')) {
         toast.info('Impersonation session is strictly read-only.')
         return
       }
@@ -137,8 +137,8 @@ export default function NotificationsPage() {
       setItems([])
       setHasMore(false)
       announceNotificationsChanged()
-    } catch (e: any) {
-      if (e?.message?.includes('read-only')) {
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes('read-only')) {
         toast.info('Impersonation session is strictly read-only.')
         return
       }

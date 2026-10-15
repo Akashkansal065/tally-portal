@@ -21,7 +21,7 @@ SQLAlchemy==2.0.51
 greenlet==3.5.3
 aiomysql==0.3.2
 PyMySQL==1.2.0
-cryptography==48.0.1
+cryptography==49.0.0
 
 # Sign-in
 PyJWT==2.13.0

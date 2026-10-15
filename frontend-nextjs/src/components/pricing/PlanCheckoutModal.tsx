@@ -31,10 +31,21 @@ import { useSalesContact } from '@/hooks/useSalesContact'
 import { loadScript } from '@/lib/loadScript'
 import { toast } from 'sonner'
 
+interface RazorpayInstance {
+  open: () => void
+}
+
+interface CashfreeInstance {
+  checkout: (opts: { paymentSessionId: string; redirectTarget: string }) => Promise<{
+    paymentDetails?: Record<string, unknown>
+    error?: unknown
+  }>
+}
+
 declare global {
   interface Window {
-    Razorpay?: any
-    Cashfree?: any
+    Razorpay?: new (options: Record<string, unknown>) => RazorpayInstance
+    Cashfree?: (config: { mode: string }) => CashfreeInstance
   }
 }
 
@@ -96,12 +107,20 @@ export function PlanCheckoutModal({
       ? '3 Years'
       : 'Monthly'
 
-  // Load gateway capabilities and billing profile
+  // Reset modal state when closed
   useEffect(() => {
     if (!isOpen) {
-      setOrderFulfilled(null)
-      return
+      const timer = setTimeout(() => {
+        setOrderFulfilled(null)
+        setQuote(null)
+      }, 0)
+      return () => clearTimeout(timer)
     }
+  }, [isOpen])
+
+  // Load gateway capabilities and billing profile
+  useEffect(() => {
+    if (!isOpen) return
 
     fetchGateways()
       .then((res) => {
@@ -133,17 +152,16 @@ export function PlanCheckoutModal({
         })
         .catch(() => {})
     }
-  }, [isOpen, token])
+  }, [isOpen, token, activeMode])
 
   // Fetch pure server quote whenever plan, duration, extras or coupon change
   useEffect(() => {
-    if (!isOpen || !plan) {
-      setQuote(null)
-      return
-    }
+    if (!isOpen || !plan) return
 
     let active = true
-    setQuoteLoading(true)
+    Promise.resolve().then(() => {
+      if (active) setQuoteLoading(true)
+    })
 
     calculateQuote(
       {
@@ -259,7 +277,7 @@ export function PlanCheckoutModal({
           theme: {
             color: '#10b981',
           },
-          handler: async (response: any) => {
+          handler: async (response: { razorpay_payment_id?: string; razorpay_order_id?: string; razorpay_signature?: string }) => {
             try {
               toast.info('Verifying payment with bank...')
               const confirmRes = await confirmBillingOrder(
@@ -280,8 +298,9 @@ export function PlanCheckoutModal({
                 })
                 onSuccess?.()
               }
-            } catch (err: any) {
-              toast.error(err.message || 'Payment verification failed.')
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err)
+              toast.error(msg || 'Payment verification failed.')
             }
           },
           modal: {
@@ -311,7 +330,7 @@ export function PlanCheckoutModal({
         cf.checkout({
           paymentSessionId: session_id,
           redirectTarget: '_modal',
-        }).then(async (result: any) => {
+        }).then(async (result: { paymentDetails?: Record<string, unknown> }) => {
           if (result.paymentDetails) {
             toast.info('Verifying payment...')
             const confirmRes = await confirmBillingOrder(
@@ -339,8 +358,9 @@ export function PlanCheckoutModal({
         })
         onSuccess?.()
       }
-    } catch (err: any) {
-      toast.error(err.message || 'Payment initiation failed. Please try WhatsApp sales.')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(msg || 'Payment initiation failed. Please try WhatsApp sales.')
       setLoading(false)
     }
   }

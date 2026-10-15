@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Sparkles,
   ShieldCheck,
@@ -26,7 +26,7 @@ import {
 import { API_BASE, authHeaders, formatDate } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { PlanCheckoutModal } from '@/components/pricing/PlanCheckoutModal'
-import { fetchInvoices, cancelAutopaySubscription, BillingInvoiceSummary, salesTelUrl, salesWhatsAppUrl } from '@/lib/billing'
+import { fetchInvoices, cancelAutopaySubscription, BillingInvoiceSummary, salesTelUrl, salesWhatsAppUrl, SubscriptionDetails, BillingPlan } from '@/lib/billing'
 import { useSalesContact } from '@/hooks/useSalesContact'
 import { toast } from 'sonner'
 import Link from 'next/link'
@@ -35,18 +35,17 @@ export function SubscriptionBillingPanel() {
   const { user, token } = useAuth()
   const salesContact = useSalesContact()
   const [loading, setLoading] = useState(true)
-  const [subscription, setSubscription] = useState<any>(null)
-  const [plans, setPlans] = useState<any[]>([])
+  const [subscription, setSubscription] = useState<SubscriptionDetails | null>(null)
+  const [plans, setPlans] = useState<BillingPlan[]>([])
   const [invoices, setInvoices] = useState<BillingInvoiceSummary[]>([])
   const [durationKey, setDurationKey] = useState<'1_year' | '2_year' | '3_year'>('3_year')
-  const [selectedPlanForModal, setSelectedPlanForModal] = useState<any>(null)
+  const [selectedPlanForModal, setSelectedPlanForModal] = useState<BillingPlan | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
 
-  const fetchSubscriptionData = async () => {
+  const fetchSubscriptionData = async (_options?: unknown) => {
     try {
       setLoading(true)
-      setLoadFailed(false)
       const [subRes, plansRes] = await Promise.all([
         fetch(`${API_BASE}/billing/current-subscription`, {
           headers: token ? authHeaders(token) : {}
@@ -59,6 +58,7 @@ export function SubscriptionBillingPanel() {
       if (!subData.success || !plansData.success) throw new Error('Billing data unavailable')
       setSubscription(subData)
       setPlans(plansData.plans)
+      setLoadFailed(false)
 
       if (token) {
         fetchInvoices(token)
@@ -74,12 +74,50 @@ export function SubscriptionBillingPanel() {
   }
 
   useEffect(() => {
-    fetchSubscriptionData()
+    let active = true
+
+    Promise.all([
+      fetch(`${API_BASE}/billing/current-subscription`, {
+        headers: token ? authHeaders(token) : {}
+      }),
+      fetch(`${API_BASE}/billing/plans`)
+    ])
+      .then(async ([subRes, plansRes]) => {
+        const subData = await subRes.json()
+        const plansData = await plansRes.json()
+        if (!active) return
+        if (!subData.success || !plansData.success) throw new Error('Billing data unavailable')
+        setSubscription(subData)
+        setPlans(plansData.plans)
+        setLoadFailed(false)
+
+        if (token) {
+          fetchInvoices(token)
+            .then((r) => {
+              if (active) setInvoices(r.invoices || [])
+            })
+            .catch(() => {
+              if (active) setInvoices([])
+            })
+        }
+      })
+      .catch((err) => {
+        if (!active) return
+        console.error('Failed to load subscription data:', err)
+        setLoadFailed(true)
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
   }, [token])
 
   const [cancellingAutopay, setCancellingAutopay] = useState(false)
 
-  const handleOpenCheckout = (plan: any) => {
+  const handleOpenCheckout = (plan: BillingPlan) => {
     setSelectedPlanForModal(plan)
     setIsModalOpen(true)
   }
@@ -91,9 +129,10 @@ export function SubscriptionBillingPanel() {
     try {
       const res = await cancelAutopaySubscription(token)
       toast.success(res.message)
-      fetchSubscriptionData()
-    } catch (err: any) {
-      toast.error(err.message || 'Failed to cancel autopay')
+      fetchSubscriptionData(true)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(msg || 'Failed to cancel autopay')
     } finally {
       setCancellingAutopay(false)
     }

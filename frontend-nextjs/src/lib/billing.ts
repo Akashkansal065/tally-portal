@@ -33,9 +33,13 @@ export interface BillingPlan {
   is_popular: boolean
   color: string
   accent: string
+  border?: string
   pricing: Record<string, PlanPrice>
   limits: PlanLimits
   feature_keys: string[]
+  highlights?: string[]
+  features?: Array<{ text: string; bold?: boolean }>
+  missing?: string[]
 }
 
 export interface BillingAddon {
@@ -284,7 +288,21 @@ export interface CreateOrderRequest {
   gateway?: string
   client_request_key?: string
   buyer_state_code?: string
-  buyer_snapshot?: Record<string, any>
+  buyer_snapshot?: Record<string, unknown>
+}
+
+export interface CheckoutConfig {
+  key?: string
+  amount?: number
+  currency?: string
+  order_id?: string
+  env?: string
+  payment_session_id?: string
+  client_payload?: {
+    payment_session_id?: string
+    [key: string]: unknown
+  }
+  [key: string]: unknown
 }
 
 export interface CreateOrderResponse {
@@ -294,7 +312,7 @@ export interface CreateOrderResponse {
   total_rupees: number
   status: string
   gateway: string
-  checkout_config: Record<string, any>
+  checkout_config: CheckoutConfig
 }
 
 export interface ConfirmOrderResponse {
@@ -336,14 +354,14 @@ export interface BillingInvoiceSummary {
 }
 
 export interface BillingInvoiceDetails extends BillingInvoiceSummary {
-  buyer: Record<string, any>
-  seller: Record<string, any>
+  buyer: Record<string, unknown>
+  seller: Record<string, unknown>
 }
 
 export interface BillingProfile {
   legal_name: string | null
   gstin: string | null
-  address: Record<string, any>
+  address: Record<string, unknown>
   state_code: string | null
   email: string | null
   phone: string | null
@@ -381,7 +399,7 @@ export async function createBillingOrder(req: CreateOrderRequest, token: string)
  */
 export async function confirmBillingOrder(
   orderRef: string,
-  payload: Record<string, any>,
+  payload: Record<string, unknown>,
   token: string
 ): Promise<ConfirmOrderResponse> {
   const res = await fetch(`${API_BASE}/billing/orders/${encodeURIComponent(orderRef)}/confirm`, {
@@ -635,7 +653,7 @@ export async function createCustomPlan(
 
 export async function setAccountOverrides(
   accountId: number,
-  overrides: Record<string, any>,
+  overrides: Record<string, unknown>,
   token: string
 ): Promise<{ success: boolean; message: string }> {
   const res = await fetch(`${API_BASE}/platform/billing/accounts/${accountId}/overrides`, {

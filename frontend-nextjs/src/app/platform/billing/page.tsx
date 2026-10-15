@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
@@ -106,10 +106,9 @@ export default function PlatformBillingConsolePage() {
     total_rupees: number
   } | null>(null)
 
-  const loadData = async () => {
+  const loadData = async (_options?: unknown) => {
     if (!token) return
     setLoading(true)
-    setUnauthorized(false)
     try {
       const [m, a, l, w] = await Promise.all([
         fetchPlatformMetrics(token),
@@ -121,11 +120,13 @@ export default function PlatformBillingConsolePage() {
       setAccounts(a)
       setLeads(l)
       setWebhooks(w)
-    } catch (err: any) {
-      if (err.message && (err.message.includes('403') || err.message.includes('run this server'))) {
+      setUnauthorized(false)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg && (msg.includes('403') || msg.includes('run this server'))) {
         setUnauthorized(true)
       } else {
-        toast.error(`Failed to load operator data: ${err.message}`)
+        toast.error(`Failed to load operator data: ${msg}`)
       }
     } finally {
       setLoading(false)
@@ -133,7 +134,39 @@ export default function PlatformBillingConsolePage() {
   }
 
   useEffect(() => {
-    loadData()
+    if (!token) return
+    let active = true
+
+    Promise.all([
+      fetchPlatformMetrics(token),
+      fetchPlatformAccounts(token),
+      fetchPlatformLeads(token),
+      fetchPlatformWebhooks(token),
+    ])
+      .then(([m, a, l, w]) => {
+        if (!active) return
+        setMetrics(m)
+        setAccounts(a)
+        setLeads(l)
+        setWebhooks(w)
+        setUnauthorized(false)
+      })
+      .catch((err: unknown) => {
+        if (!active) return
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg && (msg.includes('403') || msg.includes('run this server'))) {
+          setUnauthorized(true)
+        } else {
+          toast.error(`Failed to load operator data: ${msg}`)
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
   }, [token])
 
   // Filtered accounts
@@ -173,9 +206,10 @@ export default function PlatformBillingConsolePage() {
       )
       toast.success(res.message || 'Plan assigned successfully!')
       setAssignModalAccount(null)
-      loadData()
-    } catch (err: any) {
-      toast.error(`Assignment failed: ${err.message}`)
+      loadData(true)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`Assignment failed: ${msg}`)
     } finally {
       setActionLoading(false)
     }
@@ -201,9 +235,10 @@ export default function PlatformBillingConsolePage() {
       )
       toast.success(`Custom plan '${customPlanName}' created (Code: ${res.plan_code})!`)
       setCustomPlanModalAccount(null)
-      loadData()
-    } catch (err: any) {
-      toast.error(`Custom plan creation failed: ${err.message}`)
+      loadData(true)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`Custom plan creation failed: ${msg}`)
     } finally {
       setActionLoading(false)
     }
@@ -226,9 +261,10 @@ export default function PlatformBillingConsolePage() {
         await lockAccountSubscription(acc.account_id, token)
         toast.warning(`Account #${acc.account_id} locked`)
       }
-      loadData()
-    } catch (err: any) {
-      toast.error(`Action failed: ${err.message}`)
+      loadData(true)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`Action failed: ${msg}`)
     }
   }
 
@@ -268,9 +304,10 @@ export default function PlatformBillingConsolePage() {
         total_rupees: res.total_rupees,
       })
       setOfflineRef('')
-      loadData()
-    } catch (err: any) {
-      toast.error(`Recording offline payment failed: ${err.message}`)
+      loadData(true)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error(`Recording offline payment failed: ${msg}`)
     } finally {
       setActionLoading(false)
     }

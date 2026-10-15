@@ -71,24 +71,10 @@ function RolesAndAccessContent() {
   const tabParam = searchParams?.get('tab')
 
   // Primary navigation tabs
-  const [activeTab, setActiveTab] = useState<'roles' | 'admins' | 'permissions'>(() => {
-    if (tabParam === 'admins') return 'admins'
-    if (tabParam === 'permissions') return 'permissions'
-    return 'roles'
-  })
-
-  useEffect(() => {
-    if (tabParam === 'admins') {
-      setActiveTab('admins')
-    } else if (tabParam === 'permissions') {
-      setActiveTab('permissions')
-    } else {
-      setActiveTab('roles')
-    }
-  }, [tabParam])
+  const activeTab: 'roles' | 'admins' | 'permissions' =
+    tabParam === 'admins' ? 'admins' : tabParam === 'permissions' ? 'permissions' : 'roles'
 
   const handleSelectTab = useCallback((newTab: 'roles' | 'admins' | 'permissions') => {
-    setActiveTab(newTab)
     const targetUrl = newTab === 'roles' ? '/console/roles' : `/console/roles?tab=${newTab}`
     router.replace(targetUrl, { scroll: false })
   }, [router])

@@ -23,19 +23,26 @@ export default function BillingLockedPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (token) {
-      fetchCurrentSubscription(token)
-        .then((data) => {
-          setSub(data)
-          // If the account has paid and is no longer locked, redirect back to dashboard
-          if (data.status === 'active' || data.status === 'legacy') {
-            window.location.href = '/'
-          }
-        })
-        .catch(() => {})
-        .finally(() => setLoading(false))
-    } else {
-      setLoading(false)
+    if (!token) {
+      const timer = setTimeout(() => setLoading(false), 0)
+      return () => clearTimeout(timer)
+    }
+    let active = true
+    fetchCurrentSubscription(token)
+      .then((data) => {
+        if (!active) return
+        setSub(data)
+        // If the account has paid and is no longer locked, redirect back to dashboard
+        if (data.status === 'active' || data.status === 'legacy') {
+          window.location.href = '/'
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
     }
   }, [token])
 
