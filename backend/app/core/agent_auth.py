@@ -96,6 +96,21 @@ async def authenticate_device(request: Request, token: str, db: AsyncSession) ->
         except Exception:
             pass
     request.state.agent_device = device
+
+    # 402 Full Lock check for sync agents
+    if user.account_id:
+        from app.services.billing.entitlements import get_entitlements
+        ent = await get_entitlements(db, user.account_id)
+        if ent.is_locked:
+            path = request.url.path
+            is_exempt = path == "/health" or path.startswith("/health")
+            if not is_exempt:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="Your subscription has expired. Please renew your plan to continue syncing.",
+                    headers={"X-Billing-State": "locked"},
+                )
+
     return user
 
 

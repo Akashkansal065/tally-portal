@@ -22,11 +22,16 @@ import {
   AlertCircle,
   ChevronDown,
   CreditCard,
+  Sparkles,
   Bell,
   CheckCheck,
   Check,
   CloudOff,
+  Trash2,
+  AlertTriangle,
+  ShieldAlert,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { forgetBranding } from '@/lib/branding'
 import { cn, API_BASE, authHeaders } from '@/lib/utils'
 import { useOfflinePending } from '@/hooks/useOfflinePending'
@@ -51,7 +56,7 @@ const BELL_LIMIT = 20
 const HEADER_ICON_BUTTON = 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white hover:bg-emerald-600/60 transition-colors cursor-pointer'
 
 export function GlobalHeader() {
-  const { user, token, permissions, switchCompany } = useAuth()
+  const { user, token, permissions, switchCompany, isReadOnlyImpersonation } = useAuth()
   const isAdmin = isAdminUser(permissions, user?.role)
   const pathname = usePathname()
   const router = useRouter()
@@ -63,6 +68,11 @@ export function GlobalHeader() {
   const [savingCompany, setSavingCompany] = useState(false)
   const [editError, setEditError] = useState('')
   const [editSuccess, setEditSuccess] = useState('')
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleteAction, setDeleteAction] = useState<'archive' | 'delete'>('archive')
+  const [deleteConfirmName, setDeleteConfirmName] = useState('')
+  const [isDeletingCompany, setIsDeletingCompany] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const [syncHealth, setSyncHealth] = useState<{
     status: string
     total_sync_issues: number
@@ -143,27 +153,50 @@ export function GlobalHeader() {
 
   const markAllAsRead = async () => {
     if (!token) return
+    if (isReadOnlyImpersonation) {
+      toast.info('Notifications cannot be modified in read-only impersonation mode.')
+      return
+    }
     try {
       await markAllNotificationsRead(token)
       setNotifications(prev => prev.map(n => ({ ...n, is_read: true })))
       setUnreadNotifCount(0)
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.message?.includes('read-only')) {
+        toast.info('Impersonation session is strictly read-only.')
+        return
+      }
       console.error('Failed to mark all as read:', e)
     }
   }
 
   const markAsRead = async (notif: AppNotification) => {
     if (!token) return
+    if (isReadOnlyImpersonation) {
+      return
+    }
     setNotifications(prev => prev.map(n => (n.id === notif.id ? { ...n, is_read: true } : n)))
     setUnreadNotifCount(prev => Math.max(0, prev - 1))
-    markNotificationRead(token, notif.id).catch(e => console.error('Failed to mark notification as read:', e))
+    markNotificationRead(token, notif.id).catch(e => {
+      if (!e?.message?.includes('read-only')) {
+        console.error('Failed to mark notification as read:', e)
+      }
+    })
   }
 
   const dismissNotification = async (notif: AppNotification) => {
     if (!token) return
+    if (isReadOnlyImpersonation) {
+      toast.info('Notifications cannot be dismissed in read-only impersonation mode.')
+      return
+    }
     setNotifications(prev => prev.filter(n => n.id !== notif.id))
     if (!notif.is_read) setUnreadNotifCount(prev => Math.max(0, prev - 1))
-    deleteNotificationRequest(token, notif.id).catch(e => console.error('Failed to delete notification:', e))
+    deleteNotificationRequest(token, notif.id).catch(e => {
+      if (!e?.message?.includes('read-only')) {
+        console.error('Failed to delete notification:', e)
+      }
+    })
   }
 
   const handleDecided = (notif: AppNotification, decision: 'approved' | 'rejected') => {
@@ -329,11 +362,51 @@ export function GlobalHeader() {
     }
   }
 
+  const handleDeleteOrArchiveCompany = async () => {
+    if (!activeCompany) return
+    setIsDeletingCompany(true)
+    setDeleteError('')
+    try {
+      const activeToken = token || localStorage.getItem('mytally_token') || localStorage.getItem('token') || ''
+      const res = await fetch(`${API_BASE}/companies/${activeCompany.company_id}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${activeToken}`,
+          'X-Company-ID': activeCompany.company_id.toString(),
+        },
+        body: JSON.stringify({
+          action: deleteAction,
+          confirmation_name: deleteConfirmName.trim(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data.detail || `Failed to ${deleteAction} company.`)
+      }
+      toast.success(data.detail || `Company ${deleteAction === 'archive' ? 'archived' : 'deleted'} successfully.`)
+      setShowDeleteConfirm(false)
+      setShowCompanyModal(false)
+      if (data.replacement_company_id) {
+        localStorage.setItem('active_company_id', String(data.replacement_company_id))
+      }
+      setTimeout(() => {
+        window.location.assign('/')
+      }, 500)
+    } catch (err: any) {
+      setDeleteError(err.message || `An error occurred while attempting to ${deleteAction} company.`)
+    } finally {
+      setIsDeletingCompany(false)
+    }
+  }
+
+  if (pathname?.startsWith('/console')) return null
+
   return (
     <>
       <header
         className={cn(
-          "shrink-0 border-b border-emerald-600/30 bg-emerald-500 dark:bg-emerald-600 text-white relative z-40",
+          "shrink-0 border-b border-emerald-700/30 bg-emerald-600 dark:bg-emerald-700 text-white relative z-40",
           (showNotifications || showCompanyModal) && "z-50"
         )}
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
@@ -351,7 +424,7 @@ export function GlobalHeader() {
               </button>
             )}
             <Link href="/" className="shrink-0 rounded-md" aria-label="Home">
-              <img src="/logo.png" alt="" className="h-8 w-8 object-contain rounded-md bg-white p-0.5" />
+              <img src="/logo.png" alt="Sneh Distributors Logo" width={32} height={32} className="h-8 w-8 object-contain rounded-md bg-white p-0.5" />
             </Link>
             {user.allowedCompanies && user.allowedCompanies.length > 0 ? (
               <button
@@ -374,8 +447,18 @@ export function GlobalHeader() {
             )}
           </div>
 
-          {/* Right: sync status, offline queue, notifications */}
+          {/* Right: pricing plans, sync status, offline queue, notifications */}
           <div className="flex items-center gap-1.5">
+            <Link
+              href="/pricing"
+              className="inline-flex min-h-11 shrink-0 items-center cursor-pointer text-white"
+              title="View Subscription Plans & Pricing"
+            >
+              <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-lg transition-all bg-amber-400/20 hover:bg-amber-400/30 border border-amber-300/40 text-amber-100 shadow-sm">
+                <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span className="hidden sm:inline">Plans</span>
+              </span>
+            </Link>
             {syncHealth && isAdmin && (
               <Link
                 href="/admin?tab=sync"
@@ -466,7 +549,13 @@ export function GlobalHeader() {
                         <button
                           type="button"
                           onClick={markAllAsRead}
-                          className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-lg px-2 text-sm font-semibold text-emerald-700 hover:underline dark:text-emerald-400 cursor-pointer"
+                          title={isReadOnlyImpersonation ? 'Disabled in read-only impersonation mode' : 'Mark all as read'}
+                          className={cn(
+                            'inline-flex min-h-10 shrink-0 items-center gap-1 rounded-lg px-2 text-sm font-semibold transition-colors',
+                            isReadOnlyImpersonation
+                              ? 'text-muted-foreground/60 cursor-not-allowed hover:no-underline'
+                              : 'text-emerald-700 hover:underline dark:text-emerald-400 cursor-pointer'
+                          )}
                         >
                           <CheckCheck className="h-4 w-4" />
                           Read all
@@ -601,23 +690,130 @@ export function GlobalHeader() {
           <div className="bg-card border border-border rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 text-foreground animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold">
-                  <Building className="w-5 h-5" />
+                <div className={cn(
+                  "w-10 h-10 rounded-xl flex items-center justify-center font-bold",
+                  showDeleteConfirm ? "bg-rose-500/10 text-rose-600" : "bg-emerald-500/10 text-emerald-600"
+                )}>
+                  {showDeleteConfirm ? <AlertTriangle className="w-5 h-5" /> : <Building className="w-5 h-5" />}
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-base text-foreground leading-snug">{activeCompany.name}</h3>
-                  <span className="text-[11px] text-muted-foreground font-mono">Company ID #{activeCompany.company_id}</span>
+                  <h3 className="font-extrabold text-base text-foreground leading-snug">
+                    {showDeleteConfirm ? 'Archive / Delete Company' : activeCompany.name}
+                  </h3>
+                  <span className="text-[11px] text-muted-foreground font-mono">
+                    {showDeleteConfirm ? `Target: ${activeCompany.name} (ID #${activeCompany.company_id})` : `Company ID #${activeCompany.company_id}`}
+                  </span>
                 </div>
               </div>
               <button
-                onClick={() => setShowCompanyModal(false)}
+                onClick={() => { setShowCompanyModal(false); setShowDeleteConfirm(false); }}
                 className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {isEditingCompany ? (
+            {showDeleteConfirm ? (
+              <div className="space-y-4 text-xs">
+                {deleteError && (
+                  <div className="p-3 rounded-xl bg-destructive/10 text-destructive text-xs flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>{deleteError}</span>
+                  </div>
+                )}
+
+                <div className="p-3 rounded-xl bg-rose-500/5 border border-rose-500/20 text-foreground space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-rose-600 dark:text-rose-400 font-bold text-xs">
+                    <ShieldAlert className="w-4 h-4 shrink-0" />
+                    <span>Tenant Security & Isolation</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Only organization Admins and Owners can manage companies. Other tenants cannot view or remove companies belonging to your account.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Select Removal Method</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDeleteAction('archive')}
+                      className={cn(
+                        "p-3 rounded-xl border text-left transition-all cursor-pointer",
+                        deleteAction === 'archive'
+                          ? "border-emerald-600 bg-emerald-500/10 shadow-sm"
+                          : "border-border hover:bg-muted/50"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-foreground">Archive</span>
+                        <span className="text-[10px] font-semibold bg-emerald-500/20 text-emerald-600 px-1.5 py-0.5 rounded">Recommended</span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-muted-foreground leading-tight">
+                        Hides company from switcher & stops sync. Financial records remain safely preserved.
+                      </p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDeleteAction('delete')}
+                      className={cn(
+                        "p-3 rounded-xl border text-left transition-all cursor-pointer",
+                        deleteAction === 'delete'
+                          ? "border-rose-600 bg-rose-500/10 shadow-sm"
+                          : "border-border hover:bg-muted/50"
+                      )}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-rose-600 dark:text-rose-400">Delete (Purge)</span>
+                        <span className="text-[10px] font-semibold bg-rose-500/20 text-rose-600 px-1.5 py-0.5 rounded">Danger</span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-muted-foreground leading-tight">
+                        Permanently wipes all vouchers, ledgers, items, and data. Cannot be undone.
+                      </p>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-muted-foreground">
+                    To confirm, please type <span className="font-mono text-foreground font-extrabold select-all">{activeCompany.name}</span>:
+                  </label>
+                  <input
+                    type="text"
+                    value={deleteConfirmName}
+                    onChange={e => setDeleteConfirmName(e.target.value)}
+                    placeholder={`Type "${activeCompany.name}" to confirm`}
+                    className="w-full px-3 py-2 rounded-xl border border-input bg-background font-medium text-xs focus:outline-none focus:ring-2 focus:ring-rose-500/40"
+                  />
+                </div>
+
+                <div className="pt-3 flex items-center justify-end gap-2 border-t border-border">
+                  <button
+                    type="button"
+                    onClick={() => { setShowDeleteConfirm(false); setDeleteError(''); }}
+                    className="px-3.5 py-1.5 rounded-xl border border-border text-xs font-semibold hover:bg-muted transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteOrArchiveCompany}
+                    disabled={
+                      isDeletingCompany ||
+                      deleteConfirmName.trim().toLowerCase() !== activeCompany.name.trim().toLowerCase()
+                    }
+                    className={cn(
+                      "px-4 py-1.5 rounded-xl text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
+                      deleteAction === 'delete' ? "bg-rose-600 hover:bg-rose-700" : "bg-amber-600 hover:bg-amber-700"
+                    )}
+                  >
+                    {isDeletingCompany ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    Confirm {deleteAction === 'delete' ? 'Permanent Delete' : 'Archive Company'}
+                  </button>
+                </div>
+              </div>
+            ) : isEditingCompany ? (
               <form onSubmit={handleSaveCompanyDetails} className="space-y-3 text-xs max-h-[65vh] overflow-y-auto pr-1">
                 {editError && (
                   <div className="p-2.5 rounded-xl bg-destructive/10 text-destructive text-xs flex items-center gap-2">
@@ -909,16 +1105,31 @@ export function GlobalHeader() {
               </div>
             )}
 
-            {!isEditingCompany && (
+            {!isEditingCompany && !showDeleteConfirm && (
               <div className="pt-2 flex items-center justify-between border-t border-border">
                 {isAdmin ? (
-                  <button
-                    onClick={startEditingCompany}
-                    className="px-3.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    Edit Profile Details
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={startEditingCompany}
+                      className="px-3.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      Edit Profile Details
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowDeleteConfirm(true)
+                        setDeleteError('')
+                        setDeleteConfirmName('')
+                        setDeleteAction('archive')
+                      }}
+                      className="px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+                      title="Archive or permanently delete this company"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Archive / Delete
+                    </button>
+                  </div>
                 ) : (
                   <span className="text-[11px] text-muted-foreground italic">Read-only (Admin only)</span>
                 )}

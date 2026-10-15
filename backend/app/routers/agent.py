@@ -116,12 +116,14 @@ async def _register_device(db: AsyncSession, account: Account, user: User, devic
     device = (await db.execute(select(AgentDevice).where(
         AgentDevice.account_id == account.account_id, AgentDevice.machine_id == device_in.machine_id))).scalars().first()
     if device is None:
-        if account.max_devices is not None:
+        from app.services.billing.entitlements import get_entitlements
+        ent = await get_entitlements(db, account.account_id)
+        if ent.max_devices is not None:
             active = (await db.execute(select(func.count()).select_from(AgentDevice).where(
                 AgentDevice.account_id == account.account_id, AgentDevice.revoked_at.is_(None)))).scalar() or 0
-            if active >= account.max_devices:
+            if active >= ent.max_devices:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                    detail=f"Your plan allows {account.max_devices} synced PC(s). Remove one in the app first.")
+                                    detail=f"Your plan allows {ent.max_devices} synced PC(s). Remove one in the app first.")
         device = AgentDevice(account_id=account.account_id, machine_id=device_in.machine_id)
         db.add(device)
     token, token_hash = new_device_token()
@@ -177,12 +179,14 @@ async def _link_company(db: AsyncSession, account: Account, device: AgentDevice,
             company.books_begin_date = _books_from(info.books_from)
             company.awaiting_tally = None
     if company is None:
-        if account.max_companies is not None:
+        from app.services.billing.entitlements import get_entitlements
+        ent = await get_entitlements(db, account.account_id)
+        if ent.max_companies is not None:
             held = (await db.execute(select(func.count()).select_from(Company).where(
                 Company.account_id == account.account_id))).scalar() or 0
-            if held >= account.max_companies:
+            if held >= ent.max_companies:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                    detail=f"Your plan allows {account.max_companies} company(ies).")
+                                    detail=f"Your plan allows {ent.max_companies} company(ies).")
         company = Company(account_id=account.account_id, name=info.name.strip(), tally_guid=guid,
                           tally_fingerprint=info.fingerprint, books_begin_date=_books_from(info.books_from), is_active=True)
         db.add(company)
@@ -314,6 +318,8 @@ async def signup_verify(request: Request, response: Response, req: SignupVerifyR
     account = Account(name=details["business_name"], status="active")
     db.add(account)
     await db.flush()
+    from app.services.billing.subscriptions import start_trial
+    await start_trial(db, account.account_id)
     admin_role = await create_default_roles(db, account.account_id)   # the account's own Admin and Sales roles
     # The first company comes with the sign-up: a user always has a company to be in
     company = Company(account_id=account.account_id, name=req.company.name.strip(), tally_guid=req.company.tally_guid.strip(),

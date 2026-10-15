@@ -175,6 +175,8 @@ async def auto_sync_all_model_schemas():
     # Import all models to ensure they register their tables and columns in Base.metadata
     import app.models.tally_core
     import app.models.portal_core
+    import app.models.billing      # billing tables (plans, orders, subscriptions, invoices …)
+    import app.models.platform     # platform operator console tables (admins, roles, sessions …)
     import app.routers.orders
     import app.routers.attendance
     

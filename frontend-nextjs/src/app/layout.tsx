@@ -6,6 +6,7 @@ import { PeriodProvider } from '@/context/PeriodContext'
 import { ThemeProvider } from '@/components/ThemeProvider'
 import { GlobalHeader } from '@/components/GlobalHeader'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
+import { AppMain } from '@/components/AppMain'
 
 import { PwaRegister } from '@/components/PwaRegister'
 import { DatePickerInitializer } from '@/components/DatePickerInitializer'
@@ -15,14 +16,16 @@ import { AttendanceLocationTracker } from '@/components/AttendanceLocationTracke
 import { NativeAppBridge } from '@/components/NativeAppBridge'
 import { NotificationNavigator } from '@/components/notifications/NotificationNavigator'
 import { PushRegistration } from '@/components/notifications/PushRegistration'
+import { UpgradePromptModal } from '@/components/UpgradePrompt'
+import { ImpersonationBanner } from '@/components/ImpersonationBanner'
 
 import { RouteGuard } from '@/components/RouteGuard'
 import { SpeedInsights } from '@vercel/speed-insights/next'
 import { Toaster } from 'sonner'
-import { Geist } from "next/font/google";
+import { Outfit } from "next/font/google";
 import { cn } from "@/lib/utils";
 
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+const outfit = Outfit({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
 
 export const metadata: Metadata = {
   title: 'SnehDist. — Sneh Distributors',
@@ -58,14 +61,8 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" suppressHydrationWarning className={cn("font-sans", geist.variable)}>
+    <html lang="en" suppressHydrationWarning className={cn("font-sans", outfit.variable)}>
       <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap"
-          rel="stylesheet"
-        />
         <link rel="apple-touch-icon" href="/icon-192.png" />
         <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
         <link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png" />
@@ -86,15 +83,18 @@ export default function RootLayout({
               <NativeAppBridge />
               <NotificationNavigator />
               <PushRegistration />
+              <UpgradePromptModal />
               <Toaster richColors position="top-center" closeButton />
+              {/* Operator Impersonation Banner (if active) */}
+              <ImpersonationBanner />
               {/* Top Header */}
               <GlobalHeader />
 
-              {/* Scrollable main content, padded for the bottom nav (slimmer from md) and iOS home indicator */}
-              <main className="flex-1 overflow-y-auto overflow-x-hidden pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] md:pb-[calc(3.5rem+env(safe-area-inset-bottom,0px))]">
+              {/* Main content shell (padded for bottom nav on customer pages, full-height on console) */}
+              <AppMain>
                 <CompanyLinks />
                 <RouteGuard>{children}</RouteGuard>
-              </main>
+              </AppMain>
 
               {/* Fixed bottom navigation */}
               <MobileBottomNav />

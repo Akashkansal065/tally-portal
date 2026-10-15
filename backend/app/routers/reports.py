@@ -920,9 +920,13 @@ async def get_profit_and_loss(
                SUM(COALESCE(e.credit_amount, 0) - COALESCE(e.debit_amount, 0)) as net_credit
         FROM tally_sync.ledgers l
         JOIN tally_sync.account_groups g ON l.group_id = g.group_id
-        LEFT JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
-        LEFT JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id AND COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE {date_where}
-        WHERE l.company_id = :comp_id AND (
+        JOIN tally_sync.voucher_entries e ON l.ledger_id = e.ledger_id
+        JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+        WHERE l.company_id = :comp_id 
+          AND COALESCE(v.is_cancelled, FALSE) = FALSE 
+          AND COALESCE(v.is_optional, FALSE) = FALSE 
+          {date_where}
+          AND (
             g.name IN ('Sales Accounts', 'Purchase Accounts', 'Direct Expenses', 'Indirect Expenses', 'Direct Incomes', 'Indirect Incomes')
             OR g.name LIKE '%Sales%' OR g.name LIKE '%Purchase%' OR g.name LIKE '%Expense%' OR g.name LIKE '%Income%'
         )
@@ -1292,7 +1296,7 @@ async def get_company_stock_performance(
     from sqlalchemy import text as sa_text
     from app.core.config import settings
 
-    cache_key = f"company_stock_perf_v6_{from_date}_{to_date}_{dead_stock_days}"
+    cache_key = f"company_stock_perf_v8_{from_date}_{to_date}_{dead_stock_days}"
     cached = get_cached_response(user.company_id, cache_key)
     if cached is not None:
         return cached
@@ -1332,7 +1336,7 @@ async def get_company_stock_performance(
             si.stock_item_id,
             si.name AS item_name,
             COALESCE(u.symbol, 'PCS') AS uom,
-            COALESCE(si.gst_rate_percent, 18.0) AS gst_rate_percent,
+            si.gst_rate_percent AS gst_rate_percent,
             COALESCE(si.opening_qty, 0) AS opening_qty,
             COALESCE(si.opening_rate, 0) AS opening_rate,
             COALESCE(si.closing_qty, 0) AS closing_qty,
@@ -1362,9 +1366,34 @@ async def get_company_stock_performance(
     res = await db.execute(company_sql, params)
     rows = res.fetchall()
 
+    # Query actual invoice gross totals from vouchers for the same period
+    v_gross_sql = sa_text(f"""
+        SELECT 
+            SUM(CASE WHEN (vt.name = 'Sales' OR vt.parent_type = 'Sales') THEN v.total_amount ELSE 0 END) as total_sales_gross,
+            SUM(CASE WHEN (vt.name = 'Purchase' OR vt.parent_type = 'Purchase') THEN v.total_amount ELSE 0 END) as total_purchases_gross
+        FROM {ts}.vouchers v
+        JOIN {ts}.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
+        WHERE v.company_id = :company_id 
+          AND COALESCE(v.is_cancelled, FALSE) = FALSE 
+          AND COALESCE(v.is_optional, FALSE) = FALSE
+          {date_filter}
+    """)
+    v_gross_res = await db.execute(v_gross_sql, params)
+    v_gross_row = v_gross_res.fetchone()
+    actual_sales_gross = float(v_gross_row.total_sales_gross) if v_gross_row and v_gross_row.total_sales_gross is not None else None
+    actual_purchases_gross = float(v_gross_row.total_purchases_gross) if v_gross_row and v_gross_row.total_purchases_gross is not None else None
+
     # Aggregate by company (stock group)
     companies_map: dict = {}
     all_items_list = []
+
+    # An item without a GST rate of its own takes the rate most items of its stock group carry, else 18%
+    group_rate_counts: dict = {}
+    for r in rows:
+        if r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0:
+            counts = group_rate_counts.setdefault(r.company_name, {})
+            counts[float(r.gst_rate_percent)] = counts.get(float(r.gst_rate_percent), 0) + 1
+    group_gst_fallback = {name: max(counts, key=counts.get) for name, counts in group_rate_counts.items()}
 
     for r in rows:
         cname = r.company_name
@@ -1384,7 +1413,10 @@ async def get_company_stock_performance(
         cl_val = float(r.closing_value)
 
         # GST Multiplier for Gross calculations
-        gst_percent = float(r.gst_rate_percent) if (r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0) else 18.0
+        if r.gst_rate_percent is not None and float(r.gst_rate_percent) > 0:
+            gst_percent = float(r.gst_rate_percent)
+        else:
+            gst_percent = group_gst_fallback.get(cname, 18.0)
         gst_multiplier = 1.0 + (gst_percent / 100.0)
 
         # Weighted average cost of everything available in the period
@@ -1524,13 +1556,34 @@ async def get_company_stock_performance(
         companies_list.append(comp)
     companies_list.sort(key=lambda x: x["sold_value"], reverse=True)
 
+    # Align Gross Company Totals and Grand Totals with Actual Invoice Totals
+    raw_sold_gross = sum(c["sold_value_gross"] for c in companies_list)
+    raw_pur_gross = sum(c["purchased_value_gross"] for c in companies_list)
+
+    # Only the billed amounts are aligned to the invoices. Cost of sold and pending stock are valuations of the
+    # stock itself, so the invoices' other lines (freight, services, round-off) must not move them; profit is then
+    # what was billed less what the goods cost, the same identity the net figures keep.
+    if actual_sales_gross and actual_sales_gross > 0 and raw_sold_gross > 0:
+        scale_sales = actual_sales_gross / raw_sold_gross
+        for c in companies_list:
+            c["sold_value_gross"] = round(c["sold_value_gross"] * scale_sales, 2)
+            c["profit_on_sold_gross"] = round(c["sold_value_gross"] - c["cost_of_sold_gross"], 2)
+
+    if actual_purchases_gross and actual_purchases_gross > 0 and raw_pur_gross > 0:
+        scale_pur = actual_purchases_gross / raw_pur_gross
+        for c in companies_list:
+            c["purchased_value_gross"] = round(c["purchased_value_gross"] * scale_pur, 2)
+
     # Grand totals (Net and Gross)
+    final_sold_gross = round(actual_sales_gross, 2) if (actual_sales_gross and actual_sales_gross > 0) else round(sum(c["sold_value_gross"] for c in companies_list), 2)
+    final_pur_gross = round(actual_purchases_gross, 2) if (actual_purchases_gross and actual_purchases_gross > 0) else round(sum(c["purchased_value_gross"] for c in companies_list), 2)
+
     grand_totals = {
         "total_purchased_value": round(sum(c["purchased_value"] for c in companies_list), 2),
-        "total_purchased_value_gross": round(sum(c["purchased_value_gross"] for c in companies_list), 2),
+        "total_purchased_value_gross": final_pur_gross,
         "total_purchased_qty": round(sum(c["purchased_qty"] for c in companies_list), 2),
         "total_sold_value": round(sum(c["sold_value"] for c in companies_list), 2),
-        "total_sold_value_gross": round(sum(c["sold_value_gross"] for c in companies_list), 2),
+        "total_sold_value_gross": final_sold_gross,
         "total_sold_qty": round(sum(c["sold_qty"] for c in companies_list), 2),
         "total_pending_value": round(sum(c["pending_value"] for c in companies_list), 2),
         "total_pending_value_gross": round(sum(c["pending_value_gross"] for c in companies_list), 2),

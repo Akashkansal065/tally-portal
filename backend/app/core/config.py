@@ -70,6 +70,32 @@ class Settings(BaseSettings):
     # rather than one account: backups of the server's Tally and the backup schedule. Being an account's Admin is
     # not enough, since anyone who signs up from the sync agent is the Admin of their own account. Empty = nobody.
     PLATFORM_ADMIN_EMAILS: str = ""
+    # Optional one-time bootstrap secret. Configure through the deployment secret store, never source control.
+    PLATFORM_ADMIN_INITIAL_PASSWORD: Optional[str] = None
+
+    # ── Platform Operator Console Settings (Architecture Plan Section 1) ─────
+    PLATFORM_JWT_SECRET: Optional[str] = None
+    PLATFORM_PASSKEY_REQUIRED: bool = True
+    PLATFORM_CONSOLE_ORIGIN: str = "http://localhost:3000"
+    PLATFORM_WEBAUTHN_RP_ID: str = "localhost"
+    PLATFORM_WEBAUTHN_RP_NAME: str = "MyTally Console"
+    PLATFORM_COOKIE_PATH: str = "/console-api"
+    # Cookie prefix: "__Secure-" in production HTTPS, "" in localhost/HTTP dev
+    PLATFORM_COOKIE_PREFIX: str = ""
+    PLATFORM_COOKIE_SECURE: bool = False
+
+    # Proxies whose X-Forwarded-For / X-Real-IP headers are believed (addresses or CIDRs, comma separated). From any
+    # other peer those headers are ignored, so a caller cannot forge their address in audit logs or rate limits.
+    # The default covers the Next.js /console-api rewrite and an nginx on the same machine.
+    TRUSTED_PROXY_IPS: str = "127.0.0.1,::1"
+
+    def get_platform_jwt_secret(self) -> str:
+        """Returns the operator console JWT secret. Never equals the customer JWT_SECRET."""
+        if self.PLATFORM_JWT_SECRET:
+            return self.PLATFORM_JWT_SECRET
+        import hashlib
+        return hashlib.sha256(f"{self.JWT_SECRET}:platform_operator_signing_key".encode()).hexdigest()
+
 
     # GST provider adapter. Credentials stay server-side; the adapter is API-shape agnostic.
     GST_PROVIDER_URL: Optional[str] = None
@@ -78,6 +104,37 @@ class Settings(BaseSettings):
     # UPI / Payment Settings
     DEFAULT_UPI_VPA: str = "***@upi"
     RAZORPAY_WEBHOOK_SECRET: Optional[str] = None
+
+    # ── Billing gateway secrets (Phase 3) ────────────────────────────────────
+    # Razorpay (subscription billing gateway)
+    BILLING_RAZORPAY_KEY_ID: Optional[str] = None
+    BILLING_RAZORPAY_KEY_SECRET: Optional[str] = None
+    BILLING_RAZORPAY_WEBHOOK_SECRET: Optional[str] = None
+    # Cashfree (alternative gateway)
+    BILLING_CASHFREE_APP_ID: Optional[str] = None
+    BILLING_CASHFREE_SECRET: Optional[str] = None
+    BILLING_CASHFREE_ENV: str = "sandbox"  # "sandbox" | "production"
+    BILLING_CHECKOUT_ENABLED: bool = False
+    # Recurring debits need a mandate made with the gateway, which is not built yet. Until it is, no order
+    # may claim autopay: the customer would be told they are on autopay and never be charged.
+    BILLING_AUTOPAY_ENABLED: bool = False
+
+    # Who issues the tax invoice. There are no defaults: an invoice must never carry made-up details, so
+    # nothing can be sold (online or recorded by an operator) until the legal name and GSTIN are set.
+    BILLING_SELLER_NAME: Optional[str] = None
+    BILLING_SELLER_TRADE_NAME: str = "MyTally"
+    BILLING_SELLER_GSTIN: Optional[str] = None
+    BILLING_SELLER_STATE_CODE: Optional[str] = None   # defaults to the first two digits of the GSTIN
+    BILLING_SELLER_STATE_NAME: Optional[str] = None
+    BILLING_SELLER_ADDRESS: Optional[str] = None
+    BILLING_SELLER_EMAIL: Optional[str] = None
+    BILLING_SELLER_PHONE: Optional[str] = None
+    # At most 5 characters each: with "/2627/00001" a GST invoice number may not exceed 16 characters
+    # The sales team's phone and WhatsApp number, with the country code (e.g. 919876543210). Shown on the pricing
+    # and locked-account pages and used for "Chat on WhatsApp". Empty = no number is shown anywhere.
+    BILLING_SALES_PHONE: Optional[str] = None
+    BILLING_INVOICE_PREFIX: str = "MT"
+    BILLING_CREDIT_NOTE_PREFIX: str = "MTCN"
     
     # Web Push / VAPID Settings
     VAPID_PUBLIC_KEY: Optional[str] = None

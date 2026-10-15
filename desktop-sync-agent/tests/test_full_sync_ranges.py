@@ -46,7 +46,7 @@ class Tally:
         self.calls.append("index")
         return [d for _, d in self.vouchers]
 
-    def export_vouchers_between(self, company, date_from, date_to, method="sv"):
+    def export_vouchers_between(self, company, date_from, date_to, method="sv", label=None):
         self.calls.append((method, date_from, date_to))
         if (date_from, date_to) in self.fail_ranges:
             return None

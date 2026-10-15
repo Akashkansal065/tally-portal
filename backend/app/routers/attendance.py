@@ -655,7 +655,8 @@ async def punch_attendance(
     if not photo_url:
         photo_url = f"attendance_{req.type}_{user.user_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
         
-    ip_address = request.headers.get("x-forwarded-for") or request.client.host or "unknown"
+    from app.core.rate_limiter import get_client_ip
+    ip_address = get_client_ip(request)
     sanitized_comments = req.comments[:1024] if req.comments else None
     now_ist = get_ist_now()
     formatted_ist = now_ist.strftime("%I:%M %p")

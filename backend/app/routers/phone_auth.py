@@ -178,6 +178,8 @@ async def phone_register(request: Request, response: Response, req: PhoneRegiste
         account = Account(name=business_name, status="active")
         db.add(account)
         await db.flush()
+        from app.services.billing.subscriptions import start_trial
+        await start_trial(db, account.account_id)
         admin_role = await create_default_roles(db, account.account_id)   # the account's own Admin and Sales roles
         # A user always has a company to be in. This one stands in until the first Tally company is linked.
         company = Company(account_id=account.account_id, name=business_name, pincode=pincode, awaiting_tally=True,

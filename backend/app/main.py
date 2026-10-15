@@ -3,9 +3,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import text
+from app.core.config import settings
 from app.core.database import engine, Base, AsyncSessionLocal
 from app.core.seed import seed_global_data, ensure_admin_roles_have_every_module
-from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backups, payroll_masters
+from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backups, payroll_masters, billing, platform_billing, platform_auth, platform_users, platform_roles, platform_admins, platform_audit
+import app.models.billing   # noqa: F401  – registers billing tables with Base.metadata before create_all
+import app.models.platform  # noqa: F401  – registers platform console tables with Base.metadata
 
 from app.core.logging_config import setup_logging, get_logger, RequestLoggingMiddleware
 
@@ -56,7 +59,7 @@ async def lifespan(app: FastAPI):
         (attendance_models.Attendance.__table__, ["ix_portal_attendance_user_checkin", "ix_portal_attendance_account"]),
         (attendance_models.AttendanceLocationLog.__table__, ["ix_attendance_locations_latest", "ix_attendance_locations_account"]),
         # Accounts (multi-tenant): owner columns added to tables that already existed
-        (portal.User.__table__, ["ix_users_account"]),
+        (portal.User.__table__, ["ix_users_account", "ix_users_deleted", "ix_users_account_status", "ix_users_created", "ix_users_last_login"]),
         (portal.Company.__table__, ["ix_companies_account_guid"]),
         (portal.Role.__table__, ["ix_roles_account"]),
         (portal.ShopPayment.__table__, ["ix_shop_payments_company"]),
@@ -92,6 +95,31 @@ async def lifespan(app: FastAPI):
         # and SQLAlchemy requires a special wrapper for sync execution
         await conn.run_sync(sync_seed)
 
+    # Seed billing catalog and backfill existing accounts with legacy subscriptions
+    from app.services.billing.catalog import seed_catalog
+    from app.services.billing.subscriptions import backfill_legacy_subscriptions
+    async with AsyncSessionLocal() as db:
+        try:
+            await seed_catalog(db)
+            await backfill_legacy_subscriptions(db)
+        except Exception as exc:
+            logger.warning(f"Billing catalog seed/backfill failed (non-fatal): {exc}")
+
+        # Seed platform permissions catalogue and bootstrap initial operator if configured
+        from app.core.platform_catalogue import sync_platform_catalogue, bootstrap_first_super_admin
+        try:
+            await sync_platform_catalogue(db)
+            await bootstrap_first_super_admin(db)
+        except Exception as exc:
+            logger.warning(f"Platform operator catalogue seed failed (non-fatal): {exc}")
+
+        if not settings.PLATFORM_PASSKEY_REQUIRED:
+            logger.warning("SECURITY WARNING: PLATFORM_PASSKEY_REQUIRED is disabled. Operator Console is protected by password alone.")
+
+    # Pre-Go-Live Boot Security Scan: Assert every route under /platform has permission dependency
+    from app.core.platform_security import verify_platform_routes_security
+    verify_platform_routes_security(app)
+
     # Start background workers only after initialization has succeeded.
     keep_alive_task = asyncio.create_task(db_keep_alive_task(60))
 
@@ -111,6 +139,9 @@ async def lifespan(app: FastAPI):
     from app.services.reminders import reminder_worker
     reminder_task = asyncio.create_task(reminder_worker())
 
+    # 8. Subscription lifecycle & stale order worker (every 5 minutes)
+    from app.services.billing.subscriptions import billing_lifecycle_worker
+    billing_lifecycle_task = asyncio.create_task(billing_lifecycle_worker(300))
                 
     try:
         yield
@@ -120,7 +151,16 @@ async def lifespan(app: FastAPI):
         daily_cleanup_task.cancel()
         sync_alert_task.cancel()
         reminder_task.cancel()
-        await asyncio.gather(keep_alive_task, attendance_worker_task, daily_cleanup_task, sync_alert_task, reminder_task, return_exceptions=True)
+        billing_lifecycle_task.cancel()
+        await asyncio.gather(
+            keep_alive_task,
+            attendance_worker_task,
+            daily_cleanup_task,
+            sync_alert_task,
+            reminder_task,
+            billing_lifecycle_task,
+            return_exceptions=True,
+        )
 
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -202,6 +242,13 @@ app.include_router(customers.router)
 app.include_router(notifications.router)
 app.include_router(planner.router)
 app.include_router(bank_recon.router)
+app.include_router(billing.router)
+app.include_router(platform_billing.router)
+app.include_router(platform_auth.router)
+app.include_router(platform_users.router)
+app.include_router(platform_roles.router)
+app.include_router(platform_admins.router)
+app.include_router(platform_audit.router)
 
 # Backups are made by each company's sync agent from the Tally on its own PC and uploaded here
 # (app/routers/backups.py). The server never reaches a customer's Tally for them.

@@ -17,6 +17,7 @@ from app.core.permissions import require_permission, get_effective_permission
 from app.models.portal_core import User
 from app.core.config import settings
 from app.core.datetime_utils import get_ist_now, to_ist_iso
+from app.services.billing.entitlements import require_feature
 
 async def can_manage_all_orders(user: User, db: AsyncSession) -> bool:
     """Determine whether user has manager/admin-level access to view/edit all orders."""
@@ -226,7 +227,11 @@ class OrderCreateRequest(BaseModel):
 
 # ─── Router ──────────────────────────────────────────────────────────────────
 
-router = APIRouter(prefix="/temporders", tags=["Orders"])
+router = APIRouter(
+    prefix="/temporders",
+    tags=["Orders"],
+    dependencies=[Depends(require_feature("salesman_checkin_orders"))],
+)
 
 
 @router.post("")

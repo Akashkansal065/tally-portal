@@ -22,6 +22,11 @@ os.environ.update(
     TALLY_URL="",
     TALLY_URL_COMPANY_GUID="",
     PLATFORM_ADMIN_EMAILS="",
+    PLATFORM_COOKIE_PATH="/platform",
+    PLATFORM_COOKIE_PREFIX="",
+    BILLING_SELLER_NAME="Test Seller Private Limited",
+    BILLING_SELLER_GSTIN="07ABCDE1234F1Z5",
+    BILLING_SELLER_STATE_NAME="Delhi",
     LOG_LEVEL="WARNING",
 )
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -34,7 +39,7 @@ from datetime import date, timedelta  # noqa: E402
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import BigInteger, event  # noqa: E402
+from sqlalchemy import BigInteger, event, select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
 from sqlalchemy.ext.compiler import compiles  # noqa: E402
 from sqlalchemy.pool import NullPool  # noqa: E402
@@ -53,6 +58,8 @@ from app.core.tally_target import forget_direct_companies  # noqa: E402
 from app.core.security import create_access_token, get_password_hash  # noqa: E402
 import app.models.portal_core as P  # noqa: E402
 import app.models.tally_core  # noqa: E402,F401
+import app.models.billing     # noqa: E402,F401
+import app.models.platform    # noqa: E402,F401
 import app.routers.attendance  # noqa: E402,F401  (registers attendance models)
 import app.routers.sync  # noqa: E402,F401
 
@@ -79,6 +86,11 @@ class Harness:
         async def create():
             async with self.engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            async with self.Session() as session:
+                from app.services.billing.catalog import seed_catalog
+                await seed_catalog(session)
+                from app.core.platform_catalogue import sync_platform_catalogue
+                await sync_platform_catalogue(session)
         run(create())
 
     async def _get_db(self):
@@ -158,13 +170,16 @@ class Harness:
 
 @pytest.fixture
 def harness(tmp_path):
+    from app.services.billing.entitlements import invalidate_entitlements_cache
     clear_all_auth_and_permission_caches()
     clear_all_cache()
     forget_direct_companies()
+    invalidate_entitlements_cache()     # held per account id, and every test's database starts at account 1
     yield Harness(tmp_path)
     clear_all_auth_and_permission_caches()
     clear_all_cache()
     forget_direct_companies()
+    invalidate_entitlements_cache()
 
 
 # ── device header presets ──
@@ -197,3 +212,55 @@ def login(client, email, headers=None):
 
 def bearer(token, extra=None):
     return {"Authorization": f"Bearer {token}", **(extra or {})}
+
+
+# ── platform operator console ──
+
+async def setup_test_operator(db, role_code: str = "super_admin"):
+    """A signed-in platform operator holding the role `role_code`: (PlatformAdmin, operator access token)."""
+    from app.core.platform_catalogue import sync_platform_catalogue
+    from app.core.platform_security import (
+        create_platform_access_token, generate_refresh_token, hash_password, hash_token, utc_now)
+    from app.models.platform import PlatformAdmin, PlatformAdminRole, PlatformAdminSession, PlatformRole
+    await sync_platform_catalogue(db)
+
+    # Find role
+    res = await db.execute(select(PlatformRole).where(PlatformRole.code == role_code))
+    role = res.scalars().first()
+
+    now = utc_now()
+    admin = PlatformAdmin(
+        email=f"op_{role_code}@mytally.com",
+        password_hash=hash_password("SuperSecret12345!"),
+        full_name="Test Operator",
+        status="active",
+        permission_version=1,
+    )
+    db.add(admin)
+    await db.flush()
+
+    db.add(PlatformAdminRole(admin_id=admin.admin_id, role_id=role.role_id, assigned_by=admin.admin_id))
+    await db.flush()
+
+    raw_refresh = generate_refresh_token()
+    session = PlatformAdminSession(
+        admin_id=admin.admin_id,
+        family_id="fam-123",
+        refresh_hash=hash_token(raw_refresh),
+        refresh_used=False,
+        mfa_at=now,
+        ip_address="127.0.0.1",
+        created_at=now,
+        last_seen_at=now,
+        expires_at=now + utc_now().resolution * 100000000,
+    )
+    db.add(session)
+    await db.commit()
+
+    token = create_platform_access_token(
+        admin_id=admin.admin_id,
+        session_id=session.session_id,
+        permission_version=admin.permission_version,
+        amr=["pwd", "mfa"],
+    )
+    return admin, token

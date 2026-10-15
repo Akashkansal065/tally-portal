@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Archive, ChevronRight, Loader2, Package, Pencil, Target, UserMinus } from 'lucide-react'
-import { Area, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { toast } from 'sonner'
 import { useAuth } from '@/context/AuthContext'
 import { BottomSheet } from '@/components/ui/bottom-sheet'
@@ -14,6 +13,7 @@ import {
   getReorderAlerts,
   getSalesTarget,
   getWatchlist,
+  remember,
   remembered,
   rupees,
   rupeesShort,
@@ -22,8 +22,30 @@ import {
 } from '@/lib/report-insights'
 import { DEFAULT_WATCHLIST, REORDER_DEFAULT } from '@/components/reports/Watchlists'
 
+import { TargetSparkline } from './TargetSparkline'
+
 const monthName = (month: string) =>
   new Date(`${month}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'long' })
+
+function TargetTrackerSkeleton() {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4 shadow-sm animate-pulse space-y-3" role="status">
+      <div className="flex justify-between items-start">
+        <div className="space-y-2">
+          <div className="h-3 w-28 bg-muted rounded" />
+          <div className="h-7 w-44 bg-muted rounded" />
+        </div>
+        <div className="h-6 w-12 bg-muted rounded" />
+      </div>
+      <div className="h-2.5 w-full bg-muted rounded-full" />
+      <div className="grid grid-cols-2 gap-2 pt-1">
+        <div className="h-4 w-28 bg-muted rounded" />
+        <div className="h-4 w-28 bg-muted rounded" />
+      </div>
+      <span className="sr-only">Loading the sales target...</span>
+    </div>
+  )
+}
 
 /**
  * Home's first card: this month's net sales (before GST, this company) against its monthly target, what's
@@ -33,6 +55,13 @@ export function TargetTracker() {
   const { token, user, permissions } = useAuth()
   const isAdmin = isAdminUser(permissions, user?.role)
   const [data, setData] = useState<SalesTarget | null>(null)
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      const cached = remembered<SalesTarget | null>('sales_target_cache', null)
+      if (cached) setData(cached)
+    })
+  }, [])
   const [failed, setFailed] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -43,8 +72,21 @@ export function TargetTracker() {
     if (!token) return
     let current = true
     getSalesTarget(token)
-      .then(d => { if (current) { setData(d); setFailed(false) } })
-      .catch(() => { if (current) setFailed(true) })
+      .then(d => {
+        if (current) {
+          setData(d)
+          setFailed(false)
+          remember('sales_target_cache', d)
+        }
+      })
+      .catch(() => {
+        if (current) {
+          setData(prev => {
+            if (!prev) setFailed(true)
+            return prev
+          })
+        }
+      })
     return () => { current = false }
   }, [token, reloadKey])
 
@@ -69,12 +111,7 @@ export function TargetTracker() {
 
   if (failed) return null
   if (!data) {
-    return (
-      <div className="flex h-44 items-center justify-center rounded-2xl border border-border bg-card" role="status">
-        <Loader2 className="h-5 w-5 animate-spin text-primary" />
-        <span className="sr-only">Loading the sales target</span>
-      </div>
-    )
+    return <TargetTrackerSkeleton />
   }
 
   const pct = data.achieved_pct ?? 0
@@ -143,20 +180,7 @@ export function TargetTracker() {
       </dl>
 
       {data.daily.length > 1 && (
-        <div className="mt-3 h-20" aria-hidden="true">
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={data.daily} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
-              <XAxis dataKey="date" hide />
-              <Tooltip
-                formatter={(value, name) => [rupees(Number(value)), name === 'cumulative' ? 'Sales so far' : 'Target pace']}
-                labelFormatter={label => new Date(`${label}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                contentStyle={{ borderRadius: 12, fontSize: 12 }}
-              />
-              <Area type="monotone" dataKey="cumulative" stroke="var(--color-primary)" fill="var(--color-primary)" fillOpacity={0.15} strokeWidth={2} />
-              <Line type="linear" dataKey="target_cumulative" stroke="#94a3b8" strokeDasharray="4 4" dot={false} strokeWidth={1.5} />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </div>
+        <TargetSparkline daily={data.daily} />
       )}
 
       <p className="mt-1 text-xs text-muted-foreground">Net sales before GST, after returns.</p>

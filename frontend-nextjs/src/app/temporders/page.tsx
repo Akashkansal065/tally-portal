@@ -419,7 +419,7 @@ export default function TempOrdersPage() {
           {can('orders', 'create') && (
             <button 
               onClick={() => router.push('/temporders/new')}
-              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all active:scale-[0.98] shadow-md shadow-emerald-500/10 cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all active:scale-[0.98] shadow-md shadow-emerald-600/10 cursor-pointer"
             >
               <Plus className="h-3.5 w-3.5" /> Place Order
             </button>
@@ -503,8 +503,10 @@ export default function TempOrdersPage() {
 
               {/* Status Dropdown with counts */}
               <div className="flex items-center gap-2.5">
-                <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider min-w-[70px]">Status:</span>
+                <label htmlFor="status-filter-select" className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider min-w-[70px]">Status:</label>
                 <select
+                  id="status-filter-select"
+                  aria-label="Filter by order status"
                   value={statusFilter}
                   onChange={e => setStatusFilter(e.target.value)}
                   className="flex-1 bg-muted/40 border border-border rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
@@ -520,8 +522,10 @@ export default function TempOrdersPage() {
               {/* Salesperson Dropdown with counts */}
               {permissions.isAdmin && salespersons.length > 0 && (
                 <div className="flex items-center gap-2.5">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider min-w-[70px]">Salesperson:</span>
+                  <label htmlFor="salesperson-filter-select" className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider min-w-[70px]">Salesperson:</label>
                   <select
+                    id="salesperson-filter-select"
+                    aria-label="Filter by salesperson"
                     value={salespersonFilter}
                     onChange={e => setSalespersonFilter(e.target.value)}
                     className="flex-1 bg-muted/40 border border-border rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
@@ -542,8 +546,19 @@ export default function TempOrdersPage() {
 
         {/* Orders List */}
         {loading ? (
-          <div className="flex justify-center py-10">
-            <div className="w-6 h-6 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          <div className="space-y-3" aria-busy="true" aria-label="Loading orders">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="bg-card border border-border rounded-2xl p-4 shadow-sm animate-pulse space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-2 flex-1">
+                    <div className="h-4 bg-muted rounded w-48" />
+                    <div className="h-3 bg-muted/60 rounded w-32" />
+                  </div>
+                  <div className="h-4 bg-muted rounded w-16" />
+                </div>
+                <div className="h-3 bg-muted/40 rounded w-full" />
+              </div>
+            ))}
           </div>
         ) : filteredOrders.length === 0 ? (
           <div className="text-center py-12 bg-card border border-border rounded-2xl border-dashed">
@@ -560,7 +575,7 @@ export default function TempOrdersPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="font-extrabold text-sm text-foreground break-words">{o.customer_name}</h3>
+                        <h2 className="font-extrabold text-sm text-foreground break-words">{o.customer_name}</h2>
                         {o.customer_gstin ? (
                           <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
                             GST: {o.customer_gstin.toUpperCase()}
@@ -685,7 +700,7 @@ export default function TempOrdersPage() {
             <div className="px-6 py-5 border-b border-border flex justify-between items-center shrink-0">
               <div>
                 <div className="flex items-center gap-2">
-                  <h3 className="font-black text-lg text-foreground">Order Details</h3>
+                  <h2 className="font-black text-lg text-foreground">Order Details</h2>
                   {statusBadge(expandedOrder.status, expandedOrder.sent_items_count, expandedOrder.total_items_count ?? expandedOrder.items.length)}
                 </div>
                 <p className="text-xs text-muted-foreground mt-0.5">Placed by <span className="font-bold text-foreground">{expandedOrder.salesperson}</span></p>

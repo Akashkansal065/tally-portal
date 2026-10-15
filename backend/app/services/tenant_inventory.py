@@ -110,7 +110,7 @@ async def collect_inventory(db: AsyncSession) -> Dict[str, Any]:
     unowned = {}
     for name, table in sorted(tables.items()):
         for column in ("account_id", "company_id"):
-            if column in table.c and table.c[column].nullable and name != "accounts":
+            if column in table.c and table.c[column].nullable and name not in ("accounts", "billing_plans"):
                 missing = await _count(db, select(func.count()).select_from(table).where(table.c[column].is_(None)))
                 total = await _count(db, select(func.count()).select_from(table))
                 if total:

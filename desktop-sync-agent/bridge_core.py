@@ -77,7 +77,8 @@ def health_from_status(status: Dict[str, Any], now: Optional[float] = None) -> D
         return {"kind": "paused", "title": "Syncing is paused", "detail": "Changes will sync when you resume.", "action": "resume"}
     if state == "SYNCING":
         name = status.get("active_company_name") or "your companies"
-        return {"kind": "sync", "title": f"Syncing {name}", "detail": "This can take a while for a large company.", "action": "sync"}
+        detail = status.get("sync_detail") or status.get("last_sync_status") or "This can take a while for a large company."
+        return {"kind": "sync", "title": f"Syncing {name}", "detail": detail, "action": "sync"}
     if state == "TALLY OFFLINE":
         return {"kind": "error", "title": "Can't reach TallyPrime",
                 "detail": "Open TallyPrime on this PC. Syncing resumes on its own once it is back.", "action": "retry"}

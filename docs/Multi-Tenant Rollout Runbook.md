@@ -316,3 +316,207 @@ Tally matches imported records loosely, and an Alter that matches nothing can cr
 ### The old module's files
 
 - [ ] Backups made by the old module are in `backend/backup_module/backups/` on the server (and its records in `backend/backup_module/backup.db`). They are not shown in the app any more. Copy out any you want to keep before deleting that folder.
+
+## 13. Plans, pricing and billing (Phases 0–7)
+
+The full design is in `docs/Pricing and Billing Implementation Plan.md`. This section lists the deployed billing subsystems and the exact manual steps for environment configuration and rollout.
+
+### What is implemented across phases
+
+1. **Phase 0: Stop the leak:**
+   - Client-side and mock payment verifications disabled.
+   - `BILLING_CHECKOUT_ENABLED` flag added to `app/core/config.py` (defaults to `False`).
+2. **Phase 1: Catalog & Quote Engine:**
+   - 13 relational billing tables in `app/models/billing.py`.
+   - Idempotent `seed_catalog(db)` seeds Silver, Gold, Diamond and add-ons.
+   - Pure integer-paise quote engine (`app/services/billing/quote.py`) calculating itemised GST splits (CGST+SGST vs. IGST).
+3. **Phase 2: Subscriptions & Entitlements:**
+   - Automatic `ensure_legacy_subscription(db, account_id)` preserves all existing accounts as `legacy` (unlimited, no expiration).
+   - Signups receive a 7-day Gold trial (`start_trial`).
+   - Dynamic entitlements cache (60s TTL) with invalidation hooks.
+   - Limit checks wired to entitlements in `team.py` (users) and `agent.py` (devices & companies).
+4. **Phase 3: Prepaid Checkout & Gateways:**
+   - Direct HTTP adapters for Razorpay and Cashfree without external SDK dependencies.
+   - Idempotent order fulfilment with transaction locks and webhook de-duplication.
+   - Dynamic JS gateway script loader (`src/lib/loadScript.ts`) in Next.js frontend.
+   - Dual-gateway checkout with fallback to WhatsApp concierge in `PlanCheckoutModal.tsx`.
+5. **Phase 4: GST Invoicing & Profiles:**
+   - Sequential financial-year invoice numbering (`MT/2627/00001`, credit notes `MTCN/2627/00001`) with database row locks. GST allows at most 16 characters, so each prefix is at most 5.
+   - GSTIN format validation (15-character alphanumeric regex) and buyer billing profile endpoints (`GET|PUT /billing/profile`).
+   - Tenant-isolated invoices list and detail endpoints (`GET /billing/invoices`).
+6. **Phase 5: Lifecycle & 402 Full Lock:**
+   - Background worker `billing_lifecycle_worker(300)` runs every 5 minutes in FastAPI lifespan.
+   - State progression: `trialing` → `active` → `grace` (7 days) → `locked`.
+   - 402 Payment Required interceptor in `permissions.py` with `X-Billing-State: locked` header on business routes. Exempt routes: `/auth/*`, `/billing/*`, `/platform/*`, `/health`, and notification counts.
+   - Desktop sync agent pauses sync for 15 minutes when receiving 402, preserving Tally data intact.
+   - Dedicated `/billing/locked` page in frontend with auto-redirect from `AuthContext.tsx`.
+7. **Phase 6: Operator Console:**
+   - Mounted at `/platform/billing/*`, protected by `require_platform_admin`.
+   - Real-time business metrics (`/platform/billing/metrics`), accounts listing, plan assignment, bespoke custom plan creation, manual overrides, lock/unlock, offline payment recording, leads, and webhook logs.
+8. **Phase 7: Feature Gating:**
+   - `require_feature(...)` dependency applied across:
+     - `backend/app/routers/gst.py` (`einvoice_eway_bill`)
+     - `backend/app/routers/bank_recon.py` (`bank_reconciliation`)
+     - `backend/app/routers/approvals.py` (`approval_rules_matrix`)
+     - `backend/app/routers/visits.py` and `orders.py` (`salesman_checkin_orders`)
+     - `backend/app/routers/reminders.py` (`auto_payment_reminders`)
+     - `backend/app/routers/payment_gateway.py` (`payment_links_collect`)
+   - Returns 403 Forbidden with `X-Billing-Reason: feature` and `X-Billing-Required-Feature`.
+   - Frontend `UpgradePromptModal` intercepts 403 globally and displays an upgrade modal with value propositions and direct links to `/pricing`.
+9. **Phase 8: Monthly Autopay & Recurring Billing (only partly built: no mandate is ever created with a gateway, so it is switched off by `BILLING_AUTOPAY_ENABLED=false`; see "Autopay stays off" below):**
+   - Seeded monthly prices with `autopay_allowed=True`.
+   - Recurring charge webhooks (`subscription.charged`, `SUBSCRIPTION_CHARGED`) create an automatic `BillingOrder(purpose="autopay_charge")`, extend period by 30 days, and issue sequential GST tax invoice.
+   - Recurring charge failure webhooks (`subscription.halted`, `SUBSCRIPTION_PAYMENT_FAILED`) transition the subscription to a 7-day `grace` period without immediate locking.
+   - User cancellation endpoint `POST /billing/subscription/autopay/cancel` sets `cancel_at_period_end = True` and `autopay = False` while keeping current term valid.
+10. **Phase 9: Prorated Upgrades & Metered Pack Credits:**
+    - Proration math in quote engine: when upgrading an active paid subscription, unused days in the current term (`(days_left / total_days) * term_price`) are automatically computed and credited (`proration_credit_paise`).
+    - Append-only credit ledger (`billing_credit_ledger`) with atomic balance aggregations (`get_credit_balance`, `grant_credits`, `consume_credits`).
+    - Supports `einvoice` credits (IRN / E-Way bill generation) and `whatsapp` credits (Meta Cloud API utility messages).
+    - Credit allocations fulfilled automatically when ordering add-on packs (`credit_pack`).
+
+---
+
+### Settings to make before anyone can pay
+
+All of these go in `backend/.env`. The names are the ones the code reads (`app/core/config.py`); a name that is
+not listed here is ignored.
+
+#### 1. Who issues the invoice (required)
+
+There are no defaults. Until the legal name and a real GSTIN are set, nothing can be sold: online checkout
+stays closed and the operator's "record offline payment" is refused, so that no invoice ever carries made-up
+seller details.
+
+```env
+BILLING_SELLER_NAME=<registered legal name>
+BILLING_SELLER_GSTIN=<15-character GSTIN>
+BILLING_SELLER_STATE_NAME=<state, as on the registration>
+BILLING_SELLER_ADDRESS=<registered address, one line>
+BILLING_SELLER_EMAIL=<billing email shown on invoices>
+BILLING_SELLER_PHONE=<phone shown on invoices>
+# Optional. The state code is taken from the first two digits of the GSTIN unless set here.
+# BILLING_SELLER_STATE_CODE=
+# BILLING_INVOICE_PREFIX=MT       (at most 5 characters: GST invoice numbers are limited to 16)
+# BILLING_CREDIT_NOTE_PREFIX=MTCN
+```
+
+- [ ] `GET /billing/plans` shows `"checkout_enabled": false` while any of name, GSTIN or a gateway's keys is missing, whatever `BILLING_CHECKOUT_ENABLED` says.
+
+#### 2. Payment gateways
+
+A gateway is offered at checkout only when both of its values are set.
+
+```env
+BILLING_RAZORPAY_KEY_ID=rzp_live_...
+BILLING_RAZORPAY_KEY_SECRET=...
+BILLING_RAZORPAY_WEBHOOK_SECRET=...
+
+BILLING_CASHFREE_APP_ID=...
+BILLING_CASHFREE_SECRET=...
+BILLING_CASHFREE_ENV=production      # "sandbox" until you go live
+```
+
+- `RAZORPAY_WEBHOOK_SECRET` (without `BILLING_`) is a different setting: it belongs to the payment links a
+  customer's own company sends, not to MyTally's subscriptions.
+- Cashfree signs its webhooks with the same secret key as the API (`BILLING_CASHFREE_SECRET`); there is no
+  separate webhook secret.
+- Cashfree needs the buyer's 10-digit mobile number. A customer without one on their billing details is asked
+  to add it; no stand-in number is sent.
+
+#### 3. Webhook addresses in the gateway dashboards
+
+- **Razorpay** → Settings → Webhooks
+  - URL: `https://<your API host>/billing/webhooks/razorpay`
+  - Secret: the value of `BILLING_RAZORPAY_WEBHOOK_SECRET`
+  - Events: `payment.captured`, `order.paid`
+- **Cashfree** → Developers → Webhooks
+  - URL: `https://<your API host>/billing/webhooks/cashfree` (also sent with each order when `APP_PUBLIC_URL` is set)
+  - Events: payment success
+
+A webhook that cannot be carried out is answered 500, its error is kept on the event (operator console →
+webhooks), and nothing it started is saved. The gateway's next delivery is tried again.
+
+#### 4. Autopay stays off
+
+```env
+BILLING_AUTOPAY_ENABLED=false
+```
+
+Recurring debits need a mandate created with the gateway, and that is not built. While this is `false` an order
+asking for autopay is refused, so nobody is told they are on autopay and then never charged. Do not switch it on.
+
+#### 4a. The sales number customers are shown
+
+```env
+# Country code and number, digits only
+BILLING_SALES_PHONE=919876543210
+```
+
+- [ ] Set it to the number the sales team answers, on WhatsApp too, and restart. The pricing page, the locked-account
+  page, the checkout window and the subscription panel in Admin show it, and "Chat on WhatsApp" opens a chat with it.
+  Until it is set, no number is shown anywhere and "Talk to sales" only saves the request (it appears under leads in
+  the operator console) for the team to call back.
+
+#### 5. Who may use the operator console
+
+The console (`/console`) takes only its own operator sign-in (password plus passkey). A normal MyTally sign-in is
+refused there, even for an email in `PLATFORM_ADMIN_EMAILS`. That list only names who becomes the first operator:
+
+```env
+PLATFORM_ADMIN_EMAILS=<comma-separated emails>
+# Set once, from the deployment secret store, for the very first start; remove it after the first operator signs in.
+PLATFORM_ADMIN_INITIAL_PASSWORD=<one-time password>
+```
+
+- [ ] On the first start with no operators, the first email in `PLATFORM_ADMIN_EMAILS` becomes the super admin with
+  `PLATFORM_ADMIN_INITIAL_PASSWORD`. Sign in at `/console/login`, register a passkey, then remove
+  `PLATFORM_ADMIN_INITIAL_PASSWORD` from `backend/.env` and restart. Further operators are invited from the console.
+- [ ] Lost access: run `python scripts/break_glass.py` from the `backend` folder on the server.
+
+#### 6. Real client addresses behind a proxy
+
+Rate limits, operator sign-in lockouts, IP allowlists and audit logs use the caller's address. `X-Forwarded-For` is
+believed only from the proxies in `TRUSTED_PROXY_IPS` (default `127.0.0.1,::1`: the Next.js `/console-api` rewrite and
+an nginx on the same machine). From anyone else it is ignored, since a caller can write anything there.
+
+- [ ] If a load balancer or nginx on another machine sits in front of the backend, add its address (or CIDR) to
+  `TRUSTED_PROXY_IPS` in `backend/.env` and restart. Otherwise every request looks like it came from that proxy, and
+  one person's failed sign-ins lock everyone out.
+
+---
+
+### How orders behave (for support)
+
+- What an order is (new, renewal, upgrade, downgrade, add-on) is decided by the server from the account's
+  subscription. It is never taken from the request.
+- **Add-ons on their own** can be bought only while a paid term is running. They are charged for the days left
+  in that term and never change the plan, the end date or the status.
+- **Renewal** during a running term is added to its end and keeps the seats already paid for.
+- **Upgrade** starts a new term now. The unused part of what was actually paid for the old term comes off the price.
+- **Downgrade** is refused while the account has more active users or companies than the smaller plan allows.
+  Otherwise it is paid now and takes over when the running term ends.
+- The tax (CGST+SGST or IGST) follows the state on the account's saved billing profile. The invoice shows the
+  same state.
+- Customers are told in the app, and by email when a billing email is on file: on payment, 7, 3 and 1 days
+  before a trial or a term ends, when grace starts, and when the account is locked.
+
+---
+
+### Going live (switching on self-serve checkout)
+
+- [ ] From `backend/`: `venv/bin/pytest tests` passes.
+- [ ] From `frontend-nextjs/`: `npm run build` passes.
+- [ ] Existing customers are still unlimited and not locked:
+  ```sql
+  SELECT account_id, status, plan_id FROM account_subscriptions WHERE status <> 'legacy';
+  ```
+  Before launch this should list only accounts you put on a plan yourself and new sign-ups on trial.
+- [ ] Sections 1 to 3 above are done, and a test purchase in each gateway's test mode produced a paid order, an
+  active subscription and an invoice with your real seller details.
+- [ ] Set `BILLING_CHECKOUT_ENABLED=true` in `backend/.env` and restart the backend.
+
+### Not built yet
+
+- Autopay mandates (see 4 above).
+- Refunds and credit notes, and managing coupons and standard plans, from the operator console.
+- Buying e-invoice and WhatsApp credit packs, and using the credits up.

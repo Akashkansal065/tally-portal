@@ -23,6 +23,7 @@ from app.services.gst.validation import validate_return_lines
 from app.services.gst.providers import create_provider, make_idempotency_key
 from app.services.integrations import is_enabled, not_available_yet, require_integration
 from app.routers.admin import require_admin
+from app.services.billing.entitlements import require_feature
 from app.models.portal_core import AuditLog
 from app.core.config import settings
 from app.schemas.gst import (
@@ -1667,7 +1668,7 @@ async def file_gstr9(
 
 # --- E-Invoicing (IRN & E-Way Bill) ---
 
-@router.post("/einvoice/{voucher_id}/generate")
+@router.post("/einvoice/{voucher_id}/generate", dependencies=[Depends(require_feature("einvoice_eway_bill"))])
 async def generate_einvoice_irn(
     voucher_id: int,
     user: User = Depends(require_permission("vouchers", "update")),
@@ -1779,7 +1780,7 @@ async def generate_einvoice_irn(
         "eway_bill_date": eway_bill_date.strftime("%Y-%m-%d %H:%M:%S") if eway_bill_date else None
     }
 
-@router.get("/einvoices", response_model=List[GstEinvoiceListResponse])
+@router.get("/einvoices", response_model=List[GstEinvoiceListResponse], dependencies=[Depends(require_feature("einvoice_eway_bill"))])
 async def get_einvoices_list(
     user: User = Depends(require_permission("reports", "read")),
     db: AsyncSession = Depends(get_db),
@@ -1870,7 +1871,7 @@ def _settings_out(company) -> dict:
     }
 
 
-@router.get("/einvoice/settings", response_model=EinvoiceSettingsResponse)
+@router.get("/einvoice/settings", response_model=EinvoiceSettingsResponse, dependencies=[Depends(require_feature("einvoice_eway_bill"))])
 async def get_einvoice_settings(user: User = Depends(_either_switch_on), db: AsyncSession = Depends(get_db)):
     from app.models.portal_core import Company
     company = (await db.execute(select(Company).where(Company.company_id == user.company_id))).scalars().first()
@@ -1879,7 +1880,7 @@ async def get_einvoice_settings(user: User = Depends(_either_switch_on), db: Asy
     return _settings_out(company)
 
 
-@router.put("/einvoice/settings", response_model=EinvoiceSettingsResponse)
+@router.put("/einvoice/settings", response_model=EinvoiceSettingsResponse, dependencies=[Depends(require_feature("einvoice_eway_bill"))])
 async def update_einvoice_settings(
     payload: EinvoiceSettingsUpdate,
     user: User = Depends(require_admin),

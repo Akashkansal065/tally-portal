@@ -3,31 +3,60 @@ from starlette.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
+import ipaddress
 import logging
 
 logger = logging.getLogger(__name__)
 
+def _trusted_proxies() -> list:
+    """The proxies whose forwarding headers are believed (TRUSTED_PROXY_IPS: addresses or CIDRs)."""
+    nets = []
+    for part in (settings.TRUSTED_PROXY_IPS or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logger.warning(f"Ignoring invalid TRUSTED_PROXY_IPS entry: {part!r}")
+    return nets
+
+
+def _is_trusted(ip: str, nets: list) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in nets)
+
+
 def get_client_ip(request: Request) -> str:
     """
-    Extract client IP address, respecting reverse proxy headers (Cloudflare, Nginx, ALB, Vercel).
-    Falls back to request.client.host if headers are absent.
+    The address of whoever made the request. Forwarding headers are only believed when the request came straight
+    from a trusted proxy (TRUSTED_PROXY_IPS): from anyone else they are whatever the caller chose to send. Of the
+    X-Forwarded-For hops, the client is the right-most one that is not itself a trusted proxy; the left-most is
+    the one a caller can forge.
     """
-    cf_ip = request.headers.get("cf-connecting-ip")
-    if cf_ip:
-        return cf_ip.strip()
-
-    x_real_ip = request.headers.get("x-real-ip")
-    if x_real_ip:
-        return x_real_ip.strip()
+    peer = request.client.host if request.client and request.client.host else "127.0.0.1"
+    nets = _trusted_proxies()
+    if not _is_trusted(peer, nets):
+        return peer
 
     forwarded_for = request.headers.get("x-forwarded-for")
     if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+        hops = [hop.strip() for hop in forwarded_for.split(",") if hop.strip()]
+        for hop in reversed(hops):
+            if not _is_trusted(hop, nets):
+                return hop
+        if hops:
+            return hops[0]
 
-    if request.client and request.client.host:
-        return request.client.host
+    for header in ("x-real-ip", "cf-connecting-ip"):
+        value = (request.headers.get(header) or "").strip()
+        if value:
+            return value
 
-    return "127.0.0.1"
+    return peer
 
 
 # Initialize the Limiter with client IP resolution and environment toggle
