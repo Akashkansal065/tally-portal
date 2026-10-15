@@ -69,3 +69,4 @@ GoogleService-Info.plist
 *firebase_web_app*.json
 *.spec
 desktop-sync-agent/*.spec
+/docs/temp
