@@ -428,7 +428,7 @@ def tally_parent_name(raw: Optional[str]) -> Optional[str]:
     A group's real parent name, or None for a top-level group. Tally reports the top level as the
     reserved name "Primary" behind a control character, which sanitising leaves as " Primary".
     """
-    name = (raw or "").strip()
+    name = (raw or "").replace("&#4;", "").replace("\x04", "").strip()
     return None if not name or name.lower() == "primary" else name
 
 def apply_group_extra_data(group: MstGroup, extra_data: Optional[dict]):
@@ -489,8 +489,13 @@ async def _read_payroll_cost_centre(db: AsyncSession, company_id: int, row, node
 
 
 def _decimal_or_none(text_value) -> Optional[Decimal]:
-    """A Tally number such as " 30" or "-4838.71 Days"; None when there is nothing usable."""
+    """A Tally number such as " 30", "-4838.71 Days", "(1,250.50)" (negative) or "5,000.00/Nos"; None when there is
+    nothing usable."""
     cleaned = (text_value or "").replace(",", "").strip().split(" ")[0]
+    if "/" in cleaned:
+        cleaned = cleaned.split("/")[0]
+    if len(cleaned) > 2 and cleaned.startswith("(") and cleaned.endswith(")"):
+        cleaned = "-" + cleaned[1:-1]
     try:
         return Decimal(cleaned) if cleaned else None
     except Exception:

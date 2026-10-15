@@ -24,6 +24,13 @@ NETWORK_ERROR_PREFIX = "HTTP/Network Error"
 _INVALID_XML_10_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x84\x86-\x9f]")
 _COUNT = re.compile(r"<(CREATED|ALTERED|DELETED|CANCELLED|IGNORED|ERRORS|EXCEPTIONS)>\s*(\d+)\s*</\1>")
 
+def decode_tally_reply(body: bytes) -> str:
+    """Tally replies in UTF-8 or, with a byte order mark, UTF-16; same rule as the backend's sync upload."""
+    if body.startswith(b"\xff\xfe") or body.startswith(b"\xfe\xff"):
+        return body.decode("utf-16", errors="replace")
+    return body.decode("utf-8", errors="replace")
+
+
 def escape_xml(text: Any) -> str:
     """Safely escapes XML special characters and strips invalid control characters."""
     if text is None:
@@ -239,7 +246,7 @@ class TallyClient:
                 headers={"Content-Type": "text/xml;charset=utf-8"}
             )
             with self._urlopen(req, timeout=self.timeout) as resp:
-                data = resp.read().decode("utf-8", errors="replace")
+                data = decode_tally_reply(resp.read())
                 return ("<ENVELOPE>" in data or "<RESPONSE>" in data), "Connected"
         except urllib.error.URLError as e:
             return False, f"Unreachable ({e.reason})"
@@ -300,7 +307,7 @@ class TallyClient:
                 headers={"Content-Type": "text/xml;charset=utf-8"}
             )
             with self._urlopen(req, timeout=self.timeout) as resp:
-                raw_xml = resp.read().decode("utf-8", errors="replace")
+                raw_xml = decode_tally_reply(resp.read())
                 result["raw_response"] = raw_xml
 
                 if "<ENVELOPE>" in raw_xml:
@@ -373,7 +380,7 @@ class TallyClient:
                 headers={"Content-Type": "text/xml;charset=utf-8"}
             )
             with self._urlopen(req, timeout=self.timeout) as resp:
-                raw_xml = resp.read().decode("utf-8", errors="replace")
+                raw_xml = decode_tally_reply(resp.read())
                 if "<ENVELOPE>" in raw_xml:
                     root = ET.fromstring(raw_xml)
                     for cmp_node in root.findall(".//COLLECTION/COMPANY"):
@@ -506,7 +513,7 @@ class TallyClient:
                 req = urllib.request.Request(self.tally_url, data=xml_req.encode("utf-8"),
                                              headers={"Content-Type": "text/xml;charset=utf-8"})
                 with self._urlopen(req, timeout=timeout) as resp:
-                    resp_xml = resp.read().decode("utf-8", errors="replace")
+                    resp_xml = decode_tally_reply(resp.read())
                     elapsed = timer.stop()
                     if elapsed >= 2.0:
                         logger.info(f"   ⏱️ Tally answered '{label}' in {elapsed:.1f}s.")
@@ -608,7 +615,7 @@ class TallyClient:
                 headers={"Content-Type": "text/xml;charset=utf-8"}
             )
             with self._urlopen(req, timeout=timeout) as resp:
-                resp_str = resp.read().decode("utf-8", errors="replace")
+                resp_str = decode_tally_reply(resp.read())
                 elapsed = timer.stop()
                 if elapsed >= 2.0:
                     logger.info(f"   ⏱️ Tally answered outbound request in {elapsed:.1f}s.")
@@ -631,7 +638,7 @@ class TallyClient:
             req = urllib.request.Request(self.tally_url, data=envelope.encode("utf-8"),
                                          headers={"Content-Type": "text/xml;charset=utf-8"})
             with self._urlopen(req, timeout=timeout) as resp:
-                return True, resp.read().decode("utf-8", errors="replace")
+                return True, decode_tally_reply(resp.read())
         except Exception as e:
             return False, f"{NETWORK_ERROR_PREFIX}: {e}"
 
@@ -654,7 +661,7 @@ class TallyClient:
             req = urllib.request.Request(self.tally_url, data=xml_req.encode("utf-8"),
                                          headers={"Content-Type": "text/xml;charset=utf-8"})
             with self._urlopen(req, timeout=15) as resp:
-                resp_xml = resp.read().decode("utf-8", errors="replace")
+                resp_xml = decode_tally_reply(resp.read())
             found = re.search(r"<VOUCHER [^>]*>.*?</VOUCHER>", resp_xml, re.S)
             if not found:
                 return None
@@ -699,7 +706,7 @@ class TallyClient:
                 headers={"Content-Type": "text/xml;charset=utf-8"}
             )
             with self._urlopen(req, timeout=15) as resp:
-                resp_xml = resp.read().decode("utf-8", errors="replace")
+                resp_xml = decode_tally_reply(resp.read())
                 if "<VOUCHER" in resp_xml:
                     root = ET.fromstring(resp_xml)
                     vch_node = root.find(".//COLLECTION/VOUCHER")

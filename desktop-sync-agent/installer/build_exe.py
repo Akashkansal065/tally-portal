@@ -7,8 +7,9 @@ import sys
 import PyInstaller.__main__
 
 EXE_NAME = "SnehDistribuorsSync"
-# Read at run time from beside the program, so they travel as files as well as imports
-MODULES = ["security.py", "config.py", "agent.py", "tally_client.py", "cloud_client.py", "backups.py", "bridge_core.py", "webview_app.py"]
+# The .py modules are compiled into the exe by PyInstaller's import analysis; nothing reads them as files when
+# frozen (config.get_app_dir / autostart use sys.executable; get_asset_path only looks up assets/ and ui/), so
+# they are not added as data: that would ship readable source inside the exe.
 
 
 def main() -> None:
@@ -22,8 +23,6 @@ def main() -> None:
         "--add-data", f"ui{os.pathsep}ui",          # the web window's page
         "--hidden-import", "webview",                # pywebview; without it the .exe opens the classic window
     ]
-    for module in MODULES:
-        args += ["--add-data", f"{module}{os.pathsep}."]
     PyInstaller.__main__.run(args + sys.argv[1:] + ["gui_app.py"])
 
 

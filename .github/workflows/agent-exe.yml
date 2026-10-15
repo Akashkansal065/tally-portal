@@ -43,6 +43,14 @@ jobs:
         run: python -m pytest -q tests
       - name: Build the exe
         run: python installer/build_exe.py
+      - name: Check no Python source is inside the exe
+        run: |
+          $listing = python -m PyInstaller.utils.cliutils.archive_viewer -l -r dist\SnehDistribuorsSync.exe
+          $listing | Out-File archive-listing.txt
+          # --collect-all customtkinter legitimately carries its own files; the agent's modules must not appear
+          $own = 'security|config|agent|tally_client|cloud_client|backups|bridge_core|webview_app|gui_app'
+          $src = $listing | Select-String -Pattern "'($own)\.py'"
+          if ($src) { $src | ForEach-Object { Write-Host $_ }; throw "Agent source (.py) is inside the exe." }
       - name: Check the exe opens and stays open
         run: |
           $exe = Resolve-Path dist\SnehDistribuorsSync.exe

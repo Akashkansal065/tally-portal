@@ -5,8 +5,60 @@ import hashlib
 from pathlib import Path
 from typing import Dict, Any, Optional
 import json
+import stat
 
 from .config import settings
+
+MAX_ARCHIVE_MEMBERS = 10_000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 20 * 1024 ** 3
+
+
+class UnsafeArchiveError(ValueError):
+    """A zip member would escape the target folder, is a link, or the archive is implausibly large."""
+
+
+def safe_extract_zip(zip_path: Path, target_dir: Path,
+                     max_members: int = MAX_ARCHIVE_MEMBERS,
+                     max_total_bytes: int = MAX_ARCHIVE_UNCOMPRESSED_BYTES) -> Path:
+    """Extracts member by member. Rejects absolute paths, '..' traversal, drive letters, symlinks, and archives over
+    the member or uncompressed-size caps, before anything is written."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    root = target_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zipf:
+        members = zipf.infolist()
+        if len(members) > max_members:
+            raise UnsafeArchiveError(f"Archive has {len(members)} members (limit {max_members}).")
+        if sum(m.file_size for m in members) > max_total_bytes:
+            raise UnsafeArchiveError("Archive uncompressed size exceeds the limit.")
+        plan = []
+        for m in members:
+            name = m.filename.replace("\\", "/")
+            parts = [p for p in name.split("/") if p not in ("", ".")]
+            if name.startswith("/") or ".." in parts or (parts and ":" in parts[0]):
+                raise UnsafeArchiveError(f"Unsafe path in archive: {m.filename!r}")
+            if stat.S_ISLNK(m.external_attr >> 16):
+                raise UnsafeArchiveError(f"Symlink in archive: {m.filename!r}")
+            dest = (root.joinpath(*parts)).resolve() if parts else root
+            if dest != root and root not in dest.parents:
+                raise UnsafeArchiveError(f"Unsafe path in archive: {m.filename!r}")
+            plan.append((m, dest))
+        written = 0
+        for m, dest in plan:
+            if m.is_dir() or dest == root:
+                dest.mkdir(parents=True, exist_ok=True)
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with zipf.open(m) as src, open(dest, "wb") as out:
+                while True:
+                    chunk = src.read(65536)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_total_bytes:
+                        raise UnsafeArchiveError("Archive uncompressed size exceeds the limit.")
+                    out.write(chunk)
+    return target_dir
+
 
 class LocalBackupStorage:
     """Manages creation, extraction, hashing, and deletion of backup archive files."""
@@ -45,10 +97,7 @@ class LocalBackupStorage:
 
     def extract_zip(self, zip_path: Path, target_dir: Path) -> Path:
         """Extracts a backup zip into target_dir."""
-        target_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(zip_path, 'r') as zipf:
-            zipf.extractall(target_dir)
-        return target_dir
+        return safe_extract_zip(zip_path, target_dir)
 
     def delete_backup_file(self, file_name: str) -> bool:
         """Deletes a backup zip file from disk."""

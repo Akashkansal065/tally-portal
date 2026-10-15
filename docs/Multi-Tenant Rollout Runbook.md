@@ -520,3 +520,8 @@ an nginx on the same machine). From anyone else it is ignored, since a caller ca
 - Autopay mandates (see 4 above).
 - Refunds and credit notes, and managing coupons and standard plans, from the operator console.
 - Buying e-invoice and WhatsApp credit packs, and using the credits up.
+
+## Phase 1 safety fixes (WS-1, WS-2, WS-6)
+
+- Backend: no migration. Deploy normally; backup restore now rejects unsafe zips (path traversal, symlinks, over 10,000 members or 20 GB uncompressed) with an error instead of extracting them.
+- Agent: rebuild and redistribute SnehDistribuorsSync.exe (tag `agent-v*`). The exe no longer carries the `.py` sources as data files; the `agent-exe.yml` build fails if they reappear. Existing installs keep working until updated.
