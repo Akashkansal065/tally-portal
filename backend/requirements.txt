@@ -2,29 +2,29 @@
 # anyio, ...) are left to pip. Install with: pip install -r requirements.txt
 
 # Web framework and server
-fastapi==0.139.0
-uvicorn==0.51.0
-uvloop==0.22.1; sys_platform != 'win32'
+fastapi==0.143.0
+uvicorn==0.54.0
+uvloop==0.23.0; sys_platform != 'win32'
 gunicorn==23.0.0; sys_platform != 'win32'
 python-multipart==0.0.32
 slowapi==0.1.10
 
 # Settings and validation
-pydantic==2.13.4
-pydantic-settings==2.14.2
-python-dotenv==1.2.2
+pydantic==2.14.1
+pydantic-settings==2.15.0
+python-dotenv==1.2.4
 # Time zones (Asia/Kolkata): Windows has no time zone database of its own
 tzdata==2026.5
 
 # Database: MySQL in production (cryptography is needed for MySQL 8 password auth)
-SQLAlchemy==2.0.51
-greenlet==3.5.3
+SQLAlchemy==2.1.4
+greenlet==3.5.6
 aiomysql==0.3.2
-PyMySQL==1.2.0
+PyMySQL==1.2.3
 cryptography==49.0.0
 
 # Sign-in
-PyJWT==2.13.0
+PyJWT==2.15.1
 bcrypt==5.0.0
 
 # Calls to Tally and other services
