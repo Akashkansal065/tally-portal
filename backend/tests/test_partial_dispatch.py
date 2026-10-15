@@ -163,12 +163,12 @@ def test_item_level_partial_dispatch_and_amounts(partial_dispatch_world):
     assert b["remaining_total"] == 3500.0
     assert b["sent_items_count"] == 0
 
-    # 8. Non-owner regular salesperson cannot dispatch someone else's order
+    # 8. A salesperson cannot dispatch: it needs the Order dispatch permission
     sales_dispatch = client.put(f"/temporders/{order_id}/items/{item1_id}/dispatch", json={
         "is_sent": True
     }, headers=sales_token2)
     assert sales_dispatch.status_code == 403
-    assert "Not authorized" in sales_dispatch.json()["detail"]
+    assert "Order dispatch" in sales_dispatch.json()["detail"]
 
     # 9. Cancel the order
     cancel_res = client.put(f"/temporders/{order_id}/status", json={

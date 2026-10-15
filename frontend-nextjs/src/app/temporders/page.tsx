@@ -73,7 +73,10 @@ type Salesperson = {
 }
 
 export default function TempOrdersPage() {
-  const { user, token, permissions, can } = useAuth()
+  const { user, token, can } = useAuth()
+  // Everyone's orders need the Order dispatch permission (Admins have it). Orders alone covers one's own.
+  const canSeeAllOrders = can('order_dispatch', 'read')
+  const canManageAllOrders = can('order_dispatch', 'update')
   const router = useRouter()
   const [orders, setOrders] = useState<Order[]>([])
   const [salespersons, setSalespersons] = useState<Salesperson[]>([])
@@ -112,11 +115,10 @@ export default function TempOrdersPage() {
   const fetchData = async () => {
     setLoading(true)
     try {
-      const isAdmin = permissions.isAdmin
-      const ordersUrl = isAdmin ? `${API_BASE}/temporders/all` : `${API_BASE}/temporders`
+      const ordersUrl = canSeeAllOrders ? `${API_BASE}/temporders/all` : `${API_BASE}/temporders`
       const headers = authHeaders(token)
 
-      if (isAdmin) {
+      if (canSeeAllOrders) {
         const [ordersRes, usersRes] = await Promise.all([
           fetch(ordersUrl, { headers }),
           fetch(`${API_BASE}/admin/users`, { headers }).catch(() => null)
@@ -346,8 +348,8 @@ export default function TempOrdersPage() {
   }, [orders, statusFilter, salespersonFilter])
 
   const checkIsEditable = (order: Order) => {
+    if (canManageAllOrders) return true
     if (!can('orders', 'update')) return false
-    if (permissions?.isAdmin) return true
     const currentUserId = user?.user_id ?? user?.id
     if (currentUserId != null && order.user_id !== currentUserId) return false
     if (order.status !== 'pending') return false
@@ -363,9 +365,8 @@ export default function TempOrdersPage() {
   const canDispatchOrder = (order: Order | null) => {
     if (!order) return false
     if (order.status === 'cancelled') return false
-    if (permissions?.isAdmin) return true
-    const currentUserId = user?.user_id ?? user?.id
-    return Boolean(can('orders', 'update') && currentUserId != null && order.user_id === currentUserId)
+    // Marking items sent is dispatch work, never the salesperson's own: it can complete the order
+    return canManageAllOrders
   }
 
   const statusBadge = (status: string, sentCount?: number, totalCount?: number) => {
@@ -520,7 +521,7 @@ export default function TempOrdersPage() {
               </div>
 
               {/* Salesperson Dropdown with counts */}
-              {permissions.isAdmin && salespersons.length > 0 && (
+              {canSeeAllOrders && salespersons.length > 0 && (
                 <div className="flex items-center gap-2.5">
                   <label htmlFor="salesperson-filter-select" className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider min-w-[70px]">Salesperson:</label>
                   <select
@@ -588,7 +589,7 @@ export default function TempOrdersPage() {
                       </div>
                       <div className="flex gap-2 items-center mt-1 text-[10px] text-muted-foreground font-semibold flex-wrap">
                         <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {formatDate(o.created_at)}</span>
-                        {permissions.isAdmin && (
+                        {canSeeAllOrders && (
                           <span className="flex items-center gap-1 uppercase bg-muted px-1.5 py-0.5 rounded tracking-wider text-[8px]">
                             {o.salesperson}
                           </span>
@@ -661,7 +662,7 @@ export default function TempOrdersPage() {
                         </button>
                       )}
 
-                      {permissions.isAdmin && (o.status === 'pending' || o.status === 'partial') && (
+                      {canManageAllOrders && (o.status === 'pending' || o.status === 'partial') && (
                         <>
                           <button 
                             onClick={() => handleStatusChange(o.id, 'done')}
@@ -946,7 +947,7 @@ export default function TempOrdersPage() {
                   <Edit className="h-4 w-4" /> Edit Order
                 </button>
               )}
-              {permissions.isAdmin && (expandedOrder.status === 'pending' || expandedOrder.status === 'partial') && (
+              {canManageAllOrders && (expandedOrder.status === 'pending' || expandedOrder.status === 'partial') && (
                 <button 
                   onClick={() => handleStatusChange(expandedOrder.id, 'done')}
                   className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl text-sm transition-all shadow-md cursor-pointer"
@@ -958,7 +959,7 @@ export default function TempOrdersPage() {
                 onClick={() => setExpandedOrder(null)}
                 className={cn(
                   "py-3 font-bold rounded-xl text-sm transition-all px-6 text-center cursor-pointer",
-                  permissions.isAdmin && (expandedOrder.status === 'pending' || expandedOrder.status === 'partial') ? "bg-muted hover:bg-muted/80 text-foreground" : "flex-1 bg-emerald-500 hover:bg-emerald-600 text-white"
+                  canManageAllOrders && (expandedOrder.status === 'pending' || expandedOrder.status === 'partial') ? "bg-muted hover:bg-muted/80 text-foreground" : "flex-1 bg-emerald-500 hover:bg-emerald-600 text-white"
                 )}
               >
                 Close

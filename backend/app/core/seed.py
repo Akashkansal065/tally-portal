@@ -22,6 +22,7 @@ def seed_global_data(db: Session):
             ('vouchers',  'Vouchers',              'Payment, Receipt, Journal, Sales, Purchase, etc.', 1),
             ('inventory', 'Inventory',             'Stock items, godowns, stock movement', 1),
             ('orders',    'Orders',                'Sales and Purchase orders', 1),
+            ('order_dispatch', 'Order Dispatch',  'See, edit and dispatch every salesperson''s orders', 1),
             ('payments',  'Payments & Bills',      'Bill-wise allocation, outstanding, gateway payments', 1),
             ('outstanding', 'Outstanding & Reminders', 'Customer dues, aging and payment reminders', 1),
             ('reports',   'Reports',               'Trial Balance, P&L, Balance Sheet, GST reports', 1),
@@ -67,6 +68,18 @@ def seed_global_data(db: Session):
             db.execute(text("""
                 INSERT INTO modules (code, name, description, is_system)
                 VALUES ('outstanding', 'Outstanding & Reminders', 'Customer dues, aging and payment reminders', 1)
+            """))
+            db.commit()
+
+        # Ensure 'order_dispatch' module exists on update. Seeing, editing and dispatching everyone's orders used
+        # to follow from Orders update + delete, which the Sales role has; it is its own module now, and only
+        # admins start with it (ensure_admin_roles_have_every_module).
+        dispatch_exists = db.execute(text("SELECT COUNT(*) FROM modules WHERE code = 'order_dispatch'")).scalar()
+        if dispatch_exists == 0:
+            print("Adding missing 'order_dispatch' module...")
+            db.execute(text("""
+                INSERT INTO modules (code, name, description, is_system)
+                VALUES ('order_dispatch', 'Order Dispatch', 'See, edit and dispatch every salesperson''s orders', 1)
             """))
             db.commit()
 

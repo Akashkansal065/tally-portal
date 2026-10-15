@@ -1753,13 +1753,20 @@ async def get_customer_profile_detail(
             if name:
                 o_conds.append(TempOrder.custom_customer_name == name)
             if o_conds:
+                from app.routers.orders import can_see_all_orders
+                from app.core.tenancy import rows_of_company
                 o_stmt = (
                     select(TempOrder)
+                    .join(User, TempOrder.user_id == User.user_id)
                     .options(selectinload(TempOrder.items), selectinload(TempOrder.user))
-                    .where(or_(*o_conds))
+                    # This company's orders only: a customer name alone also matches other accounts' customers
+                    .where(or_(*o_conds), rows_of_company(TempOrder, user))
                     .order_by(desc(TempOrder.created_at))
                     .limit(10)
                 )
+                # Everyone's orders need Order dispatch; a salesperson sees their own
+                if not await can_see_all_orders(user, db):
+                    o_stmt = o_stmt.where(TempOrder.user_id == user.user_id)
                 o_res = await db.execute(o_stmt)
                 for o in o_res.scalars().all():
                     items_cnt = sum((getattr(it, "qty", 0) or 0) for it in o.items) if o.items else 0

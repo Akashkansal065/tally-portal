@@ -13,19 +13,41 @@ from datetime import datetime, timezone
 
 from app.core.database import get_db, Base
 from app.core.tenancy import rows_of_company
-from app.core.permissions import require_permission, get_effective_permission
+from app.core.permissions import get_current_user, require_permission, get_effective_permission
 from app.models.portal_core import User
 from app.core.config import settings
 from app.core.datetime_utils import get_ist_now, to_ist_iso
 from app.services.billing.entitlements import require_feature
 
+# Everyone's orders, as opposed to one's own: the "Order dispatch" permission. "read" sees every salesperson's
+# orders; "update" also edits any of them at any time, marks items sent and sets an order done or cancelled.
+# The "orders" module alone covers only the user's own orders (placing them, and editing for 30 minutes).
+ORDER_DISPATCH = "order_dispatch"
+
+
+async def order_dispatch_access(user: User, db: AsyncSession) -> dict:
+    """The user's Order dispatch permission. Admins always have it in full."""
+    if (await get_effective_permission(user, "admin", db)).get("can_read", False):
+        return {"can_create": True, "can_read": True, "can_update": True, "can_delete": True}
+    return await get_effective_permission(user, ORDER_DISPATCH, db)
+
+
+async def can_see_all_orders(user: User, db: AsyncSession) -> bool:
+    return bool((await order_dispatch_access(user, db)).get("can_read", False))
+
+
 async def can_manage_all_orders(user: User, db: AsyncSession) -> bool:
-    """Determine whether user has manager/admin-level access to view/edit all orders."""
-    admin_perms = await get_effective_permission(user, "admin", db)
-    if admin_perms.get("can_read", False):
-        return True
-    orders_perms = await get_effective_permission(user, "orders", db)
-    return bool(orders_perms.get("can_update", False) and orders_perms.get("can_delete", False))
+    """May edit any salesperson's order at any time and dispatch it."""
+    return bool((await order_dispatch_access(user, db)).get("can_update", False))
+
+
+def require_order_dispatch(action: str):
+    """Endpoint dependency: the user holds Order dispatch `action` ('read' or 'update')."""
+    async def dependency(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> User:
+        if not (await order_dispatch_access(user, db)).get(f"can_{action}", False):
+            raise HTTPException(status_code=403, detail="This needs the Order dispatch permission.")
+        return user
+    return dependency
 
 def check_order_editable(order: "TempOrder", is_manager: bool) -> bool:
     # Managers/admins can edit orders at any time
@@ -349,7 +371,7 @@ async def list_orders(
 
 @router.get("/all")
 async def list_all_orders(
-    current_user: User = Depends(require_permission("admin", "read")),
+    current_user: User = Depends(require_order_dispatch("read")),
     db: AsyncSession = Depends(get_db),
 ):
     from app.models.tally_core import MstLedger
@@ -428,8 +450,8 @@ async def get_dispatch_summary(
     start_dt = datetime.combine(s_date, dt_time.min)
     end_dt = datetime.combine(e_date, dt_time.max)
 
-    # 2. Check manager permissions
-    is_manager = await can_manage_all_orders(user, db)
+    # 2. Everyone's orders, or only the user's own
+    is_manager = await can_see_all_orders(user, db)
 
     # 3. Build query
     query = (
@@ -622,13 +644,12 @@ async def get_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    is_manager = await can_manage_all_orders(user, db)
-
-    # Access control: managers can view any order; regular salesperson only their own
-    if not is_manager and order.user_id != user.user_id:
+    # Access control: Order dispatch sees any order; everyone else only their own
+    if not await can_see_all_orders(user, db) and order.user_id != user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to view this order")
 
-    # Time check (30 minutes edit window for regular salesperson; managers can edit anytime)
+    # Time check (30 minutes edit window for regular salesperson; Order dispatch can edit anytime)
+    is_manager = await can_manage_all_orders(user, db)
     is_editable = check_order_editable(order, is_manager)
 
     res = format_order_response(order)
@@ -640,12 +661,17 @@ async def get_order(
 async def edit_order(
     order_id: int,
     req: OrderCreateRequest,
-    user: User = Depends(require_permission("orders", "update")),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     from app.models.tally_core import MstLedger
     from app.models.tally_core import MstStockItem
     from sqlalchemy.orm import selectinload
+
+    # Order dispatch edits any order at any time; otherwise Orders update, on one's own order, for 30 minutes
+    is_manager = await can_manage_all_orders(user, db)
+    if not is_manager and not (await get_effective_permission(user, "orders", db)).get("can_update", False):
+        raise HTTPException(status_code=403, detail="You do not have permission to update in module orders.")
 
     result = await db.execute(
         select(TempOrder)
@@ -656,8 +682,6 @@ async def edit_order(
     order = result.scalars().first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-
-    is_manager = await can_manage_all_orders(user, db)
 
     if not is_manager and order.user_id != user.user_id:
         raise HTTPException(status_code=403, detail="Not authorized to edit this order")
@@ -732,7 +756,7 @@ class OrderStatusUpdate(BaseModel):
 async def update_order_status(
     order_id: int,
     req: OrderStatusUpdate,
-    user: User = Depends(require_permission("admin", "update")),
+    user: User = Depends(require_order_dispatch("update")),
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy.orm import selectinload
@@ -817,7 +841,7 @@ async def update_order_item_dispatch(
     order_id: int,
     item_id: int,
     req: ItemDispatchUpdate,
-    user: User = Depends(require_permission("orders", "update")),
+    user: User = Depends(require_order_dispatch("update")),
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy.orm import selectinload
@@ -840,9 +864,6 @@ async def update_order_item_dispatch(
     if order.status == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot dispatch items on a cancelled order")
 
-    is_manager = await can_manage_all_orders(user, db)
-    if not is_manager and order.user_id != user.user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to update this order")
 
     target_item = next((it for it in order.items if it.id == item_id), None)
     if not target_item:
@@ -883,7 +904,7 @@ class BatchItemDispatchPayload(BaseModel):
 async def update_order_items_dispatch_batch(
     order_id: int,
     req: BatchItemDispatchPayload,
-    user: User = Depends(require_permission("orders", "update")),
+    user: User = Depends(require_order_dispatch("update")),
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy.orm import selectinload
@@ -906,9 +927,6 @@ async def update_order_items_dispatch_batch(
     if order.status == "cancelled":
         raise HTTPException(status_code=400, detail="Cannot dispatch items on a cancelled order")
 
-    is_manager = await can_manage_all_orders(user, db)
-    if not is_manager and order.user_id != user.user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to update this order")
 
     now_ist = get_ist_now()
     items_map = {it.id: it for it in order.items}

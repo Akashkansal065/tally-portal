@@ -110,7 +110,7 @@ const MODULE_GROUPS = [
     description: 'Customer directory, shop GPS check-in logs, mobile sales orders, visit history & staff attendance',
     icon: MapPin,
     color: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20',
-    codes: ['customers', 'visits', 'orders', 'attendance']
+    codes: ['customers', 'visits', 'orders', 'order_dispatch', 'attendance']
   },
   {
     id: 'reports_tax',

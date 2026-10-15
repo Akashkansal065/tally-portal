@@ -540,6 +540,7 @@ ALL_KNOWN_MODULES = [
     "bom",
     "reports",
     "orders",
+    "order_dispatch",
     "visits",
     "gst",
     "customers",
