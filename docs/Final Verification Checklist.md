@@ -298,3 +298,21 @@ Bugs found by this run and fixed: `receipt.receipt_id` read after the purge (500
 reported as drift.
 
 The test voucher this run created in MyTally (voucher id 402) is now cancelled; it can stay.
+
+### 5g-2. More server-side results (same day)
+
+| # | Result |
+|---|---|
+| T14 / WS-8 gzip | A 328 KB voucher export went up as 10.6 KB gzip (97% smaller) and imported (200). Damaged gzip answers 400, a 513 MB decompression bomb sent as 510 KB answers 413, and the server stayed healthy. |
+| R2 / WS-13 restore into a new company | A real stored backup (4 of 4, 94 KB) restored into a new company in 1 second: `verified: true`, 44 vouchers, 53 ledgers, 19 stock items, equal to the manifest, no problems; `bound: false` because the source company already holds that Tally GUID (by design). |
+| R3 | The restored company's per-ledger debit and credit totals equal the source's for 51 of 53 ledgers; the other two differ by exactly the 1,000 of my cancelled test voucher (a flaw in my comparison query, which counted entries of cancelled vouchers). Voucher count (44) and total (12,739,743.71) are identical. |
+| R1 / R4 | **Not done.** Encryption at rest and the restore drill need a backup uploaded by a signed-in agent PC; the only PC (DESKTOP-KBP40SQ) holds the company link and I would not take it over. Do them with a real "Back up now" after setting the key (section 2). |
+
+Bug found and fixed by R2: `audit_logs.action` is 20 characters wide and MySQL refuses longer values, which SQLite does
+not. The restore imported everything and then answered 500 on its final audit row, and every reconcile write-back audit
+name was also too long. Names are now `RESTORE_NEW_COMPANY`, `RECON_WB_QUEUED` and `RECON_WB_<OUTCOME>`, with a test that
+guards the length. A missing backup file now answers 409 instead of 500.
+
+Test data left in the local MySQL by these runs, safe to delete from the app: companies **7** "Bhrama Enterprises
+(restore test)" (inactive, from the run that failed on the audit row) and **8** "Bhrama Enterprises (restore test 2)";
+the cancelled voucher 402 in company 1; 14 stale `PROCESSING` rows in `sync_inbound_receipts` (purged after 7 days).

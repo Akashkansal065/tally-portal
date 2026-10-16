@@ -24,6 +24,10 @@ INTEGRATION_KEY = "reconcile_writeback"
 STATUS_VALUES = ("", "Yes", "No")
 
 
+# audit_logs.action is 20 characters wide: MySQL refuses anything longer
+AUDIT_QUEUED = "RECON_WB_QUEUED"
+AUDIT_RESULT_PREFIX = "RECON_WB_"
+
 class WritebackRefused(Exception):
     def __init__(self, message: str, status_code: int = 409):
         super().__init__(message)
@@ -75,7 +79,7 @@ async def queue_writeback(db: AsyncSession, company_id: int, user_id: int, vouch
     row = SyncQueue(company_id=company_id, record_type=RECORD_TYPE, record_id=voucher.voucher_id, action="Alter",
                     is_processed=False, status="PENDING", snapshot_data=request)
     db.add(row)
-    db.add(AuditLog(company_id=company_id, user_id=user_id, action="RECONCILE_WRITEBACK_QUEUED",
+    db.add(AuditLog(company_id=company_id, user_id=user_id, action=AUDIT_QUEUED,
                     entity_type="Voucher", entity_id=voucher.voucher_id, new_value=request))
     await db.commit()
     await db.refresh(row)
@@ -123,7 +127,7 @@ async def record_result(db: AsyncSession, company_id: int, user_id: int, sync_id
     else:
         row.is_processed, row.status = True, "FAILED"
         row.error_message = (message or outcome)[:500]
-    db.add(AuditLog(company_id=company_id, user_id=user_id, action=f"RECONCILE_WRITEBACK_{outcome.upper()}",
+    db.add(AuditLog(company_id=company_id, user_id=user_id, action=f"{AUDIT_RESULT_PREFIX}{outcome.upper()}",
                     entity_type="Voucher", entity_id=row.record_id, new_value={"message": (message or "")[:300], "alter_id": alter_id}))
     await db.commit()
     return {"status": outcome}
