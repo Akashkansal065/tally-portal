@@ -445,6 +445,12 @@ def _trim_marker(text_value) -> str:
     return (text_value or "").replace("\x04", "").strip()
 
 
+def _reference_or_none(text_value, limit: int = 100) -> Optional[str]:
+    """An order or tracking reference; Tally writes "Not Applicable" (behind its control character) for none."""
+    cleaned = _trim_marker(text_value)
+    return None if not cleaned or cleaned.lower() == "not applicable" else cleaned[:limit]
+
+
 async def _rename_employee_lines(db: AsyncSession, company_id: int, old_name: str, new_name: str) -> None:
     """Attendance and payroll lines name their employee; they follow a rename made in Tally."""
     in_company = select(TrnVoucher.voucher_id).where(TrnVoucher.company_id == company_id)
@@ -509,9 +515,9 @@ def parse_batch_allocations(inv_node) -> list:
             "billed_quantity": billed,
             "rate": rate,
             "amount": amount,
-            "order_number": text("ORDERNO")[:100] or None,
+            "order_number": _reference_or_none(node.findtext("ORDERNO")),
             "order_due_date": parse_tally_date(text("ORDERDUEDATE")),
-            "tracking_number": text("TRACKINGNUMBER")[:100] or None,
+            "tracking_number": _reference_or_none(node.findtext("TRACKINGNUMBER")),
         }
         # "Primary Batch" is Tally's name for no batch at all
         if (row["batch_name"] or "").lower() == "primary batch":
@@ -3008,11 +3014,11 @@ async def import_tally_xml(
                 item_desc = inv_node.findtext("ITEMDESCRIPTION") or inv_node.findtext("NARRATION") or inv_node.findtext("DESCRIPTION")
 
                 allocations = parse_batch_allocations(inv_node)
-                line_order_no = (inv_node.findtext("ORDERNO") or "").strip()[:100] or next(
+                line_order_no = _reference_or_none(inv_node.findtext("ORDERNO")) or next(
                     (a["order_number"] for a in allocations if a["order_number"]), None)
                 line_due = parse_tally_date((inv_node.findtext("ORDERDUEDATE") or "").strip()) or next(
                     (a["order_due_date"] for a in allocations if a["order_due_date"]), None)
-                line_tracking = (inv_node.findtext("TRACKINGNUMBER") or "").strip()[:100] or next(
+                line_tracking = _reference_or_none(inv_node.findtext("TRACKINGNUMBER")) or next(
                     (a["tracking_number"] for a in allocations if a["tracking_number"]), None)
 
                 # Insert TrnInventory

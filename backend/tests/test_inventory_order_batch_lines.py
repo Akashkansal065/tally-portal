@@ -161,3 +161,15 @@ def test_books_parity_and_ledger_entries_are_not_touched_by_batch_rows(harness, 
             return result
     result = run(go())
     assert result["ledgers_drifting"] == 0 and result["voucher_count_drift"] == 0
+
+
+def test_not_applicable_order_and_tracking_markers_are_no_reference():
+    """Real TallyPrime writes ORDERNO/TRACKINGNUMBER as 'Not Applicable' (behind a control character) on every plain batch line."""
+    node = ET.fromstring(
+        '<ALLINVENTORYENTRIES.LIST><BATCHALLOCATIONS.LIST><BATCHNAME>Batch1</BATCHNAME>'
+        '<ORDERNO>&#4; Not Applicable</ORDERNO><TRACKINGNUMBER> Not Applicable</TRACKINGNUMBER>'
+        '<AMOUNT>21300.00</AMOUNT><ACTUALQTY> 100 nos</ACTUALQTY><BILLEDQTY> 100 nos</BILLEDQTY>'
+        '</BATCHALLOCATIONS.LIST></ALLINVENTORYENTRIES.LIST>'.replace("&#4;", ""))
+    rows = parse_batch_allocations(node)
+    assert rows[0]["order_number"] is None and rows[0]["tracking_number"] is None
+    assert rows[0]["batch_name"] == "Batch1" and rows[0]["quantity"] == 100

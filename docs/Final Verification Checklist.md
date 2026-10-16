@@ -246,3 +246,5 @@ New findings to act on:
 
 - **T7 timing:** with the fix below, a full export of 14 collections finishes in 0.3 s, no failures; vouchers are 335 KB.
 - **BUG FOUND AND FIXED: a `PriceLevel` collection request hangs TallyPrime.** It never answered, the next request (`UOMs`) timed out too, and the XML server stayed dead until Tally was restarted. The request is no longer sent. Never add a PriceLevel collection export again; read price levels from stock item price lists or the ledger's `PRICELEVEL`.
+- **BUG FOUND AND FIXED (WS-11): "Not Applicable" was stored as an order and tracking number.** Real Tally writes `<ORDERNO>` / `<TRACKINGNUMBER>` as "Not Applicable" (behind a control character) on all 88 batch lines of the test company. The importer now treats that as no reference. Real tracking numbers `T001` / `T003` are read correctly.
+- **Real batch lines carry no `GODOWNNAME`** when godowns are not enabled for the voucher; quantities arrive as ` 100 nos`. Both are handled.
