@@ -20,3 +20,14 @@ def test_the_original_voucher_fields_are_still_requested():
     for tag in ("GUID", "MASTERID", "REMOTEALTGUID", "ALTERID", "VOUCHERTYPENAME", "VOUCHERNUMBER", "DATE", "ISCANCELLED",
                 "ISOPTIONAL", "ALLLEDGERENTRIES.LIST", "INVENTORYENTRIES.LIST", "ALLINVENTORYENTRIES.LIST"):
         assert tag in tags(VOUCHER_FETCH), tag
+
+
+
+def test_ledger_fields_are_requested():
+    from tally_client import LEDGER_FETCH
+    asked = tags(LEDGER_FETCH)
+    for tag in ("CREDITLIMIT", "BILLCREDITPERIOD", "LEDGERCONTACT", "LEDGERMOBILE", "EMAIL", "EMAILCC", "WEBSITE",
+                "LEDGERFAX", "COUNTRYNAME", "TAXCLASSIFICATIONNAME", "MSMEREGISTRATIONDETAILS.LIST",
+                "LOWERDEDUCTION.LIST", "HSNDETAILS.LIST", "LEDMULTIADDRESSLIST.LIST", "OPENINGBALANCE", "CLOSINGBALANCE"):
+        assert tag in asked, tag
+    assert len(LEDGER_FETCH.split(",")) == len(asked)
