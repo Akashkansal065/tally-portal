@@ -1044,6 +1044,14 @@ async def get_outbound_queue(
         if item.record_type == "Currency":
             xml_envelope = await queued_currency_xml(db, item) or ""
 
+        if item.record_type == "VoucherReconcile":
+            from app.services import reconcile_writeback as rwb
+            from app.services.integrations import is_enabled
+            comp_row = (await db.execute(select(Company).where(Company.company_id == user.company_id))).scalars().first()
+            # Off again since it was asked for: retired below like any item whose entity is gone
+            if comp_row is not None and item.snapshot_data and await is_enabled(db, user.company_id, rwb.INTEGRATION_KEY):
+                xml_envelope = rwb.marker_xml(comp_row.name, item.snapshot_data, item.record_id)
+
         if item.record_type == "Company":
             xml_envelope = await queued_company_xml(db, item)
 
@@ -1163,6 +1171,32 @@ async def report_active_keys(
         clear_company_cache(company_id)
     clear_company_cache(company_id, SYNC_HEALTH_CACHE_KEY)
     return outcome
+
+
+class ReconcileResult(BaseModel):
+    sync_id: int
+    outcome: str = Field(max_length=20)       # done / already / stale / failed
+    alter_id: Optional[str] = Field(default=None, max_length=30)
+    message: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/reconcile-result", dependencies=[Depends(bind_sync_company)])
+async def report_reconcile_result(
+    body: ReconcileResult,
+    user: User = Depends(require_permission("sync", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """How a reconciliation write-back the agent was given ended. Safe to send again."""
+    from app.core.cache import clear_company_cache
+    from app.services import reconcile_writeback as rwb
+    if body.outcome not in ("done", "already", "stale", "failed"):
+        raise HTTPException(status_code=400, detail="Unknown outcome.")
+    try:
+        result = await rwb.record_result(db, user.company_id, body.sync_id, body.outcome, body.alter_id or "", body.message or "")
+    except rwb.WritebackRefused as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+    clear_company_cache(user.company_id)
+    return result
 
 
 class CompanySyncReport(BaseModel):

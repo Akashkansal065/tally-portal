@@ -384,6 +384,12 @@ class CloudClient:
                 return False
         return False
 
+    def report_reconcile_result(self, sync_id: int, outcome: str, alter_id: str = "", message: str = "") -> bool:
+        """Tells MyTally how a reconciliation write-back ended (done, already, stale or failed)."""
+        status, _, _ = self._call("POST", "/sync/reconcile-result", {
+            "sync_id": sync_id, "outcome": outcome, "alter_id": alter_id, "message": message[:500]})
+        return status == 200
+
     def report_active_keys(self, payload: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         """Sends the complete list of keys Tally holds as active (records the server may soft-delete when two
         lists in a row lack them). Safe to send again: the server counts one list_id once."""

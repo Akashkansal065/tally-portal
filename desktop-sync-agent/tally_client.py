@@ -808,6 +808,28 @@ class TallyClient:
             logger.debug(f"Error finding voucher by master id {master_id}: {e}")
         return None
 
+    FULL_VOUCHER_FETCH = ("*,ALLLEDGERENTRIES.LIST,INVENTORYENTRIES.LIST,ALLINVENTORYENTRIES.LIST,BILLALLOCATIONS.LIST,"
+                          "BANKALLOCATIONS.LIST,BATCHALLOCATIONS.LIST,EWAYBILLDETAILS.LIST,COSTCENTREALLOCATIONS.LIST")
+
+    def fetch_voucher_block(self, company_name: str, master_id: int) -> Optional[str]:
+        """The voucher Tally holds under this master id, whole, as `<VOUCHER ...>...</VOUCHER>`; None when Tally
+        did not answer or holds none (or more than one, which is never guessed at)."""
+        xml_req = f"""<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>MyTallyFullVchById</ID></HEADER>
+<BODY><DESC><STATICVARIABLES>
+  <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+  <SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>
+</STATICVARIABLES><TDL><TDLMESSAGE>
+  <SYSTEM TYPE="Formulae" NAME="MyTallyByMasterId">$MasterID = {int(master_id)}</SYSTEM>
+  <COLLECTION NAME="MyTallyFullVchById" ISMODIFY="No"><TYPE>Voucher</TYPE>
+    <FETCH>{self.FULL_VOUCHER_FETCH}</FETCH><FILTERS>MyTallyByMasterId</FILTERS>
+  </COLLECTION>
+</TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>"""
+        resp = self._export(xml_req, "FullVoucher", timeout=30, retries=1)
+        if resp is None:
+            return None
+        blocks = re.findall(r"<VOUCHER\b[^>]*>.*?</VOUCHER>", resp, re.S)
+        return blocks[0] if len(blocks) == 1 else None
+
     def find_voucher_by_remote_id(self, company_name: str, remote_id: str, date_yyyymmdd: Optional[str] = None) -> Optional[Dict[str, str]]:
         """
         Looks up a voucher in Tally by REMOTEID. Useful after a timeout to verify if Tally

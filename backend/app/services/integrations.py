@@ -129,6 +129,15 @@ INTEGRATIONS: Dict[str, Integration] = {i.key: i for i in [
         phase="Backups", live=True, has_keys=_drive_keys_set,
     ),
     Integration(
+        key="reconcile_writeback",
+        label="Write bank reconciliation back to Tally",
+        description="When a bank line is reconciled in MyTally, set the bank date on the voucher in Tally too. "
+                    "The sync agent re-reads the voucher first and changes only the bank date and status.",
+        provider="TallyPrime (through the sync agent)",
+        cost="Free",
+        phase="Reconciliation", live=True, has_keys=lambda _company: True,
+    ),
+    Integration(
         key="payment_gateway",
         label="Online payment links (Razorpay / Stripe)",
         description="Card and net-banking payment links that mark the bill paid automatically. UPI links and QR codes don't need this.",

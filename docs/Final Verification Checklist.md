@@ -92,7 +92,10 @@ Per company, in the web app: Admin → Integrations → **Google Drive copy of b
   as `MyTallyBridge-Setup-<version>.exe`, signed under the same conditions as the exe. Per-user, no admin, no
   scheduled task; "Start with Windows" stays the agent's own setting.
 
-_(WS-14 adds its steps here as it lands.)_
+**WS-14 reconciliation write-back**
+1. Rebuild and redistribute the agent (it carries the read-back-and-alter logic); the backend needs no migration.
+2. Per company, Admin > Integrations > **Write bank reconciliation back to Tally** (off by default). Pilot it on one
+   test company first (checks W1-W4).
 
 ## 4. Run the suites (once, at the end)
 
@@ -173,6 +176,15 @@ change.
 | I3 | Uninstall from Settings > Apps | Program removed; sign-in, settings and backups folder remain | user data untouched |
 | I4 | Install over an older version while the agent runs | The old agent is closed and the new one installed | `CloseApplications=yes` |
 
+### 5f. WS-14 reconciliation write-back (real TallyPrime)
+
+| # | What to do | Expected | Assumption it tests |
+|---|---|---|---|
+| W1 | On a test company switch the integration on, then `POST /bank-recon/writeback` for a receipt with one bank allocation (`bankers_date`, `manual_status`) | Within a cycle the voucher shows the bank date in Tally's Bank Reconciliation; MyTally then holds the same values and the new AlterID | `FETCH *` of a voucher returns a complete voucher that Tally accepts back as an Alter addressed by `TAGNAME=MASTERID` + `DATE` without changing anything else |
+| W2 | Compare the voucher before and after (narration, entries, bill and cost-centre allocations, GST fields) | Identical except `BANKERSDATE` / `BANKMANUALSTATUS` | the read-modify-write preserves nested lists the importer does not model |
+| W3 | Alter the voucher in Tally, then queue a write-back using MyTally's stale AlterID | Outcome `stale`; the request shows FAILED with the reason; Tally untouched | AlterID comparison (the value format `<ALTERID> 9</ALTERID>` is trimmed) |
+| W4 | Queue the same values twice | Second is `unchanged` (or `already` if Tally already holds them); no second Tally voucher, no AlterID change on repeat | idempotency end to end |
+
 ## 6. Checks that need REAL Google credentials
 
 | # | What to do | Expected | Assumption it tests |
@@ -201,7 +213,8 @@ change.
 - Other reports (daybook, P&L, balance sheet) were not audited for order/delivery-note rows after the trial
   balance fix.
 - "Re-sync this ledger's vouchers" from the parity report was not built.
-- WS-13 tests (`test_backup_hardening.py`) and WS-12 tests (`test_tally_ports.py`) were written but **not run**
+- WS-13 tests (`test_backup_hardening.py`) and WS-12 tests (`test_tally_ports.py`), WS-14 (`test_reconcile_writeback.py` in backend and agent) and the WS-15 installer script
+  test were written but **not run**
   while building; expect to fix small things on the first run.
 - Not built by decision: S3 off-site backup (covered by Google Drive), the string vault, PyArmor, anti-debug,
   JSONEx (WS-17).

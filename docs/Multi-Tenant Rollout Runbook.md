@@ -637,3 +637,9 @@ Each verified backup can also be copied, by the server, to the company's own Goo
 - Source: `desktop-sync-agent/installer/MyTallyBridge.iss` (Inno Setup 6). CI builds it after the exe on every run (artifact `MyTallyBridge-Setup`) and attaches `MyTallyBridge-Setup-<version>.exe` to the `agent-v*` release, signed when the signing secrets exist.
 - Per-user install under the person's profile, no administrator rights, nothing written to HKLM. It adds **no** scheduled task, service or Run-key entry; starting with Windows remains the agent's own setting. Uninstalling removes the program only.
 - The raw `SnehDistribuorsSync.exe` is still attached for people who prefer it.
+
+## Phase 6 reconciliation write-back (WS-14)
+
+- Switch: Admin → Integrations → **Write bank reconciliation back to Tally**, per company, **off by default**. Needs the upgraded agent; no migration.
+- How it works: `POST /bank-recon/writeback {voucher_id, allocation_id, bankers_date, manual_status}` queues a `VoucherReconcile` row in the ordinary outbound queue (so it shows in the queue and audit log). The agent reads the voucher's current XML by master id, refuses if its AlterID is not the one MyTally last saw (outcome `stale`), changes only `BANKERSDATE` / `BANKMANUALSTATUS` in the one matching bank allocation, and sends the voucher back as an Alter addressed by `TAGNAME="MASTERID"` plus its date. MyTally records the new values and AlterID only after the agent reports success. The same values twice are a no-op; a newer request replaces one still waiting.
+- Not built: bulk write-back, or writing an entry that has several matching allocations (the agent refuses rather than guesses).

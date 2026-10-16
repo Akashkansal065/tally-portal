@@ -22,6 +22,7 @@ from config import (
 )
 from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
 import tally_ports
+import reconcile_writeback as rwb
 from cloud_client import CloudClient, halt_message, SYNC_BUSY_REASON
 from backups import BackupScheduler, LocalBackups, folder_problem
 from xml.sax.saxutils import unescape
@@ -773,6 +774,11 @@ class DesktopSyncAgent:
                 logger.error(f"⛔ Not sending {rec_type} #{rec_id} ({action}) to Tally: {refusal}")
                 continue
 
+            if str(rec_type or "") == "VoucherReconcile":
+                # Not a payload for Tally as it stands: the voucher is read back first, see reconcile_writeback.py
+                self._write_back_reconcile(sync_id, rec_id, xml_payload)
+                continue
+
             # Ensure SVCURRENTCOMPANY is explicitly set in STATICVARIABLES to avoid multi-company cross-talk
             if "<SVCURRENTCOMPANY>" not in xml_payload and self.active_company_name:
                 esc_cmp = escape_xml(self.active_company_name)
@@ -845,6 +851,34 @@ class DesktopSyncAgent:
             self.cloud.report_voucher_identities(voucher_identities)
 
         return len(successful_ids)
+
+    def _write_back_reconcile(self, sync_id: int, voucher_id: Any, marker_xml: str) -> None:
+        """Carry out one queued reconciliation write-back and report how it ended. Never guesses: a voucher that
+        changed in Tally since MyTally last saw it, or an allocation that cannot be told apart, stops here."""
+        def report(outcome: str, message: str, alter_id: str = "") -> None:
+            level = logger.info if outcome in (rwb.DONE, rwb.ALREADY) else logger.warning
+            level(f"🏦 Reconciliation write-back for voucher #{voucher_id}: {outcome}. {message}")
+            self.cloud.report_reconcile_result(int(sync_id), outcome, alter_id, message)
+        job = rwb.parse_marker(marker_xml)
+        if job is None:
+            return report(rwb.FAILED, "The write-back request was not understood.")
+        block = self.tally.fetch_voucher_block(self.active_company_name, int(job["master_id"]))
+        if block is None:
+            return report(rwb.FAILED, "Tally did not return exactly one voucher under that master id.")
+        current = rwb.voucher_alter_id(block)
+        if job["alter_id"] and current != job["alter_id"]:
+            return report(rwb.STALE, f"The voucher changed in Tally (AlterID {current}, MyTally last saw {job['alter_id']}). "
+                                     "Sync it, then ask again.", current)
+        new_block, outcome, message = rwb.apply_bank_dates(block, job["instrument_number"], job["amount"],
+                                                           job["bankers_date"], job["manual_status"])
+        if new_block is None:
+            return report(outcome, message, current)
+        envelope = rwb.alter_envelope(self.active_company_name, new_block, int(job["master_id"]), job["date"])
+        ok, reply = self.tally.send_xml(envelope)
+        if not ok:
+            return report(rwb.FAILED, f"Tally refused the change: {str(reply)[:200]}", current)
+        after = self.tally.fetch_voucher_block(self.active_company_name, int(job["master_id"]))
+        report(rwb.DONE, message, rwb.voucher_alter_id(after) if after else current)
 
     def sync_inbound_cycle(self, is_incremental: bool = False):
         """Pulls masters and vouchers from Tally and pushes them into MyTally Cloud database with deep diagnostics."""

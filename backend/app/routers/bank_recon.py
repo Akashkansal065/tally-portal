@@ -10,6 +10,7 @@ from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKe
 from sqlalchemy.orm import selectinload
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, date, timedelta
+from pydantic import BaseModel
 from decimal import Decimal
 import io
 import csv
@@ -1828,3 +1829,30 @@ async def batch_review_status(
 
     await db.commit()
     return {"success": True, "count": len(txs), "review_status": review_status}
+
+
+class WritebackIn(BaseModel):
+    voucher_id: int
+    allocation_id: int
+    bankers_date: Optional[date] = None
+    manual_status: Optional[str] = None      # "Yes", "No" or empty
+
+
+@router.post("/writeback", status_code=202)
+async def queue_reconcile_writeback(
+    req: WritebackIn,
+    user: User = Depends(require_permission("vouchers", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask the sync agent to write a reconciliation date back into Tally (WS-14). Off unless the company's
+    Reconcile write-back switch is on; goes through the outbound queue; the agent re-reads the voucher from
+    Tally first and stops if it changed since MyTally last saw it."""
+    from app.services import reconcile_writeback as rwb
+    from app.services.integrations import is_enabled, switched_off
+    if not await is_enabled(db, user.company_id, rwb.INTEGRATION_KEY):
+        raise switched_off(rwb.INTEGRATION_KEY)
+    try:
+        return await rwb.queue_writeback(db, user.company_id, user.user_id, req.voucher_id, req.allocation_id,
+                                         req.bankers_date, req.manual_status)
+    except rwb.WritebackRefused as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
