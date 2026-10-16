@@ -21,12 +21,16 @@ from keyring.backend import KeyringBackend  # noqa: E402
 # get_logs_dir here so its module-level RotatingFileHandler never opens the real
 # desktop-sync-agent/logs/agent.log.
 _test_logs = tempfile.TemporaryDirectory(prefix="mytally-agent-tests-")
+os.environ["MYTALLY_LOGS_DIR"] = _test_logs.name
 agent_config.get_logs_dir = lambda: _test_logs.name
 
 
 def pytest_unconfigure(config):
     logging.shutdown()
-    _test_logs.cleanup()
+    try:
+        _test_logs.cleanup()
+    except Exception:
+        pass
 
 
 class MemoryKeyring(KeyringBackend):

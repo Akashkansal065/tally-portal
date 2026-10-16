@@ -17,6 +17,7 @@ import logging
 import agent
 logging.getLogger("MyTallySyncAgent").info("🔑 Signing this PC in to http://192.168.1.39:8000 as someone@example.com…")
 logging.getLogger("Backups").warning("💾 Backups wait until a folder is chosen")
+sys.__stdout__.write(f"log file: {agent.file_handler.baseFilename}\n")
 sys.__stdout__.write("logged without raising\n")
 """
 
@@ -26,6 +27,7 @@ def test_logging_an_emoji_never_raises_without_a_console(tmp_path):
     run = subprocess.run([sys.executable, "-c", LIKE_THE_EXE], cwd=AGENT_DIR, env=env, capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr[-2000:]
     assert "logged without raising" in run.stdout
+    assert f"log file: {Path(env['MYTALLY_LOGS_DIR']) / 'agent.log'}" in run.stdout
 
 
 def test_agent_log_handler_uses_the_test_temp_directory():
