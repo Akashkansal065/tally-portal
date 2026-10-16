@@ -81,6 +81,9 @@ class CustomerAgingSummary(BaseModel):
     overdue_bills_count: int
     dunning_level: str  # 'CURRENT', 'GENTLE', 'FORMAL', 'URGENT'
     bills: List[CustomerAgingBill]
+    # Filled only when one customer is asked for (party_ledger_id), for their pending bills page and its PDF
+    address: Optional[str] = None
+    gstin: Optional[str] = None
 
 class AgingKPISummary(BaseModel):
     total_receivables: float

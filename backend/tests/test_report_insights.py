@@ -140,6 +140,19 @@ def test_outstanding_screen_uses_the_shared_ageing(world):
     assert data["default_credit_days"] == 30
 
 
+def test_one_customers_pending_bills_carry_their_address_and_gstin(world):
+    b = world["books"]
+    amar = b.customer("Amar", address="Samrat Place", state="Uttar Pradesh", pincode="250001", gstin="09AATFS7513D1ZV")
+    b.sale(amar, days_ago=40, amount=1000)
+    staff = login(world["client"], "staff@example.com")
+    data = world["client"].get(f"/payment/aging/dashboard?party_ledger_id={amar.ledger_id}", headers=bearer(staff)).json()
+    customer = data["customers"][0]
+    assert customer["address"] == "Samrat Place, Uttar Pradesh - 250001" and customer["gstin"] == "09AATFS7513D1ZV"
+    assert [bill["outstanding_amount"] for bill in customer["bills"]] == [1000]
+    everyone = world["client"].get("/payment/aging/dashboard", headers=bearer(staff)).json()
+    assert everyone["customers"][0]["address"] is None   # the full list stays lean
+
+
 def test_monthly_target_is_for_the_current_company_only(world):
     a, z = world["books"], world["beta_books"]
     amar, beta_shop = a.customer("Amar"), z.customer("Beta Shop")

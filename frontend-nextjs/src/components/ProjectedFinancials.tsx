@@ -6,7 +6,6 @@ import {
   Building2, TrendingUp, CheckCircle2, ChevronRight, Edit3, Lock, ShieldCheck
 } from 'lucide-react'
 import { formatCurrency } from '@/lib/utils'
-import jsPDF from 'jspdf'
 
 interface FixedAssetItem {
   id: string
@@ -252,7 +251,9 @@ export default function ProjectedFinancials({ companyName = 'M/S SNEH DISTRIBUTO
   const totalLiabilities = curData.proprietorCapital + curData.unsecuredLoans + totalCurrentLiabilities
 
   // Export PDF function matching exact screenshot layout
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
+    // Loaded on click: jsPDF is ~130 KB and pages that link here prefetch this file
+    const { default: jsPDF } = await import('jspdf')
     const doc = new jsPDF({
       orientation: 'portrait',
       unit: 'mm',

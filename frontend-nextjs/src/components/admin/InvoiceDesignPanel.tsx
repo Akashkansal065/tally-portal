@@ -5,7 +5,6 @@ import { CheckCircle2, CircleAlert, Eye, ImagePlus, Loader2, Trash2 } from 'luci
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { getBranding, imageFileToDataUrl, saveBranding, type Branding, type BrandingUpdate } from '@/lib/branding'
-import { generateVoucherPdf } from '@/lib/pdf-generator'
 
 const field = 'h-10 w-full rounded-xl border border-border bg-background px-3 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30'
 
@@ -74,6 +73,8 @@ export function InvoiceDesignPanel({ token, companyId }: { token: string | null;
   const preview = async () => {
     setPreviewing(true)
     try {
+      // Loaded on click so Admin (and pages that prefetch it) don't download jsPDF up front
+      const { generateVoucherPdf } = await import('@/lib/pdf-generator')
       const doc = await generateVoucherPdf({
         voucherGuid: 'sample',
         header: { voucherType: 'Sales', voucherNumber: 'SAMPLE-1', date: new Date().toISOString().slice(0, 10), partyName: 'Sample Customer' },

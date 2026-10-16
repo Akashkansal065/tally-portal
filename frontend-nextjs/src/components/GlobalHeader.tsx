@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
+import { PUBLIC_PATHS } from '@/components/RouteGuard'
 import { BottomSheet } from '@/components/ui/bottom-sheet'
 import { isAdminUser } from '@/lib/navigation'
 import {
@@ -56,7 +57,7 @@ const BELL_LIMIT = 20
 const HEADER_ICON_BUTTON = 'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white hover:bg-emerald-600/60 transition-colors cursor-pointer'
 
 export function GlobalHeader() {
-  const { user, token, permissions, switchCompany, isReadOnlyImpersonation } = useAuth()
+  const { user, token, permissions, switchCompany, isReadOnlyImpersonation, isLoading } = useAuth()
   const isAdmin = isAdminUser(permissions, user?.role)
   const pathname = usePathname()
   const router = useRouter()
@@ -104,11 +105,14 @@ export function GlobalHeader() {
       }
     }
     fetchSyncHealth()
+    // Admin → Tally Sync loads fresher numbers (e.g. after clearing an issue); show those straight away
+    const onFresh = (e: Event) => setSyncHealth((e as CustomEvent).detail)
+    window.addEventListener('mytally:sync-health', onFresh)
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return
       fetchSyncHealth()
     }, 60000)
-    return () => clearInterval(interval)
+    return () => { clearInterval(interval); window.removeEventListener('mytally:sync-health', onFresh) }
   }, [token])
 
   // Notification States
@@ -263,6 +267,14 @@ export function GlobalHeader() {
     upi_id: ''
   })
 
+  // While the session is checked, hold the bar's place so the page doesn't drop 56px when it appears
+  if (!user && isLoading && !PUBLIC_PATHS.includes(pathname) && !pathname?.startsWith('/console')) {
+    return (
+      <header className="shrink-0 border-b border-emerald-800/30 bg-emerald-700" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }} aria-hidden="true">
+        <div className="h-14" />
+      </header>
+    )
+  }
   // No way around Connect Tally: the app's navigation appears once a Tally PC is connected
   if (!user || user.needs_tally_setup) return null
 
@@ -407,7 +419,7 @@ export function GlobalHeader() {
     <>
       <header
         className={cn(
-          "shrink-0 border-b border-emerald-700/30 bg-emerald-600 dark:bg-emerald-700 text-white relative z-40",
+          "shrink-0 border-b border-emerald-800/30 bg-emerald-700 text-white relative z-40",
           (showNotifications || showCompanyModal) && "z-50"
         )}
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
@@ -425,7 +437,7 @@ export function GlobalHeader() {
               </button>
             )}
             <Link href="/" className="shrink-0 rounded-md" aria-label="Home">
-              <img src="/logo.png" alt="Sneh Distributors Logo" width={32} height={32} className="h-8 w-8 object-contain rounded-md bg-white p-0.5" />
+              <img src="/logo-64.png" alt="Sneh Distributors Logo" width={32} height={32} className="h-8 w-8 object-contain rounded-md bg-white p-0.5" />
             </Link>
             {user.allowedCompanies && user.allowedCompanies.length > 0 ? (
               <button
@@ -474,7 +486,7 @@ export function GlobalHeader() {
                   "flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg transition-all border shadow-sm",
                   syncHealth.total_sync_issues > 0
                     ? "bg-rose-600 group-hover:bg-rose-700 text-white border-rose-400 animate-pulse"
-                    : "bg-white/20 group-hover:bg-white/30 text-white border-white/20"
+                    : "bg-emerald-900/40 group-hover:bg-emerald-900/60 text-white border-white/20"
                 )}>
                 <span className={cn("w-2 h-2 rounded-full", syncHealth.total_sync_issues > 0 ? "bg-white" : "bg-emerald-300")}></span>
                 <span className="hidden sm:inline">

@@ -10,7 +10,7 @@ import { afterLoginPath } from '@/lib/utils'
 // where somebody else (the admin who sent it) is signed in, or pricing / plans comparison.
 const OPEN_WHEN_SIGNED_IN = ['/accept-invite', '/pricing']
 // Pages anyone may open without signing in
-const PUBLIC_PATHS = ['/login', '/signup', '/accept-invite', '/pricing']
+export const PUBLIC_PATHS = ['/login', '/signup', '/accept-invite', '/pricing']
 // Where someone whose business has no Tally PC yet is kept until they have connected one
 const CONNECT_TALLY = '/connect'
 

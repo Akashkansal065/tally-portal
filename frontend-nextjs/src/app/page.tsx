@@ -438,14 +438,13 @@ export default function DashboardPage() {
             <dt className={BANNER_LABEL}>Name of company</dt>
             <dd className="text-lg font-black tracking-tight">{companyName}</dd>
           </div>
-          {dashboardData && (
-            <div className="min-w-0 md:text-right">
-              <dt className={BANNER_LABEL}>Last entry</dt>
-              <dd className="text-base md:text-lg font-black tracking-tight">
-                {dashboardData.date_of_last_entry || 'No entries'}
-              </dd>
-            </div>
-          )}
+          {/* Always present, so the card keeps its height while the dashboard loads */}
+          <div className="min-w-0 md:text-right">
+            <dt className={BANNER_LABEL}>Last entry</dt>
+            <dd className="min-h-6 text-base md:text-lg font-black tracking-tight">
+              {dashboardData ? (dashboardData.date_of_last_entry || 'No entries') : <span className="sr-only">Loading</span>}
+            </dd>
+          </div>
         </dl>
       </section>
 

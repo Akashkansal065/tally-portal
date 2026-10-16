@@ -25,7 +25,8 @@ import { Toaster } from 'sonner'
 import { Outfit } from "next/font/google";
 import { cn } from "@/lib/utils";
 
-const outfit = Outfit({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
+// latin-ext holds ₹ (U+20B9): without it the browser fetches that file late and every amount re-flows
+const outfit = Outfit({ subsets: ['latin', 'latin-ext'], variable: '--font-sans', display: 'swap' });
 
 export const metadata: Metadata = {
   title: 'SnehDist. — Sneh Distributors',
@@ -101,7 +102,8 @@ export default function RootLayout({
             </PeriodProvider>
           </AuthProvider>
         </ThemeProvider>
-        {process.env.NODE_ENV === 'production' && <SpeedInsights />}
+        {/* Only Vercel serves the Speed Insights script; elsewhere it 404s and logs a console error */}
+        {process.env.VERCEL && <SpeedInsights />}
       </body>
     </html>
   )

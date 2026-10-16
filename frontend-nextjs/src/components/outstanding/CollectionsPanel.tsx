@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { BellRing, Loader2, MessageCircle, Phone } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { cn } from '@/lib/utils'
 import { getCollections, rupees, rupeesShort, type Collections } from '@/lib/report-insights'
 
-const SHOWN = 8
+const SHOWN = 5
 
 const monthLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-IN', { month: 'short' })
 
@@ -14,11 +15,13 @@ const monthLabel = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateStri
  * Outstanding → who to chase first (overdue amount weighted by how late it is) and how long customers take
  * to pay (days sales outstanding, DSO) by month-end. Reminders reuse the screen's WhatsApp reminder flow.
  */
-export function CollectionsPanel({ reloadKey, onRemind, onSchedule }: {
+export function CollectionsPanel({ reloadKey, onRemind, onSchedule, onShowAll }: {
   reloadKey: number
   onRemind: (ledgerId: number) => void
   /** Automatic email / WhatsApp reminders for this customer */
   onSchedule?: (ledgerId: number, name: string) => void
+  /** Everyone overdue: the page's own customer table, filtered, rather than a second full list here */
+  onShowAll?: () => void
 }) {
   const { token } = useAuth()
   const [data, setData] = useState<Collections | null>(null)
@@ -34,7 +37,8 @@ export function CollectionsPanel({ reloadKey, onRemind, onSchedule }: {
 
   if (!data) {
     return (
-      <div className="flex h-32 items-center justify-center rounded-2xl border border-border bg-card" role="status">
+      // Takes the loaded panel's height (5 customers to chase), so the customer list below doesn't jump when it fills in
+      <div className="flex min-h-[1000px] items-start justify-center rounded-2xl border border-border bg-card pt-24 sm:min-h-[560px]" role="status">
         <Loader2 className="h-5 w-5 animate-spin text-primary" />
         <span className="sr-only">Loading collections</span>
       </div>
@@ -104,7 +108,7 @@ export function CollectionsPanel({ reloadKey, onRemind, onSchedule }: {
                 <span className="w-5 shrink-0 pt-0.5 text-sm font-bold text-muted-foreground">{i + 1}</span>
                 <div className="min-w-0 flex-1 sm:flex sm:items-center sm:justify-between sm:gap-3">
                 <div className="min-w-0">
-                  <p className="font-semibold">{c.name}</p>
+                  <Link href={`/outstanding/${c.ledger_id}`} className="inline-block py-1 font-semibold hover:text-emerald-700 hover:underline">{c.name}</Link>
                   <p className="text-xs text-muted-foreground">
                     <span className="font-semibold text-foreground">{rupees(c.overdue)}</span> overdue · on average {c.average_days_late} days late
                     (oldest {c.oldest_days_late}) · credit {c.credit_days}d
@@ -119,7 +123,7 @@ export function CollectionsPanel({ reloadKey, onRemind, onSchedule }: {
                   <button
                     type="button"
                     onClick={() => onRemind(c.ledger_id)}
-                    className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-emerald-600 px-3 text-sm font-semibold text-white hover:bg-emerald-700 cursor-pointer"
+                    className="inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-emerald-700 px-3 text-sm font-semibold text-white hover:bg-emerald-800 cursor-pointer"
                   >
                     <MessageCircle className="h-4 w-4" /> Remind
                   </button>
@@ -142,10 +146,10 @@ export function CollectionsPanel({ reloadKey, onRemind, onSchedule }: {
         {data.chase.length > SHOWN && (
           <button
             type="button"
-            onClick={() => setShowAll(s => !s)}
+            onClick={() => (onShowAll ? onShowAll() : setShowAll(s => !s))}
             className="mt-2 min-h-10 w-full rounded-xl border border-border text-sm font-semibold hover:bg-muted cursor-pointer"
           >
-            {showAll ? 'Show fewer' : `Show all ${data.chase.length}`}
+            {onShowAll ? `See all ${data.chase.length} overdue customers below` : showAll ? 'Show fewer' : `Show all ${data.chase.length}`}
           </button>
         )}
       </div>

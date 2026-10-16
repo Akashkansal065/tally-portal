@@ -279,6 +279,17 @@ async def get_aging_dashboard(
     # 2. Age every debtor's balance by due date (shared with Executive Analytics and Home)
     ageing = await receivables_ageing(db, user.company_id, party_ledger_id=party_ledger_id)
 
+    # One customer's pending bills page also prints their address and GSTIN
+    party_details = {}
+    if party_ledger_id and ageing:
+        from app.models.tally_core import MstLedger
+        row = (await db.execute(select(MstLedger.address, MstLedger.state, MstLedger.pincode, MstLedger.gstin).where(
+            MstLedger.company_id == user.company_id, MstLedger.ledger_id == party_ledger_id))).first()
+        if row:
+            place = ", ".join(x for x in (row.address, row.state) if x)
+            party_details = {"address": f"{place} - {row.pincode}" if place and row.pincode else (place or None),
+                             "gstin": row.gstin or None}
+
     customers = []
     for p in ageing:
         bills = [
@@ -322,6 +333,7 @@ async def get_aging_dashboard(
             overdue_bills_count=sum(1 for b in bills if b.days_overdue > 0),
             dunning_level=dunning,
             bills=bills,
+            **(party_details if p.ledger_id == party_ledger_id else {}),
         ))
 
     def total(bucket: str) -> float:

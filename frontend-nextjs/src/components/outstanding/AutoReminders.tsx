@@ -372,7 +372,7 @@ function ReminderSheetBody({ ledgerId, token, onChanged }: { ledgerId: number; t
       </section>
 
       <button type="button" onClick={doSend} disabled={busy !== null || chosen.length === 0}
-        className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50 cursor-pointer">
+        className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-700 text-sm font-bold text-white hover:bg-emerald-800 disabled:opacity-50 cursor-pointer">
         {busy === 'send' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Send reminder now
       </button>
 
@@ -532,7 +532,7 @@ export function AutoRemindersStrip({ token, reloadKey, onChanged }: { token: str
   return (
     <section aria-label="Automatic reminders" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm">
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600"><BellRing className="h-5 w-5" /></div>
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"><BellRing className="h-5 w-5" /></div>
         <div>
           <h2 className="text-sm font-bold">Automatic reminders</h2>
           <p className="text-sm text-muted-foreground">

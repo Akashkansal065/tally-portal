@@ -27,9 +27,10 @@ import { TargetSparkline } from './TargetSparkline'
 const monthName = (month: string) =>
   new Date(`${month}-01T00:00:00`).toLocaleDateString('en-IN', { month: 'long' })
 
+// Same height as the loaded card (288px), so the page below holds still when it fills in
 function TargetTrackerSkeleton() {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4 shadow-sm animate-pulse space-y-3" role="status">
+    <div className="min-h-[288px] rounded-2xl border border-border bg-card p-4 shadow-sm animate-pulse space-y-3" role="status">
       <div className="flex justify-between items-start">
         <div className="space-y-2">
           <div className="h-3 w-28 bg-muted rounded" />
@@ -54,14 +55,9 @@ function TargetTrackerSkeleton() {
 export function TargetTracker() {
   const { token, user, permissions } = useAuth()
   const isAdmin = isAdminUser(permissions, user?.role)
-  const [data, setData] = useState<SalesTarget | null>(null)
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      const cached = remembered<SalesTarget | null>('sales_target_cache', null)
-      if (cached) setData(cached)
-    })
-  }, [])
+  // Last known figures on the first render (not after a skeleton frame), so the cards below don't jump
+  const [data, setData] = useState<SalesTarget | null>(() =>
+    typeof window === 'undefined' ? null : remembered<SalesTarget | null>('sales_target_cache', null))
   const [failed, setFailed] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -218,9 +214,24 @@ export function TargetTracker() {
 }
 
 /** Counts from the watchlists, linking to them: customers buying less and items about to run out. */
+type AttentionCounts = { customers: number; items: number; deadValue: number; deadItems: number }
+
+const cachedCounts = (key: string): AttentionCounts | null => {
+  if (typeof window === 'undefined') return null
+  const cached = remembered<Partial<AttentionCounts>>(key, {})
+  return typeof cached.customers === 'number' ? cached as AttentionCounts : null
+}
+
 export function NeedsAttention() {
-  const { token } = useAuth()
-  const [counts, setCounts] = useState<{ customers: number; items: number; deadValue: number; deadItems: number } | null>(null)
+  const { token, user } = useAuth()
+  const cacheKey = `needs_attention_${user?.company_id ?? 0}`
+  // Last visit's counts on the first render, so the page below doesn't jump when the fresh ones arrive
+  const [counts, setCounts] = useState<AttentionCounts | null>(() => cachedCounts(cacheKey))
+  const [countsKey, setCountsKey] = useState(cacheKey)
+  if (countsKey !== cacheKey) {   // switched company: show that company's last counts
+    setCountsKey(cacheKey)
+    setCounts(cachedCounts(cacheKey))
+  }
 
   useEffect(() => {
     if (!token) return
@@ -231,13 +242,18 @@ export function NeedsAttention() {
     const deadDays = remembered('dead_stock', { days: 90 }).days
     Promise.all([getWatchlist(token, criteria), getReorderAlerts(token, reorder.cover_days), getDeadStock(token, deadDays)])
       .then(([w, r, d]) => {
-        if (current) setCounts({ customers: w.customers.length, items: r.items.length, deadValue: d.total_value, deadItems: d.count })
+        if (!current) return
+        const fresh = { customers: w.customers.length, items: r.items.length, deadValue: d.total_value, deadItems: d.count }
+        setCounts(fresh)
+        remember(cacheKey, fresh)
       })
       .catch(() => {})
     return () => { current = false }
-  }, [token])
+  }, [token, cacheKey])
 
-  if (!counts || (counts.customers === 0 && counts.items === 0 && counts.deadItems === 0)) return null
+  // First visit: hold one tile's height (the usual case) rather than pushing the page down later
+  if (!counts) return <div className="min-h-14" aria-hidden="true" />
+  if (counts.customers === 0 && counts.items === 0 && counts.deadItems === 0) return null
 
   const tile = 'flex min-h-14 items-center gap-3 rounded-2xl border border-border bg-card px-3.5 py-2.5 hover:bg-muted/60'
   return (

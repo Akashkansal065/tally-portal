@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import clear_all_cache
@@ -483,49 +483,48 @@ async def set_customer_city(
 
 # ─── Collections priority ────────────────────────────────────────────────────
 
-async def receivables_as_of(db: AsyncSession, company_id: int, day: date) -> float:
-    """Total customers owe at the end of a day: opening balances plus all entries up to that day."""
+async def dso_by_day(db: AsyncSession, company_id: int, days: List[date]) -> Dict[date, Optional[float]]:
+    """Days of sales customers owe at the end of each day: receivables then ÷ the 90 days' billing up to it × 90.
+    All days in three queries, not a handful per day (the DB is remote, so round trips are the cost)."""
+    result: Dict[date, Optional[float]] = {d: None for d in days}
     debtor_groups = await group_ids_under(db, company_id, "Sundry Debtors")
-    if not debtor_groups:
-        return 0.0
+    if not debtor_groups or not days:
+        return result
     opening = (await db.execute(
         select(MstLedger.opening_balance, MstLedger.opening_balance_type)
         .where(MstLedger.company_id == company_id, MstLedger.group_id.in_(debtor_groups))
     )).all()
-    total = sum(float(o or 0) * (-1 if (t or "Dr").lower() == "cr" else 1) for o, t in opening)
+    opening_total = sum(float(o or 0) * (-1 if (t or "Dr").lower() == "cr" else 1) for o, t in opening)
+
+    net = TrnAccounting.debit_amount - TrnAccounting.credit_amount
+    debtors = and_(MstLedger.company_id == company_id, MstLedger.group_id.in_(debtor_groups), live_voucher())
+    # Receivables at each day's end: opening balances plus every entry up to that day
     moved = (await db.execute(
-        select(func.coalesce(func.sum(TrnAccounting.debit_amount - TrnAccounting.credit_amount), 0))
+        select(*[func.coalesce(func.sum(case((TrnVoucher.voucher_date <= d, net), else_=0)), 0) for d in days])
         .join(TrnVoucher, TrnVoucher.voucher_id == TrnAccounting.voucher_id)
         .join(MstLedger, MstLedger.ledger_id == TrnAccounting.ledger_id)
-        .where(MstLedger.company_id == company_id, MstLedger.group_id.in_(debtor_groups),
-               live_voucher(), TrnVoucher.voucher_date <= day)
-    )).scalar()
-    return round(total + float(moved or 0), 2)
-
-
-async def billed_between(db: AsyncSession, company_id: int, start: date, end: date) -> float:
-    """What customers were billed, including GST, after returns: sales invoices minus credit notes."""
-    debtor_groups = await group_ids_under(db, company_id, "Sundry Debtors")
-    if not debtor_groups:
-        return 0.0
-    amount = (await db.execute(
-        select(func.coalesce(func.sum(TrnAccounting.debit_amount - TrnAccounting.credit_amount), 0))
+        .where(debtors, TrnVoucher.voucher_date <= max(days))
+    )).one()
+    # Billed in the 90 days up to each day, including GST, after returns: sales invoices minus credit notes
+    billed = (await db.execute(
+        select(*[func.coalesce(func.sum(case(
+            (and_(TrnVoucher.voucher_date >= d - timedelta(days=89), TrnVoucher.voucher_date <= d), net), else_=0)), 0)
+            for d in days])
         .join(TrnVoucher, TrnVoucher.voucher_id == TrnAccounting.voucher_id)
         .join(MstVoucherType, MstVoucherType.voucher_type_id == TrnVoucher.voucher_type_id)
         .join(MstLedger, MstLedger.ledger_id == TrnAccounting.ledger_id)
-        .where(MstLedger.company_id == company_id, MstLedger.group_id.in_(debtor_groups), live_voucher(),
-               TrnVoucher.voucher_date >= start, TrnVoucher.voucher_date <= end,
+        .where(debtors, TrnVoucher.voucher_date >= min(days) - timedelta(days=89), TrnVoucher.voucher_date <= max(days),
                (MstVoucherType.name.in_(("Sales", "Credit Note"))) | (MstVoucherType.parent_type.in_(("Sales", "Credit Note"))))
-    )).scalar()
-    return float(amount or 0)
+    )).one()
+    for d, owed, sold in zip(days, moved, billed):
+        if float(sold or 0) > 0:
+            result[d] = round(round(opening_total + float(owed or 0), 2) / float(sold) * 90, 1)
+    return result
 
 
 async def days_sales_outstanding(db: AsyncSession, company_id: int, day: date) -> Optional[float]:
     """Days of sales customers owe: receivables at the day's end ÷ the last 90 days' billing × 90."""
-    billed = await billed_between(db, company_id, day - timedelta(days=89), day)
-    if billed <= 0:
-        return None
-    return round(await receivables_as_of(db, company_id, day) / billed * 90, 1)
+    return (await dso_by_day(db, company_id, [day]))[day]
 
 
 @router.get("/collections")
@@ -561,9 +560,8 @@ async def collections_priority(
         })
     chase.sort(key=lambda c: c["priority"], reverse=True)
 
-    dso_trend = []
-    for day in snapshots.month_ends(today, 6):
-        dso_trend.append({"day": day.isoformat(), "dso": await days_sales_outstanding(db, user.company_id, day)})
+    dso = await dso_by_day(db, user.company_id, snapshots.month_ends(today, 6))
+    dso_trend = [{"day": day.isoformat(), "dso": value} for day, value in dso.items()]
 
     return {
         "as_of": today.isoformat(),

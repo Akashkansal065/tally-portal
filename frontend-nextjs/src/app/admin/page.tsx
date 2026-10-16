@@ -2,6 +2,7 @@
 
 import { confirmInCompany } from '@/lib/current-company'
 import { useEffect, useState, useCallback, useRef } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { API_BASE, authHeaders, formatDate, formatToIST } from '@/lib/utils'
@@ -223,6 +224,7 @@ export default function AdminPage() {
     total_exception_traffic: number
     unreconciled_deleted_count?: number
     total_sync_issues?: number
+    backup_drill?: { ok: boolean; checked_at: string | null; problem: string | null } | null
   } | null>(null)
 
   // Traffic Logs
@@ -250,6 +252,8 @@ export default function AdminPage() {
       if (res.ok) {
         const data = await res.json()
         setSyncHealth(data)
+        // The header's sync badge shows the same numbers; keep it in step instead of waiting for its next poll
+        window.dispatchEvent(new CustomEvent('mytally:sync-health', { detail: data }))
       }
     } catch {
       // Gracefully ignore transient network drops
@@ -1455,6 +1459,21 @@ const handleSavePermissions = async () => {
                   </div>
                 </div>
               </div>
+
+              {/* A failed backup check counts as a sync issue but has no traffic or deleted-record row, so say what it is */}
+              {syncHealth?.backup_drill && !syncHealth.backup_drill.ok && (
+                <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm dark:border-rose-900/50 dark:bg-rose-950/30" role="alert">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+                  <div>
+                    <p className="font-bold text-rose-700 dark:text-rose-400">The newest backup could not be opened and checked</p>
+                    <p className="text-muted-foreground">
+                      {syncHealth.backup_drill.problem || 'The backup file failed verification.'}
+                      {syncHealth.backup_drill.checked_at && <> · checked {new Date(syncHealth.backup_drill.checked_at).toLocaleString('en-IN')}</>}
+                      {' '}· <Link href="/backup" className="font-semibold text-rose-700 underline dark:text-rose-400">Open backups</Link>
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Sync Center Sub-Navigation Tabs */}
               <div className="flex items-center gap-2 border-b border-border/80 pb-2">
