@@ -1,8 +1,10 @@
 """Agent tests: a fake MyTally backend over real HTTP, and an in-memory keyring so tests never
 write to the OS credential vault."""
 import json
+import logging
 import os
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -10,8 +12,25 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import config as agent_config  # noqa: E402
 import keyring  # noqa: E402
 from keyring.backend import KeyringBackend  # noqa: E402
+
+
+# Test modules import agent.py during collection, before fixtures can run. Redirect
+# get_logs_dir here so its module-level RotatingFileHandler never opens the real
+# desktop-sync-agent/logs/agent.log.
+_test_logs = tempfile.TemporaryDirectory(prefix="mytally-agent-tests-")
+os.environ["MYTALLY_LOGS_DIR"] = _test_logs.name
+agent_config.get_logs_dir = lambda: _test_logs.name
+
+
+def pytest_unconfigure(config):
+    logging.shutdown()
+    try:
+        _test_logs.cleanup()
+    except Exception:
+        pass
 
 
 class MemoryKeyring(KeyringBackend):

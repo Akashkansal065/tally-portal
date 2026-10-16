@@ -17,6 +17,11 @@ def get_app_dir() -> str:
 
 def get_logs_dir() -> str:
     """Returns absolute path to logs directory, safe for Windows autostart & restricted permissions."""
+    override = os.environ.get("MYTALLY_LOGS_DIR")
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
+
     app_dir = get_app_dir()
     logs_dir = os.path.join(app_dir, "logs")
     try:
