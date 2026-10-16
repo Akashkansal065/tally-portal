@@ -86,3 +86,87 @@ def backend():
     fake.url = f"http://127.0.0.1:{server.server_address[1]}"
     yield fake
     server.shutdown()
+
+
+# ── mock Tally (WS-16) ──
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+TALLY_FIXTURES = Path(__file__).parent / "fixtures" / "tally"
+
+
+class MockTally:
+    """A local HTTP server that answers Tally XML requests with canned replies, picked by the request's
+    <HEADER><ID>. Needs no TallyPrime. Replies come from `respond(id, xml_or_callable_or_list)`, else from
+    tests/fixtures/tally/<ID>.xml, else an empty ENVELOPE.
+
+    A callable reply receives the request body and returns the reply text; a list is served in order, the
+    last item repeating. `requests` records (id, body) for every call, `ids` just the ids."""
+
+    EMPTY = "<ENVELOPE><BODY><DATA><COLLECTION></COLLECTION></DATA></BODY></ENVELOPE>"
+
+    def __init__(self):
+        self.requests = []
+        self.replies = {}
+        self.encoding = "utf-8"
+        self.url = ""
+
+    @property
+    def ids(self):
+        return [i for i, _ in self.requests]
+
+    def respond(self, request_id, reply):
+        self.replies[request_id] = list(reply) if isinstance(reply, list) else reply
+        return self
+
+    def fixture(self, name):
+        return (TALLY_FIXTURES / f"{name}.xml").read_text(encoding="utf-8")
+
+    def _reply_for(self, request_id, body):
+        reply = self.replies.get(request_id)
+        if reply is None:
+            path = TALLY_FIXTURES / f"{request_id}.xml"
+            return path.read_text(encoding="utf-8") if path.exists() else self.EMPTY
+        if isinstance(reply, list):
+            item = reply.pop(0) if len(reply) > 1 else reply[0]
+            reply = item
+        return reply(body) if callable(reply) else reply
+
+    def handle(self, handler):
+        length = int(handler.headers.get("Content-Length") or 0)
+        body = handler.rfile.read(length).decode("utf-8", "replace") if length else ""
+        found = re.search(r"<HEADER>.*?<ID>([^<]+)</ID>", body, re.S)
+        request_id = found.group(1).strip() if found else ""
+        self.requests.append((request_id, body))
+        reply = self._reply_for(request_id, body)
+        if isinstance(reply, Exception):
+            handler.send_response(500)
+            handler.end_headers()
+            return
+        raw = reply.encode(self.encoding)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/xml")
+        handler.send_header("Content-Length", str(len(raw)))
+        handler.end_headers()
+        handler.wfile.write(raw)
+
+
+@pytest.fixture
+def mock_tally():
+    mock = MockTally()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            mock.handle(self)
+
+        do_GET = do_POST
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    mock.url = f"http://127.0.0.1:{server.server_address[1]}"
+    yield mock
+    server.shutdown()
+    server.server_close()
