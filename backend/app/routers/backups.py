@@ -14,6 +14,7 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,7 +115,14 @@ def _download(backup: CompanyBackup, company: Company) -> FileResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This backup's file is not on the server.")
     stamp = backup.taken_at.strftime("%Y%m%d-%H%M") if backup.taken_at else backup.backup_key
     safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (company.name or "company"))[:60]
-    return FileResponse(path=str(path), media_type="application/zip", filename=f"{safe_name}-{stamp}.zip")
+    from app.services import backup_crypto
+    try:
+        readable = svc.plaintext_copy(backup)
+    except backup_crypto.CryptoError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    cleanup = BackgroundTask(lambda: readable.unlink(missing_ok=True)) if readable != path else None
+    return FileResponse(path=str(readable), media_type="application/zip", filename=f"{safe_name}-{stamp}.zip",
+                        background=cleanup)
 
 
 # ── The sync agent ───────────────────────────────────────────────────────────
@@ -393,6 +401,39 @@ async def request_restore(backup_id: int, req: RestoreIn, admin: User = Depends(
     await db.commit()
     await db.refresh(restore)
     return svc.restore_dict(restore)
+
+
+class RestoreNewIn(BaseModel):
+    confirm_company_name: str = Field(max_length=255)
+    new_company_name: Optional[str] = Field(default=None, max_length=150)
+
+
+@router.post("/{backup_id}/restore-new-company")
+async def restore_into_new_company(backup_id: int, req: RestoreNewIn, admin: User = Depends(require_admin),
+                                   db: AsyncSession = Depends(get_db)):
+    """Make a NEW MyTally company from a stored backup, written from the archive on the server (nothing goes to
+    Tally). Administrators only, behind BACKUP_RESTORE_NEW_COMPANY_ENABLED; the company's name must be typed."""
+    from app.services import backup_restore_new as restore_new
+    if not settings.BACKUP_RESTORE_NEW_COMPANY_ENABLED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Restoring into a new company is not switched on yet.")
+    company = await _company(db, admin)
+    backup = await _company_backup(db, company.company_id, backup_id)
+    if req.confirm_company_name.strip().lower() != (company.name or "").strip().lower():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Type the company's name exactly to confirm.")
+    from app.services.billing.entitlements import get_entitlements
+    from sqlalchemy import func
+    ent = await get_entitlements(db, company.account_id)
+    if ent.max_companies is not None:
+        held = (await db.execute(select(func.count()).select_from(Company).where(
+            Company.account_id == company.account_id))).scalar() or 0
+        if held >= ent.max_companies:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Your plan allows {ent.max_companies} company(ies).")
+    name = (req.new_company_name or f"{company.name} (restored {get_ist_now().strftime('%d %b %Y')})").strip()
+    try:
+        return await restore_new.restore_into_new_company(db, backup, company, admin.user_id, name)
+    except restore_new.RestoreRefused as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
 
 @router.post("/restores/{restore_id}/cancel")

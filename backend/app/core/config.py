@@ -160,6 +160,14 @@ class Settings(BaseSettings):
     BACKUP_STORAGE_DIR: str = ""
     BACKUP_MAX_BYTES: int = 2 * 1024 * 1024 * 1024
     BACKUP_RESTORE_ENABLED: bool = False
+    # Backups held on the server are encrypted with AES-256-GCM when an active key is set (services/backup_crypto.py).
+    # BACKUP_ENCRYPTION_KEYS is "keyid:base64key,keyid2:base64key2" (32-byte keys); every listed key can read, the
+    # active one writes. Empty = backups are stored as they arrive.
+    BACKUP_ENCRYPTION_KEYS: Optional[str] = None
+    BACKUP_ENCRYPTION_ACTIVE_KEY_ID: Optional[str] = None
+    # Restoring a backup into a NEW MyTally company (admin only, typed confirmation). Off until a restore of a real
+    # backup has been checked on a test account.
+    BACKUP_RESTORE_NEW_COMPANY_ENABLED: bool = False
 
     # Google Drive copies of backups (app/services/google_drive.py). All four must be set before a company can link
     # a Drive. SECRETS_ENCRYPTION_KEY is a Fernet key (python -c "from cryptography.fernet import Fernet;

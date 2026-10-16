@@ -634,6 +634,8 @@ class CompanyBackup(Base):
     drive_attempts = Column(Integer, nullable=False, default=0)
     drive_next_retry_at = Column(DateTime, nullable=True)
     drive_uploaded_at = Column(DateTime, nullable=True)
+    # The key id the stored file is encrypted with (services/backup_crypto.py); NULL = stored as a plain file
+    encryption_key_id = Column(String(64), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1960,3 +1962,17 @@ class DriveFileDeletion(Base):
     backup_key = Column(String(64), nullable=False)
     attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class BackupDrillResult(Base):
+    """What the latest restore drill found for a company: its newest stored backup was opened, checked against
+    its checksum and manifest. One row per company, replaced by each drill (services/backup_drill.py)."""
+    __tablename__ = "backup_drill_results"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), primary_key=True)
+    backup_id = Column(Integer, nullable=True)
+    backup_key = Column(String(64), nullable=True)
+    checked_at = Column(DateTime, server_default=func.now())
+    ok = Column(Boolean, nullable=False, default=False)
+    problem = Column(String(500), nullable=True)
+    record_counts = Column(JSON, nullable=True)

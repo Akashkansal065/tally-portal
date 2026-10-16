@@ -258,9 +258,18 @@ def _matches(meta: Dict[str, Any], backup: CompanyBackup) -> bool:
 async def upload_backup(link: GoogleDriveLink, backup: CompanyBackup, company_name: str) -> str:
     """Copy a stored backup to Drive and return the file id. Safe to repeat: an existing copy is recognised and
     kept, never doubled. Raises DriveError."""
-    path = backup_svc.file_path(backup)
-    if backup.status != "stored" or not path.exists():
+    if backup.status != "stored" or not backup_svc.file_path(backup).exists():
         raise DriveError("The backup file is not on the server any more.", retryable=False)
+    from app.services.backup_crypto import CryptoError
+    try:
+        # The Drive copy is the ZIP itself, readable in the user's own Drive: an encrypted file is opened first
+        with backup_svc.plaintext_file(backup) as path:
+            return await _upload_plain(link, backup, company_name, path)
+    except CryptoError as e:
+        raise DriveError(str(e), retryable=False)
+
+
+async def _upload_plain(link: GoogleDriveLink, backup: CompanyBackup, company_name: str, path) -> str:
     token = await access_token(link)
     folder = await ensure_folder(link, company_name, token)
     auth = {"Authorization": f"Bearer {token}"}

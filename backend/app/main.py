@@ -189,6 +189,10 @@ async def lifespan(app: FastAPI):
     from app.services.google_drive import drive_worker
     drive_task = asyncio.create_task(drive_worker(300))
 
+    # 7c. Daily restore drill: the newest backup of each company is opened and checked
+    from app.services.backup_drill import drill_worker
+    drill_task = asyncio.create_task(drill_worker())
+
     # 8. Subscription lifecycle & stale order worker (every 5 minutes)
     from app.services.billing.subscriptions import billing_lifecycle_worker
     billing_lifecycle_task = asyncio.create_task(billing_lifecycle_worker(300))
@@ -202,6 +206,7 @@ async def lifespan(app: FastAPI):
         sync_alert_task.cancel()
         reminder_task.cancel()
         drive_task.cancel()
+        drill_task.cancel()
         billing_lifecycle_task.cancel()
         await asyncio.gather(
             keep_alive_task,
@@ -210,6 +215,7 @@ async def lifespan(app: FastAPI):
             sync_alert_task,
             reminder_task,
             drive_task,
+            drill_task,
             billing_lifecycle_task,
             return_exceptions=True,
         )

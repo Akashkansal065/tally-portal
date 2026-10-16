@@ -16,6 +16,8 @@ restore are kept whole for KEEP_DAYS: they are the way back if a restore went wr
 import hashlib
 import os
 import re
+import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional, Set, Tuple
@@ -125,8 +127,72 @@ def finish_file(backup: CompanyBackup) -> bool:
     if not part.exists() or part.stat().st_size != backup.size_bytes or sha256_of(part) != backup.sha256:
         discard_files(backup)
         return False
-    os.replace(part, file_path(backup))
+    from app.services import backup_crypto
+    key_id = backup_crypto.active_key_id()
+    final = file_path(backup)
+    if key_id:
+        # Encrypted at rest: written beside the final name, then moved into place; the plain part is removed
+        sealed = final.with_suffix(".zip.enc.tmp")
+        backup_crypto.encrypt_file(part, sealed, key_id)
+        os.replace(sealed, final)
+        part.unlink()
+        backup.encryption_key_id = key_id
+    else:
+        os.replace(part, final)
+        backup.encryption_key_id = None
     return True
+
+
+def temp_dir() -> Path:
+    d = storage_root() / ".tmp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def is_encrypted(backup: CompanyBackup) -> bool:
+    if backup.encryption_key_id:
+        return True
+    path = file_path(backup)
+    from app.services import backup_crypto
+    try:
+        return path.exists() and backup_crypto.read_header(path) is not None
+    except Exception:
+        return False
+
+
+@contextmanager
+def plaintext_file(backup: CompanyBackup):
+    """A path to the backup's ZIP as the PC made it. A plain file is used where it is; an encrypted one is
+    decrypted to a temporary file that is removed afterwards."""
+    path = file_path(backup)
+    if not is_encrypted(backup):
+        yield path
+        return
+    from app.services import backup_crypto
+    tmp = temp_dir() / f"{uuid.uuid4().hex}.zip"
+    try:
+        backup_crypto.decrypt_to(path, tmp)
+        yield tmp
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def plaintext_copy(backup: CompanyBackup) -> Path:
+    """Like plaintext_file for a caller that removes the file itself (a download response)."""
+    path = file_path(backup)
+    if not is_encrypted(backup):
+        return path
+    from app.services import backup_crypto
+    tmp = temp_dir() / f"{uuid.uuid4().hex}.zip"
+    try:
+        backup_crypto.decrypt_to(path, tmp)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp
 
 
 def discard_files(backup: CompanyBackup) -> None:
@@ -169,6 +235,7 @@ def backup_dict(backup: CompanyBackup) -> dict:
         "taken_at": to_ist_iso(backup.taken_at),
         "stored_at": to_ist_iso(backup.stored_at),
         "size_bytes": backup.size_bytes, "record_counts": backup.record_counts or {},
+        "encrypted": bool(backup.encryption_key_id),
         "tally_company_name": backup.tally_company_name, "error": backup.error,
         "created_at": to_ist_iso(backup.created_at),
         "drive_status": backup.drive_status, "drive_error": backup.drive_error,

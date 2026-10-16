@@ -22,6 +22,10 @@ column ...` lines. Back up the database first. In the order the commits added th
 | 4 | table `sync_inbound_receipts` (unique `company_id, idempotency_key`) | WS-9 | `portal_core.py` |
 | 5 | `company_backups.drive_status`, `drive_file_id`, `drive_error`, `drive_attempts`, `drive_next_retry_at`, `drive_uploaded_at`; tables `google_drive_links`, `drive_file_deletions` | Google Drive | `portal_core.py` |
 | 6 | `stock_entries.order_number`, `order_due_date`, `tracking_number`; table `stock_entry_batch_allocations` | WS-11 | `tally_core.py` |
+| 7 | `company_backups.encryption_key_id` (VARCHAR 64, NULL); table `backup_drill_results` | WS-13 | `portal_core.py` |
+
+Not a schema change but a data step: existing backup files are encrypted by `python scripts/backup_crypto.py
+encrypt-existing` (section 3b), once an active key is set.
 
 After the first start, confirm each exists (`SHOW COLUMNS` / `SHOW TABLES`) before upgrading agents.
 
@@ -35,6 +39,9 @@ After the first start, confirm each exists (`SHOW COLUMNS` / `SHOW TABLES`) befo
 | `GOOGLE_OAUTH_REDIRECT_URI` | unset | Google Drive link; must equal the Cloud console redirect URI |
 | `SECRETS_ENCRYPTION_KEY` | unset | Fernet key encrypting stored Google refresh tokens; back it up |
 | `APP_PUBLIC_URL` | unset (existing setting) | where the Google callback sends the browser (`<url>/backup`) |
+| `BACKUP_ENCRYPTION_KEYS` | unset | `id:base64key,id2:base64key2`, 32-byte keys; every listed key can read (WS-13) |
+| `BACKUP_ENCRYPTION_ACTIVE_KEY_ID` | unset (= no encryption) | the key id new backups are written with |
+| `BACKUP_RESTORE_NEW_COMPANY_ENABLED` | `false` | restore a backup into a NEW MyTally company (WS-13) |
 
 Per company, in the web app: Admin → Integrations → **Google Drive copy of backups** (off by default).
 
@@ -55,7 +62,21 @@ Per company, in the web app: Admin → Integrations → **Google Drive copy of b
 6. **Flags:** features that stay off until chosen are listed in section 7.
 
 ### 3b. Added with later workstreams
-_(Filled in as WS-13, WS-12, WS-2, WS-15 and WS-14 land.)_
+
+**WS-13 backup hardening**
+1. Generate a key: `cd backend && python3 scripts/backup_crypto.py new-key`. Put it in `BACKUP_ENCRYPTION_KEYS` as
+   `k1:<key>` and set `BACKUP_ENCRYPTION_ACTIVE_KEY_ID=k1`; keep the key with your other secrets (a backup cannot
+   be read without it). Restart the backend.
+2. Encrypt files already on disk: `python3 scripts/backup_crypto.py encrypt-existing` (repeat-safe; a file is replaced
+   only after it decrypts back to its recorded SHA-256). Check with `python3 scripts/backup_crypto.py status`.
+3. Rotation: add `k2:<new key>` to `BACKUP_ENCRYPTION_KEYS`, set the active id to `k2`, restart, run
+   `python3 scripts/backup_crypto.py rewrap`, check `status` shows only `k2`, then remove `k1`.
+4. Restore into a new company stays off until you set `BACKUP_RESTORE_NEW_COMPANY_ENABLED=true`; try it first on a
+   test account (checks R1-R3 in section 6b).
+5. The daily restore drill needs nothing; its first result appears in `/sync/health` `backup_drill` about ten
+   minutes after the backend starts.
+
+_(WS-12, WS-2, WS-15 and WS-14 add their steps here as they land.)_
 
 ## 4. Run the suites (once, at the end)
 
@@ -102,6 +123,15 @@ change.
 | T13 | Lose a response on purpose (stop the backend mid-import, restart, let the agent retry) | Second attempt returns the stored answer or imports once; no duplicates | WS-9 stale-PROCESSING takeover timing |
 | T14 | Upload a large export with gzip through the real proxy | 200, smaller request; an upload above the cap gets 413 | WS-8 and the production proxy limits |
 
+### 5b. Server-side checks that need real data (no Tally, no Google)
+
+| # | What to do | Expected | Assumption it tests |
+|---|---|---|---|
+| R1 | With a key set, finish a real backup from an agent, then download it from the Backup page | The file on disk starts with `MTBKENC1`; the download opens as a ZIP | encryption at rest end to end |
+| R2 | Turn `BACKUP_RESTORE_NEW_COMPANY_ENABLED` on; restore a real backup into a new company (`POST /backups/{id}/restore-new-company`) | A new company with the same ledger, stock item and voucher counts as the manifest; `verified: true` | the importer accepts the agent's real archive in dependency order; manifest counts match what the importer stores |
+| R3 | Compare the new company's trial balance with the source company's for the same date | same figures | restore fidelity |
+| R4 | Damage a stored backup file on a test server, wait for the drill (or call `drill_all`) | `/sync/health` shows `backup_drill.ok = false` and status degraded | drill reporting |
+
 ## 6. Checks that need REAL Google credentials
 
 | # | What to do | Expected | Assumption it tests |
@@ -130,5 +160,7 @@ change.
 - Other reports (daybook, P&L, balance sheet) were not audited for order/delivery-note rows after the trial
   balance fix.
 - "Re-sync this ledger's vouchers" from the parity report was not built.
+- WS-13 tests (`test_backup_hardening.py`) were written but **not run** while building; expect to fix small things on
+  the first run.
 - Not built by decision: S3 off-site backup (covered by Google Drive), the string vault, PyArmor, anti-debug,
   JSONEx (WS-17).

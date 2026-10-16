@@ -4740,6 +4740,10 @@ async def get_sync_health(
     deleted_in_tally = await deleted_in_tally_count(db, user.company_id)
     from app.services.books_parity import parity_summary
     parity = await parity_summary(db, user.company_id)
+    from app.services.backup_drill import drill_summary
+    backup_drill = await drill_summary(db, user.company_id)
+    if backup_drill is not None and not backup_drill["ok"]:
+        total_sync_issues += 1      # the newest backup could not be opened and verified
 
     # 4. Recent 5 logs: only the short columns, never the stored XML payloads
     recent_logs = (await db.execute(
@@ -4768,6 +4772,8 @@ async def get_sync_health(
         "deleted_in_tally_count": deleted_in_tally,
         # How MyTally's books compare with Tally's own figures at the last complete key list; None before one
         "books_parity": parity,
+        # The daily restore drill's finding for the newest backup; None before the first drill
+        "backup_drill": backup_drill,
         "total_sync_issues": total_sync_issues,
         "recent_traffic": [
             {
