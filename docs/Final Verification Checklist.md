@@ -213,8 +213,15 @@ change.
 - Other reports (daybook, P&L, balance sheet) were not audited for order/delivery-note rows after the trial
   balance fix.
 - "Re-sync this ledger's vouchers" from the parity report was not built.
-- WS-13 tests (`test_backup_hardening.py`) and WS-12 tests (`test_tally_ports.py`), WS-14 (`test_reconcile_writeback.py` in backend and agent) and the WS-15 installer script
-  test were written but **not run**
-  while building; expect to fix small things on the first run.
+- **Written but never run** (the user's rule was to run no suites while building; run them in section 4 and expect
+  small fixes on the first run): backend `test_backup_hardening.py` (WS-13), `test_reconcile_writeback.py` (WS-14);
+  agent `test_tally_ports.py` (WS-12), `test_reconcile_writeback.py` (WS-14), `test_installer_script.py` (WS-15).
+  Code from WS-12 to WS-15 was only syntax-checked (`py_compile`); the CI workflow was only parsed as YAML.
+- WS-13 restore into a new company writes into MyTally from the archive (nothing goes to Tally) and binds the new
+  company to the backup's GUID only when no other company of the account holds it, so a restore beside the original
+  stays unbound by design.
+- WS-14 writes one bank allocation per request and refuses an ambiguous match; there is no bulk write-back.
+- WS-12 offers a port only for a company already linked to the PC; a first-time setup on a non-default port is
+  still manual.
 - Not built by decision: S3 off-site backup (covered by Google Drive), the string vault, PyArmor, anti-debug,
   JSONEx (WS-17).
