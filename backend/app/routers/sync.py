@@ -1192,7 +1192,7 @@ async def report_reconcile_result(
     if body.outcome not in ("done", "already", "stale", "failed"):
         raise HTTPException(status_code=400, detail="Unknown outcome.")
     try:
-        result = await rwb.record_result(db, user.company_id, body.sync_id, body.outcome, body.alter_id or "", body.message or "")
+        result = await rwb.record_result(db, user.company_id, user.user_id, body.sync_id, body.outcome, body.alter_id or "", body.message or "")
     except rwb.WritebackRefused as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
     clear_company_cache(user.company_id)

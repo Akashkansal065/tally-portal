@@ -302,5 +302,20 @@ def test_the_endpoint_is_off_by_default_admin_only_and_needs_the_typed_name(harn
     monkeypatch.setattr(settings, "BACKUP_RESTORE_NEW_COMPANY_ENABLED", True)
     assert client.post(url, json=body, headers=bearer(login(client, clerk.email))).status_code == 403
     assert client.post(url, json={"confirm_company_name": "wrong"}, headers=h).status_code == 400
+    assert client.post(url, json=body, headers=h).status_code == 403                       # the plan's one company is taken
+    from app.services.billing.entitlements import invalidate_entitlements_cache
+    from app.services.billing.subscriptions import start_trial
+    from tests.conftest import run
+
+    account = harness.add(P.Account(name="Alpha", status="active"))
+    harness.execute(P.Company.__table__.update().where(P.Company.company_id == c.company_id).values(account_id=account.account_id))
+    harness.execute(P.User.__table__.update().values(account_id=account.account_id))
+
+    async def give_room():
+        async with harness.Session() as db:
+            await start_trial(db, account.account_id, trial_days=7)
+        invalidate_entitlements_cache(account.account_id)
+    run(give_room())
     res = client.post(url, json=body, headers=h)
-    assert res.status_code == 200 and res.json()["verified"] is True
+    assert res.status_code == 200, res.text
+    assert res.json()["verified"] is True

@@ -96,7 +96,7 @@ def marker_xml(company_name: str, request: Dict[str, Any], voucher_id: int) -> s
             "</MYTALLYRECONCILE>")
 
 
-async def record_result(db: AsyncSession, company_id: int, sync_id: int, outcome: str, alter_id: str, message: str) -> Dict[str, Any]:
+async def record_result(db: AsyncSession, company_id: int, user_id: int, sync_id: int, outcome: str, alter_id: str, message: str) -> Dict[str, Any]:
     """What the agent reports. Done/already: MyTally now holds the values and the new AlterID, and the request is
     finished. Stale/failed: nothing is changed here and the request is marked failed with the reason."""
     row = (await db.execute(select(SyncQueue).where(
@@ -123,7 +123,7 @@ async def record_result(db: AsyncSession, company_id: int, sync_id: int, outcome
     else:
         row.is_processed, row.status = True, "FAILED"
         row.error_message = (message or outcome)[:500]
-    db.add(AuditLog(company_id=company_id, user_id=None, action=f"RECONCILE_WRITEBACK_{outcome.upper()}",
+    db.add(AuditLog(company_id=company_id, user_id=user_id, action=f"RECONCILE_WRITEBACK_{outcome.upper()}",
                     entity_type="Voucher", entity_id=row.record_id, new_value={"message": (message or "")[:300], "alter_id": alter_id}))
     await db.commit()
     return {"status": outcome}
