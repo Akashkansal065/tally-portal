@@ -20,7 +20,7 @@ from app.models.tally_core import (
     MstVoucherTypePrefix, MstVoucherTypeSuffix, MstVoucherTypeRestart,
     MstVoucherTypeClass, MstVoucherTypeClassGroup,
     MstCostCategory, MstCostCentre, CostCenter, MstAttendanceType, MstPayHead, TrnAttendance, TrnPayHead,
-    TrnVoucher, TrnAccounting, TrnInventory, TrnBill, TrnBankAllocation,
+    TrnVoucher, TrnAccounting, TrnInventory, StockEntryBatchAllocation, TrnBill, TrnBankAllocation,
     BillAllocation, MstLedgerGstRegistration, TrnEwayBill, MstHsnDetail,
     MstLedgerMsmeDetail, MstLedgerAddress, MstLedgerTdsLowerDeduction, TrnCostCentreAllocation
 )
@@ -486,6 +486,41 @@ async def _read_payroll_cost_centre(db: AsyncSession, company_id: int, row, node
                 db.add(MstEmployeeSalaryRate(company_id=company_id, cost_centre_id=row.cost_centre_id, effective_from=start, pay_head_name=head[:100],
                                              rate=_decimal_or_none(rate.findtext("EMPTIMERATE")), position=position))
                 position += 1
+
+
+def parse_batch_allocations(inv_node) -> list:
+    """The BATCHALLOCATIONS.LIST rows of one inventory line, each checked on its own: a row with nothing usable
+    is dropped, an unreadable number or date is left empty, and none of that fails the voucher. Returns dicts
+    with batch_name, godown, destination_godown, quantity, billed_quantity, rate, amount, order_number,
+    order_due_date, tracking_number."""
+    rows = []
+    for node in inv_node.findall("BATCHALLOCATIONS.LIST"):
+        def text(tag):
+            return (node.findtext(tag) or "").strip()
+        qty = _decimal_or_none(text("ACTUALQTY"))
+        billed = _decimal_or_none(text("BILLEDQTY"))
+        amount = _decimal_or_none(text("AMOUNT"))
+        rate = _decimal_or_none(text("RATE"))
+        row = {
+            "batch_name": text("BATCHNAME")[:150] or None,
+            "godown": text("GODOWNNAME")[:150] or None,
+            "destination_godown": text("DESTINATIONGODOWNNAME")[:150] or None,
+            "quantity": qty if qty is not None else billed,
+            "billed_quantity": billed,
+            "rate": rate,
+            "amount": amount,
+            "order_number": text("ORDERNO")[:100] or None,
+            "order_due_date": parse_tally_date(text("ORDERDUEDATE")),
+            "tracking_number": text("TRACKINGNUMBER")[:100] or None,
+        }
+        # "Primary Batch" is Tally's name for no batch at all
+        if (row["batch_name"] or "").lower() == "primary batch":
+            row["batch_name"] = None
+        if all(row[k] in (None, "") for k in ("batch_name", "godown", "destination_godown", "quantity", "order_number",
+                                               "tracking_number")):
+            continue
+        rows.append(row)
+    return rows
 
 
 def _decimal_or_none(text_value) -> Optional[Decimal]:
@@ -2508,7 +2543,12 @@ async def import_tally_xml(
 
                 # 2. Delete ALL existing child records in strict FK dependency order
                 await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_accounting_allocations WHERE stock_entry_id IN (SELECT stock_entry_id FROM `{tally_db}`.stock_entries WHERE voucher_id = {vid})"))
+                await db.execute(text(f"DELETE FROM `{tally_db}`.stock_entry_batch_allocations WHERE stock_entry_id IN (SELECT stock_entry_id FROM `{tally_db}`.stock_entries WHERE voucher_id = {vid})"))
                 await db.execute(text(f"DELETE FROM `{tally_db}`.stock_entries WHERE voucher_id = {vid}"))
+                # The rows are gone; the session must not keep the old objects (a reused row id would collide)
+                for gone in old_inv_list:
+                    if gone in db:
+                        db.expunge(gone)
                 await db.execute(text(f"DELETE FROM `{tally_db}`.voucher_entry_cost_centres WHERE entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
                 await db.execute(text(f"DELETE FROM `{tally_db}`.bank_allocations WHERE entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
                 await db.execute(text(f"DELETE FROM `{tally_db}`.bill_allocations WHERE voucher_entry_id IN (SELECT entry_id FROM `{tally_db}`.voucher_entries WHERE voucher_id = {vid})"))
@@ -2967,8 +3007,19 @@ async def import_tally_xml(
 
                 item_desc = inv_node.findtext("ITEMDESCRIPTION") or inv_node.findtext("NARRATION") or inv_node.findtext("DESCRIPTION")
 
+                allocations = parse_batch_allocations(inv_node)
+                line_order_no = (inv_node.findtext("ORDERNO") or "").strip()[:100] or next(
+                    (a["order_number"] for a in allocations if a["order_number"]), None)
+                line_due = parse_tally_date((inv_node.findtext("ORDERDUEDATE") or "").strip()) or next(
+                    (a["order_due_date"] for a in allocations if a["order_due_date"]), None)
+                line_tracking = (inv_node.findtext("TRACKINGNUMBER") or "").strip()[:100] or next(
+                    (a["tracking_number"] for a in allocations if a["tracking_number"]), None)
+
                 # Insert TrnInventory
                 stock_entry = TrnInventory(
+                    order_number=line_order_no,
+                    order_due_date=line_due,
+                    tracking_number=line_tracking,
                     voucher_id=voucher.voucher_id,
                     stock_item_id=item.stock_item_id,
                     quantity=qty_val,
@@ -2984,6 +3035,19 @@ async def import_tally_xml(
                 )
                 db.add(stock_entry)
                 await db.flush()
+                for line_no, alloc in enumerate(allocations, 1):
+                    godown = await get_or_create_godown(db, company_id, alloc["godown"]) if alloc["godown"] else None
+                    to_godown = (await get_or_create_godown(db, company_id, alloc["destination_godown"])
+                                 if alloc["destination_godown"] else None)
+                    db.add(StockEntryBatchAllocation(
+                        stock_entry_id=stock_entry.stock_entry_id, line_no=line_no, batch_name=alloc["batch_name"],
+                        godown_id=godown.godown_id if godown else None,
+                        destination_godown_id=to_godown.godown_id if to_godown else None,
+                        quantity=alloc["quantity"], billed_quantity=alloc["billed_quantity"], rate=alloc["rate"],
+                        amount=alloc["amount"], order_number=alloc["order_number"],
+                        order_due_date=alloc["order_due_date"], tracking_number=alloc["tracking_number"]))
+                if allocations:
+                    await db.flush()
 
             # Attendance lines: an employee, an attendance type and how much of it
             for att_node in v_node.findall("ATTENDANCEENTRIES.LIST"):

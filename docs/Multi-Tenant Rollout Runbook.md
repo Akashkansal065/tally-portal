@@ -605,3 +605,10 @@ Each verified backup can also be copied, by the server, to the company's own Goo
 - **Backfill:** only records Tally alters after the upgrade carry the new values on their own. For existing ones run **Sync All** (force full sync) once per company from the agent.
 - **Unverified on a real TallyPrime:** every tag name is the one the importer already reads; none was checked against a live export. A tag Tally does not know is expected to be left out of the reply, not to fail it, but check the first Sync All of a pilot company: its export time (the agent log prints bytes and seconds per collection) and that vouchers still import. If an export now times out, remove the new tags from `VOUCHER_FETCH` / `LEDGER_FETCH` / `STOCK_ITEM_FETCH` in `tally_client.py`.
 - **Size:** voucher ranges stay 50 vouchers; the extra fields add well under 1 KB per voucher (the IRN QR code is the largest).
+
+## Phase 5 inventory order, tracking and batch lines (WS-11)
+
+- **Backend:** no hand-run migration. The startup schema sync adds `order_number`, `order_due_date` and `tracking_number` to `stock_entries` and creates `stock_entry_batch_allocations` (one row per `BATCHALLOCATIONS.LIST` of a voucher's inventory line, with batch, godown, destination godown, quantity, rate, amount and order/tracking references).
+- **Agent:** nothing to change: the voucher export already fetches whole inventory lists, and the batch rows are nested inside them. Existing vouchers get their batch rows when they are next altered in Tally or after a **Sync All** (force full sync).
+- **Behaviour to know:** quantities in batch rows are kept with Tally's sign; a tracking number is a reference and is never checked for uniqueness; rows with nothing usable are dropped and unreadable numbers or dates are left empty without failing the voucher. Stock levels, balances and the books-parity check do not read these rows.
+- **Unverified on a real TallyPrime:** tag names (`ORDERNO`, `ORDERDUEDATE`, `TRACKINGNUMBER`, `DESTINATIONGODOWNNAME`, `BATCHNAME`, `GODOWNNAME`) and whether TallyPrime puts the order references on the line or only inside the batch allocation (both are read).

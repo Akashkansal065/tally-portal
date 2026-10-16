@@ -1156,7 +1156,14 @@ class TrnInventory(Base):
     flow_type = Column(Enum('source', 'destination', name='stock_flow_type'), nullable=True)
     actual_quantity = Column(Numeric(14, 3), nullable=True)
     item_description = Column(TEXT, nullable=True)
+    # Sales/Purchase order references on the line (Tally: ORDERNO, ORDERDUEDATE, TRACKINGNUMBER). Recorded as
+    # given: a tracking number is a reference, not a key, and is never checked for uniqueness.
+    order_number = Column(String(100), nullable=True)
+    order_due_date = Column(Date, nullable=True)
+    tracking_number = Column(String(100), nullable=True)
     
+    batch_allocations = relationship("StockEntryBatchAllocation", back_populates="stock_entry",
+                                     cascade="all, delete-orphan", order_by="StockEntryBatchAllocation.line_no")
     voucher = relationship("TrnVoucher", back_populates="inventory_entries")
     godown = relationship("MstGodown", back_populates="stock_entries")
     stock_item = relationship("MstStockItem")
@@ -1165,6 +1172,27 @@ class TrnInventory(Base):
     accounting_allocations = relationship("VoucherAccountingAllocation", back_populates="stock_entry", cascade="all, delete-orphan")
     # Will be available when inventory module is imported
     # serial = relationship("SerialNumber")
+
+class StockEntryBatchAllocation(Base):
+    """One BATCHALLOCATIONS.LIST row of a voucher's inventory line: a line can be split across batches, godowns
+    and orders (partial fulfilment). Quantities are as Tally gave them, signs included."""
+    __tablename__ = "stock_entry_batch_allocations"
+    __table_args__ = {"schema": settings.TALLY_DATABASE_NAME}
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    stock_entry_id = Column(BigInteger, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.stock_entries.stock_entry_id", ondelete="CASCADE"), nullable=False, index=True)
+    line_no = Column(Integer, nullable=False, default=0)
+    batch_name = Column(String(150), nullable=True)
+    godown_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.godowns.godown_id", ondelete="SET NULL"), nullable=True)
+    destination_godown_id = Column(Integer, ForeignKey(f"{settings.TALLY_DATABASE_NAME}.godowns.godown_id", ondelete="SET NULL"), nullable=True)
+    quantity = Column(Numeric(14, 3), nullable=True)
+    billed_quantity = Column(Numeric(14, 3), nullable=True)
+    rate = Column(Numeric(14, 2), nullable=True)
+    amount = Column(Numeric(18, 2), nullable=True)
+    order_number = Column(String(100), nullable=True)
+    order_due_date = Column(Date, nullable=True)
+    tracking_number = Column(String(100), nullable=True)
+    stock_entry = relationship("TrnInventory", back_populates="batch_allocations")
+
 
 class VoucherAccountingAllocation(Base):
     __tablename__ = "voucher_accounting_allocations"
