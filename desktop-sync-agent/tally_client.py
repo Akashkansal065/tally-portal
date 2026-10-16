@@ -824,6 +824,7 @@ class TallyClient:
 <BODY><DESC><STATICVARIABLES>
   <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
   <SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>
+  <SVFROMDATE TYPE="Date">20000101</SVFROMDATE><SVTODATE TYPE="Date">20991231</SVTODATE>
 </STATICVARIABLES><TDL><TDLMESSAGE>
   <SYSTEM TYPE="Formulae" NAME="MyTallyByMasterId">$MasterID = {int(master_id)}</SYSTEM>
   <COLLECTION NAME="MyTallyFullVchById" ISMODIFY="No"><TYPE>Voucher</TYPE>
@@ -833,6 +834,10 @@ class TallyClient:
         resp = self._export(xml_req, "FullVoucher", timeout=30, retries=1)
         if resp is None:
             return None
+        info = resp.find("<CMPINFO>")
+        info_end = resp.find("</CMPINFO>", info) if info >= 0 else -1
+        if info >= 0 and info_end >= 0:    # its counts hold <VOUCHER>44</VOUCHER>, which is not a voucher
+            resp = resp[:info] + resp[info_end + len("</CMPINFO>"):]
         blocks = re.findall(r"<VOUCHER\b[^>]*>.*?</VOUCHER>", resp, re.S)
         return blocks[0] if len(blocks) == 1 else None
 
