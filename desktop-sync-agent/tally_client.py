@@ -366,6 +366,8 @@ class TallyClient:
             <TYPE>Company</TYPE>
             <COMPUTE>AppPath : $$ApplicationPath</COMPUTE>
             <COMPUTE>CmpName : $Name</COMPUTE>
+            <COMPUTE>CmpNumber : $CompanyNumber</COMPUTE>
+            <COMPUTE>CmpGuid : $Guid</COMPUTE>
             <COMPUTE>DataPath : $$DataPath</COMPUTE>
             <COMPUTE>SysRelease : $$Release</COMPUTE>
             <COMPUTE>SysVersion : $$Version</COMPUTE>
@@ -379,6 +381,9 @@ class TallyClient:
         result = {
             "connected": False,
             "company_name": "",
+            "company_id": "",
+            "company_number": "",
+            "guid": "",
             "app_path": "",
             "data_path": "",
             "tallysave_path": "",
@@ -401,21 +406,28 @@ class TallyClient:
                     result["connected"] = True
                     try:
                         root = ET.fromstring(raw_xml)
-                        cmp_node = root.find(".//COLLECTION/COMPANY") or root.find(".//DATA//COMPANY")
+                        cmp_node = root.find(".//COLLECTION/COMPANY")
+                        if cmp_node is None:
+                            cmp_node = root.find(".//DATA//COMPANY")
                         if cmp_node is not None:
                             result["company_name"] = cmp_node.get("NAME") or ""
                             
                             for child in cmp_node:
                                 tag_upper = child.tag.upper()
                                 val = (child.text or "").strip()
-                                if tag_upper == "APPPATH":
+                                if tag_upper == "APPPATH" and not result["app_path"]:
                                     result["app_path"] = val
-                                elif tag_upper in ("DATAPATH", "FULLDATAPATH"):
+                                elif tag_upper in ("DATAPATH", "FULLDATAPATH") and not result["data_path"]:
                                     result["data_path"] = val
-                                elif tag_upper in ("SYSRELEASE", "RELEASE"):
+                                elif tag_upper in ("SYSRELEASE", "RELEASE") and not result["release"]:
                                     result["release"] = val
-                                elif tag_upper in ("CMPNAME", "NAME") and not result["company_name"]:
+                                elif tag_upper in ("CMPNAME", "COMPANYNAME") and not result["company_name"]:
                                     result["company_name"] = val
+                                elif tag_upper in ("CMPNUMBER", "COMPANYNUMBER") and not result["company_id"]:
+                                    result["company_id"] = val
+                                    result["company_number"] = val
+                                elif tag_upper in ("CMPGUID", "COMPANYGUID") and not result["guid"]:
+                                    result["guid"] = val
 
                             if result["app_path"]:
                                 sep = "\\" if "\\" in result["app_path"] else "/"
@@ -432,7 +444,7 @@ class TallyClient:
     def get_open_companies(self) -> List[Dict[str, str]]:
         """
         Queries Tally for all companies currently open/loaded in memory.
-        Returns list of dicts: [{"name": ..., "guid": ..., "starting_from": ..., "ending_at": ..., "fingerprint": ...}].
+        Returns list of dicts: [{"name": ..., "guid": ..., "starting_from": ..., "ending_at": ..., "fingerprint": ..., "company_id": ...}].
         fingerprint is the Tally company number and books-from date: what differs between a company and a
         copied or restored one that still carries its GUID.
         """
@@ -484,6 +496,9 @@ class TallyClient:
                                 "starting_from": s_from.strip(),
                                 "ending_at": e_to.strip(),
                                 "fingerprint": f"{number}|{books_from}" if number and books_from else "",
+                                "number": number,
+                                "company_number": number,
+                                "company_id": number,
                             })
         except Exception as e:
             logger.debug(f"Error checking open companies: {e}")

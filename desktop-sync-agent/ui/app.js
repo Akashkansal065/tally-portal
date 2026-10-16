@@ -122,6 +122,11 @@ function advancedFields() {
     say("Checking TallyPrime and the server...");
     const result = await api.test_connection(F);
     test.disabled = false; test.textContent = "Test connection";
+    if (result.tally_url && result.tally_url !== F.tally) {
+      F.tally = result.tally_url;
+      const tbox = document.getElementById("f-tally");
+      if (tbox) tbox.value = result.tally_url;
+    }
     say(result.text, result.kind);
   } }, "Test connection");
   return [field("Server address", "server"), field("TallyPrime address", "tally", "TallyPrime's default is http://127.0.0.1:9000"), h("div", null, test)];
@@ -171,7 +176,13 @@ const SCREENS = {
 
 function companyField() {
   return h("div", { class: "field" }, h("label", { for: "f-company" }, "Company"),
-    h("div", { class: "row" }, input("company"), h("button", { class: "btn sec", id: "setup-detect", onclick: detectTally }, "Detect")), tallyNote());
+    h("div", { class: "row" },
+      input("company"),
+      h("button", { class: "btn sec", id: "setup-detect", onclick: detectTally }, "Detect"),
+      h("button", { class: "btn sec", id: "setup-launch", style: "display:none; margin-left:6px;", onclick: launchTallyFromSetup }, "Start Tally")
+    ),
+    tallyNote()
+  );
 }
 
 function showSetup(screen) {
@@ -182,6 +193,7 @@ function showSetup(screen) {
   setup.msgEl = setup.noteEl = setup.mainBtn = null;
   $app.replaceChildren(h("div", { class: "setup" }, h("div", { class: "card" }, SCREENS[screen](),
     h("div", { class: "note", id: "setup-build" }, versionText()))));
+  updateLaunchBtn();
   if (!setup.detected) { setup.detected = true; detectTally(); }
   const first = $app.querySelector("input.inp");
   if (first && screen !== "welcome") first.focus();
@@ -190,13 +202,46 @@ function showSetup(screen) {
 async function detectTally() {
   setNote("Looking for TallyPrime...", "idle");
   const found = await api.detect_tally(F.tally);
+  if (found.url && found.url !== F.tally) {
+    F.tally = found.url;
+    const tbox = document.getElementById("f-tally");
+    if (tbox) tbox.value = found.url;
+  }
   if (found.company) {
     F.company = found.company;
     const box = document.getElementById("f-company");
     if (box) box.value = found.company;
   }
+  setup.canLaunch = !!found.can_launch;
+  setup.exePath = found.exe_path || "";
   setNote(found.text, found.kind);
+  updateLaunchBtn();
 }
+
+async function launchTallyFromSetup() {
+  const btn = document.getElementById("setup-launch");
+  if (btn) { btn.disabled = true; btn.textContent = "Starting..."; }
+  setNote("Starting TallyPrime...", "idle");
+  const res = await api.launch_tally_from_setup();
+  if (res.ok) {
+    setNote("TallyPrime starting... checking connectivity...", "idle");
+    setTimeout(async () => {
+      await detectTally();
+      if (btn) { btn.disabled = false; btn.textContent = "Start Tally"; }
+    }, 8000);
+  } else {
+    setNote(res.message || "Failed to start TallyPrime", "error");
+    if (btn) { btn.disabled = false; btn.textContent = "Start Tally"; }
+  }
+}
+
+function updateLaunchBtn() {
+  const btn = document.getElementById("setup-launch");
+  if (btn) {
+    btn.style.display = setup.canLaunch ? "inline-block" : "none";
+  }
+}
+
 function setNote(text, kind) {
   setup.note = { text, kind };
   if (setup.noteEl && setup.noteEl.isConnected) { setup.noteEl.textContent = text; setup.noteEl.className = "c-" + kind; }
@@ -324,7 +369,7 @@ function enterMain() {
 // Signed in: rail, health bar, pages
 // ---------------------------------------------------------------------------
 const M = { page: "", seq: 0, logs: [], state: null, key: "", els: {}, menu: null, companies: null };
-const ACTION_LABEL = { resume: "Resume", retry: "Retry", signin: "Sign in again", sync: "Sync now", use_port: "Use this port" };
+const ACTION_LABEL = { resume: "Resume", retry: "Retry", signin: "Sign in again", sync: "Sync now", use_port: "Use this port", launch_tally: "Start TallyPrime" };
 
 function showMain(page) {
   view = "main";
@@ -376,9 +421,34 @@ function showPage(name) {
 async function mainAction() {
   const action = M.state ? M.state.health.action : "sync";
   if (action === "signin") return showSetup("signin");
-  if (action === "use_port") { await api.use_tally_port(); poll(); return; }
-  if (action === "resume") await api.resume(); else await api.sync_now();
-  poll();
+  if (M.els.mainBtn) {
+    M.els.mainBtn.disabled = true;
+  }
+  let failMsg = "";
+  try {
+    if (action === "use_port") {
+      const res = await api.use_tally_port();
+      if (res && !res.ok && res.message) failMsg = res.message;
+    } else if (action === "launch_tally") {
+      if (M.els.mainBtn) {
+        M.els.mainBtn.textContent = "Starting...";
+      }
+      const res = await api.launch_tally();
+      if (res && !res.ok && res.message) failMsg = res.message;
+    } else if (action === "resume") {
+      await api.resume();
+    } else {
+      await api.sync_now();
+    }
+  } catch (err) {
+    failMsg = (err && err.message) || "Action failed";
+  } finally {
+    M.key = "";
+    await poll();
+    if (failMsg && M.els.detail) {
+      M.els.detail.textContent = failMsg;
+    }
+  }
 }
 
 function closeMenu() {

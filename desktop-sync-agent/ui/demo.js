@@ -46,6 +46,8 @@
     open_backups_folder: () => wait(settings.backups_dir ? { ok: true, message: "" } : { ok: false, message: "No folder has been chosen for backups yet." }),
     export_logs: () => wait({ ok: true, message: "Exported to the Desktop: MyTallyBridge_Logs_20261010_224500.zip" }),
     clear_logs: () => wait({ ok: true }),
+    launch_tally: () => wait({ ok: true, message: "Demo: started Tally" }),
+    launch_tally_from_setup: () => wait({ ok: true, message: "Demo: started Tally" }),
     detect_tally: () => wait({ company: "Sneh Distributors", kind: "ok", text: "Demo: found in TallyPrime: 'Sneh Distributors' (made up; no Tally was asked)." }, 400),
     test_connection: () => wait({ kind: "ok", text: "Demo: TallyPrime connected (Sneh Distributors), server reachable (made up; nothing was asked)." }, 500),
     sign_in: (v) => wait(v.password ? { ok: true } : { ok: false, message: "Sign-in failed: enter your password." }, 500),

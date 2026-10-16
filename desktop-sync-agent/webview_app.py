@@ -157,6 +157,11 @@ class Api:
         ok, message = self._session.agent.use_offered_tally_port()
         return {"ok": ok, "message": message}
 
+    def launch_tally(self) -> Dict[str, Any]:
+        """Start TallyPrime on this PC."""
+        ok, message = self._session.agent.launch_tally()
+        return {"ok": ok, "message": message}
+
     def sync_now(self) -> Dict[str, Any]:
         """Sync now / Retry. Starts the sync again if it is not running, rather than waking nothing."""
         if core.has_credentials(self._session.config):
@@ -257,10 +262,14 @@ class Api:
         return {"ok": True}
 
     # -- first run ----------------------------------------------------------
-    def detect_tally(self, tally_url: str = "") -> Dict[str, str]:
+    def detect_tally(self, tally_url: str = "") -> Dict[str, Any]:
         return core.detect_tally(str(tally_url or "").strip())
 
-    def test_connection(self, values: Dict[str, Any]) -> Dict[str, str]:
+    def launch_tally_from_setup(self) -> Dict[str, Any]:
+        ok, message = core.launch_tally()
+        return {"ok": ok, "message": message}
+
+    def test_connection(self, values: Dict[str, Any]) -> Dict[str, Any]:
         v = values or {}
         return core.test_connection(str(v.get("server") or "").strip(), str(v.get("email") or "").strip(),
                                     str(v.get("password") or ""), str(v.get("tally") or "").strip())

@@ -460,6 +460,7 @@ class SetupView(ctk.CTkFrame):
         entry(row, self.v_company).pack(side="left", fill="x", expand=True)
         self.detect_btn = secondary_button(row, "Detect", self._detect_tally_company, height=34, width=70)
         self.detect_btn.pack(side="left", padx=(8, 0))
+        self.launch_btn = secondary_button(row, "Start Tally", self._launch_tally, height=34, width=80)
         self._tally_line()
         ctk.CTkCheckBox(self.card, text="Start with Windows", variable=self.v_autostart, font=font(13), text_color=TEXT_2,
                         fg_color=PRIMARY, hover_color=PRIMARY_HOVER, border_color=BORDER_INPUT, checkmark_color=ON_PRIMARY,
@@ -507,16 +508,44 @@ class SetupView(ctk.CTkFrame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _launch_tally(self):
+        self._set_tally_note("Starting TallyPrime...", "idle")
+        if hasattr(self, "launch_btn") and self.launch_btn.winfo_exists():
+            self.launch_btn.configure(state="disabled")
+
+        def worker():
+            ok, msg = core.launch_tally()
+            def after_launch():
+                if ok:
+                    self._set_tally_note("TallyPrime starting... Checking connection...", "idle")
+                    self.after(8000, self._detect_tally_company)
+                else:
+                    self._set_tally_note(msg, "error")
+                    if hasattr(self, "launch_btn") and self.launch_btn.winfo_exists():
+                        self.launch_btn.configure(state="normal")
+            self.after(0, after_launch)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _set_tally_note(self, text: str, kind: str):
         self.tally_note = (text, kind)
         if self.note_lbl is not None and self.note_lbl.winfo_exists():
             self.note_lbl.configure(text=text, text_color=STATE[kind]["fg"])
 
-    def _on_detect_finish(self, found: Dict[str, str]):
+    def _on_detect_finish(self, found: Dict[str, Any]):
         if not self.winfo_exists():
             return
-        if found["company"]:
+        if found.get("url") and found.get("url") != self.v_tally.get():
+            self.v_tally.set(found["url"])
+        if found.get("company"):
             self.v_company.set(found["company"])
+        can_launch = bool(found.get("can_launch"))
+        if hasattr(self, "launch_btn") and self.launch_btn.winfo_exists():
+            if can_launch:
+                self.launch_btn.pack(side="left", padx=(6, 0))
+                self.launch_btn.configure(state="normal")
+            else:
+                self.launch_btn.pack_forget()
         self._set_tally_note(found["text"], found["kind"])
 
     def _run_connection_test(self):
@@ -530,9 +559,11 @@ class SetupView(ctk.CTkFrame):
 
         threading.Thread(target=test_worker, daemon=True).start()
 
-    def _on_test_done(self, result: Dict[str, str]):
+    def _on_test_done(self, result: Dict[str, Any]):
         if not self.winfo_exists():
             return
+        if result.get("tally_url") and result.get("tally_url") != self.v_tally.get():
+            self.v_tally.set(result["tally_url"])
         if self.advanced_open and self.test_btn.winfo_exists():
             self.test_btn.configure(text="Test connection", state="normal")
         self._say(result["text"], result["kind"])
@@ -764,6 +795,18 @@ class MainView(ctk.CTkFrame):
             agent.resume()
         elif self._action == "signin":
             self.app.show_setup()
+        elif self._action == "use_port":
+            agent.use_offered_tally_port()
+        elif self._action == "launch_tally":
+            self.main_btn.configure(text="Starting...", state="disabled")
+            def worker():
+                ok, msg = agent.launch_tally()
+                def after_launch():
+                    if not ok:
+                        self.detail_lbl.configure(text=msg)
+                        self.main_btn.configure(text="Start Tally", state="normal")
+                self.after(0, after_launch)
+            threading.Thread(target=worker, daemon=True).start()
         else:
             agent.trigger_immediate_sync(force_full=False)
 
@@ -797,7 +840,7 @@ class MainView(ctk.CTkFrame):
             self.badge.configure(text=look["glyph"], fg_color=look["bg"], text_color=look["fg"])
             self.title_lbl.configure(text=health["title"])
             self.detail_lbl.configure(text=health["detail"])
-            label = {"resume": "Resume", "retry": "Retry", "signin": "Sign in again"}.get(health["action"], "Sync now")
+            label = {"resume": "Resume", "retry": "Retry", "signin": "Sign in again", "use_port": "Use Port", "launch_tally": "Start Tally"}.get(health["action"], "Sync now")
             self.main_btn.configure(text="Syncing..." if busy else label, state="disabled" if busy else "normal")
 
             if busy and not self._bar_running:

@@ -2,6 +2,7 @@
 import agent as agent_module
 import bridge_core
 import tally_ports as tp
+from tally_client import TallyClient
 
 LINKED = "guid-linked"
 
@@ -109,3 +110,245 @@ def test_it_stays_on_the_old_port_when_the_new_one_stops_answering(tmp_path, mon
     monkeypatch.setattr(agent_module.TallyClient, "check_health", lambda self: (False, "down"))
     a._diagnose_tally()
     assert a.config.tally_url == "http://127.0.0.1:9000"
+
+
+def test_find_tally_installation_from_hint(tmp_path):
+    tally_exe = tmp_path / "tally.exe"
+    tally_exe.write_text("binary")
+    tally_ini = tmp_path / "tally.ini"
+    tally_ini.write_text("[Tally]\nServerPort=9005")
+
+    info = tp.find_tally_installation(hint=str(tally_exe))
+    assert info["exe_path"] == str(tally_exe)
+    assert info["install_dir"] == str(tmp_path)
+    assert info["ini_path"] == str(tally_ini)
+
+
+def test_find_tally_listening_ports_parses_output():
+    netstat_sample = """
+  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       900
+  TCP    127.0.0.1:9003         0.0.0.0:0              LISTENING       1234
+  TCP    0.0.0.0:9004           0.0.0.0:0              LISTENING       1234
+    """
+    ports = tp.find_tally_listening_ports(runner=lambda: netstat_sample, target_pids=["1234"])
+    assert 9003 in ports and 9004 in ports
+    assert 135 not in ports
+
+
+def test_launch_tally(tmp_path, monkeypatch):
+    tp.forget_installation_cache()
+    tally_exe = tmp_path / "tally.exe"
+    tally_exe.write_text("binary")
+
+    launched = []
+    monkeypatch.setattr(tp.subprocess, "Popen", lambda args, **kw: launched.append(args))
+    monkeypatch.setattr(tp, "tally_is_running", lambda: False)
+    monkeypatch.setattr(tp, "is_tally_starting", lambda: False)
+
+    ok, msg = tp.launch_tally(exe_path=str(tally_exe))
+    assert ok is True and str(tally_exe) in msg
+    assert len(launched) == 1 and launched[0] == [str(tally_exe)]
+
+    # Missing file
+    monkeypatch.setattr(tp, "is_tally_starting", lambda: False)
+    ok, msg = tp.launch_tally(exe_path=str(tmp_path / "nonexistent.exe"))
+    assert ok is False and "Could not find tally.exe" in msg
+
+
+def test_launch_tally_repeat_protection(tmp_path, monkeypatch):
+    tp.forget_installation_cache()
+    tally_exe = tmp_path / "tally.exe"
+    tally_exe.write_text("binary")
+
+    # 1. Reject if already running
+    monkeypatch.setattr(tp, "tally_is_running", lambda: True)
+    monkeypatch.setattr(tp, "is_tally_starting", lambda: False)
+    ok, msg = tp.launch_tally(exe_path=str(tally_exe))
+    assert ok is False and "already running" in msg
+
+    # 2. Reject if currently starting up
+    monkeypatch.setattr(tp, "tally_is_running", lambda: False)
+    monkeypatch.setattr(tp, "is_tally_starting", lambda: True)
+    ok, msg = tp.launch_tally(exe_path=str(tally_exe))
+    assert ok is False and "starting up" in msg
+
+    # 3. Reject if running status is unknown (None)
+    monkeypatch.setattr(tp, "tally_is_running", lambda: None)
+    monkeypatch.setattr(tp, "is_tally_starting", lambda: False)
+    ok, msg = tp.launch_tally(exe_path=str(tally_exe))
+    assert ok is False and "Could not determine" in msg
+
+
+def test_find_tally_installation_caching(tmp_path, monkeypatch):
+    tp.forget_installation_cache()
+    # When not found, do not cache
+    empty_info = tp.find_tally_installation(hint="", use_cache=True, is_running=False)
+    if not empty_info["exe_path"]:
+        assert tp._cached_installation is None
+
+    tally_exe = tmp_path / "tally.exe"
+    tally_exe.write_text("binary")
+
+    call_count = [0]
+    def fake_running():
+        call_count[0] += 1
+        return False
+
+    monkeypatch.setattr(tp, "tally_is_running", fake_running)
+    info1 = tp.find_tally_installation(hint=str(tally_exe), use_cache=True)
+    assert info1["exe_path"] == str(tally_exe)
+    first_calls = call_count[0]
+
+    # Second call should use cache and only call tally_is_running if is_running not supplied
+    info2 = tp.find_tally_installation(hint=str(tally_exe), use_cache=True, is_running=False)
+    assert info2["exe_path"] == str(tally_exe)
+    # call_count should not increase because is_running was provided
+    assert call_count[0] == first_calls
+    tp.forget_installation_cache()
+
+
+def test_auto_detect_tally_server_discovers_company_and_port(tmp_path, monkeypatch):
+    tp.forget_installation_cache()
+    tally_exe = tmp_path / "tally.exe"
+    tally_exe.write_text("binary")
+    tally_ini = tmp_path / "tally.ini"
+    tally_ini.write_text("[Tally]\nServerPort=9008")
+
+    monkeypatch.setattr(tp, "find_tally_installation", lambda *a, **k: {
+        "exe_path": str(tally_exe), "ini_path": str(tally_ini), "install_dir": str(tmp_path), "is_running": True
+    })
+    monkeypatch.setattr(tp, "find_tally_listening_ports", lambda: [9008])
+
+    answers = {
+        "http://127.0.0.1:9008": [{"name": "Acme Industries", "company_id": "10001", "guid": "acme-guid"}]
+    }
+    probe = lambda url: answers.get(url, [])
+    found = tp.auto_detect_tally_server(probe=probe)
+    assert found["connected"] is True
+    assert found["port"] == 9008
+    assert found["company_name"] == "Acme Industries"
+    assert found["company_id"] == "10001"
+    assert found["guid"] == "acme-guid"
+
+
+def test_auto_detect_tally_server_ignores_disconnected_probe(tmp_path, monkeypatch):
+    monkeypatch.setattr(tp, "find_tally_installation", lambda *a, **k: {"exe_path": "", "ini_path": "", "install_dir": "", "is_running": False})
+    monkeypatch.setattr(tp, "find_tally_listening_ports", lambda: [9000])
+
+    # Probe returning explicitly disconnected result
+    probe = lambda url: {"connected": False}
+    found = tp.auto_detect_tally_server(probe=probe)
+    assert found["connected"] is False
+
+
+def test_detect_tally_returns_company_id_and_port(monkeypatch):
+    fake_discovery = {
+        "connected": True,
+        "company_name": "Bharat Traders",
+        "company_id": "10005",
+        "guid": "bt-guid",
+        "port": 9002,
+        "url": "http://127.0.0.1:9002",
+        "exe_path": "C:\\TallyPrime\\tally.exe",
+    }
+    monkeypatch.setattr(bridge_core.tally_ports, "auto_detect_tally_server", lambda *a, **k: fake_discovery)
+    # Force direct url to fail so auto_detect is used
+    monkeypatch.setattr(bridge_core.TallyClient, "discover_tally_host", lambda self: {"connected": False})
+
+    res = bridge_core.detect_tally("http://127.0.0.1:9000")
+    assert res["kind"] == "ok"
+    assert res["company"] == "Bharat Traders"
+    assert res["company_id"] == "10005"
+    assert res["port"] == 9002
+    assert "Bharat Traders" in res["text"]
+    assert "10005" in res["text"]
+    assert "9002" in res["text"]
+    assert "Switched Tally address" in res["text"]
+
+
+def test_test_connection_returns_tally_url(monkeypatch):
+    fake_discovery = {
+        "connected": True,
+        "company_name": "Bharat Traders",
+        "company_id": "10005",
+        "guid": "bt-guid",
+        "port": 9002,
+        "url": "http://127.0.0.1:9002",
+    }
+    monkeypatch.setattr(bridge_core.tally_ports, "auto_detect_tally_server", lambda *a, **k: fake_discovery)
+    monkeypatch.setattr(bridge_core.TallyClient, "discover_tally_host", lambda self: {"connected": False})
+    monkeypatch.setattr(bridge_core.CloudClient, "check_health", lambda self: (True, "OK"))
+
+    res = bridge_core.test_connection(backend_url="http://cloud", email="", password="", tally_url="http://127.0.0.1:9000")
+    assert res["tally_url"] == "http://127.0.0.1:9002"
+    assert "connected on http://127.0.0.1:9002" in res["text"]
+    assert res["kind"] == "ok"
+
+
+def test_discover_tally_host_multi_company_isolation(monkeypatch):
+    xml_with_two_companies = """<ENVELOPE>
+      <BODY>
+        <DATA>
+          <COLLECTION>
+            <COMPANY NAME="Company A">
+              <CMPNAME>Company A</CMPNAME>
+              <CMPNUMBER>10001</CMPNUMBER>
+              <CMPGUID>guid-aaa</CMPGUID>
+              <APPPATH>C:\\Tally\\</APPPATH>
+              <NUMBER>99999</NUMBER>
+              <GUID>unrelated-guid</GUID>
+            </COMPANY>
+            <COMPANY NAME="Company B">
+              <CMPNAME>Company B</CMPNAME>
+              <CMPNUMBER>10002</CMPNUMBER>
+              <CMPGUID>guid-bbb</CMPGUID>
+            </COMPANY>
+          </COLLECTION>
+        </DATA>
+      </BODY>
+    </ENVELOPE>"""
+
+    class DummyResp:
+        def read(self):
+            return xml_with_two_companies.encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+
+    client = TallyClient(tally_url="http://127.0.0.1:9000")
+    monkeypatch.setattr(client, "_urlopen", lambda *a, **k: DummyResp())
+
+    res = client.discover_tally_host()
+    assert res["connected"] is True
+    assert res["company_name"] == "Company A"
+    assert res["company_id"] == "10001"
+    assert res["guid"] == "guid-aaa"
+    # Bare NUMBER / GUID tags and company B tags must NOT have overwritten Company A
+    assert res["company_id"] != "99999"
+    assert res["company_id"] != "10002"
+    assert res["guid"] != "unrelated-guid"
+    assert res["guid"] != "guid-bbb"
+
+
+def test_match_open_company():
+    cmps = [
+        {"name": "Company A", "guid": "guid-a"},
+        {"name": "Company B", "guid": "guid-b"},
+    ]
+    assert tp.match_open_company(cmps, {"guid": "guid-b"})["name"] == "Company B"
+    assert tp.match_open_company(cmps, {"company_name": "Company B"})["guid"] == "guid-b"
+    assert tp.match_open_company(cmps, {"guid": "guid-c"})["name"] == "Company A"
+    assert tp.match_open_company([], {"guid": "guid-a"}) == {}
+
+
+def test_auto_detect_tally_server_unknown_running_cannot_launch(monkeypatch):
+    monkeypatch.setattr(tp, "find_tally_installation", lambda *a, **k: {
+        "exe_path": "C:\\Tally\\tally.exe", "ini_path": "", "install_dir": "", "is_running": None
+    })
+    monkeypatch.setattr(tp, "find_tally_listening_ports", lambda: [])
+    found = tp.auto_detect_tally_server(probe=lambda url: {"connected": False})
+    assert found["connected"] is False
+    assert found["can_launch"] is False
+
+

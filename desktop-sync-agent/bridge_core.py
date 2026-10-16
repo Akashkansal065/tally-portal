@@ -13,9 +13,11 @@ import sys
 import time
 import subprocess
 from typing import Optional, Dict, Any, List, Tuple
+from urllib.parse import urlparse
 
 from config import (save_config, install_startup, uninstall_startup, get_logs_dir, hold_single_instance, build_stamp,
                     running_instance_build)
+import tally_ports
 from tally_client import TallyClient
 from cloud_client import CloudClient
 
@@ -86,6 +88,10 @@ def health_from_status(status: Dict[str, Any], now: Optional[float] = None) -> D
             return {"kind": "warn", "title": f"TallyPrime is on port {offer.get('port')}",
                     "detail": f"It answers there and has your company '{offer.get('company', '')}'. Use that port?",
                     "action": "use_port"}
+        if status.get("can_launch_tally") and status.get("tally_running") is False:
+            return {"kind": "error", "title": "TallyPrime is not running",
+                    "detail": status.get("tally_diagnosis") or "TallyPrime isn't running on this PC. You can start it here.",
+                    "action": "launch_tally"}
         return {"kind": "error", "title": "Can't reach TallyPrime",
                 "detail": status.get("tally_diagnosis") or "Open TallyPrime on this PC. Syncing resumes on its own once it is back.",
                 "action": "retry"}
@@ -203,19 +209,152 @@ def has_credentials(config) -> bool:
 # ---------------------------------------------------------------------------
 # TallyPrime and the server, before sign-in
 # ---------------------------------------------------------------------------
-def detect_tally(tally_url: str) -> Dict[str, str]:
-    """What is at the TallyPrime address, as one line to show: {"company", "text", "kind"}."""
-    info = TallyClient(tally_url=tally_url or DEFAULT_TALLY_URL).discover_tally_host()
-    if not info.get("connected"):
-        return {"company": "", "kind": "error", "text": "Can't find TallyPrime. Open it on this PC, then press Detect."}
-    name = info.get("company_name") or ""
-    if not name:
-        return {"company": "", "kind": "warn", "text": "TallyPrime is running, but no company is open. Open your company, then press Detect."}
-    return {"company": name, "kind": "ok", "text": f"Found in TallyPrime: '{name}'."}
+def _detect_result(
+    company: str = "",
+    company_id: str = "",
+    guid: str = "",
+    url: str = DEFAULT_TALLY_URL,
+    port: int = 0,
+    kind: str = "error",
+    text: str = "",
+    can_launch: bool = False,
+    exe_path: str = "",
+) -> Dict[str, Any]:
+    return {
+        "company": company,
+        "company_id": company_id,
+        "guid": guid,
+        "url": url,
+        "port": port,
+        "kind": kind,
+        "text": text,
+        "can_launch": can_launch,
+        "exe_path": exe_path,
+    }
 
 
-def test_connection(backend_url: str, email: str, password: str, tally_url: str) -> Dict[str, str]:
+def detect_tally(tally_url: str) -> Dict[str, Any]:
+    """What is at the TallyPrime address or on candidate ports, as a dict:
+    {"company": str, "company_id": str, "guid": str, "url": str, "port": int, "text": str, "kind": str, "can_launch": bool, "exe_path": str}
+    """
+    url_to_try = tally_url or DEFAULT_TALLY_URL
+    try:
+        info = TallyClient(tally_url=url_to_try, timeout=1.5).discover_tally_host()
+    except Exception:
+        info = {}
+
+    if info.get("connected"):
+        try:
+            open_cmps = TallyClient(tally_url=url_to_try, timeout=2.0).get_open_companies()
+        except Exception:
+            open_cmps = []
+        first = tally_ports.match_open_company(open_cmps, info)
+        name = first.get("name") or info.get("company_name") or ""
+        cmp_id = first.get("company_id") or first.get("company_number") or info.get("company_id") or ""
+        guid = first.get("guid") or info.get("guid") or ""
+        parsed = urlparse(url_to_try)
+        port = parsed.port or 9000
+        if not name:
+            return _detect_result(
+                url=url_to_try,
+                port=port,
+                kind="warn",
+                text="TallyPrime is running, but no company is open. Open your company, then press Detect.",
+            )
+        cmp_id_str = f" (Company ID: {cmp_id})" if cmp_id else ""
+        return _detect_result(
+            company=name,
+            company_id=cmp_id,
+            guid=guid,
+            url=url_to_try,
+            port=port,
+            kind="ok",
+            text=f"Found in TallyPrime: '{name}'{cmp_id_str}.",
+        )
+
+    # Not connected on the given URL: run automatic multi-port and install detection
+    auto = tally_ports.auto_detect_tally_server(current_url=url_to_try)
+    if auto.get("connected"):
+        name = auto.get("company_name") or ""
+        cmp_id = auto.get("company_id") or ""
+        port = auto.get("port") or 9000
+        url = auto.get("url") or url_to_try
+        guid = auto.get("guid") or ""
+        exe_path = auto.get("exe_path") or ""
+        switched = (url != url_to_try)
+        if not name:
+            switched_str = f" Switched Tally address to {url}." if switched else ""
+            return _detect_result(
+                url=url,
+                port=port,
+                kind="warn",
+                text=f"TallyPrime is running on port {port}, but no company is open.{switched_str} Open your company, then press Detect.",
+                exe_path=exe_path,
+            )
+        cmp_id_str = f" (Company ID: {cmp_id})" if cmp_id else ""
+        switched_str = f" Switched Tally address to {url}." if switched else ""
+        return _detect_result(
+            company=name,
+            company_id=cmp_id,
+            guid=guid,
+            url=url,
+            port=port,
+            kind="ok",
+            text=f"Found in TallyPrime: '{name}'{cmp_id_str} on port {port}.{switched_str}",
+            exe_path=exe_path,
+        )
+
+    is_running = auto.get("is_running")
+    exe_path = auto.get("exe_path") or ""
+    can_launch = auto.get("can_launch", False)
+
+    if is_running:
+        if tally_ports.is_tally_starting():
+            return _detect_result(
+                url=url_to_try,
+                kind="warn",
+                text="TallyPrime was recently started and is warming up. Please wait a moment, then press Detect again.",
+                exe_path=exe_path,
+            )
+        return _detect_result(
+            url=url_to_try,
+            kind="error",
+            text="TallyPrime is running, but isn't answering on any port. In TallyPrime press F1 (Help) > Settings > Connectivity and turn the ODBC/XML server on (and restart Tally).",
+            exe_path=exe_path,
+        )
+
+    if can_launch and exe_path:
+        return _detect_result(
+            url=url_to_try,
+            kind="error",
+            text=f"TallyPrime is not running. Found at '{exe_path}'. You can start it below.",
+            can_launch=True,
+            exe_path=exe_path,
+        )
+
+    return _detect_result(
+        url=url_to_try,
+        kind="error",
+        text="Can't find TallyPrime. Open it on this PC, then press Detect.",
+    )
+
+
+def launch_tally() -> Tuple[bool, str]:
+    """Launch TallyPrime on this computer."""
+    return tally_ports.launch_tally()
+
+
+def test_connection(backend_url: str, email: str, password: str, tally_url: str) -> Dict[str, Any]:
+    orig_tally_url = tally_url
     t_info = TallyClient(tally_url=tally_url).discover_tally_host()
+    switched_port = False
+    if not t_info.get("connected"):
+        auto = tally_ports.auto_detect_tally_server(current_url=tally_url)
+        if auto.get("connected"):
+            t_info = {"connected": True, "company_name": auto.get("company_name")}
+            tally_url = auto.get("url") or tally_url
+            switched_port = (tally_url != orig_tally_url)
+
     c_client = CloudClient(backend_url=backend_url, email=email, password=password)
     cloud_ok, _ = c_client.check_health()
     auth_ok, auth_msg = False, ""
@@ -225,7 +364,10 @@ def test_connection(backend_url: str, email: str, password: str, tally_url: str)
     t_ok = t_info.get("connected", False)
     lines = []
     if t_ok:
-        lines.append(f"TallyPrime: connected ({t_info.get('company_name') or 'no company open'}).")
+        if switched_port:
+            lines.append(f"TallyPrime: connected on {tally_url} ({t_info.get('company_name') or 'no company open'}). Updated address to match.")
+        else:
+            lines.append(f"TallyPrime: connected ({t_info.get('company_name') or 'no company open'}).")
     else:
         lines.append("TallyPrime: not reachable. Open it on this PC.")
     if cloud_ok:
@@ -238,7 +380,11 @@ def test_connection(backend_url: str, email: str, password: str, tally_url: str)
     else:
         lines.append(f"Server: can't connect to {backend_url or 'the address given'}.")
     overall_ok = t_ok and cloud_ok and (auth_ok or not password)
-    return {"text": " ".join(lines), "kind": "ok" if overall_ok else ("warn" if (t_ok or cloud_ok) else "error")}
+    return {
+        "text": " ".join(lines),
+        "kind": "ok" if overall_ok else ("warn" if (t_ok or cloud_ok) else "error"),
+        "tally_url": tally_url,
+    }
 
 
 # ---------------------------------------------------------------------------

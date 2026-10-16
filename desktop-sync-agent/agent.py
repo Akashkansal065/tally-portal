@@ -219,6 +219,9 @@ class DesktopSyncAgent:
         # Where Tally may really be when the configured URL does not answer (WS-12): offered, never applied silently
         self.tally_port_offer: Optional[Dict[str, Any]] = None
         self.tally_diagnosis: str = ""
+        self.tally_exe_path = ""
+        self.tally_running: Optional[bool] = None
+        self.can_launch_tally = False
         self._port_checked_at: float = 0.0
         # per company: (masters counter, vouchers counter, when a full incremental pass last ran clean)
         self._probe_seen: Dict[str, Tuple[int, int, float]] = {}
@@ -301,6 +304,9 @@ class DesktopSyncAgent:
             "tally_release": self.tally_release,
             "tally_port_offer": self.tally_port_offer,
             "tally_diagnosis": self.tally_diagnosis,
+            "tally_exe_path": self.tally_exe_path,
+            "tally_running": self.tally_running,
+            "can_launch_tally": self.can_launch_tally,
             # What the server holds for the company on screen. Falls back to what this run has sent, for a
             # server too old to say; that number grows with every repeated sync and is not a count of records.
             "total_vouchers": (self._server_counts or {}).get("vouchers", self.total_vouchers),
@@ -418,9 +424,13 @@ class DesktopSyncAgent:
         self._port_checked_at = now
         try:
             running = tally_ports.tally_is_running()
-            self.tally_diagnosis = tally_ports.diagnosis_text(self.config.tally_url, running)
-            guids = [c.get("guid", "") for c in self.linked_companies()]
+            self.tally_running = running
             hint = getattr(self, "_tally_ini_path", "")
+            install = tally_ports.find_tally_installation(hint, use_cache=True, is_running=running)
+            self.tally_exe_path = install.get("exe_path") or ""
+            self.can_launch_tally = bool(self.tally_exe_path and running is False)
+            self.tally_diagnosis = tally_ports.diagnosis_text(self.config.tally_url, running, can_launch=self.can_launch_tally)
+            guids = [c.get("guid", "") for c in self.linked_companies()]
 
             def probe(url: str):
                 return TallyClient(tally_url=url, timeout=3).get_open_companies()
@@ -438,6 +448,16 @@ class DesktopSyncAgent:
                     logger.info(f"🔁 {message} (found on its own: it answers there with company '{offer['company']}')")
         except Exception as e:
             logger.debug(f"Tally port check failed: {e}")
+
+    def launch_tally(self) -> Tuple[bool, str]:
+        """Launches TallyPrime on this computer if installed."""
+        ok, msg = tally_ports.launch_tally()
+        if ok:
+            logger.info(f"🚀 {msg}")
+            self.immediate_sync_requested = True
+            self._connections_checked = 0
+            self._port_checked_at = 0
+        return ok, msg
 
     def use_offered_tally_port(self) -> Tuple[bool, str]:
         """The person accepted the offered port: only now is the configured URL changed."""
