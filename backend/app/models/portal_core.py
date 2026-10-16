@@ -1881,3 +1881,19 @@ class TallyMissingRecord(Base):
     first_missing_at = Column(DateTime, server_default=func.now())
     deleted_at = Column(DateTime, nullable=True)
     restored_at = Column(DateTime, nullable=True)
+
+
+class TallyParityReport(Base):
+    """What the last complete active-key list said Tally holds, set against what MyTally computes (WS-5).
+    One row per company, replaced each time. A verification only: nothing here feeds the books."""
+    __tablename__ = "tally_parity_reports"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), primary_key=True)
+    taken_at = Column(DateTime, server_default=func.now())
+    list_id = Column(String(64), nullable=True)
+    ledgers_checked = Column(Integer, default=0)
+    ledgers_drifting = Column(Integer, default=0)
+    vouchers_tally = Column(Integer, default=0)
+    vouchers_here = Column(Integer, default=0)
+    top_ledgers = Column(JSON, nullable=True)          # [{ledger_id, name, tally, computed, difference}]
+    voucher_count_drift = Column(JSON, nullable=True)  # [{voucher_type, financial_year, tally, here}]

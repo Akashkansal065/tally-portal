@@ -227,7 +227,8 @@ async def get_trial_balance(
 ):
     """Group-level trial balance for the period, like Tally's: the opening balance at the start of the period,
     the period's debits and credits, and the closing balance at its end (Dr positive). No dates means all time.
-    Cancelled and optional vouchers are left out."""
+    Cancelled and optional vouchers are left out, and so are orders and delivery/receipt notes, which
+    never post to the books."""
     try:
         from_date = date.fromisoformat(from_date).isoformat() if from_date else None
         to_date = date.fromisoformat(to_date).isoformat() if to_date else None
@@ -238,7 +239,8 @@ async def get_trial_balance(
     if cached is not None:
         return cached
 
-    from sqlalchemy import text
+    from sqlalchemy import bindparam, text
+    from app.services.voucher_kinds import NON_POSTING
 
     # Ledger opening balances are stored unsigned with a Dr/Cr type; vouchers before the period roll into the opening
     query = await db.execute(text("""
@@ -258,14 +260,17 @@ async def get_trial_balance(
                    SUM(CASE WHEN :from_date IS NULL OR v.voucher_date >= :from_date THEN e.credit_amount ELSE 0 END) as total_credit
             FROM tally_sync.voucher_entries e
             JOIN tally_sync.vouchers v ON e.voucher_id = v.voucher_id
+            JOIN tally_sync.voucher_types vt ON v.voucher_type_id = vt.voucher_type_id
             WHERE COALESCE(v.is_cancelled, FALSE) = FALSE AND COALESCE(v.is_optional, FALSE) = FALSE AND v.company_id = :comp_id
+              AND LOWER(COALESCE(NULLIF(vt.parent_type, ''), vt.name)) NOT IN :non_posting
               AND (:to_date IS NULL OR v.voucher_date <= :to_date)
             GROUP BY e.ledger_id
         ) sub ON l.ledger_id = sub.ledger_id
         WHERE l.company_id = :comp_id
         GROUP BY g.name
         ORDER BY g.name
-    """), {"comp_id": user.company_id, "from_date": from_date, "to_date": to_date})
+    """).bindparams(bindparam("non_posting", expanding=True)),
+        {"comp_id": user.company_id, "from_date": from_date, "to_date": to_date, "non_posting": sorted(NON_POSTING)})
 
     results = []
     for r in query.all():

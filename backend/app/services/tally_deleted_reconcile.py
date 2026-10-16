@@ -210,8 +210,17 @@ async def apply_active_key_lists(db: AsyncSession, company_id: int, list_id: str
             results.append({"entity": entity, "received": len(items), "skipped": "count_mismatch"})
             continue
         results.append(await _reconcile_entity(db, company_id, entity, items, list_id))
+    await db.flush()
+    parity = None
+    if lists.get("Voucher") or lists.get("Ledger"):
+        # A verification only: it reads the books and writes its own report row, and must never fail the list
+        try:
+            from app.services.books_parity import build_parity_report
+            parity = await build_parity_report(db, company_id, list_id, lists.get("Voucher"), lists.get("Ledger"))
+        except Exception as e:
+            logger.warning(f"Books-parity check failed for company {company_id}: {e}", exc_info=True)
     await db.commit()
-    return {"status": "ok", "results": results}
+    return {"status": "ok", "results": results, "parity": parity}
 
 
 async def deleted_in_tally_count(db: AsyncSession, company_id: int) -> int:

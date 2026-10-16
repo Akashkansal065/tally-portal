@@ -92,8 +92,10 @@ def voucher_keys(resp_xml: str) -> List[Dict[str, str]]:
     for n, start in enumerate(starts):
         end = starts[n + 1] if n + 1 < len(starts) else len(resp_xml)
         block = resp_xml[start:end]
+        vch_type = re.match(r'<VOUCHER\b[^>]*\bVCHTYPE="([^"]*)"', block)
         keys.append({"master_id": _tag(block, "MASTERID"), "guid": _tag(block, "GUID"),
-                     "alter_id": _tag(block, "ALTERID"), "date": _tag(block, "DATE")})
+                     "alter_id": _tag(block, "ALTERID"), "date": _tag(block, "DATE"),
+                     "voucher_type": unescape(vch_type.group(1)).strip() if vch_type else _tag(block, "VOUCHERTYPENAME")})
     return keys
 
 
@@ -104,8 +106,12 @@ def master_keys(resp_xml: str, tag: str) -> List[Dict[str, str]]:
     for m in re.finditer(rf"<{tag}\b([^>]*)>(.*?)</{tag}>", resp_xml, re.S):
         attrs, block = m.group(1), m.group(2)
         named = re.search(r'\bNAME="([^"]*)"', attrs)
-        keys.append({"name": unescape(named.group(1)) if named else _tag(block, "NAME"),
-                     "guid": _tag(block, "GUID"), "master_id": _tag(block, "MASTERID")})
+        key = {"name": unescape(named.group(1)) if named else _tag(block, "NAME"),
+               "guid": _tag(block, "GUID"), "master_id": _tag(block, "MASTERID")}
+        closing = _tag(block, "CLOSINGBALANCE")
+        if closing:
+            key["closing_balance"] = closing      # Tally's own figure, for the books-parity check
+        keys.append(key)
     return keys
 
 
@@ -595,7 +601,7 @@ class TallyClient:
     def export_voucher_keys(self, company_name: Optional[str]) -> Optional[List[Dict[str, str]]]:
         """MASTERID, GUID, ALTERID and DATE of every voucher in the company, from an export that fetches nothing
         else. None when Tally did not answer."""
-        resp_xml = self._export(self._voucher_request(company_name, "MyTallyVoucherKeys", "MASTERID,GUID,ALTERID,DATE"),
+        resp_xml = self._export(self._voucher_request(company_name, "MyTallyVoucherKeys", "MASTERID,GUID,ALTERID,DATE,VOUCHERTYPENAME"),
                                 "VoucherKeys")
         return None if resp_xml is None else voucher_keys(resp_xml)
 
@@ -608,7 +614,7 @@ class TallyClient:
   <BODY><DESC>
     <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>{sv_cmp}</STATICVARIABLES>
     <TDL><TDLMESSAGE>
-      <COLLECTION NAME="{label}"><TYPE>{obj_type}</TYPE><FETCH>NAME,GUID,MASTERID</FETCH></COLLECTION>
+      <COLLECTION NAME="{label}"><TYPE>{obj_type}</TYPE><FETCH>NAME,GUID,MASTERID,CLOSINGBALANCE</FETCH></COLLECTION>
     </TDLMESSAGE></TDL>
   </DESC></BODY>
 </ENVELOPE>"""

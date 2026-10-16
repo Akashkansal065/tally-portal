@@ -4707,6 +4707,8 @@ async def get_sync_health(
     # Records deleted inside Tally and taken out of the books here (see services/tally_deleted_reconcile.py)
     from app.services.tally_deleted_reconcile import deleted_in_tally_count
     deleted_in_tally = await deleted_in_tally_count(db, user.company_id)
+    from app.services.books_parity import parity_summary
+    parity = await parity_summary(db, user.company_id)
 
     # 4. Recent 5 logs: only the short columns, never the stored XML payloads
     recent_logs = (await db.execute(
@@ -4733,6 +4735,8 @@ async def get_sync_health(
         "total_exception_traffic": exception_logs,
         "unreconciled_deleted_count": unreconciled_deleted_count,
         "deleted_in_tally_count": deleted_in_tally,
+        # How MyTally's books compare with Tally's own figures at the last complete key list; None before one
+        "books_parity": parity,
         "total_sync_issues": total_sync_issues,
         "recent_traffic": [
             {

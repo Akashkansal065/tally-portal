@@ -59,3 +59,16 @@ def is_attendance(voucher_type) -> bool:
 def is_payroll(voucher_type) -> bool:
     """Pay heads per employee, posted to the pay head ledgers against a payable ledger."""
     return "payroll" in (base_type(voucher_type), (getattr(voucher_type, "name", "") or "").strip().lower())
+
+
+# Voucher types that never post to the books in Tally: orders, stock-only notes and journals, memoranda.
+# The importer still keeps their ledger lines (the party line of an order, say), so anything that sums
+# voucher_entries into balances must leave these types out.
+NON_POSTING = {"sales order", "purchase order", "delivery note", "receipt note", "rejections in", "rejections out",
+               "stock journal", "physical stock", "material in", "material out", "job work in order",
+               "job work out order", "memorandum"}
+
+
+def is_non_posting(voucher_type) -> bool:
+    """True when a voucher of this type does not post to ledger balances (orders, delivery and receipt notes)."""
+    return base_type(voucher_type) in NON_POSTING or (getattr(voucher_type, "name", "") or "").strip().lower() in NON_POSTING
