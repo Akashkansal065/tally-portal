@@ -104,3 +104,16 @@ def test_a_refused_list_is_tried_again_next_time(tmp_path, mock_tally):
     agent._maybe_report_active_keys(GUID, after_full_sync=False)
     agent._maybe_report_active_keys(GUID, after_full_sync=False)
     assert len(cloud.sent) == 2
+
+
+def test_master_keys_ignores_the_cmpinfo_counts_block():
+    """Real TallyPrime writes <LEDGER>217</LEDGER> in CMPINFO before the objects; it must not become a key."""
+    from tally_client import master_keys
+    xml = ('<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DESC><CMPINFO><LEDGER>217</LEDGER>'
+           '<STOCKITEM>252</STOCKITEM></CMPINFO></DESC><DATA><COLLECTION>'
+           '<LEDGER NAME="AARAV PLASTIC CROCKERY" RESERVEDNAME=""><GUID TYPE="String">g-1</GUID>'
+           '<MASTERID TYPE="Number"> 726</MASTERID><CLOSINGBALANCE TYPE="Amount">-62018.64</CLOSINGBALANCE>'
+           '</LEDGER></COLLECTION></DATA></BODY></ENVELOPE>')
+    keys = master_keys(xml, "LEDGER")
+    assert keys == [{"name": "AARAV PLASTIC CROCKERY", "guid": "g-1", "master_id": "726",
+                     "closing_balance": "-62018.64"}]

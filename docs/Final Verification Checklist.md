@@ -142,6 +142,22 @@ change.
 | T13 | Lose a response on purpose (stop the backend mid-import, restart, let the agent retry) | Second attempt returns the stored answer or imports once; no duplicates | WS-9 stale-PROCESSING takeover timing |
 | T14 | Upload a large export with gzip through the real proxy | 200, smaller request; an upload above the cap gets 413 | WS-8 and the production proxy limits |
 
+## 5a. Results of the live read-only run (TallyPrime at 192.168.1.50:9000, company "Sneh Distributors")
+
+Read-only requests only; nothing was written to Tally.
+
+| Check | Result |
+|---|---|
+| Connection, open companies, fingerprint | OK. One open company; fingerprint `100000|20250401`. Release and data path are not returned by `discover_tally_host` (app path is). |
+| T2 voucher keys | **Passes.** 1234 keys with MASTERID, GUID, ALTERID, DATE and type; equals the voucher index count (1234). |
+| T3 master keys | **Found and fixed a bug:** the CMPINFO counts block (`<LEDGER>217</LEDGER>`) was read as an object, giving an empty key and one extra count. Fixed in `master_keys`; now 190 ledgers and 536 stock items, none incomplete. `NAME` is an attribute, `MASTERID` carries `TYPE="Number"` and a leading space (handled). |
+| T3 closing balance sign | A debtor ledger shows `-62018.64`, so negative = debit as assumed. 159 of 190 ledgers return one (blank = zero). |
+| T6 change probe | Returns numbers: masters 1143, vouchers 1733. Whether they rise on a save is still to be tried (needs a write). |
+
+New findings to act on:
+- **CMPINFO counts are unreliable** (217 ledgers / 252 stock items against 190 / 536 returned). Never use them as a completeness gate; the voucher index count is the gate and it matched.
+- **Stock item `CLOSINGBALANCE` is a quantity with a unit** (`690 PCS`), not an amount. Make sure the parity check reads `closing_balance` only for ledgers.
+
 ### 5b. Server-side checks that need real data (no Tally, no Google)
 
 | # | What to do | Expected | Assumption it tests |

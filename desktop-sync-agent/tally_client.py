@@ -122,6 +122,11 @@ def voucher_keys(resp_xml: str) -> List[Dict[str, str]]:
 def master_keys(resp_xml: str, tag: str) -> List[Dict[str, str]]:
     """NAME, GUID and MASTERID of every <tag> object in a keys-only master export. The name is the NAME
     attribute, or a NAME element when Tally wrote it that way."""
+    # The CMPINFO block of counts holds <LEDGER>217</LEDGER> and the like; it is not an object
+    info = resp_xml.find("<CMPINFO>")
+    info_end = resp_xml.find("</CMPINFO>", info) if info >= 0 else -1
+    if info >= 0 and info_end >= 0:
+        resp_xml = resp_xml[:info] + resp_xml[info_end + len("</CMPINFO>"):]
     keys = []
     for m in re.finditer(rf"<{tag}\b([^>]*)>(.*?)</{tag}>", resp_xml, re.S):
         attrs, block = m.group(1), m.group(2)
