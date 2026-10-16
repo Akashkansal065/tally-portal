@@ -283,3 +283,18 @@ any other Tally, or a port that stops answering before the switch, changes nothi
 Verified live against the test VM: agent pointed at `192.168.71.130:9000` found Tally on `:9001` with company
 "Bhrama Enterprises"; with a GUID that is not linked it made no offer. Agent tests for it: 10 in `test_tally_ports.py`.
 Still to see on the Windows VM: the whole thing inside a running agent (P1 above), including the `tally.ini` read.
+
+## 5g. Server-side results (branch backend on :8001 against the local MySQL, real test Tally)
+
+| # | Result |
+|---|---|
+| Migrations 1-7 | Applied cleanly on the real MySQL at start-up: all added columns logged by the schema synchronizer, all 8 new tables present. |
+| T13 / WS-9 replay | A real 14-collection export pushed twice with the same keys: 14 receipts, each `attempts = 1`, vouchers stayed 44. A key left in `PROCESSING` by a crashed request answered 409 until it goes stale (20 minutes). |
+| T4 / WS-3 end to end | Voucher deleted in Tally: complete list A flags it missing, list B soft-deletes it (`deleted_in_tally_count` = 1), a repeated list changes nothing. An incomplete list is ignored, a list with a wrong expected count is skipped, and a voucher imported under an hour ago is held back by the grace window (by design). |
+| T12 / WS-5 parity | 52 of 53 ledgers compared, 0 drifting, 44 vouchers on both sides: MyTally's books equal Tally's, signs and opening balances included. |
+
+Bugs found by this run and fixed: `receipt.receipt_id` read after the purge (500 on the first real upload), blank
+`CLOSINGBALANCE` (a zero ledger) was skipped by the parity check, and Tally's computed "Profit & Loss A/c" ledger was
+reported as drift.
+
+The test voucher this run created in MyTally (voucher id 402) is now cancelled; it can stay.
