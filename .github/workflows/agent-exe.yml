@@ -5,6 +5,12 @@ name: Sync agent exe
 # - Pushing a tag like agent-v2.0.0: it is also attached to a GitHub Release of that name.
 on:
   workflow_dispatch:
+    inputs:
+      builder:
+        description: "Also build with Nuitka, for comparison only (the release always uses the PyInstaller exe)"
+        type: choice
+        options: [pyinstaller, nuitka]
+        default: pyinstaller
   push:
     tags: ["agent-v*"]
   pull_request:
@@ -29,6 +35,10 @@ jobs:
       run:
         shell: pwsh
         working-directory: desktop-sync-agent
+    env:
+      # Set under Settings > Secrets and variables > Actions to sign the exe. Without them the build is unsigned.
+      CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+      CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,6 +53,26 @@ jobs:
         run: python -m pytest -q tests
       - name: Build the exe
         run: python installer/build_exe.py
+      - name: Sign the exe (Authenticode; only on a release tag, only when the certificate secrets exist)
+        if: startsWith(github.ref, 'refs/tags/agent-v') && env.CODESIGN_PFX_BASE64 != '' && env.CODESIGN_PFX_PASSWORD != ''
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
+          try {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe was not found on this runner." }
+            & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:CODESIGN_PFX_PASSWORD /tr http://timestamp.digicert.com /td SHA256 dist\SnehDistribuorsSync.exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed ($LASTEXITCODE)." }
+            & $signtool.FullName verify /pa /v dist\SnehDistribuorsSync.exe
+            if ($LASTEXITCODE -ne 0) { throw "The signature did not verify ($LASTEXITCODE)." }
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+      - name: Report whether the exe is signed
+        run: |
+          $sig = Get-AuthenticodeSignature dist\SnehDistribuorsSync.exe
+          "Authenticode status: $($sig.Status) $($sig.SignerCertificate.Subject)"
       - name: Check no Python source is inside the exe
         run: |
           $listing = python -m PyInstaller.utils.cliutils.archive_viewer -l -r dist\SnehDistribuorsSync.exe
@@ -60,6 +90,21 @@ jobs:
           if ($app.HasExited) { throw "The exe closed by itself (exit code $($app.ExitCode))." }
           Get-Process | Where-Object { $_.MainWindowTitle -eq "MyTally Bridge" } | Select-Object ProcessName, MainWindowTitle
           Get-Process -Name SnehDistribuorsSync -ErrorAction SilentlyContinue | Stop-Process -Force
+      - name: Build with Nuitka (manual comparison only; never released)
+        if: github.event_name == 'workflow_dispatch' && inputs.builder == 'nuitka'
+        run: |
+          python -m pip install nuitka ordered-set zstandard
+          python -m nuitka --onefile --assume-yes-for-downloads --windows-console-mode=disable `
+            --windows-icon-from-ico=assets\icon.ico --output-dir=dist-nuitka --output-filename=SnehDistribuorsSync-nuitka.exe `
+            --include-data-dir=assets=assets --include-data-dir=ui=ui --include-package=customtkinter --include-package=keyring `
+            --include-module=webview gui_app.py
+          "{0:N1} MB" -f ((Get-Item dist-nuitka\SnehDistribuorsSync-nuitka.exe).Length / 1MB)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'workflow_dispatch' && inputs.builder == 'nuitka'
+        with:
+          name: SnehDistribuorsSync-nuitka-exe-comparison
+          path: desktop-sync-agent/dist-nuitka/SnehDistribuorsSync-nuitka.exe
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SnehDistribuorsSync-exe

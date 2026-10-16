@@ -80,7 +80,14 @@ Per company, in the web app: Admin → Integrations → **Google Drive copy of b
 - Agent rebuild only; nothing to configure. The health bar offers "Use this port" only when a port answers and
   names an already-linked company; the configured URL is never changed without the click.
 
-_(WS-2, WS-15 and WS-14 add their steps here as they land.)_
+**WS-2 signing and Nuitka comparison**
+1. Optional: add repository secrets `WINDOWS_CODESIGN_PFX_BASE64` (the code-signing `.pfx`, base64) and
+   `WINDOWS_CODESIGN_PFX_PASSWORD`. The signing step runs only on an `agent-v*` tag and only when both exist; with
+   neither, the exe is built unsigned and the log says `Authenticode status: NotSigned`.
+2. Nuitka: Actions > Sync agent exe > Run workflow > builder = nuitka. It uploads
+   `SnehDistribuorsSync-nuitka-exe-comparison`; it is never attached to a release.
+
+_(WS-15 and WS-14 add their steps here as they land.)_
 
 ## 4. Run the suites (once, at the end)
 
@@ -143,6 +150,14 @@ change.
 | P1 | In TallyPrime set the XML server port to 9001 (F1 > Settings > Connectivity) while the agent still points at 9000 | Within about a minute the health bar says "TallyPrime is on port 9001 ... Use that port?"; clicking switches and syncing resumes | `tally.ini` `ServerPort` location and format, and that a probe on another port returns the open companies |
 | P2 | Close TallyPrime | Message: "TallyPrime isn't running on this PC" | `tasklist /FI "IMAGENAME eq tally.exe"` output on the customer's Windows |
 | P3 | Open TallyPrime with the XML server off | Message names F1 > Settings > Connectivity | the wording matches TallyPrime's actual menu path in the installed release |
+
+### 5d. WS-2 signing (real certificate, Windows)
+
+| # | What to do | Expected | Assumption it tests |
+|---|---|---|---|
+| S1 | Push an `agent-v*` tag with the two secrets set | Workflow log shows `Successfully verified` and `Authenticode status: Valid`; the released exe shows the publisher in Properties > Digital Signatures | signtool path on `windows-latest`, timestamp server reachable, PFX password handling |
+| S2 | Push a tag with the secrets missing | Build succeeds, unsigned, signing step skipped | the conditional really skips (a secret in `if:` is read through job `env`) |
+| S3 | Run the workflow manually with builder = nuitka | A comparison artifact appears; the normal exe is unchanged | Nuitka flags build this app (they were not tried) |
 
 ## 6. Checks that need REAL Google credentials
 

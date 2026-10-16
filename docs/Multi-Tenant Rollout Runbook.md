@@ -626,3 +626,8 @@ Each verified backup can also be copied, by the server, to the company's own Goo
 
 - **Agent rebuild only** (tag `agent-v*`); no server change, no setting. When the configured URL does not answer, the agent (at most once a minute) tries `ServerPort` from `tally.ini` (the path Tally reported, then the standard install folders) and ports 9000-9005 and 9999. If one answers with a company whose GUID is already linked to this PC, the health bar offers "TallyPrime is on port N. Use that port?". The URL changes only when the person clicks.
 - **Wording only:** `tasklist` tells "TallyPrime isn't running" from "running but its port is off (F1 > Settings > Connectivity)". There is no netstat, no process-to-port mapping, and tally.exe is never started by the agent.
+
+## Phase 6 exe signing and Nuitka comparison (WS-2 remaining)
+
+- **Signing:** add the repository secrets `WINDOWS_CODESIGN_PFX_BASE64` (base64 of the code-signing `.pfx`) and `WINDOWS_CODESIGN_PFX_PASSWORD`. On an `agent-v*` tag, and only when both exist, the workflow signs `SnehDistribuorsSync.exe` with SHA-256 and a DigiCert timestamp, verifies the signature, and removes the certificate file. Otherwise it builds unsigned. The certificate is never written anywhere but the runner's temp folder.
+- **Nuitka:** manual runs only (Run workflow > builder = nuitka). The result is an extra artifact for comparison; the release always carries the PyInstaller exe. The string vault, PyArmor and any anti-debugging are deliberately not added.
