@@ -1838,3 +1838,46 @@ def _give_new_company_its_currencies(mapper, connection, company):
         "decimal_places_for_words": c.get("decimal_places_for_words", 2),
         "is_base_currency": False,
     } for c in WORLD_CURRENCIES])
+
+
+class TallyKeyListState(Base):
+    """The last complete list of active Tally keys received for a company and record type. list_id is what the
+    agent called that list: the same one arriving again (a retry) is recognised and counts for nothing."""
+    __tablename__ = "tally_key_list_state"
+    __table_args__ = (
+        UniqueConstraint("company_id", "entity_type", name="uq_tally_key_list_state"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+    state_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    entity_type = Column(String(30), nullable=False)       # Voucher, Ledger, StockItem
+    last_list_id = Column(String(64), nullable=False)
+    last_list_at = Column(DateTime, server_default=func.now())
+    last_key_count = Column(Integer, default=0)
+
+
+class TallyMissingRecord(Base):
+    """A record Tally's complete active-key list no longer holds. It is also the audit row of a record
+    removed from MyTally's books because it was deleted in Tally (status 'deleted'), with what it looked like
+    before so it can be put back. Never a hard delete."""
+    __tablename__ = "tally_missing_records"
+    __table_args__ = (
+        UniqueConstraint("company_id", "entity_type", "record_id", name="uq_tally_missing_record"),
+        Index("ix_tally_missing_company_status", "company_id", "status"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+    missing_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    entity_type = Column(String(30), nullable=False)
+    record_id = Column(BigInteger, nullable=False)
+    tally_master_id = Column(Integer, nullable=True)
+    tally_guid = Column(String(64), nullable=True)
+    identifier = Column(String(255), nullable=True)         # "Sales #27 on 2026-03-01", a ledger's name
+    last_alter_id = Column(Integer, nullable=True)          # the last AlterID MyTally saw for it
+    streak = Column(Integer, default=0)                     # consecutive complete lists without it
+    status = Column(String(20), default="missing")          # missing, deleted, restored
+    prior_state = Column(JSON, nullable=True)
+    last_list_id = Column(String(64), nullable=True)
+    first_missing_at = Column(DateTime, server_default=func.now())
+    deleted_at = Column(DateTime, nullable=True)
+    restored_at = Column(DateTime, nullable=True)

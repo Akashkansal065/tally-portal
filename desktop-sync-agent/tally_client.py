@@ -8,6 +8,7 @@ import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 import logging
+from html import unescape
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
 from config import get_logs_dir
@@ -75,6 +76,37 @@ _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
 _VOUCHER_OPEN = re.compile(r"<VOUCHER[\s>]")
 # One pass over a voucher: where its lists open and close, and every DATE on the way
 _LIST_OR_DATE = re.compile(r"<(/?)[A-Z0-9_.]+\.LIST\b[^>]*?(/?)>|<DATE\b[^>]*>\s*(\d{8})\s*</DATE>")
+
+
+def _tag(block: str, tag: str) -> str:
+    found = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", block, re.S)
+    return unescape(found.group(1)).strip() if found else ""
+
+
+def voucher_keys(resp_xml: str) -> List[Dict[str, str]]:
+    """MASTERID, GUID, ALTERID and DATE of every voucher in a keys-only export. Read as text, like voucher_dates."""
+    info = resp_xml.find("<CMPINFO>")
+    info_end = resp_xml.find("</CMPINFO>", info) if info >= 0 else -1
+    starts = [m.start() for m in _VOUCHER_OPEN.finditer(resp_xml) if not (info >= 0 and info < m.start() < info_end)]
+    keys = []
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(resp_xml)
+        block = resp_xml[start:end]
+        keys.append({"master_id": _tag(block, "MASTERID"), "guid": _tag(block, "GUID"),
+                     "alter_id": _tag(block, "ALTERID"), "date": _tag(block, "DATE")})
+    return keys
+
+
+def master_keys(resp_xml: str, tag: str) -> List[Dict[str, str]]:
+    """NAME, GUID and MASTERID of every <tag> object in a keys-only master export. The name is the NAME
+    attribute, or a NAME element when Tally wrote it that way."""
+    keys = []
+    for m in re.finditer(rf"<{tag}\b([^>]*)>(.*?)</{tag}>", resp_xml, re.S):
+        attrs, block = m.group(1), m.group(2)
+        named = re.search(r'\bNAME="([^"]*)"', attrs)
+        keys.append({"name": unescape(named.group(1)) if named else _tag(block, "NAME"),
+                     "guid": _tag(block, "GUID"), "master_id": _tag(block, "MASTERID")})
+    return keys
 
 
 def tally_date_text(yyyymmdd: str) -> str:
@@ -559,6 +591,29 @@ class TallyClient:
         if resp_xml is None:
             return None
         return [d for d in voucher_dates(resp_xml) if d]
+
+    def export_voucher_keys(self, company_name: Optional[str]) -> Optional[List[Dict[str, str]]]:
+        """MASTERID, GUID, ALTERID and DATE of every voucher in the company, from an export that fetches nothing
+        else. None when Tally did not answer."""
+        resp_xml = self._export(self._voucher_request(company_name, "MyTallyVoucherKeys", "MASTERID,GUID,ALTERID,DATE"),
+                                "VoucherKeys")
+        return None if resp_xml is None else voucher_keys(resp_xml)
+
+    def export_master_keys(self, company_name: Optional[str], obj_type: str) -> Optional[List[Dict[str, str]]]:
+        """NAME, GUID and MASTERID of every master of one type (Ledger, StockItem). None when Tally did not answer."""
+        sv_cmp = f"<SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
+        label = f"MyTally{obj_type}Keys"
+        request = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>{label}</ID></HEADER>
+  <BODY><DESC>
+    <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>{sv_cmp}</STATICVARIABLES>
+    <TDL><TDLMESSAGE>
+      <COLLECTION NAME="{label}"><TYPE>{obj_type}</TYPE><FETCH>NAME,GUID,MASTERID</FETCH></COLLECTION>
+    </TDLMESSAGE></TDL>
+  </DESC></BODY>
+</ENVELOPE>"""
+        resp_xml = self._export(request, f"{obj_type}Keys")
+        return None if resp_xml is None else master_keys(resp_xml, obj_type.upper())
 
     def export_vouchers_between(self, company_name: Optional[str], date_from: str, date_to: str,
                                 method: str = "sv", label: Optional[str] = None) -> Optional[str]:

@@ -1097,6 +1097,46 @@ async def report_voucher_identities(
         clear_company_cache(user.company_id)
     return {"status": "success", "updated": updated}
 
+class ActiveKeyList(BaseModel):
+    """Every key Tally holds as active for the company right now (WS-3). Sent only from a complete export."""
+    list_id: str = Field(min_length=8, max_length=64)       # the same list sent again carries the same id
+    complete: bool = False
+    voucher_count_expected: Optional[int] = None            # what the agent's voucher index counted
+    vouchers: Optional[List[Dict[str, Any]]] = None         # [{master_id, guid, alter_id, date}]
+    ledgers: Optional[List[Dict[str, Any]]] = None          # [{name, guid, master_id}]
+    stock_items: Optional[List[Dict[str, Any]]] = None
+
+
+@router.post("/active-keys", dependencies=[Depends(bind_sync_company)])
+async def report_active_keys(
+    body: ActiveKeyList,
+    user: User = Depends(require_permission("sync", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Records Tally no longer holds. Two consecutive complete lists without a record soft-delete it (vouchers are
+    marked cancelled, ledgers and stock items deactivated, with an audit row). Safe to send again: the same
+    list_id counts once, and an incomplete list changes nothing.
+    """
+    from app.core.cache import clear_company_cache
+    from app.core.sync_guard import SYNC_BUSY_REASON, SyncBusy, company_sync_guard
+    from app.services.tally_deleted_reconcile import apply_active_key_lists
+    company_id = user.company_id
+    try:
+        async with company_sync_guard(db, company_id), sync_lock:
+            outcome = await apply_active_key_lists(
+                db, company_id, body.list_id, body.complete,
+                {"Voucher": body.vouchers, "Ledger": body.ledgers, "StockItem": body.stock_items},
+                {"Voucher": body.voucher_count_expected} if body.voucher_count_expected is not None else None)
+    except SyncBusy:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, headers={"X-Sync-Reason": SYNC_BUSY_REASON},
+                            detail="A sync of this company is already running on the server. Try again when it has finished.")
+    if any(r.get("deleted") or r.get("restored") for r in outcome["results"]):
+        clear_company_cache(company_id)
+    clear_company_cache(company_id, SYNC_HEALTH_CACHE_KEY)
+    return outcome
+
+
 class CompanySyncReport(BaseModel):
     tally_guid: str
     state: str = Field(max_length=30)          # live / closed / ambiguous / error
@@ -4664,6 +4704,10 @@ async def get_sync_health(
     unreconciled_deleted_count = unreconciled_del_res.scalar() or 0
     total_sync_issues = failed_logs + exception_logs + unreconciled_deleted_count
 
+    # Records deleted inside Tally and taken out of the books here (see services/tally_deleted_reconcile.py)
+    from app.services.tally_deleted_reconcile import deleted_in_tally_count
+    deleted_in_tally = await deleted_in_tally_count(db, user.company_id)
+
     # 4. Recent 5 logs: only the short columns, never the stored XML payloads
     recent_logs = (await db.execute(
         select(
@@ -4688,6 +4732,7 @@ async def get_sync_health(
         "total_failed_traffic": failed_logs,
         "total_exception_traffic": exception_logs,
         "unreconciled_deleted_count": unreconciled_deleted_count,
+        "deleted_in_tally_count": deleted_in_tally,
         "total_sync_issues": total_sync_issues,
         "recent_traffic": [
             {

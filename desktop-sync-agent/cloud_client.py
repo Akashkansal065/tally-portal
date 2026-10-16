@@ -378,6 +378,12 @@ class CloudClient:
                 return False
         return False
 
+    def report_active_keys(self, payload: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        """Sends the complete list of keys Tally holds as active (records the server may soft-delete when two
+        lists in a row lack them). Safe to send again: the server counts one list_id once."""
+        status, body, _ = self._call("POST", "/sync/active-keys", payload)
+        return status == 200, body if isinstance(body, dict) else {}
+
     def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None, force: bool = False) -> Tuple[bool, Dict[str, Any]]:
         """Uploads exported Tally XML to MyTally backend to update the database with comprehensive diagnostics."""
         headers = {

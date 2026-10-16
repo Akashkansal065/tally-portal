@@ -9,6 +9,7 @@ from logging.handlers import RotatingFileHandler
 from typing import List, Optional, Dict, Any, Tuple
 
 import re
+import uuid
 from config import (
     load_config,
     save_config,
@@ -43,6 +44,10 @@ IMPORTED_KINDS = (
 FULL_SYNC_SLICE_SECONDS = 90
 # A plan older than this is made again: its counts no longer describe what is in Tally
 FULL_SYNC_PLAN_MAX_AGE_SECONDS = 6 * 3600
+# How often the list of keys Tally holds as active is sent (it also goes after every full sync). The server
+# soft-deletes a record only when it is missing from two lists in a row, so this is the slowest a record
+# deleted in Tally can leave MyTally.
+ACTIVE_KEYS_INTERVAL_SECONDS = 3600
 SERVER_BUSY_MESSAGE = "the server is still importing this company's previous sync."
 
 
@@ -205,6 +210,7 @@ class DesktopSyncAgent:
         # the outbound queue has had its turn, instead of waiting a whole inbound interval for each slice
         self._resume_full_sync = False
         self._watermarks = {}
+        self._active_keys_sent: Dict[str, float] = {}
         self.last_sync_time = None
         self.last_sync_timestr = "Never"
         self.last_sync_status = "Ready"
@@ -966,9 +972,62 @@ class DesktopSyncAgent:
             if progress:
                 self.last_sync_status += f" · {progress}"
             self.last_inbound_time = time.time()
+            if self._last_company_ok:
+                self._maybe_report_active_keys(company_key, after_full_sync=not is_incremental)
         finally:
             self.is_syncing = False
         return self._last_company_ok
+
+    def _active_company_stands(self) -> bool:
+        """Is the company this pass is about still open in Tally, as the very copy that is bound to MyTally?"""
+        guid, fingerprint = self.active_company_guid, getattr(self.cloud, "company_fingerprint", "")
+        if not guid or not fingerprint:
+            return False
+        match = next((c for c in self.tally.get_open_companies() if c.get("guid") == guid), None)
+        return match is not None and (match.get("fingerprint") or "") == fingerprint
+
+    def _maybe_report_active_keys(self, company_key: str, after_full_sync: bool) -> None:
+        """Sends the keys of everything Tally holds as active, so MyTally can drop what was deleted in Tally.
+        Never affects the sync's outcome, and never sends a list that might be partial."""
+        try:
+            if (self.config.full_sync_cursors or {}).get(company_key):
+                return      # a full sync is still under way
+            sent = self._active_keys_sent
+            due = after_full_sync or time.time() - sent.get(company_key, 0) >= ACTIVE_KEYS_INTERVAL_SECONDS
+            if not due or not hasattr(self.tally, "export_voucher_keys"):
+                return
+            if not self._active_company_stands():
+                logger.info("   ℹ️ Active-key list skipped: the open company does not match the one bound to MyTally.")
+                return
+            keys = self.tally.export_voucher_keys(self.active_company_name)
+            index = self.tally.export_voucher_index(self.active_company_name)
+            # The two exports must agree, and every key must be usable: otherwise the list may be partial
+            if keys is None or index is None or len(keys) != len(index) or not keys:
+                logger.info("   ℹ️ Active-key list skipped: Tally's voucher list was not complete.")
+                return
+            if any(not (k.get("master_id") or "").strip() or not (k.get("guid") or "").strip() for k in keys):
+                logger.info("   ℹ️ Active-key list skipped: some vouchers came without a master id or GUID.")
+                return
+            payload = {"complete": True, "voucher_count_expected": len(index),
+                       "vouchers": [{k: v for k, v in key.items() if v} for key in keys]}
+            for field, obj_type in (("ledgers", "Ledger"), ("stock_items", "StockItem")):
+                masters = self.tally.export_master_keys(self.active_company_name, obj_type)
+                if masters and all((m.get("guid") or m.get("master_id")) for m in masters):
+                    payload[field] = masters
+            if not self._active_company_stands():
+                logger.info("   ℹ️ Active-key list dropped: the open company changed while it was being read.")
+                return
+            payload["list_id"] = uuid.uuid4().hex
+            ok, res = self.cloud.report_active_keys(payload)
+            if ok:
+                sent[company_key] = time.time()
+                removed = sum(r.get("deleted", 0) for r in res.get("results", []))
+                if removed:
+                    logger.info(f"   🗑️ {removed} record(s) deleted in Tally were taken out of MyTally's books.")
+            else:
+                logger.info("   ℹ️ The active-key list was not accepted; it is sent again next time.")
+        except Exception as e:
+            logger.warning(f"Could not send the active-key list: {e}")
 
     def _note_imported(self, res: Dict[str, Any]) -> str:
         """Add one push's counts to the cycle's totals. Returns them as text, every kind the server changed."""
