@@ -11,6 +11,7 @@ import { API_BASE, authHeaders, cn } from '@/lib/utils'
 import Cropper from 'react-easy-crop'
 import { getCroppedImg } from '@/lib/cropImage'
 import LedgerDetailsClient from '@/app/ledgers/[id]/ledger-details-client'
+import CustomerItemsTab from './customer-items-tab'
 import { INDIAN_STATES, parseGSTIN, WEEKLY_OFF_DAYS, PROPOSED_PINCODE_CITIES } from '@/lib/location-data'
 import {
   Users,
@@ -59,8 +60,12 @@ import {
   Share2,
   ShoppingCart,
   ArrowDownRight,
-  ArrowUpRight
+  ArrowUpRight,
+  Package
 } from 'lucide-react'
+
+const MAIN_TABS = ['overview', 'statement', 'items', 'orders', 'visits'] as const
+type MainTab = typeof MAIN_TABS[number]
 
 export interface FinancialSummary {
   closing_balance: number
@@ -231,19 +236,22 @@ function CustomerProfileContent() {
 
   const canViewStore = Boolean(isAdmin || permissions?.showCustomers || can?.('customers', 'read'))
   const canViewStatement = Boolean(isAdmin || permissions?.showSalesLedgers || permissions?.showLedger || can?.('ledger_customer', 'read') || can?.('ledgers', 'read'))
+  // What they buy comes from the reports API
+  const canViewItems = Boolean(isAdmin || can?.('reports', 'read'))
   const canViewOrders = Boolean(isAdmin || permissions?.showOrders || can?.('orders', 'read'))
   const canViewVisits = Boolean(isAdmin || permissions?.showCheckIn || can?.('visits', 'read'))
   const canDelete = Boolean(isAdmin || can?.('customers', 'delete'))
   const canUpdate = Boolean(isAdmin || can?.('customers', 'update'))
 
   const allowedTabs = useMemo(() => {
-    const list: ('overview' | 'statement' | 'orders' | 'visits')[] = []
+    const list: MainTab[] = []
     if (canViewStore) list.push('overview')
     if (canViewStatement) list.push('statement')
+    if (canViewItems) list.push('items')
     if (canViewOrders) list.push('orders')
     if (canViewVisits) list.push('visits')
     return list
-  }, [canViewStore, canViewStatement, canViewOrders, canViewVisits])
+  }, [canViewStore, canViewStatement, canViewItems, canViewOrders, canViewVisits])
 
   const [customer, setCustomer] = useState<CustomerDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -251,18 +259,18 @@ function CustomerProfileContent() {
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
 
-  // 360° View Main Tabs: overview | statement | orders | visits
-  const [mainTab, setMainTab] = useState<'overview' | 'statement' | 'orders' | 'visits'>(() => {
+  // 360° View Main Tabs: overview | statement | items | orders | visits
+  const [mainTab, setMainTab] = useState<MainTab>(() => {
     if (typeof window !== 'undefined') {
       const urlParams = new URLSearchParams(window.location.search)
       const tabParam = urlParams.get('tab')
-      if (tabParam === 'statement' || tabParam === 'orders' || tabParam === 'visits' || tabParam === 'overview') {
-        return tabParam
+      if (MAIN_TABS.includes(tabParam as MainTab)) {
+        return tabParam as MainTab
       }
       try {
         const savedTab = sessionStorage.getItem(`customer_tab_${targetId}`)
-        if (savedTab === 'statement' || savedTab === 'orders' || savedTab === 'visits' || savedTab === 'overview') {
-          return savedTab
+        if (MAIN_TABS.includes(savedTab as MainTab)) {
+          return savedTab as MainTab
         }
       } catch {}
     }
@@ -270,7 +278,7 @@ function CustomerProfileContent() {
   })
 
   // Synchronize tab helper to keep state, sessionStorage, and URL query params in sync
-  const handleTabChange = (tab: 'overview' | 'statement' | 'orders' | 'visits') => {
+  const handleTabChange = (tab: MainTab) => {
     setMainTab(tab)
     if (typeof window !== 'undefined') {
       if (targetId) {
@@ -290,8 +298,8 @@ function CustomerProfileContent() {
 
   // Synchronize mainTab when URL searchParams changes (e.g. browser back/forward)
   useEffect(() => {
-    const tabFromUrl = searchParams.get('tab') as 'overview' | 'statement' | 'orders' | 'visits' | null
-    if (tabFromUrl && ['overview', 'statement', 'orders', 'visits'].includes(tabFromUrl)) {
+    const tabFromUrl = searchParams.get('tab') as MainTab | null
+    if (tabFromUrl && MAIN_TABS.includes(tabFromUrl)) {
       if (tabFromUrl !== mainTab) {
         setMainTab(tabFromUrl)
         if (targetId) {
@@ -302,8 +310,8 @@ function CustomerProfileContent() {
       }
     } else if (!tabFromUrl && typeof window !== 'undefined' && targetId) {
       try {
-        const savedTab = sessionStorage.getItem(`customer_tab_${targetId}`) as 'overview' | 'statement' | 'orders' | 'visits' | null
-        if (savedTab && ['statement', 'orders', 'visits', 'overview'].includes(savedTab)) {
+        const savedTab = sessionStorage.getItem(`customer_tab_${targetId}`) as MainTab | null
+        if (savedTab && MAIN_TABS.includes(savedTab)) {
           if (mainTab !== savedTab) {
             setMainTab(savedTab)
             const url = new URL(window.location.href)
@@ -1868,6 +1876,24 @@ function CustomerProfileContent() {
             </button>
           )}
 
+          {/* Tab: What they buy */}
+          {canViewItems && (
+            <button
+              type="button"
+              onClick={() => handleTabChange('items')}
+              className={cn(
+                'flex-1 sm:flex-initial flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-2 py-2 sm:px-4 sm:py-2.5 rounded-xl sm:rounded-2xl font-bold text-[11px] sm:text-sm transition-all text-center min-w-0',
+                mainTab === 'items'
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-background/40 sm:hover:bg-muted/60'
+              )}
+            >
+              <Package className="w-4 h-4 shrink-0" />
+              <span className="sm:hidden truncate">Buys</span>
+              <span className="hidden sm:inline whitespace-nowrap">What they buy</span>
+            </button>
+          )}
+
           {/* Tab 3: Order History */}
           {canViewOrders && (
             <button
@@ -2713,6 +2739,11 @@ function CustomerProfileContent() {
               </div>
             )}
           </div>
+        )}
+
+        {/* ─── WHAT THEY BUY ─── */}
+        {mainTab === 'items' && canViewItems && (
+          <CustomerItemsTab ledgerId={customer.ledger_id} token={token} />
         )}
 
         {/* ─── TAB 3: ORDER HISTORY ─── */}
