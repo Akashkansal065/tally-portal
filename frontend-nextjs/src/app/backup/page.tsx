@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { AlertTriangle, CheckCircle2, Clock, Database, Download, Loader2, RotateCcw, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, Cloud, Database, Download, Loader2, RotateCcw, XCircle } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { API_BASE, authHeaders, cn, formatToIST } from '@/lib/utils'
@@ -21,6 +21,15 @@ type Backup = {
   size_bytes: number | null
   record_counts: Record<string, number>
   error: string | null
+  drive_status?: 'pending' | 'uploaded' | 'failed' | null
+  drive_error?: string | null
+}
+type DriveState = {
+  enabled: boolean
+  configured: boolean
+  status: 'off' | 'needs_setup' | 'not_linked' | 'linked' | 'needs_relink'
+  google_email: string | null
+  last_error: string | null
 }
 type Restore = {
   restore_id: number
@@ -64,6 +73,50 @@ export default function BackupPage() {
   const [problem, setProblem] = useState('')
   const [asking, setAsking] = useState(false)
   const [restoring, setRestoring] = useState<Backup | null>(null)
+  const [drive, setDrive] = useState<DriveState | null>(null)
+  const [driveBusy, setDriveBusy] = useState(false)
+
+  const loadDrive = useCallback(async () => {
+    if (!token) return
+    try { setDrive(await call<DriveState>(token, '/backups/drive')) } catch { setDrive(null) }
+  }, [token])
+  useEffect(() => { loadDrive() }, [loadDrive])
+
+  // Coming back from Google: say what happened, then drop the query string
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const result = params.get('drive')
+    if (!result) return
+    if (result === 'linked') toast.success('Google Drive connected. Backups are copied to it from now on.')
+    else toast.error(params.get('message') || 'Google Drive was not connected.')
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [])
+
+  const connectDrive = async () => {
+    if (!token) return
+    setDriveBusy(true)
+    try {
+      const { authorization_url } = await call<{ authorization_url: string }>(token, '/backups/drive/connect', { method: 'POST' })
+      window.location.href = authorization_url
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not start the Google sign-in')
+      setDriveBusy(false)
+    }
+  }
+
+  const driveAction = async (path: string, method: string, done: string) => {
+    if (!token) return
+    setDriveBusy(true)
+    try {
+      setDrive(await call<DriveState>(token, path, { method }))
+      toast.success(done)
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'That did not work')
+    } finally {
+      setDriveBusy(false)
+    }
+  }
 
   const load = useCallback(async () => {
     if (!token) return
@@ -156,6 +209,37 @@ export default function BackupPage() {
         Tally. Each backup is kept on that PC and here: every backup from today, then the last one of each of the
         previous {data.keep_days} days.
       </p>
+
+      {drive && drive.enabled && (
+        <section className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2">
+            <Cloud className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="space-y-0.5">
+              <p className="font-semibold">Google Drive copy</p>
+              {drive.status === 'linked' && <p className="text-muted-foreground">Each backup is also kept in {drive.google_email || 'your Google Drive'}, in the folder MyTally Backups / {data.company.name}.</p>}
+              {drive.status === 'needs_relink' && <p className="text-amber-700 dark:text-amber-400">{drive.last_error || 'Google no longer accepts the saved sign-in.'} Reconnect to carry on.</p>}
+              {drive.status === 'not_linked' && <p className="text-muted-foreground">Link a Google account to keep a second copy of every backup in your own Drive. MyTally can only see the files it creates there.</p>}
+              {drive.status === 'needs_setup' && <p className="text-muted-foreground">Google Drive linking is not set up on this server yet. Ask your MyTally operator.</p>}
+            </div>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            {(drive.status === 'not_linked' || drive.status === 'needs_relink') && (
+              <button onClick={connectDrive} disabled={driveBusy}
+                className="inline-flex h-9 items-center gap-2 rounded-xl bg-primary px-3 text-sm font-semibold text-primary-foreground disabled:opacity-60">
+                {driveBusy && <Loader2 className="h-4 w-4 animate-spin" />} {drive.status === 'needs_relink' ? 'Reconnect' : 'Connect Google Drive'}
+              </button>
+            )}
+            {drive.status === 'linked' && (
+              <button onClick={() => driveAction('/backups/drive/retry', 'POST', 'Tried the waiting copies again.')} disabled={driveBusy}
+                className="h-9 rounded-xl border border-border px-3 text-sm font-medium disabled:opacity-60">Copy waiting backups</button>
+            )}
+            {(drive.status === 'linked' || drive.status === 'needs_relink') && (
+              <button onClick={() => { if (confirm('Disconnect Google Drive? Files already in your Drive are left there.')) driveAction('/backups/drive', 'DELETE', 'Google Drive disconnected.') }}
+                disabled={driveBusy} className="h-9 rounded-xl border border-border px-3 text-sm font-medium disabled:opacity-60">Disconnect</button>
+            )}
+          </div>
+        </section>
+      )}
 
       {openRestore && (
         <section className="flex flex-col gap-3 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -250,9 +334,12 @@ export default function BackupPage() {
 function BackupState({ backup }: { backup: Backup }) {
   const counts = backup.record_counts || {}
   if (backup.status === 'stored') {
+    const driveNote = backup.drive_status === 'uploaded' ? ' · In Google Drive'
+      : backup.drive_status === 'pending' ? ' · Waiting for Google Drive'
+      : backup.drive_status === 'failed' ? ` · Google Drive copy failed${backup.drive_error ? `: ${backup.drive_error}` : ''}` : ''
     return (
       <p className="text-xs text-muted-foreground">
-        {(counts.ledgers ?? 0).toLocaleString('en-IN')} ledgers · {(counts.vouchers ?? 0).toLocaleString('en-IN')} vouchers · {size(backup.size_bytes)}
+        {(counts.ledgers ?? 0).toLocaleString('en-IN')} ledgers · {(counts.vouchers ?? 0).toLocaleString('en-IN')} vouchers · {size(backup.size_bytes)}{driveNote}
       </p>
     )
   }

@@ -561,3 +561,39 @@ an nginx on the same machine). From anyone else it is ignored, since a caller ca
 - **What a receipt does:** the same key and body within 15 minutes of a finished import gets the stored answer back (`Idempotent-Replay: true`) and does not import; a different body under the key is refused with 422; a duplicate while the first is importing gets 409 `sync_in_progress`. A receipt stuck in PROCESSING for more than 20 minutes (the worker died) is taken over by the next try, which imports again: importing the same export twice is safe, so the cost of a crash is a repeat, not a duplicate. A forced upload (Sync All) always imports.
 - **Stuck receipt:** to clear one by hand, `DELETE FROM sync_inbound_receipts WHERE company_id = <id> AND idempotency_key = '<key>'`; the next upload runs normally.
 - **Limit:** the import commits in many steps, so receipt and import are not one transaction; recovery is the stale-PROCESSING takeover above. Worth knowing if an import dies halfway: part of the export is stored until the retry finishes it.
+
+## Google Drive backup
+
+Each verified backup can also be copied, by the server, to the company's own Google Drive. No Google token reaches a PC. Files are created with the `drive.file` scope, so MyTally sees only what it made.
+
+### Operator steps (once per server)
+
+1. In the Google Cloud console create (or pick) a project, then **APIs & Services → Library → Google Drive API → Enable**.
+2. **OAuth consent screen:** choose External, fill in the app name, support email and your domain. Under **Scopes** add `.../auth/drive.file` (plus `openid` and `email`, which are listed by default). `drive.file` is a non-sensitive scope, so publishing needs no Google security review.
+3. **Credentials → Create credentials → OAuth client ID → Web application.** Under **Authorized redirect URIs** add exactly the backend callback URL, for example `https://api.example.com/backups/drive/callback`.
+4. Set in `backend/.env`, then restart the backend:
+   - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
+   - `GOOGLE_OAUTH_REDIRECT_URI` (the same URL as in step 3)
+   - `SECRETS_ENCRYPTION_KEY`, a Fernet key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Back it up with the other secrets: without it every company has to link Drive again.
+   - `APP_PUBLIC_URL` must be the web app's address (the callback sends the browser back to `<APP_PUBLIC_URL>/backup`).
+5. **Migration:** none by hand. The startup schema sync adds the `drive_*` columns to `company_backups` and creates `google_drive_links` and `drive_file_deletions`.
+6. While the consent screen is in **Testing**, add each Google account that will link a Drive under **OAuth consent screen → Test users** (refresh tokens of a Testing app also expire after 7 days, which shows up as "Reconnect"). When you are ready for real customers, click **Publish app**; with only `drive.file`, `openid` and `email` no verification review is needed.
+7. In the web app, **Admin → Integrations → Google Drive copy of backups**: switch on for each company. Its status is `needs_setup` until the four variables above are set and the company has linked a Drive, then `connected`.
+
+### What it does and does not do
+- Folder `MyTally Backups / <company name>`; file name is the backup key plus `.zip`. A retry never makes a second copy (found by stored id, then by name and properties), and size and MD5 are compared after upload.
+- Drive trouble never fails a backup. Each backup shows "In Google Drive", "Waiting" or "Copy failed: reason" on the Backup page; failures retry with backoff (5 minutes up to 6 hours, 8 tries, then "Copy waiting backups" on the page).
+- Retention follows the same rule as on the server. Only Drive files whose id MyTally recorded and whose properties name this company and backup are deleted.
+- **Not supported in v1:** Google Workspace shared drives, and linking one Drive to several companies at once (each company links its own).
+- Unlinking revokes the token at Google and deletes the stored credential; files stay in the user's Drive.
+- Not verified without real Google credentials: the consent-screen flow, token expiry timing in Testing mode, and quota messages as Google really words them. The code paths are tested against a fake Google.
+
+### End-user guide
+1. Open **Backup** in the web app (you need to be an administrator).
+2. In the **Google Drive copy** card press **Connect Google Drive**.
+3. Choose the Google account, then **Continue / Allow** when Google asks to let MyTally create and manage files it makes in your Drive.
+4. You return to the Backup page with "Google Drive connected". The backups still kept are copied; new ones follow within minutes.
+5. To see the files: open Google Drive and look for the **MyTally Backups** folder, then your company's folder. Each backup list line says "In Google Drive".
+6. To stop: press **Disconnect**. MyTally forgets the sign-in and tells Google to revoke it; the files already in your Drive stay.
+7. If the card says **Reconnect** (you removed MyTally's access in your Google account, changed the password, or the access expired): press **Reconnect** and allow access again. Waiting backups are then copied.
+8. If a backup says "Google Drive is full", free space in that Drive or connect another account; the copy retries by itself.
