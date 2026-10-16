@@ -28,7 +28,7 @@ Tag names are those the importer already reads; they were **not** verified again
 | BASICORDERREF | no | yes | order_reference | **request** |
 | BASICSHIPDELIVERYNOTE | no | yes | despatch_doc_no | **request** |
 | IRN, IRNACKNO, IRNACKDATE, IRNQRCODE | no | yes | irn, irn_ack_no, irn_ack_date, irn_qr_code | **request** |
-| IRNCANCELLED, IRNCANCELDATE, IRNCANCELREASON, IRNIRPSOURCE | no | yes | irn_cancel_* , irn_source | **request** (kept out of the first fetch: not seen in TallyPrime exports of ordinary vouchers; see note) |
+| IRNCANCELLED, IRNCANCELDATE, IRNCANCELREASON, IRNIRPSOURCE | no | yes | irn_cancel_* , irn_source | **request** |
 | EWAYBILLDETAILS.LIST | no | yes | eway_bills | **request** |
 | ISINVOICE | no | no | is_invoice (column exists) | **parse + request** |
 | PERSISTEDVIEW | no | no | persisted_view (column exists) | **parse + request** |

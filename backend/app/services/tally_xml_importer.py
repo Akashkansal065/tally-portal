@@ -2377,6 +2377,13 @@ async def import_tally_xml(
             order_reference = v_node.findtext("BASICORDERREF") or v_node.findtext("ORDERREFERENCE")
             despatch_doc_no = v_node.findtext("BASICSHIPDELIVERYNOTE") or v_node.findtext("DESPATCHDOCNO")
 
+            # The party's own reference (supplier invoice number, cheque no.), and how Tally shows the voucher.
+            # Only a tag that is present changes what is stored; an export without them leaves the values alone.
+            reference_number = (v_node.findtext("REFERENCE") or "").strip()[:50] or None
+            is_invoice_text = (v_node.findtext("ISINVOICE") or "").strip().lower()
+            is_invoice_val = (is_invoice_text == "yes") if is_invoice_text in ("yes", "no") else None
+            persisted_view = (v_node.findtext("PERSISTEDVIEW") or "").strip()[:50] or None
+
             # e-Invoice Fields (Schema v7.0 GSTeInvoiceDetail)
             irn = v_node.findtext("IRN")
             irn_ack_no = v_node.findtext("IRNACKNO")
@@ -2539,6 +2546,9 @@ async def import_tally_xml(
             voucher.voucher_date = v_date
             voucher.effective_date = effective_date
             if reference_date: voucher.reference_date = reference_date
+            if reference_number: voucher.reference_number = reference_number
+            if is_invoice_val is not None: voucher.is_invoice = is_invoice_val
+            if persisted_view: voucher.persisted_view = persisted_view
             if place_of_supply: voucher.place_of_supply = place_of_supply
             if buyer_name: voucher.buyer_name = buyer_name
             if buyer_address: voucher.buyer_address = buyer_address
