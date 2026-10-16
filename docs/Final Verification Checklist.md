@@ -257,3 +257,18 @@ New findings to act on:
   - T8: all voucher-header tags are present in every voucher (`REFERENCE`, `EFFECTIVEDATE`, `PLACEOFSUPPLY`, `BASICBUYERNAME`, `IRN`, `EWAYBILLDETAILS.LIST`, `ISINVOICE`, `PERSISTEDVIEW`, `ISPOSTDATED`, `CONSIGNEEMAILINGNAME`); values were mostly empty in this company. `PARTYGSTIN` was never returned.
 - **STILL OPEN, needs a Tally setting (T1, W1-W4):** this company has no bank allocations at all, and Tally silently drops `BANKALLOCATIONS.LIST` sent by import (tried `Cheque/DD` and MyTally's `Others` + `PAYMENTMODE Transacted`; the block comes back without it). Enable bank allocation entry in the test company's Receipt/Payment voucher configuration (F12), or enter one Receipt against HDFC BANK A/c with a cheque number by hand, then re-run.
 - **Voucher dates after 2025-08-31 were rejected** ("Voucher date is missing", really out of the company's period); test vouchers used 2025-07-01.
+
+## 4a. Results of the full run (2026-10-16, after all phases)
+
+| Suite | Result |
+|---|---|
+| Agent (`desktop-sync-agent`) | **172 passed** |
+| Backend | first run **606 passed, 3 failed**; the 3 were fixed (below) and their files re-run: reconcile write-back and backup hardening **24 passed**. The full backend suite was not run a second time. |
+| Frontend `tsc --noEmit` | passes (exit 0) |
+| Frontend production build | passes with `next build --webpack` (Turbopack cannot follow a `node_modules` symlink, which is only how this worktree was built) |
+
+Failures found by the run, all real:
+- **Reconcile result report would have returned 500:** it wrote an audit row with no user, and `audit_logs.user_id` is NOT NULL. It now records the signed-in user (`48edafb`).
+- **`test_the_endpoint_is_off_by_default...`:** the test account had no company room under its plan, so the new-company restore (correctly) answered 403. The test now attaches an account with a trial.
+
+Still not done, because it needs something only you can supply: T1 and W1-W4 (bank allocations are switched off in the test company, section 5a-2), every row of section 5b that needs a running server with real data, 5c P1-P3 (needs changing Tally's port), 5d signing, 5e installer (Windows), section 6 (Google).
