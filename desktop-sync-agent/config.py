@@ -74,6 +74,8 @@ class AgentConfig:
     inbound_interval_seconds: int = 60
     # About how many vouchers a full sync sends to the server in one request (see agent.VOUCHERS_PER_RANGE)
     vouchers_per_range: int = 50
+    # Move to the port TallyPrime really answers on, when that Tally names a company already linked to this PC
+    auto_switch_tally_port: bool = True
     tally_app_path: Optional[str] = None
     tally_data_path: Optional[str] = None
     auto_discover_paths: bool = True

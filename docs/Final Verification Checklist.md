@@ -272,3 +272,14 @@ Failures found by the run, all real:
 - **`test_the_endpoint_is_off_by_default...`:** the test account had no company room under its plan, so the new-company restore (correctly) answered 403. The test now attaches an account with a trial.
 
 Still not done, because it needs something only you can supply: T1 and W1-W4 (bank allocations are switched off in the test company, section 5a-2), every row of section 5b that needs a running server with real data, 5c P1-P3 (needs changing Tally's port), 5d signing, 5e installer (Windows), section 6 (Google).
+
+## 4b. Port detection is now automatic (WS-12 change, same day)
+
+On your request the agent now switches on its own. When the configured URL does not answer, it probes the usual
+ports and moves to the one where TallyPrime answers **with a company whose GUID is already linked to this PC**;
+any other Tally, or a port that stops answering before the switch, changes nothing. Turn it off with
+`auto_switch_tally_port: false` in `agent_config.json` (then the health bar asks, as before).
+
+Verified live against the test VM: agent pointed at `192.168.71.130:9000` found Tally on `:9001` with company
+"Bhrama Enterprises"; with a GUID that is not linked it made no offer. Agent tests for it: 10 in `test_tally_ports.py`.
+Still to see on the Windows VM: the whole thing inside a running agent (P1 above), including the `tally.ini` read.

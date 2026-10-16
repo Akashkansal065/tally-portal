@@ -58,6 +58,7 @@ def make_agent(tmp_path, monkeypatch, offer=None):
 def test_the_url_is_not_changed_until_the_offer_is_accepted(tmp_path, monkeypatch):
     offer = {"url": "http://127.0.0.1:9002", "port": 9002, "company": "Alpha"}
     a = make_agent(tmp_path, monkeypatch, offer)
+    a.config.auto_switch_tally_port = False
     a._diagnose_tally()
     assert a.tally_port_offer == offer and a.config.tally_url == "http://127.0.0.1:9000"
     status = a.get_status()
@@ -71,6 +72,7 @@ def test_the_url_is_not_changed_until_the_offer_is_accepted(tmp_path, monkeypatc
 def test_accepting_switches_the_url_after_checking_it_still_answers(tmp_path, monkeypatch):
     offer = {"url": "http://127.0.0.1:9002", "port": 9002, "company": "Alpha"}
     a = make_agent(tmp_path, monkeypatch, offer)
+    a.config.auto_switch_tally_port = False
     a._diagnose_tally()
     monkeypatch.setattr(agent_module, "save_config", lambda *args, **kw: None)
     monkeypatch.setattr(agent_module.TallyClient, "check_health", lambda self: (False, "down"))
@@ -89,3 +91,21 @@ def test_without_an_offer_the_health_bar_uses_the_diagnosis(tmp_path, monkeypatc
     status.update({"status": "TALLY OFFLINE"})
     health = bridge_core.health_from_status(status)
     assert health["action"] == "retry" and "Connectivity" in health["detail"]
+
+
+def test_the_port_is_switched_on_its_own_when_it_names_a_linked_company(tmp_path, monkeypatch):
+    offer = {"url": "http://127.0.0.1:9002", "port": 9002, "company": "Alpha"}
+    a = make_agent(tmp_path, monkeypatch, offer)
+    monkeypatch.setattr(agent_module, "save_config", lambda *args, **kw: None)
+    monkeypatch.setattr(agent_module.TallyClient, "check_health", lambda self: (True, "ok"))
+    a._diagnose_tally()
+    assert a.config.tally_url == "http://127.0.0.1:9002" and a.tally_port_offer is None and a.tally_connected is True
+
+
+def test_it_stays_on_the_old_port_when_the_new_one_stops_answering(tmp_path, monkeypatch):
+    offer = {"url": "http://127.0.0.1:9002", "port": 9002, "company": "Alpha"}
+    a = make_agent(tmp_path, monkeypatch, offer)
+    monkeypatch.setattr(agent_module, "save_config", lambda *args, **kw: None)
+    monkeypatch.setattr(agent_module.TallyClient, "check_health", lambda self: (False, "down"))
+    a._diagnose_tally()
+    assert a.config.tally_url == "http://127.0.0.1:9000"

@@ -429,6 +429,13 @@ class DesktopSyncAgent:
                 logger.info(f"🔎 TallyPrime answers on port {offer['port']} (company '{offer['company']}'). "
                             "Use it from the health bar to switch.")
             self.tally_port_offer = offer
+            # The offer already proves who answers: the port names a company whose GUID is linked to this PC. So
+            # the switch is made on its own; turn auto_switch_tally_port off to be asked instead.
+            if offer and getattr(self.config, "auto_switch_tally_port", True):
+                ok, message = self.use_offered_tally_port()
+                if ok:
+                    self.tally_connected = True
+                    logger.info(f"🔁 {message} (found on its own: it answers there with company '{offer['company']}')")
         except Exception as e:
             logger.debug(f"Tally port check failed: {e}")
 
