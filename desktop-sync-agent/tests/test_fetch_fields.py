@@ -31,3 +31,14 @@ def test_ledger_fields_are_requested():
                 "LOWERDEDUCTION.LIST", "HSNDETAILS.LIST", "LEDMULTIADDRESSLIST.LIST", "OPENINGBALANCE", "CLOSINGBALANCE"):
         assert tag in asked, tag
     assert len(LEDGER_FETCH.split(",")) == len(asked)
+
+
+def test_stock_item_fields_are_requested_and_unparsed_lists_are_not():
+    from tally_client import STOCK_ITEM_FETCH
+    asked = tags(STOCK_ITEM_FETCH)
+    for tag in ("HSNDETAILS.LIST", "INFGSTHSNCODE", "INFGSTIGSTRATE", "LANGUAGENAME.LIST", "BATCHALLOCATIONS.LIST", "ALTERID"):
+        assert tag in asked, tag
+    # the importer reads none of these yet: asking would only make the export bigger
+    for tag in ("MULTICOMPONENTLIST.LIST", "FULLPRICELIST.LIST", "MRPDETAILS.LIST", "REORDERBASE", "PARTNUMBER"):
+        assert tag not in asked, tag
+    assert len(STOCK_ITEM_FETCH.split(",")) == len(asked)
