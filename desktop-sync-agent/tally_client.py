@@ -84,6 +84,10 @@ STOCK_ITEM_FETCH = ("NAME,GUID,MASTERID,ALTERID,PARENT,CATEGORY,BASEUNITS,ADDITI
                     "IGNORENEGATIVESTOCK,COSTINGMETHOD,VALUATIONMETHOD,GSTTYPEOFSUPPLY,BATCHALLOCATIONS.LIST,"
                     "HSNDETAILS.LIST,INFGSTHSNCODE,INFGSTIGSTRATE,LANGUAGENAME.LIST")
 
+# The currency fields the importer reads and stores
+CURRENCY_FETCH = ("NAME,ORIGINALNAME,EXPANDEDNAME,ISOCURRENCYCODE,DECIMALPLACES,INMILLIONS,ISSUFFIX,HASSPACE,"
+                  "DECIMALSYMBOL,DECIMALPLACESFORPRINTING,MAILINGNAME.LIST")
+
 # Two ways of asking Tally for the vouchers of a date range. Which one a Tally honours is found by trying:
 # "sv" sets the report period; "filter" also filters the collection on the voucher date.
 VOUCHER_RANGE_METHODS = ("sv", "filter")
@@ -495,6 +499,9 @@ class TallyClient:
             ("Ledgers", "Ledger", LEDGER_FETCH, True),
             ("VoucherTypes", "VoucherType", "NAME,PARENT,ALTERID,NUMBERINGMETHOD,USEZEROENTRIES,ISOPTIONAL,COMMONNARRATION,MULTINARRATION,PRINTAFTERSAVE", True),
             ("StockGroups", "StockGroup", "NAME,GUID,MASTERID,PARENT,ALTERID", True),
+            # No ALTERID filter on these two, so they come with the full passes only, like units and godowns
+            ("Currencies", "Currency", CURRENCY_FETCH, False),
+            ("PriceLevels", "PriceLevel", "NAME,ALTERID", False),
             ("UOMs", "Unit", "NAME,GUID,MASTERID,ALTERID,ORIGINALNAME,DECIMALPLACES,ISSIMPLEUNIT,BASEUNITS,ADDITIONALUNITS,CONVERSION", False),
             ("Godowns", "Godown", "NAME,GUID,ALTERID,PARENT", False),
             ("StockCategories", "StockCategory", "NAME,GUID,ALTERID,PARENT", False),

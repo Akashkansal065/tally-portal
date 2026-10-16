@@ -42,3 +42,16 @@ def test_stock_item_fields_are_requested_and_unparsed_lists_are_not():
     for tag in ("MULTICOMPONENTLIST.LIST", "FULLPRICELIST.LIST", "MRPDETAILS.LIST", "REORDERBASE", "PARTNUMBER"):
         assert tag not in asked, tag
     assert len(STOCK_ITEM_FETCH.split(",")) == len(asked)
+
+
+def test_currency_and_price_level_collections_are_full_pass_only(mock_tally):
+    from tally_client import CURRENCY_FETCH, TallyClient
+    for tag in ("NAME", "ISOCURRENCYCODE", "DECIMALPLACES", "INMILLIONS", "ISSUFFIX", "HASSPACE", "DECIMALSYMBOL", "MAILINGNAME.LIST"):
+        assert tag in tags(CURRENCY_FETCH), tag
+    client = TallyClient(mock_tally.url, timeout=5)
+    client.export_full_collections("Sample Co", min_alter_id=0)
+    assert "ExportCurrencies" in mock_tally.ids and "ExportPriceLevels" in mock_tally.ids
+    before = len(mock_tally.requests)
+    client.export_full_collections("Sample Co", min_alter_id=5, min_voucher_alter_id=5)
+    incremental = [i for i, _ in mock_tally.requests[before:]]
+    assert "ExportCurrencies" not in incremental and "ExportPriceLevels" not in incremental     # watermarks untouched

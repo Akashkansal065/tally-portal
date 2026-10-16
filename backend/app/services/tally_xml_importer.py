@@ -16,7 +16,7 @@ logger = logging.getLogger("uvicorn.error")
 from app.core.config import settings
 from app.models.tally_core import (
     MstGroup, MstLedger, MstStockGroup, MstStockCategory, 
-    MstGodown, MstStockItem, MstVoucherType, MstUom,
+    MstGodown, MstStockItem, MstVoucherType, MstUom, MstPriceLevel,
     MstVoucherTypePrefix, MstVoucherTypeSuffix, MstVoucherTypeRestart,
     MstVoucherTypeClass, MstVoucherTypeClassGroup,
     MstCostCategory, MstCostCentre, CostCenter, MstAttendanceType, MstPayHead, TrnAttendance, TrnPayHead,
@@ -1189,6 +1189,25 @@ async def import_tally_xml(
     if imported_currencies > 0:
         await db.commit()
         logger.info(f"Committed {imported_currencies} Currencies")
+
+    # Price levels (<PRICELEVEL NAME="..."> directly in the collection; a voucher's own PRICELEVEL text is not one)
+    imported_price_levels = 0
+    for pl_node in root.findall(".//COLLECTION/PRICELEVEL"):
+        pl_name = (pl_node.get("NAME") or pl_node.findtext("NAME") or "").strip()[:100]
+        if not pl_name:
+            continue
+        alter_text = (pl_node.findtext("ALTERID") or "").strip()
+        pl_alter = int(alter_text) if alter_text.isdigit() else None
+        existing_pl = (await db.execute(select(MstPriceLevel).where(
+            MstPriceLevel.company_id == company_id, MstPriceLevel.name == pl_name))).scalars().first()
+        if existing_pl is None:
+            db.add(MstPriceLevel(company_id=company_id, name=pl_name, is_active=True, tally_alter_id=pl_alter))
+        elif pl_alter is not None:
+            existing_pl.tally_alter_id = pl_alter
+        imported_price_levels += 1
+    if imported_price_levels:
+        await db.commit()
+        logger.info(f"Committed {imported_price_levels} Price Levels")
 
     # 1.3 Parse Voucher Types (<VOUCHERTYPE>)
     for vt_node in root.findall(".//VOUCHERTYPE"):

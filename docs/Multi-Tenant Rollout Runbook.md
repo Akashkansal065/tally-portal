@@ -597,3 +597,11 @@ Each verified backup can also be copied, by the server, to the company's own Goo
 6. To stop: press **Disconnect**. MyTally forgets the sign-in and tells Google to revoke it; the files already in your Drive stay.
 7. If the card says **Reconnect** (you removed MyTally's access in your Google account, changed the password, or the access expired): press **Reconnect** and allow access again. Waiting backups are then copied.
 8. If a backup says "Google Drive is full", free space in that Drive or connect another account; the copy retries by itself.
+
+## Phase 5 export field coverage (WS-10)
+
+- **Agent rebuild** (tag `agent-v*`); upgrade the backend first (it only gains a Price Level parser and three voucher header fields; an older agent's exports import exactly as before). No migration.
+- **What changes in the exports:** vouchers also bring header fields (dates, reference, place of supply, buyer, consignee, IRN, e-way bill, invoice flags); ledgers bring credit limit and period, contact, tax classification, MSME, lower TDS and extra addresses; stock items bring HSN/GST details and aliases; Currency and Price Level are exported on full passes. The list, and what is deliberately **not** requested yet (MRP, BOM, price lists, reorder, UQC), is in `docs/Export Field Coverage Matrix.md`.
+- **Backfill:** only records Tally alters after the upgrade carry the new values on their own. For existing ones run **Sync All** (force full sync) once per company from the agent.
+- **Unverified on a real TallyPrime:** every tag name is the one the importer already reads; none was checked against a live export. A tag Tally does not know is expected to be left out of the reply, not to fail it, but check the first Sync All of a pilot company: its export time (the agent log prints bytes and seconds per collection) and that vouchers still import. If an export now times out, remove the new tags from `VOUCHER_FETCH` / `LEDGER_FETCH` / `STOCK_ITEM_FETCH` in `tally_client.py`.
+- **Size:** voucher ranges stay 50 vouchers; the extra fields add well under 1 KB per voucher (the IRN QR code is the largest).
