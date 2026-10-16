@@ -504,9 +504,10 @@ class TallyClient:
             ("Ledgers", "Ledger", LEDGER_FETCH, True),
             ("VoucherTypes", "VoucherType", "NAME,PARENT,ALTERID,NUMBERINGMETHOD,USEZEROENTRIES,ISOPTIONAL,COMMONNARRATION,MULTINARRATION,PRINTAFTERSAVE", True),
             ("StockGroups", "StockGroup", "NAME,GUID,MASTERID,PARENT,ALTERID", True),
-            # No ALTERID filter on these two, so they come with the full passes only, like units and godowns
+            # No ALTERID filter, so it comes with the full passes only, like units and godowns.
+            # A PriceLevel collection request is NOT sent: on a real TallyPrime it never answered and left the
+            # whole XML server hung until Tally was restarted (every later request timed out too).
             ("Currencies", "Currency", CURRENCY_FETCH, False),
-            ("PriceLevels", "PriceLevel", "NAME,ALTERID", False),
             ("UOMs", "Unit", "NAME,GUID,MASTERID,ALTERID,ORIGINALNAME,DECIMALPLACES,ISSIMPLEUNIT,BASEUNITS,ADDITIONALUNITS,CONVERSION", False),
             ("Godowns", "Godown", "NAME,GUID,ALTERID,PARENT", False),
             ("StockCategories", "StockCategory", "NAME,GUID,ALTERID,PARENT", False),

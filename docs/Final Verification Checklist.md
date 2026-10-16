@@ -241,3 +241,8 @@ New findings to act on:
   still manual.
 - Not built by decision: S3 off-site backup (covered by Google Drive), the string vault, PyArmor, anti-debug,
   JSONEx (WS-17).
+
+### 5a-2. Live run on the test VM (TallyPrime at 192.168.71.130:9001, "Bhrama Enterprises", 44 vouchers)
+
+- **T7 timing:** with the fix below, a full export of 14 collections finishes in 0.3 s, no failures; vouchers are 335 KB.
+- **BUG FOUND AND FIXED: a `PriceLevel` collection request hangs TallyPrime.** It never answered, the next request (`UOMs`) timed out too, and the XML server stayed dead until Tally was restarted. The request is no longer sent. Never add a PriceLevel collection export again; read price levels from stock item price lists or the ledger's `PRICELEVEL`.
