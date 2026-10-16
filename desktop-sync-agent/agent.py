@@ -48,6 +48,9 @@ FULL_SYNC_PLAN_MAX_AGE_SECONDS = 6 * 3600
 # soft-deletes a record only when it is missing from two lists in a row, so this is the slowest a record
 # deleted in Tally can leave MyTally.
 ACTIVE_KEYS_INTERVAL_SECONDS = 3600
+# The change probe lets an idle company cost one request a cycle. A full incremental pass still runs at
+# least this often whatever the probe says, so a probe that is wrong costs a delay, never a missed change.
+PROBE_SAFETY_PASS_SECONDS = 15 * 60
 SERVER_BUSY_MESSAGE = "the server is still importing this company's previous sync."
 
 
@@ -211,6 +214,8 @@ class DesktopSyncAgent:
         self._resume_full_sync = False
         self._watermarks = {}
         self._active_keys_sent: Dict[str, float] = {}
+        # per company: (masters counter, vouchers counter, when a full incremental pass last ran clean)
+        self._probe_seen: Dict[str, Tuple[int, int, float]] = {}
         self.last_sync_time = None
         self.last_sync_timestr = "Never"
         self.last_sync_status = "Ready"
@@ -897,13 +902,42 @@ class DesktopSyncAgent:
             else:
                 prefix = f"📥 [INITIAL INBOUND SYNC] Pulling full baseline data from Tally..."
 
+            # An idle company costs one small request: TallyPrime's change counters say whether anything moved.
+            # Any doubt (no answer, a failed earlier cycle, a full sync owed, the safety pass due) runs the lot.
+            probe = None
+            sides = ("masters", "vouchers")
+            if (is_incremental and not force_all and retry_floor is None and hasattr(self.tally, "probe_change_counters")
+                    and not (self.config.full_sync_cursors or {}).get(company_key)):
+                probe = self.tally.probe_change_counters(self.active_company_name, self.active_company_guid)
+                seen = self._probe_seen.get(company_key)
+                if probe is not None and seen is not None and time.time() - seen[2] < PROBE_SAFETY_PASS_SECONDS:
+                    sides = tuple(s for s, now, before in (("masters", probe[0], seen[0]), ("vouchers", probe[1], seen[1]))
+                                  if now != before)
+                    if not sides:
+                        logger.info("   ✨ Tally's change counters have not moved; nothing to pull.")
+                        self._last_company_ok = True
+                        self.last_inbound_time = self.last_sync_time = time.time()
+                        self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
+                        self.last_sync_status = "Up-to-date (no changes)"
+                        self._maybe_report_active_keys(company_key, after_full_sync=False)
+                        return True
+            if is_incremental and sides != ("masters", "vouchers"):
+                logger.info(f"   🔎 Tally's change counters moved for: {', '.join(sides)}.")
+
             logger.info(f"{prefix}")
             if vouchers_in_ranges and not is_incremental:
                 collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=0,
                                                                  min_voucher_alter_id=None, skip_vouchers=True)
             else:
+                # Only a pass narrowed by the probe passes the side flags; every other call is as it always was
+                narrowed = {}
+                if is_incremental and "vouchers" not in sides:
+                    narrowed["skip_vouchers"] = True
+                if is_incremental and "masters" not in sides:
+                    narrowed["only_vouchers"] = True
                 collections = self.tally.export_full_collections(self.active_company_name, min_alter_id=min_alter,
-                                                                 min_voucher_alter_id=min_voucher_alter if is_incremental else None)
+                                                                 min_voucher_alter_id=min_voucher_alter if is_incremental else None,
+                                                                 **narrowed)
             export_failures = list(getattr(self.tally, "last_export_failures", []) or [])
             if export_failures:
                 logger.error(f"   ❌ Could not export from Tally: {', '.join(export_failures)}")
@@ -911,6 +945,10 @@ class DesktopSyncAgent:
             if not collections and not vouchers_in_ranges:
                 self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures))
                 self._last_company_ok = not export_failures
+                if self._last_company_ok:
+                    self._note_probe(company_key, probe, sides, is_incremental)
+                else:
+                    self._probe_seen.pop(company_key, None)
                 self.last_inbound_time = time.time()
                 self.last_sync_time = time.time()
                 self.last_sync_timestr = time.strftime("%d %b %Y, %I:%M:%S %p")
@@ -973,10 +1011,24 @@ class DesktopSyncAgent:
                 self.last_sync_status += f" · {progress}"
             self.last_inbound_time = time.time()
             if self._last_company_ok:
+                self._note_probe(company_key, probe, sides, is_incremental)
                 self._maybe_report_active_keys(company_key, after_full_sync=not is_incremental)
+            else:
+                self._probe_seen.pop(company_key, None)
         finally:
             self.is_syncing = False
         return self._last_company_ok
+
+    def _note_probe(self, company_key: str, probe: Optional[Tuple[int, int]], sides: Tuple[str, ...],
+                    is_incremental: bool) -> None:
+        """Remember the change counters read before this pass's exports (a change made during them is then
+        seen next cycle). The safety clock restarts only when both sides ran."""
+        if probe is not None:
+            kept = self._probe_seen.get(company_key)
+            ran_everything = sides == ("masters", "vouchers")
+            self._probe_seen[company_key] = (probe[0], probe[1], time.time() if ran_everything or kept is None else kept[2])
+        elif is_incremental:
+            self._probe_seen.pop(company_key, None)   # no probe this time: do not trust an older reading
 
     def _active_company_stands(self) -> bool:
         """Is the company this pass is about still open in Tally, as the very copy that is bound to MyTally?"""

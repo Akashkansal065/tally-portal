@@ -115,6 +115,28 @@ def master_keys(resp_xml: str, tag: str) -> List[Dict[str, str]]:
     return keys
 
 
+def parse_change_counters(resp_xml: Optional[str], company_name: str, company_guid: str = "") -> Optional[Tuple[int, int]]:
+    """AltMstId and AltVchId of the one company this reply names, or None when that cannot be said for sure."""
+    if not resp_xml:
+        return None
+    found = []
+    for m in re.finditer(r"<COMPANY\b([^>]*)>(.*?)</COMPANY>", resp_xml, re.S):
+        attrs, block = m.group(1), m.group(2)
+        named = re.search(r'\bNAME="([^"]*)"', attrs)
+        name = unescape(named.group(1)).strip() if named else _tag(block, "NAME")
+        found.append((name, _tag(block, "GUID"), _tag(block, "ALTMSTID"), _tag(block, "ALTVCHID")))
+    if company_guid:
+        found = [c for c in found if c[1] == company_guid]
+    elif company_name:
+        found = [c for c in found if c[0] == company_name]
+    if len(found) != 1:
+        return None                      # not there, or two that cannot be told apart
+    mst, vch = found[0][2], found[0][3]
+    if not (mst.isdigit() and vch.isdigit()):
+        return None
+    return int(mst), int(vch)
+
+
 def tally_date_text(yyyymmdd: str) -> str:
     """20250401 -> 1-Apr-2025, the form Tally's $$Date reads the same way in every regional setting."""
     return f"{int(yyyymmdd[6:8])}-{_MONTHS[int(yyyymmdd[4:6]) - 1]}-{yyyymmdd[0:4]}"
@@ -597,6 +619,30 @@ class TallyClient:
         if resp_xml is None:
             return None
         return [d for d in voucher_dates(resp_xml) if d]
+
+    def probe_change_counters(self, company_name: Optional[str], company_guid: str = "") -> Optional[Tuple[int, int]]:
+        """(masters counter, vouchers counter): TallyPrime's company-level AltMstId and AltVchId, which rise
+        whenever a master or a voucher is created, altered or deleted. One small request. None whenever there
+        is any doubt (no answer, no such company, the fields missing or not numbers): the caller then runs its
+        normal cycle. UNVERIFIED against a real TallyPrime: see docs/Multi-Tenant Rollout Runbook.md."""
+        sv_cmp = f"<SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
+        request = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>MyTallyChangeProbe</ID></HEADER>
+  <BODY><DESC>
+    <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>{sv_cmp}</STATICVARIABLES>
+    <TDL><TDLMESSAGE>
+      <COLLECTION NAME="MyTallyChangeProbe">
+        <TYPE>Company</TYPE>
+        <NATIVEMETHOD>Name, Guid, AltMstId, AltVchId</NATIVEMETHOD>
+      </COLLECTION>
+    </TDLMESSAGE></TDL>
+  </DESC></BODY>
+</ENVELOPE>"""
+        try:
+            resp_xml = self._export(request, "ChangeProbe", timeout=15, retries=0)
+        except Exception:
+            return None
+        return parse_change_counters(resp_xml, company_name or "", company_guid)
 
     def export_voucher_keys(self, company_name: Optional[str]) -> Optional[List[Dict[str, str]]]:
         """MASTERID, GUID, ALTERID and DATE of every voucher in the company, from an export that fetches nothing
