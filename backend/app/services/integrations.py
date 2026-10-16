@@ -46,6 +46,11 @@ def _gst_demo_mode(company: Company) -> bool:
     return (company.einvoice_env or "mock") == "mock"
 
 
+def _drive_keys_set(_company: Company) -> bool:
+    from app.services.google_drive import configured
+    return configured()
+
+
 @dataclass(frozen=True)
 class Integration:
     key: str
@@ -115,6 +120,15 @@ INTEGRATIONS: Dict[str, Integration] = {i.key: i for i in [
         phase="Later", demo=True,
     ),
     Integration(
+        key="google_drive_backup",
+        label="Google Drive copy of backups",
+        description="Also keep each verified backup in the company's own Google Drive, in a MyTally Backups folder. "
+                    "Link the Drive from the Backup page.",
+        provider="Google Drive (only files MyTally creates)",
+        cost="Free; uses the linked Drive's storage",
+        phase="Backups", live=True, has_keys=_drive_keys_set,
+    ),
+    Integration(
         key="payment_gateway",
         label="Online payment links (Razorpay / Stripe)",
         description="Card and net-banking payment links that mark the bill paid automatically. UPI links and QR codes don't need this.",
@@ -169,11 +183,21 @@ def status_of(integration: Integration, enabled: bool, company: Optional[Company
 async def integration_statuses(db: AsyncSession, company_id: int) -> List[dict]:
     company = (await db.execute(select(Company).where(Company.company_id == company_id))).scalars().first()
     on = await enabled_keys(db, company_id)
+    from app.models.portal_core import GoogleDriveLink
+    drive_linked = (await db.execute(select(GoogleDriveLink.status).where(
+        GoogleDriveLink.company_id == company_id))).scalars().first() == "linked"
+
+    def state(i: Integration) -> str:
+        result = status_of(i, i.key in on, company)
+        # Set up on the server is not enough: a Drive integration is connected once the company has linked one
+        if i.key == "google_drive_backup" and result == "connected" and not drive_linked:
+            return "needs_setup"
+        return result
     return [
         {
             "key": i.key, "label": i.label, "description": i.description, "provider": i.provider,
             "cost": i.cost, "phase": i.phase, "live": i.live, "enabled": i.key in on,
-            "status": status_of(i, i.key in on, company),
+            "status": state(i),
         }
         for i in INTEGRATIONS.values()
     ]

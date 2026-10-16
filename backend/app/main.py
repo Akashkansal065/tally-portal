@@ -6,7 +6,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database import engine, AsyncSessionLocal
 from app.core.seed import seed_global_data, ensure_admin_roles_have_every_module
-from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backups, payroll_masters, billing, platform_billing, platform_auth, platform_users, platform_roles, platform_admins, platform_audit
+from app.routers import auth, companies, ledgers, vouchers, voucher_types, currency_tds, payment, inventory, advanced, gst, payment_gateway, sync, admin, visits, expenses, orders, reports, report_insights, attendance, health, masters, payments, customers, notifications, planner, bank_recon, integrations, reminders, branding, edocs, approvals, greetings, books, backups, drive_backup, payroll_masters, billing, platform_billing, platform_auth, platform_users, platform_roles, platform_admins, platform_audit
 import app.models.billing   # noqa: F401  – registers billing tables with Base.metadata before create_all
 import app.models.platform  # noqa: F401  – registers platform console tables with Base.metadata
 
@@ -185,6 +185,10 @@ async def lifespan(app: FastAPI):
     from app.services.reminders import reminder_worker
     reminder_task = asyncio.create_task(reminder_worker())
 
+    # 7b. Retries of Google Drive copies of backups (every 5 minutes; does nothing unless Drive is configured)
+    from app.services.google_drive import drive_worker
+    drive_task = asyncio.create_task(drive_worker(300))
+
     # 8. Subscription lifecycle & stale order worker (every 5 minutes)
     from app.services.billing.subscriptions import billing_lifecycle_worker
     billing_lifecycle_task = asyncio.create_task(billing_lifecycle_worker(300))
@@ -197,6 +201,7 @@ async def lifespan(app: FastAPI):
         daily_cleanup_task.cancel()
         sync_alert_task.cancel()
         reminder_task.cancel()
+        drive_task.cancel()
         billing_lifecycle_task.cancel()
         await asyncio.gather(
             keep_alive_task,
@@ -204,6 +209,7 @@ async def lifespan(app: FastAPI):
             daily_cleanup_task,
             sync_alert_task,
             reminder_task,
+            drive_task,
             billing_lifecycle_task,
             return_exceptions=True,
         )
@@ -299,6 +305,7 @@ app.include_router(platform_audit.router)
 # Backups are made by each company's sync agent from the Tally on its own PC and uploaded here
 # (app/routers/backups.py). The server never reaches a customer's Tally for them.
 app.include_router(backups.agent_router)
+app.include_router(drive_backup.router)
 app.include_router(backups.router)
 
 @app.get("/")

@@ -626,6 +626,14 @@ class CompanyBackup(Base):
     tally_fingerprint = Column(String(200), nullable=True)
     record_counts = Column(JSON, nullable=True)      # {"ledgers": 412, "vouchers": 9031, ...}
     error = Column(Text, nullable=True)
+    # The copy on the company's linked Google Drive (app/services/google_drive.py). NULL = not applicable
+    # (Drive not linked when this backup was stored); pending / uploaded / failed
+    drive_status = Column(String(20), nullable=True)
+    drive_file_id = Column(String(128), nullable=True)
+    drive_error = Column(String(500), nullable=True)
+    drive_attempts = Column(Integer, nullable=False, default=0)
+    drive_next_retry_at = Column(DateTime, nullable=True)
+    drive_uploaded_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1919,3 +1927,36 @@ class SyncInboundReceipt(Base):
     created_at = Column(DateTime, server_default=func.now())
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+class GoogleDriveLink(Base):
+    """A company's linked Google Drive, one per company (app/services/google_drive.py). The refresh token is kept
+    only encrypted (Fernet, SECRETS_ENCRYPTION_KEY) and is never returned by any API or written to a log."""
+    __tablename__ = "google_drive_links"
+    __table_args__ = (
+        UniqueConstraint("company_id", name="uq_google_drive_links_company"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+    link_id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    linked_by_user_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.users.user_id", ondelete="SET NULL"), nullable=True)
+    google_email = Column(String(255), nullable=True)
+    refresh_token_enc = Column(Text, nullable=False)
+    folder_id = Column(String(128), nullable=True)
+    status = Column(String(20), nullable=False, default="linked")     # linked / needs_relink
+    last_error = Column(String(500), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class DriveFileDeletion(Base):
+    """A Drive copy of a backup that retention removed here and that still has to be removed from Drive. Only
+    ever holds files MyTally created and recorded the id of."""
+    __tablename__ = "drive_file_deletions"
+    __table_args__ = {"schema": settings.PORTAL_DATABASE_NAME}
+    deletion_id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    drive_file_id = Column(String(128), nullable=False)
+    backup_key = Column(String(64), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, server_default=func.now())

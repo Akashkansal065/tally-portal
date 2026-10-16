@@ -156,6 +156,8 @@ async def prune_company(db: AsyncSession, company_id: int, now: datetime) -> int
     for row in doomed:
         discard_files(row)
     if doomed:
+        from app.services import google_drive
+        await google_drive.queue_deletions(db, doomed)   # their Drive copies go too, once their ids are recorded
         await db.execute(delete(CompanyBackup).where(CompanyBackup.backup_id.in_([r.backup_id for r in doomed])))
         logger.info(f"Company #{company_id}: {len(doomed)} backup(s) no longer kept were deleted.")
     return len(doomed)
@@ -169,6 +171,8 @@ def backup_dict(backup: CompanyBackup) -> dict:
         "size_bytes": backup.size_bytes, "record_counts": backup.record_counts or {},
         "tally_company_name": backup.tally_company_name, "error": backup.error,
         "created_at": to_ist_iso(backup.created_at),
+        "drive_status": backup.drive_status, "drive_error": backup.drive_error,
+        "drive_uploaded_at": to_ist_iso(backup.drive_uploaded_at),
     }
 
 

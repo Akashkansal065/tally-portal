@@ -12,7 +12,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -25,7 +25,10 @@ from app.core.datetime_utils import IST, get_ist_now
 from app.core.permissions import bind_sync_company, get_current_user
 from app.models.portal_core import Company, CompanyBackup, CompanyRestore, User
 from app.routers.admin import require_admin
+from app.core.logging_config import get_logger
 from app.services import backups as svc
+
+logger = get_logger("app.routers.backups")
 
 agent_router = APIRouter(prefix="/agent/backups", tags=["Backups (sync agent)"], dependencies=[Depends(bind_sync_company)])
 router = APIRouter(prefix="/backups", tags=["Backups"])
@@ -209,7 +212,8 @@ async def upload_chunk(backup_key: str, index: int, request: Request, user: User
 
 
 @agent_router.post("/{backup_key}/complete")
-async def complete_backup(backup_key: str, request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def complete_backup(backup_key: str, request: Request, background: BackgroundTasks,
+                          user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Every chunk has been sent: check the file against its checksum and keep it."""
     _require_device(request)
     company = await _company(db, user)
@@ -229,8 +233,20 @@ async def complete_backup(backup_key: str, request: Request, user: User = Depend
                             headers={"X-Next-Chunk": "0"})
     now = get_ist_now()
     backup.status, backup.stored_at = "stored", now
+    # A copy for the company's linked Google Drive, if it has one. Never part of whether the backup is stored.
+    from app.services import google_drive
+    from app.services.integrations import is_enabled
+    wants_drive = False
+    try:
+        if google_drive.configured() and await is_enabled(db, company.company_id, "google_drive_backup"):
+            await google_drive.mark_pending(db, backup)
+            wants_drive = backup.drive_status == "pending"
+    except Exception as e:
+        logger.warning(f"Drive copy not queued for backup {backup.backup_key}: {type(e).__name__}")
     await svc.prune_company(db, company.company_id, now)
     await db.commit()
+    if wants_drive:
+        background.add_task(google_drive.push_in_background, backup.backup_id)
     return svc.backup_dict(backup)
 
 

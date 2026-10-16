@@ -161,6 +161,15 @@ class Settings(BaseSettings):
     BACKUP_MAX_BYTES: int = 2 * 1024 * 1024 * 1024
     BACKUP_RESTORE_ENABLED: bool = False
 
+    # Google Drive copies of backups (app/services/google_drive.py). All four must be set before a company can link
+    # a Drive. SECRETS_ENCRYPTION_KEY is a Fernet key (python -c "from cryptography.fernet import Fernet;
+    # print(Fernet.generate_key().decode())"); it encrypts the stored Google refresh tokens, and losing it means
+    # every company has to link Drive again.
+    GOOGLE_OAUTH_CLIENT_ID: Optional[str] = None
+    GOOGLE_OAUTH_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_OAUTH_REDIRECT_URI: Optional[str] = None
+    SECRETS_ENCRYPTION_KEY: Optional[str] = None
+
     # The most /sync/inbound will take in one request, counted after gzip is undone: a bigger one is refused
     # with 413 before it is held in memory. Tally exports of a large company run to tens of megabytes.
     SYNC_INBOUND_MAX_BYTES: int = 512 * 1024 * 1024
