@@ -1078,9 +1078,8 @@ async def get_ledger_statement(
         addr = parts[0]
         mobile_val = parts[1]
 
-    from datetime import datetime, date, timedelta
+    from datetime import datetime, date
     from sqlalchemy import text
-    from app.models.portal_core import Company
 
     parsed_from_date = None
     if from_date:
@@ -1089,14 +1088,9 @@ async def get_ledger_statement(
         except Exception:
             parsed_from_date = None
 
-    # Determine the financial year anchor date (default 2026-04-01)
-    comp_stmt = select(Company).where(Company.company_id == user.company_id)
-    comp_res = await db.execute(comp_stmt)
-    comp_obj = comp_res.scalars().first()
-    if comp_obj and comp_obj.financial_year_end:
-        fy_anchor_date = comp_obj.financial_year_end + timedelta(days=1)
-    else:
-        fy_anchor_date = date(2026, 4, 1)
+    # Vouchers before the opening balance date are already included in ledger.opening_balance
+    from app.services.receivables import opening_balance_date
+    fy_anchor_date = await opening_balance_date(db, user.company_id) or date.min
 
     # Calculate Individual Party Opening Balance as of from_date
     base_net = (float(ledger.opening_balance) if ledger.opening_balance_type == 'Cr' else -float(ledger.opening_balance)) if ledger.opening_balance else 0.0

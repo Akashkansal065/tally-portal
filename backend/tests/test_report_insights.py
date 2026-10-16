@@ -386,3 +386,23 @@ def test_customer_item_history_stays_inside_the_company(world):
     other = world["beta_books"].customer("Beta Party")
     staff = login(world["client"], "staff@example.com")
     assert world["client"].get(f"/reports/customer-items/{other.ledger_id}", headers=bearer(staff)).status_code == 404
+
+
+def test_vouchers_inside_the_opening_balance_are_not_counted_twice(world):
+    """Tally's opening balance is as at the day after the financial year end, so it already holds the vouchers
+    before that day. Outstanding must not add them again."""
+    async def set_year_end():
+        async with world["h"].Session() as db:
+            company = await db.get(P.Company, world["alpha"].company_id)
+            company.financial_year_end = TODAY - timedelta(days=30)   # opening balance as at 29 days ago
+            await db.commit()
+    run(set_year_end())
+    b = world["books"]
+    sharda = b.customer("Sharda", opening_balance=Decimal("500"), opening_balance_type="Dr")
+    b.sale(sharda, days_ago=40, amount=500)     # last year: already inside the 500 opening balance
+    b.sale(sharda, days_ago=10, amount=1000)    # this year
+
+    p = ageing(world)["Sharda"]
+    assert p.balance == 1500
+    # The opening balance is still aged against last year's invoice
+    assert [(bill.voucher_number, bill.outstanding) for bill in p.bills] == [("SA-2", 1000.0), ("SA-1", 500.0)]

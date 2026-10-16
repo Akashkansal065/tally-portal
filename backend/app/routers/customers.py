@@ -10,7 +10,7 @@ from sqlalchemy import func, desc, or_, and_, update
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from decimal import Decimal
-from datetime import datetime
+from datetime import date, datetime
 from collections import defaultdict, Counter
 
 from app.core.logging_config import get_logger
@@ -1628,9 +1628,9 @@ async def get_customer_profile_detail(
         op_bal = float(ledger.opening_balance or 0)
         op_type = ledger.opening_balance_type or "Dr"
         
-        # Opening balance in Tally is as of FY start (2026-04-01).
-        # Any vouchers dated before 2026-04-01 are already included in ledger.opening_balance.
-        fy_anchor_date = datetime.strptime("2026-04-01", "%Y-%m-%d").date()
+        # Vouchers before the opening balance date are already included in ledger.opening_balance
+        from app.services.receivables import opening_balance_date
+        fy_anchor_date = await opening_balance_date(db, user.company_id) or date.min
         base_net = (float(ledger.opening_balance) if op_type == 'Cr' else -float(ledger.opening_balance)) if ledger.opening_balance else 0.0
 
         pre_fy_stmt = select(

@@ -1,6 +1,7 @@
 """Receivables ageing: one definition of "overdue", shared by Outstanding, Executive Analytics and Home.
 
-A customer's balance (opening balance + debits - credits on vouchers that aren't cancelled or optional) is matched
+A customer's balance (opening balance + debits - credits on vouchers that aren't cancelled or optional, dated on or
+after the opening balance date) is matched
 to their sales invoices newest first, so payments are taken to have cleared the oldest bills. Whatever is left
 after the last invoice is the opening / pre-sync balance. Each invoice falls due its credit days after its date:
 the customer's own credit days (set in MyTally), else Tally's credit period, else the default credit days setting.
@@ -15,7 +16,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.datetime_utils import get_ist_date
-from app.models.portal_core import CustomerCreditTerm
+from app.models.portal_core import Company, CustomerCreditTerm
 from app.models.tally_core import MstGroup, MstLedger, MstVoucherType, TrnAccounting, TrnVoucher
 from app.services.app_settings import account_of_company, get_setting
 
@@ -63,6 +64,14 @@ def bucket_for(days_overdue: int) -> str:
     if days_overdue <= 90:
         return "61-90 Days"
     return "90+ Days"
+
+
+async def opening_balance_date(db: AsyncSession, company_id: int) -> Optional[date]:
+    """The date Tally's ledger opening balances are as at: the day after the company's financial year end.
+    Vouchers before it are already inside the opening balance, so a balance counts only vouchers from this date.
+    None when the company has no financial year recorded: then every voucher counts."""
+    year_end = (await db.execute(select(Company.financial_year_end).where(Company.company_id == company_id))).scalar()
+    return year_end + timedelta(days=1) if year_end else None
 
 
 def live_voucher():
@@ -150,7 +159,13 @@ async def receivables_ageing(
     if not debtor_groups:
         return []
 
-    counted = case((TrnVoucher.voucher_id.isnot(None), 1), else_=0)
+    # Vouchers before the opening balance date are already in the opening balance: counting them again would
+    # double it (the invoices themselves are still used below, to age that opening balance)
+    since = await opening_balance_date(db, company_id)
+    in_balance = TrnVoucher.voucher_id.isnot(None)
+    if since:
+        in_balance = and_(in_balance, TrnVoucher.voucher_date >= since)
+    counted = case((in_balance, 1), else_=0)
     stmt = (
         select(
             MstLedger.ledger_id, MstLedger.name, MstLedger.mobile, MstLedger.phone, MstLedger.email,
