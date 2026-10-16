@@ -1204,16 +1204,28 @@ async def list_bank_transactions(
     return output
 
 
+def tally_cleared_date(bank_entry) -> Optional[date]:
+    """The date Tally's own bank reconciliation cleared this bank entry, or None when it is not cleared.
+    Cleared means every bank allocation of the entry carries a BANKERSDATE; the latest one is returned."""
+    allocs = list(getattr(bank_entry, "bank_allocations", None) or [])
+    if not allocs or any(a.bankers_date is None for a in allocs):
+        return None
+    return max(a.bankers_date for a in allocs)
+
+
 @router.get("/unmatched-books")
 async def list_bank_unmatched_books(
     bank_ledger_id: int = Query(...),
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
     statement_id: Optional[int] = Query(None),
+    include_cleared: bool = Query(False),
     user: User = Depends(require_permission("vouchers", "read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Returns Tally vouchers on this bank ledger that are not yet matched with any statement transaction."""
+    """Returns Tally vouchers on this bank ledger that are not yet matched with any statement transaction.
+    Entries already reconciled inside Tally (BANKERSDATE set) need no manual match and are left out unless
+    include_cleared is true; either way each row says whether and when Tally cleared it."""
     matched_q = (
         select(BankStatementTransaction.matched_voucher_id)
         .join(BankStatement, BankStatementTransaction.statement_id == BankStatement.statement_id)
@@ -1257,6 +1269,9 @@ async def list_bank_unmatched_books(
             continue
 
         bank_entry = next((e for e in v.entries if e.ledger_id == bank_ledger_id), None)
+        cleared_on = tally_cleared_date(bank_entry) if bank_entry else None
+        if cleared_on and not include_cleared:
+            continue
         other_party = next((e.ledger.name for e in v.entries if e.ledger_id != bank_ledger_id and e.ledger), "Bank Transaction")
         amount = 0.0
         if bank_entry:
@@ -1270,6 +1285,8 @@ async def list_bank_unmatched_books(
 
         vtype_name = v.voucher_type.name if v.voucher_type else "Voucher"
         output.append({
+            "cleared_in_tally": cleared_on is not None,
+            "tally_cleared_date": cleared_on.isoformat() if cleared_on else None,
             "voucher_id": v.voucher_id,
             "voucher_number": v.voucher_number,
             "voucher_type": vtype_name,

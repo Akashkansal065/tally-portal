@@ -2650,10 +2650,16 @@ async def import_tally_xml(
                     except Exception:
                         b_amt = Decimal("0.00")
                     
+                    # Tally's reconciliation: a missing or unreadable value just leaves the entry unreconciled
+                    bankers_date = parse_tally_date((bank_node.findtext("BANKERSDATE") or "").strip())
+                    manual_status = (bank_node.findtext("BANKMANUALSTATUS") or "").strip()[:30] or None
+
                     is_conn = bank_node.findtext("ISCONNECTEDPAYMENT") or "No"
                     bank_alloc = TrnBankAllocation(
                         entry_id=entry.entry_id,
                         instrument_date=inst_date,
+                        bankers_date=bankers_date,
+                        bank_manual_status=manual_status,
                         transaction_type=bank_node.findtext("TRANSACTIONTYPE") or "Others",
                         payment_favouring=bank_node.findtext("PAYMENTFAVOURING") or bank_node.findtext("BANKPARTYNAME"),
                         instrument_number=bank_node.findtext("INSTRUMENTNUMBER"),

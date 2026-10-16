@@ -835,7 +835,11 @@ class TrnBankAllocation(Base):
     account_number = Column(String(50), nullable=True)
     ifs_code = Column(String(20), nullable=True)
     is_connected_payment = Column(Boolean, default=False)
-    
+    # Tally's own bank reconciliation: the date the bank cleared this entry (BANKERSDATE) and how it was
+    # reconciled (BANKMANUALSTATUS). Both stay NULL for entries Tally has not reconciled.
+    bankers_date = Column(Date, nullable=True)
+    bank_manual_status = Column(String(30), nullable=True)
+
     # Tally Prime 7.0 e-Banking & Connected Banking Fields
     bank_operation_ref = Column(String(100), nullable=True)
     bank_portal_ref = Column(String(100), nullable=True)
