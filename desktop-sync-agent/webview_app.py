@@ -152,6 +152,11 @@ class Api:
                 "logs": logs, "seq": seq}
 
     # -- syncing ------------------------------------------------------------
+    def use_tally_port(self) -> Dict[str, Any]:
+        """The person accepted the port offered in the health bar."""
+        ok, message = self._session.agent.use_offered_tally_port()
+        return {"ok": ok, "message": message}
+
     def sync_now(self) -> Dict[str, Any]:
         """Sync now / Retry. Starts the sync again if it is not running, rather than waking nothing."""
         if core.has_credentials(self._session.config):

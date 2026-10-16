@@ -21,6 +21,7 @@ from config import (
     uninstall_startup as cfg_uninstall_startup
 )
 from tally_client import TallyClient, escape_xml, NETWORK_ERROR_PREFIX
+import tally_ports
 from cloud_client import CloudClient, halt_message, SYNC_BUSY_REASON
 from backups import BackupScheduler, LocalBackups, folder_problem
 from xml.sax.saxutils import unescape
@@ -214,6 +215,10 @@ class DesktopSyncAgent:
         self._resume_full_sync = False
         self._watermarks = {}
         self._active_keys_sent: Dict[str, float] = {}
+        # Where Tally may really be when the configured URL does not answer (WS-12): offered, never applied silently
+        self.tally_port_offer: Optional[Dict[str, Any]] = None
+        self.tally_diagnosis: str = ""
+        self._port_checked_at: float = 0.0
         # per company: (masters counter, vouchers counter, when a full incremental pass last ran clean)
         self._probe_seen: Dict[str, Tuple[int, int, float]] = {}
         self.last_sync_time = None
@@ -293,6 +298,8 @@ class DesktopSyncAgent:
             "open_companies_count": self.open_companies_count,
             "linked_companies_count": len(self.linked_companies()),
             "tally_release": self.tally_release,
+            "tally_port_offer": self.tally_port_offer,
+            "tally_diagnosis": self.tally_diagnosis,
             # What the server holds for the company on screen. Falls back to what this run has sent, for a
             # server too old to say; that number grows with every repeated sync and is not a count of records.
             "total_vouchers": (self._server_counts or {}).get("vouchers", self.total_vouchers),
@@ -392,8 +399,56 @@ class DesktopSyncAgent:
             (logger.info if cloud_ok else logger.warning)(
                 "✅ The server is reachable again." if cloud_ok else f"⚠️ The server is not reachable ({cloud_msg}).")
         self.tally_connected, self.cloud_connected = tally_ok, cloud_ok
+        if tally_ok:
+            self.tally_port_offer, self.tally_diagnosis = None, ""
+        else:
+            self._diagnose_tally()
         if not self.config.auth_halt_reason:
             self.cloud_message = cloud_msg
+
+    PORT_CHECK_SECONDS = 60
+
+    def _diagnose_tally(self) -> None:
+        """Tally does not answer on the configured URL: word why, and look for a port it does answer on. Looks
+        at most once a minute, and only ever makes an offer."""
+        now = time.time()
+        if now - self._port_checked_at < self.PORT_CHECK_SECONDS:
+            return
+        self._port_checked_at = now
+        try:
+            running = tally_ports.tally_is_running()
+            self.tally_diagnosis = tally_ports.diagnosis_text(self.config.tally_url, running)
+            guids = [c.get("guid", "") for c in self.linked_companies()]
+            hint = getattr(self, "_tally_ini_path", "")
+
+            def probe(url: str):
+                return TallyClient(tally_url=url, timeout=3).get_open_companies()
+            offer = tally_ports.find_port_offer(self.config.tally_url, guids, probe, tally_ports.standard_ini_paths(hint))
+            if offer and offer != self.tally_port_offer:
+                logger.info(f"🔎 TallyPrime answers on port {offer['port']} (company '{offer['company']}'). "
+                            "Use it from the health bar to switch.")
+            self.tally_port_offer = offer
+        except Exception as e:
+            logger.debug(f"Tally port check failed: {e}")
+
+    def use_offered_tally_port(self) -> Tuple[bool, str]:
+        """The person accepted the offered port: only now is the configured URL changed."""
+        offer = self.tally_port_offer
+        if not offer:
+            return False, "There is no port on offer."
+        check = TallyClient(tally_url=offer["url"], timeout=5)
+        if not check.check_health()[0]:
+            self.tally_port_offer = None
+            return False, f"TallyPrime no longer answers on port {offer['port']}."
+        self.config.tally_url = offer["url"]
+        save_config(self.config, self.config_path)
+        self.tally = TallyClient(tally_url=self.config.tally_url)
+        self.tally.on_wait_progress = getattr(self, "_on_tally_wait_progress", None)
+        self.tally_port_offer, self.tally_diagnosis = None, ""
+        self._connections_checked = 0
+        self.immediate_sync_requested = True
+        logger.info(f"✅ Now using TallyPrime at {self.config.tally_url}.")
+        return True, f"Using TallyPrime on port {offer['port']}."
 
     def adopt_server_links(self) -> int:
         """Add the companies the server says this PC syncs but this PC does not list: a sign-in that linked a
@@ -489,6 +544,7 @@ class DesktopSyncAgent:
         
         self.tally_connected = tally_info.get("connected", False)
         self.tally_release = tally_info.get("release", "")
+        self._tally_ini_path = tally_info.get("tally_ini_path", "") or getattr(self, "_tally_ini_path", "")
 
         if tally_info["connected"]:
             logger.info(f"✅ Tally Connection: ACTIVE")

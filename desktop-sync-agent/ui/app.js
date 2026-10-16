@@ -324,7 +324,7 @@ function enterMain() {
 // Signed in: rail, health bar, pages
 // ---------------------------------------------------------------------------
 const M = { page: "", seq: 0, logs: [], state: null, key: "", els: {}, menu: null, companies: null };
-const ACTION_LABEL = { resume: "Resume", retry: "Retry", signin: "Sign in again", sync: "Sync now" };
+const ACTION_LABEL = { resume: "Resume", retry: "Retry", signin: "Sign in again", sync: "Sync now", use_port: "Use this port" };
 
 function showMain(page) {
   view = "main";
@@ -376,6 +376,7 @@ function showPage(name) {
 async function mainAction() {
   const action = M.state ? M.state.health.action : "sync";
   if (action === "signin") return showSetup("signin");
+  if (action === "use_port") { await api.use_tally_port(); poll(); return; }
   if (action === "resume") await api.resume(); else await api.sync_now();
   poll();
 }

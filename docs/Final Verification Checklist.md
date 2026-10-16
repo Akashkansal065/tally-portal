@@ -76,7 +76,11 @@ Per company, in the web app: Admin → Integrations → **Google Drive copy of b
 5. The daily restore drill needs nothing; its first result appears in `/sync/health` `backup_drill` about ten
    minutes after the backend starts.
 
-_(WS-12, WS-2, WS-15 and WS-14 add their steps here as they land.)_
+**WS-12 Tally port detection**
+- Agent rebuild only; nothing to configure. The health bar offers "Use this port" only when a port answers and
+  names an already-linked company; the configured URL is never changed without the click.
+
+_(WS-2, WS-15 and WS-14 add their steps here as they land.)_
 
 ## 4. Run the suites (once, at the end)
 
@@ -132,6 +136,14 @@ change.
 | R3 | Compare the new company's trial balance with the source company's for the same date | same figures | restore fidelity |
 | R4 | Damage a stored backup file on a test server, wait for the drill (or call `drill_all`) | `/sync/health` shows `backup_drill.ok = false` and status degraded | drill reporting |
 
+### 5c. WS-12 port detection (real TallyPrime)
+
+| # | What to do | Expected | Assumption it tests |
+|---|---|---|---|
+| P1 | In TallyPrime set the XML server port to 9001 (F1 > Settings > Connectivity) while the agent still points at 9000 | Within about a minute the health bar says "TallyPrime is on port 9001 ... Use that port?"; clicking switches and syncing resumes | `tally.ini` `ServerPort` location and format, and that a probe on another port returns the open companies |
+| P2 | Close TallyPrime | Message: "TallyPrime isn't running on this PC" | `tasklist /FI "IMAGENAME eq tally.exe"` output on the customer's Windows |
+| P3 | Open TallyPrime with the XML server off | Message names F1 > Settings > Connectivity | the wording matches TallyPrime's actual menu path in the installed release |
+
 ## 6. Checks that need REAL Google credentials
 
 | # | What to do | Expected | Assumption it tests |
@@ -160,7 +172,7 @@ change.
 - Other reports (daybook, P&L, balance sheet) were not audited for order/delivery-note rows after the trial
   balance fix.
 - "Re-sync this ledger's vouchers" from the parity report was not built.
-- WS-13 tests (`test_backup_hardening.py`) were written but **not run** while building; expect to fix small things on
-  the first run.
+- WS-13 tests (`test_backup_hardening.py`) and WS-12 tests (`test_tally_ports.py`) were written but **not run**
+  while building; expect to fix small things on the first run.
 - Not built by decision: S3 off-site backup (covered by Google Drive), the string vault, PyArmor, anti-debug,
   JSONEx (WS-17).

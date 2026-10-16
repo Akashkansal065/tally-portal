@@ -65,7 +65,7 @@ def backup_note(status: Dict[str, Any], now=None) -> str:
 
 def health_from_status(status: Dict[str, Any], now: Optional[float] = None) -> Dict[str, str]:
     """The one state the health bar shows: its kind ("idle", "paused", "sync", "ok", "warn" or "error"),
-    headline, detail line and what the main button does ("sync", "resume", "retry" or "signin"). The most
+    headline, detail line and what the main button does ("sync", "resume", "retry", "use_port" or "signin"). The most
     urgent condition wins."""
     last = status.get("last_sync_status") or ""
     state = status.get("status", "")
@@ -80,8 +80,15 @@ def health_from_status(status: Dict[str, Any], now: Optional[float] = None) -> D
         detail = status.get("sync_detail") or status.get("last_sync_status") or "This can take a while for a large company."
         return {"kind": "sync", "title": f"Syncing {name}", "detail": detail, "action": "sync"}
     if state == "TALLY OFFLINE":
+        offer = status.get("tally_port_offer")
+        if offer:
+            # Found where it really is: offered, and only used when the person says so
+            return {"kind": "warn", "title": f"TallyPrime is on port {offer.get('port')}",
+                    "detail": f"It answers there and has your company '{offer.get('company', '')}'. Use that port?",
+                    "action": "use_port"}
         return {"kind": "error", "title": "Can't reach TallyPrime",
-                "detail": "Open TallyPrime on this PC. Syncing resumes on its own once it is back.", "action": "retry"}
+                "detail": status.get("tally_diagnosis") or "Open TallyPrime on this PC. Syncing resumes on its own once it is back.",
+                "action": "retry"}
     if state == "CLOUD OFFLINE":
         return {"kind": "error", "title": "Can't reach the MyTally server",
                 "detail": status.get("cloud_message") or "Check the internet connection. Bridge keeps trying.", "action": "retry"}

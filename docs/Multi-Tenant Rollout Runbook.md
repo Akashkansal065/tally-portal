@@ -621,3 +621,8 @@ Each verified backup can also be copied, by the server, to the company's own Goo
 - **Restore into a new company:** `POST /backups/{id}/restore-new-company` (administrators; the company's name typed; `BACKUP_RESTORE_NEW_COMPANY_ENABLED=true`). It validates the archive against its manifest first, creates a new company, writes masters then vouchers in dependency order, verifies counts (vouchers exactly, masters at least), and binds the new company to the backup's Tally GUID only when no other company of the account holds it. A failed verification leaves the new company inactive. Nothing is sent to Tally.
 - **Restore drill:** daily, each company's newest stored backup is opened, checked against its SHA-256 and manifest; a failure shows as `backup_drill` in `/sync/health` and counts as a sync issue.
 - **Not done by decision:** S3 (Drive covers off-site); copying Tally's binary Data folder.
+
+## Phase 6 Tally port detection (WS-12)
+
+- **Agent rebuild only** (tag `agent-v*`); no server change, no setting. When the configured URL does not answer, the agent (at most once a minute) tries `ServerPort` from `tally.ini` (the path Tally reported, then the standard install folders) and ports 9000-9005 and 9999. If one answers with a company whose GUID is already linked to this PC, the health bar offers "TallyPrime is on port N. Use that port?". The URL changes only when the person clicks.
+- **Wording only:** `tasklist` tells "TallyPrime isn't running" from "running but its port is off (F1 > Settings > Connectivity)". There is no netstat, no process-to-port mapping, and tally.exe is never started by the agent.
