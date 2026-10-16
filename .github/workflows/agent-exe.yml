@@ -1,8 +1,10 @@
 name: Sync agent exe
 
-# Builds the Windows program people double-click: desktop-sync-agent/dist/SnehDistribuorsSync.exe.
-# - Any run: download it from the run's Artifacts.
-# - Pushing a tag like agent-v2.0.0: it is also attached to a GitHub Release of that name.
+# Builds the Windows program people double-click (desktop-sync-agent/dist/SnehDistribuorsSync.exe) and its setup file.
+# - Every merge to master that changes the agent: tests, build, and a new GitHub Release (agent-v2.0.<run number>)
+#   with both files attached. People download it from the repository's Releases page.
+# - Pushing a tag like agent-v2.1.0: a release with that exact version.
+# - Pull requests and manual runs: build and test only; download from the run's Artifacts.
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +14,11 @@ on:
         options: [pyinstaller, nuitka]
         default: pyinstaller
   push:
+    branches: [master]
     tags: ["agent-v*"]
+    paths:
+      - "desktop-sync-agent/**"
+      - ".github/workflows/agent-exe.yml"
   pull_request:
     paths:
       - "desktop-sync-agent/**"
@@ -23,7 +29,7 @@ permissions:
 
 concurrency:
   group: agent-exe-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   build:
@@ -47,14 +53,26 @@ jobs:
         with:
           python-version: "3.13"   # the version installer/build_windows_exe.bat builds with
           architecture: x64
+      - name: Work out the version and the release tag
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/agent-v*') {
+            $version = $env:GITHUB_REF_NAME -replace '^agent-v',''; $tag = $env:GITHUB_REF_NAME
+          } elseif ($env:GITHUB_EVENT_NAME -eq 'push' -and $env:GITHUB_REF -eq 'refs/heads/master') {
+            $version = "2.0.$($env:GITHUB_RUN_NUMBER)"; $tag = "agent-v$version"
+          } else {
+            $version = "0.0.0-dev"; $tag = ""
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+          "Version $version, release tag '$tag'"
       - name: Install what the agent and the build need
         run: python -m pip install --upgrade pip pyinstaller customtkinter pystray pillow cryptography keyring pywebview pytest
       - name: Tests
         run: python -m pytest -q tests
       - name: Build the exe
         run: python installer/build_exe.py
-      - name: Sign the exe (Authenticode; only on a release tag, only when the certificate secrets exist)
-        if: startsWith(github.ref, 'refs/tags/agent-v') && env.CODESIGN_PFX_BASE64 != '' && env.CODESIGN_PFX_PASSWORD != ''
+      - name: Sign the exe (Authenticode; only for a release, only when the certificate secrets exist)
+        if: env.RELEASE_TAG != '' && env.CODESIGN_PFX_BASE64 != '' && env.CODESIGN_PFX_PASSWORD != ''
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
@@ -77,12 +95,11 @@ jobs:
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-          $version = if ($env:GITHUB_REF -like 'refs/tags/agent-v*') { $env:GITHUB_REF_NAME -replace '^agent-v','' } else { "0.0.0-dev" }
-          & $iscc "/DAppVersion=$version" "/DSourceExe=..\dist\SnehDistribuorsSync.exe" installer\MyTallyBridge.iss
+          & $iscc "/DAppVersion=$($env:VERSION)" "/DSourceExe=..\dist\SnehDistribuorsSync.exe" installer\MyTallyBridge.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)." }
           Get-ChildItem dist\MyTallyBridge-Setup-*.exe | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
       - name: Sign the installer (same conditions as the exe)
-        if: startsWith(github.ref, 'refs/tags/agent-v') && env.CODESIGN_PFX_BASE64 != '' && env.CODESIGN_PFX_PASSWORD != ''
+        if: env.RELEASE_TAG != '' && env.CODESIGN_PFX_BASE64 != '' && env.CODESIGN_PFX_PASSWORD != ''
         run: |
           $pfx = Join-Path $env:RUNNER_TEMP "codesign-setup.pfx"
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
@@ -138,9 +155,13 @@ jobs:
           name: MyTallyBridge-Setup
           path: desktop-sync-agent/dist/MyTallyBridge-Setup-*.exe
           if-no-files-found: error
-      - name: Attach to a release
-        if: startsWith(github.ref, 'refs/tags/agent-v')
+      - name: Publish a GitHub Release
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: $setup = (Get-ChildItem dist\MyTallyBridge-Setup-*.exe | Select-Object -First 1).FullName; gh release create $env:TAG dist\SnehDistribuorsSync.exe $setup --repo $env:GITHUB_REPOSITORY --title "MyTally Bridge $($env:TAG -replace '^agent-v','')" --generate-notes
+        run: |
+          # A permanent name for the setup file, so releases/latest/download/MyTallyBridge-Setup.exe always works
+          Copy-Item (Get-ChildItem dist\MyTallyBridge-Setup-*.exe | Select-Object -First 1).FullName dist\MyTallyBridge-Setup.exe
+          gh release create $env:RELEASE_TAG dist\SnehDistribuorsSync.exe dist\MyTallyBridge-Setup.exe `
+            --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest `
+            --title "MyTally Bridge $($env:VERSION)" --generate-notes

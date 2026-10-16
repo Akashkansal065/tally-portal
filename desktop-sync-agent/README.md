@@ -76,7 +76,7 @@
 
 ### For the people who use it: one `.exe`
 Nobody who uses the agent needs Python or any of the commands below. They get one file, `SnehDistribuorsSync.exe`, and double-click it; it opens as **MyTally Bridge**. There are two ways to make that file:
-- **On GitHub (no Windows PC needed)**: the "Sync agent exe" workflow builds it on every pull request that touches this folder and when run by hand from the Actions tab; download it from the run's Artifacts. Pushing a tag such as `agent-v2.0.0` also attaches it to a GitHub Release, which gives a link to send to people.
+- **On GitHub (no Windows PC needed)**: every merge to `master` that changes this folder builds the agent on a Windows machine, runs the tests, and publishes a **GitHub Release** (`agent-v2.0.<build number>`) with two files: `MyTallyBridge-Setup.exe` (the installer) and `SnehDistribuorsSync.exe` (the program alone). Open the repository's **Releases** page and download from the newest one; the newest is also always at `https://github.com/<owner>/<repo>/releases/latest/download/MyTallyBridge-Setup.exe`. Pushing a tag such as `agent-v2.1.0` makes a release with that exact version instead. Pull requests and manual runs only build, with the files under the run's Artifacts.
 - **On a Windows PC**: double-click `installer\build_windows_exe.bat`. The file appears in `dist\`.
 
 The `.exe` is not code-signed, so the first time it runs Windows SmartScreen says "Windows protected your PC": press **More info**, then **Run anyway**.

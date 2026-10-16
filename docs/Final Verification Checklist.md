@@ -338,3 +338,12 @@ code-signing key on a hardware token or in a cloud HSM, so most new certificates
 that the workflow's `WINDOWS_CODESIGN_PFX_BASE64` secret expects. Before buying, ask the seller for a certificate with
 **cloud signing usable from GitHub Actions** (for example SSL.com eSigner or DigiCert KeyLocker) and change the signing
 step to its tool. The unsigned build works; the only cost is the one-time SmartScreen warning.
+
+## 5i. Releases are automatic
+
+Every merge to `master` that touches `desktop-sync-agent/` or the workflow builds, tests and publishes a GitHub Release
+`agent-v2.0.<run number>` with `MyTallyBridge-Setup.exe` and `SnehDistribuorsSync.exe`. A tag `agent-vX.Y.Z` makes that
+exact version. Signing happens for any release once the certificate secrets exist. Check once after the first merge:
+Actions > "Sync agent exe" is green on the master push, and the Releases page shows the release with both files.
+If the "Publish a GitHub Release" step is refused, look at Settings > Actions > General > Workflow permissions and any
+tag or ruleset protection on `agent-v*`.
