@@ -1897,3 +1897,25 @@ class TallyParityReport(Base):
     vouchers_here = Column(Integer, default=0)
     top_ledgers = Column(JSON, nullable=True)          # [{ledger_id, name, tally, computed, difference}]
     voucher_count_drift = Column(JSON, nullable=True)  # [{voucher_type, financial_year, tally, here}]
+
+
+class SyncInboundReceipt(Base):
+    """What became of one /sync/inbound upload, by the key the agent gave it (WS-9). A retry of an upload whose
+    answer was lost gets the stored answer back instead of importing twice. A key is only ever used with one
+    payload: the SHA-256 is checked, and a different body under the same key is refused."""
+    __tablename__ = "sync_inbound_receipts"
+    __table_args__ = (
+        UniqueConstraint("company_id", "idempotency_key", name="uq_sync_inbound_receipt"),
+        Index("ix_sync_inbound_receipt_created", "created_at"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+    receipt_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False, index=True)
+    idempotency_key = Column(String(128), nullable=False)
+    payload_sha256 = Column(String(64), nullable=False)
+    state = Column(String(20), nullable=False, default="PROCESSING")     # PROCESSING, DONE, FAILED
+    attempts = Column(Integer, default=1)
+    response_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)

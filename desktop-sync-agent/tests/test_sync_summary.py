@@ -9,7 +9,7 @@ from tests.test_inbound_watermark import FakeCloud, FakeTally, make_agent
 class CountingCloud(FakeCloud):
     """Reports the counts a real import would, and holds 44 vouchers and 53 ledgers however often it is sent them."""
 
-    def push_inbound_xml(self, xml, company_name=None, force=False):
+    def push_inbound_xml(self, xml, company_name=None, force=False, scope=None):
         label = json.loads(xml)["label"]
         return True, {"status": "success", "errors": [],
                       **{"Ledgers": {"imported_ledgers": 53}, "CostCentres": {"imported_cost_centres": 5},

@@ -390,12 +390,43 @@ class CloudClient:
         status, body, _ = self._call("POST", "/sync/active-keys", payload)
         return status == 200, body if isinstance(body, dict) else {}
 
-    def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None, force: bool = False) -> Tuple[bool, Dict[str, Any]]:
-        """Uploads exported Tally XML to MyTally backend to update the database with comprehensive diagnostics."""
+    @staticmethod
+    def receipt_key(company_guid: str, scope: str, xml_data: str, force: bool) -> str:
+        """A key that is the same for the same export and different for any other: company GUID, what was
+        exported (collection and AlterID window) and the payload's own hash."""
+        digest = hashlib.sha256()
+        for part in (company_guid or "", scope, "force" if force else "plain"):
+            digest.update(part.encode("utf-8") + b"\x1f")
+        digest.update(hashlib.sha256(xml_data.encode("utf-8")).digest())
+        return digest.hexdigest()
+
+    # Errors after which the upload may or may not have been imported: the server's receipt answers which
+    RETRYABLE_AFTER = ("TIMEOUT", "NETWORK_ERROR", "GATEWAY_OR_TUNNEL_ERROR")
+
+    def push_inbound_xml(self, xml_data: str, company_name: Optional[str] = None, force: bool = False,
+                         scope: Optional[str] = None) -> Tuple[bool, Dict[str, Any]]:
+        """Uploads exported Tally XML. With a scope (what was exported and from which AlterID) the upload
+        carries a deterministic Idempotency-Key, which makes it safe to send again after a timeout: the
+        server answers a repeat from its receipt instead of importing twice. Without one, nothing is retried."""
+        key = self.receipt_key(self.company_guid, scope, xml_data, force) if scope is not None else None
+        ok, res = self._push_inbound_once(xml_data, company_name, force, key)
+        if key and not ok and any(str(res.get("error_type", "")).startswith(t) for t in self.RETRYABLE_AFTER):
+            logger.info("   🔁 The upload's answer was lost; asking again with the same key (the server will not import twice).")
+            time.sleep(self.RETRY_PAUSE_SECONDS)
+            ok, res = self._push_inbound_once(xml_data, company_name, force, key)
+            res["retried_with_key"] = True
+        return ok, res
+
+    RETRY_PAUSE_SECONDS = 5
+
+    def _push_inbound_once(self, xml_data: str, company_name: Optional[str], force: bool,
+                           idempotency_key: Optional[str]) -> Tuple[bool, Dict[str, Any]]:
         headers = {
             **self.identity_headers,
             "Content-Type": "text/xml;charset=utf-8"
         }
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if company_name:

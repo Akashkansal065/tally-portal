@@ -48,7 +48,7 @@ class FakeCloud:
         m = max(self.have, default=0)
         return m, m
 
-    def push_inbound_xml(self, xml, company_name=None, force=False):
+    def push_inbound_xml(self, xml, company_name=None, force=False, scope=None):
         d = json.loads(xml)
         label = d["label"]
         if label in self.reject:

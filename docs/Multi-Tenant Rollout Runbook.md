@@ -553,3 +553,11 @@ an nginx on the same machine). From anyone else it is ignored, since a caller ca
   - `proxy_read_timeout` must outlast the longest import: the agent waits 300 s.
   - Do **not** enable request decompression at the proxy: the backend does it, with the cap above. A proxy that strips or rewrites `Content-Encoding` on requests makes the backend read gzip bytes as XML and the import fails.
 - **Measuring:** the agent log now has a line per collection, `📏 'Vouchers 20260401–20260430': 4,182,901 bytes, sent gzip 412,330 bytes, 3.10s round trip`.
+
+## Phase 4 durable receipts for /sync/inbound (WS-9)
+
+- **Backend:** no hand-run migration; the startup schema sync creates `sync_inbound_receipts` (unique on `company_id, idempotency_key`). Receipts older than 7 days are removed as new ones are written.
+- **Agent:** rebuild and redistribute (tag `agent-v*`). It sends `Idempotency-Key` on every upload (company GUID + collection + AlterID window + payload hash) and, only then, asks again once after a timeout. An old agent sends no key and is handled exactly as before; an old backend ignores the header.
+- **What a receipt does:** the same key and body within 15 minutes of a finished import gets the stored answer back (`Idempotent-Replay: true`) and does not import; a different body under the key is refused with 422; a duplicate while the first is importing gets 409 `sync_in_progress`. A receipt stuck in PROCESSING for more than 20 minutes (the worker died) is taken over by the next try, which imports again: importing the same export twice is safe, so the cost of a crash is a repeat, not a duplicate. A forced upload (Sync All) always imports.
+- **Stuck receipt:** to clear one by hand, `DELETE FROM sync_inbound_receipts WHERE company_id = <id> AND idempotency_key = '<key>'`; the next upload runs normally.
+- **Limit:** the import commits in many steps, so receipt and import are not one transaction; recovery is the stale-PROCESSING takeover above. Worth knowing if an import dies halfway: part of the export is stored until the retry finishes it.

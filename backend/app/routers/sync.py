@@ -2,6 +2,8 @@ import os
 import threading
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -285,6 +287,24 @@ async def inbound_sync(
             # The company being worked in has never been tied to a Tally company: this import ties it
 
     from app.core.sync_guard import SYNC_BUSY_REASON, SyncBusy, company_sync_guard
+    from app.services import inbound_receipts as receipts
+
+    # With an Idempotency-Key the upload has a durable receipt: a retry of one whose answer was lost gets the
+    # stored answer back, and a key is never reused for a different body
+    receipt_id = None
+    key = receipts.valid_key(request.headers.get("idempotency-key"))
+    if key is not None:
+        decision, detail = await receipts.begin(db, target_company_id, key, receipts.payload_hash(body, is_force), is_force)
+        if decision == receipts.REPLAY:
+            return JSONResponse(content=detail, headers={"Idempotent-Replay": "true"})
+        if decision == receipts.MISMATCH:
+            raise HTTPException(status_code=422, detail="This Idempotency-Key was already used for a different upload.")
+        if decision == receipts.BUSY:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, headers={"X-Sync-Reason": SYNC_BUSY_REASON},
+                detail="This upload is already being imported. Try again when it has finished.")
+        receipt_id = detail
+
     try:
         async with company_sync_guard(db, target_company_id), sync_lock:
             try:
@@ -298,8 +318,13 @@ async def inbound_sync(
                 if company_id:
                     from app.core.cache import clear_company_cache
                     clear_company_cache(company_id)
+                if receipt_id is not None:
+                    await receipts.finish(db, receipt_id, jsonable_encoder(result), result.get("status") == "success")
                 return result
             except Exception as ex:
+                if receipt_id is not None:
+                    await db.rollback()
+                    await receipts.finish(db, receipt_id, None, False)
                 # Full exception stays in the server log; the client gets a reference to quote, not internals
                 error_ref = uuid.uuid4().hex[:12]
                 logger.error(f"❌ [INBOUND SYNC CRITICAL EXCEPTION] ref={error_ref} user_id={user.user_id} company='{company_name}': {ex}", exc_info=True)
@@ -310,6 +335,8 @@ async def inbound_sync(
     except SyncBusy:
         # The earlier import of this company is still running (the sender gave up waiting for its answer and
         # sent again, or another backend holds it). Nothing is queued: the sender tries again later.
+        if receipt_id is not None:
+            await receipts.release(db, receipt_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, headers={"X-Sync-Reason": SYNC_BUSY_REASON},
             detail="A sync of this company is already running on the server. Try again when it has finished.")

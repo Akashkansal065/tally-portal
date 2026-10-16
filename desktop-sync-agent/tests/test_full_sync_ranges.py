@@ -70,7 +70,7 @@ class Cloud:
         # Once anything has arrived the server holds a watermark, so an ordinary cycle asks only for changes
         return (5, 5) if self.pushed else (0, 0)
 
-    def push_inbound_xml(self, xml, company_name=None, force=False):
+    def push_inbound_xml(self, xml, company_name=None, force=False, scope=None):
         numbers = [int(x.split("</VOUCHERNUMBER>")[0]) for x in xml.split("<VOUCHERNUMBER>")[1:]]
         if self.busy_for:
             self.busy_for -= 1

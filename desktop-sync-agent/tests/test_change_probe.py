@@ -23,7 +23,7 @@ class Cloud:
     def get_last_alter_id(self):
         return (5, 5)
 
-    def push_inbound_xml(self, xml, company_name=None, force=False):
+    def push_inbound_xml(self, xml, company_name=None, force=False, scope=None):
         self.pushed.append(xml)
         return True, {"imported_vouchers": 1}
 

@@ -67,7 +67,7 @@ class Cloud:
         m = max(self.have.get(self.company_guid, set()), default=0)
         return m, m
 
-    def push_inbound_xml(self, xml, company_name=None, force=False):
+    def push_inbound_xml(self, xml, company_name=None, force=False, scope=None):
         d = json.loads(xml)
         self.pushed.append((self.company_guid, d["company"], d["label"]))
         self.have.setdefault(self.company_guid, set()).update(d["ids"])

@@ -962,7 +962,8 @@ class DesktopSyncAgent:
                 return self._last_company_ok
 
             self._cycle_counts = {}
-            total_vouchers, total_ledgers, total_items, total_errors = self._push_collections(collections, force_all)
+            window = f"alter>{min_alter}/{min_voucher_alter}" if is_incremental else "full"
+            total_vouchers, total_ledgers, total_items, total_errors = self._push_collections(collections, force_all, window)
 
             # Vouchers of a full sync come in date ranges, a slice at a time (see _sync_vouchers_in_ranges)
             range_failed = False
@@ -975,7 +976,7 @@ class DesktopSyncAgent:
                     export_failures += list(getattr(self.tally, "last_export_failures", []) or [])
                     if export_failures:
                         logger.error(f"   ❌ Could not export from Tally: {', '.join(export_failures)}")
-                    pushed = self._push_collections(whole, force_all)
+                    pushed = self._push_collections(whole, force_all, "full")
                     total_vouchers += pushed[0]
                     total_errors += pushed[3]
                 else:
@@ -1108,7 +1109,8 @@ class DesktopSyncAgent:
         if counts is not None:
             self._server_counts = counts
 
-    def _push_collections(self, collections: List[Tuple[str, str]], force_all: bool) -> Tuple[int, int, int, int]:
+    def _push_collections(self, collections: List[Tuple[str, str]], force_all: bool,
+                          window: str = "") -> Tuple[int, int, int, int]:
         """Push exported collections to the cloud. Returns (vouchers, ledgers, items imported, pushes that failed)."""
         total_vouchers = total_ledgers = total_items = total_errors = total_record_errors = 0
         self._last_push_error = ""
@@ -1116,7 +1118,8 @@ class DesktopSyncAgent:
             size_kb = len(xml_data.encode("utf-8")) / 1024.0
             logger.info(f"   • [{idx}/{len(collections)}] Exported '{label}' from Tally ({size_kb:.1f} KB). Pushing to cloud...")
             self.sync_detail = f"Uploading '{label}' to server ({size_kb:.1f} KB)..."
-            ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=force_all)
+            ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=force_all,
+                                                  scope=f"{label}|{window}")
             self.sync_detail = ""
             dur = res.get("duration_seconds", 0.0)
             # What each collection weighs and how long the server takes, so the cost of uploads can be judged
@@ -1297,7 +1300,8 @@ class DesktopSyncAgent:
                 logger.error(f"   ❌ Could not export '{label}' from Tally; the full sync carries on from here next cycle.")
                 return False, imported
             self.sync_detail = f"Uploading '{label}' to server..."
-            ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=bool(cursor.get("force")))
+            ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=bool(cursor.get("force")),
+                                                  scope=f"range|{date_from}|{date_to}")
             self.sync_detail = ""
             if not ok and res.get("reason") == SYNC_BUSY_REASON:
                 logger.warning(f"   ⏳ '{label}' not sent: {SERVER_BUSY_MESSAGE} The full sync carries on from here next cycle.")
