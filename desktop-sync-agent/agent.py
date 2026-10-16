@@ -426,8 +426,8 @@ class DesktopSyncAgent:
                 return TallyClient(tally_url=url, timeout=3).get_open_companies()
             offer = tally_ports.find_port_offer(self.config.tally_url, guids, probe, tally_ports.standard_ini_paths(hint))
             if offer and offer != self.tally_port_offer:
-                logger.info(f"🔎 TallyPrime answers on port {offer['port']} (company '{offer['company']}'). "
-                            "Use it from the health bar to switch.")
+                logger.info(f"🔎 TallyPrime answers on port {offer['port']} (company '{offer['company']}')."
+                            + ("" if getattr(self.config, "auto_switch_tally_port", True) else " Use it from the health bar to switch."))
             self.tally_port_offer = offer
             # The offer already proves who answers: the port names a company whose GUID is linked to this PC. So
             # the switch is made on its own; turn auto_switch_tally_port off to be asked instead.
