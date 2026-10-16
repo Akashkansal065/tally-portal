@@ -631,3 +631,9 @@ Each verified backup can also be copied, by the server, to the company's own Goo
 
 - **Signing:** add the repository secrets `WINDOWS_CODESIGN_PFX_BASE64` (base64 of the code-signing `.pfx`) and `WINDOWS_CODESIGN_PFX_PASSWORD`. On an `agent-v*` tag, and only when both exist, the workflow signs `SnehDistribuorsSync.exe` with SHA-256 and a DigiCert timestamp, verifies the signature, and removes the certificate file. Otherwise it builds unsigned. The certificate is never written anywhere but the runner's temp folder.
 - **Nuitka:** manual runs only (Run workflow > builder = nuitka). The result is an extra artifact for comparison; the release always carries the PyInstaller exe. The string vault, PyArmor and any anti-debugging are deliberately not added.
+
+## Phase 6 Windows installer (WS-15)
+
+- Source: `desktop-sync-agent/installer/MyTallyBridge.iss` (Inno Setup 6). CI builds it after the exe on every run (artifact `MyTallyBridge-Setup`) and attaches `MyTallyBridge-Setup-<version>.exe` to the `agent-v*` release, signed when the signing secrets exist.
+- Per-user install under the person's profile, no administrator rights, nothing written to HKLM. It adds **no** scheduled task, service or Run-key entry; starting with Windows remains the agent's own setting. Uninstalling removes the program only.
+- The raw `SnehDistribuorsSync.exe` is still attached for people who prefer it.

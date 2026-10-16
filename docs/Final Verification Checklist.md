@@ -87,7 +87,12 @@ Per company, in the web app: Admin → Integrations → **Google Drive copy of b
 2. Nuitka: Actions > Sync agent exe > Run workflow > builder = nuitka. It uploads
    `SnehDistribuorsSync-nuitka-exe-comparison`; it is never attached to a release.
 
-_(WS-15 and WS-14 add their steps here as they land.)_
+**WS-15 installer**
+- Built by CI after the exe (Inno Setup, installed with Chocolatey if the runner lacks it) and attached to the release
+  as `MyTallyBridge-Setup-<version>.exe`, signed under the same conditions as the exe. Per-user, no admin, no
+  scheduled task; "Start with Windows" stays the agent's own setting.
+
+_(WS-14 adds its steps here as it lands.)_
 
 ## 4. Run the suites (once, at the end)
 
@@ -158,6 +163,15 @@ change.
 | S1 | Push an `agent-v*` tag with the two secrets set | Workflow log shows `Successfully verified` and `Authenticode status: Valid`; the released exe shows the publisher in Properties > Digital Signatures | signtool path on `windows-latest`, timestamp server reachable, PFX password handling |
 | S2 | Push a tag with the secrets missing | Build succeeds, unsigned, signing step skipped | the conditional really skips (a secret in `if:` is read through job `env`) |
 | S3 | Run the workflow manually with builder = nuitka | A comparison artifact appears; the normal exe is unchanged | Nuitka flags build this app (they were not tried) |
+
+### 5e. WS-15 installer (Windows)
+
+| # | What to do | Expected | Assumption it tests |
+|---|---|---|---|
+| I1 | Run `MyTallyBridge-Setup-<version>.exe` as a standard (non-admin) user | Installs without a UAC prompt under `%LOCALAPPDATA%\Programs\MyTally Bridge`; Start menu entry; app opens | `PrivilegesRequired=lowest` and `{autopf}` resolving per-user |
+| I2 | Check `schtasks /query` and the HKCU Run key after install | No MyTally entry from the installer | no autostart is added by the installer |
+| I3 | Uninstall from Settings > Apps | Program removed; sign-in, settings and backups folder remain | user data untouched |
+| I4 | Install over an older version while the agent runs | The old agent is closed and the new one installed | `CloseApplications=yes` |
 
 ## 6. Checks that need REAL Google credentials
 

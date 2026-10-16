@@ -73,6 +73,29 @@ jobs:
         run: |
           $sig = Get-AuthenticodeSignature dist\SnehDistribuorsSync.exe
           "Authenticode status: $($sig.Status) $($sig.SignerCertificate.Subject)"
+      - name: Build the installer (Inno Setup, per-user, no admin)
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          $version = if ($env:GITHUB_REF -like 'refs/tags/agent-v*') { $env:GITHUB_REF_NAME -replace '^agent-v','' } else { "0.0.0-dev" }
+          & $iscc "/DAppVersion=$version" "/DSourceExe=..\dist\SnehDistribuorsSync.exe" installer\MyTallyBridge.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)." }
+          Get-ChildItem dist\MyTallyBridge-Setup-*.exe | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
+      - name: Sign the installer (same conditions as the exe)
+        if: startsWith(github.ref, 'refs/tags/agent-v') && env.CODESIGN_PFX_BASE64 != '' && env.CODESIGN_PFX_PASSWORD != ''
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign-setup.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
+          try {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            Get-ChildItem dist\MyTallyBridge-Setup-*.exe | ForEach-Object {
+              & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:CODESIGN_PFX_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool sign failed ($LASTEXITCODE)." }
+            }
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
       - name: Check no Python source is inside the exe
         run: |
           $listing = python -m PyInstaller.utils.cliutils.archive_viewer -l -r dist\SnehDistribuorsSync.exe
@@ -110,9 +133,14 @@ jobs:
           name: SnehDistribuorsSync-exe
           path: desktop-sync-agent/dist/SnehDistribuorsSync.exe
           if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: MyTallyBridge-Setup
+          path: desktop-sync-agent/dist/MyTallyBridge-Setup-*.exe
+          if-no-files-found: error
       - name: Attach to a release
         if: startsWith(github.ref, 'refs/tags/agent-v')
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create $env:TAG dist\SnehDistribuorsSync.exe --repo $env:GITHUB_REPOSITORY --title "MyTally Bridge $($env:TAG -replace '^agent-v','')" --generate-notes
+        run: $setup = (Get-ChildItem dist\MyTallyBridge-Setup-*.exe | Select-Object -First 1).FullName; gh release create $env:TAG dist\SnehDistribuorsSync.exe $setup --repo $env:GITHUB_REPOSITORY --title "MyTally Bridge $($env:TAG -replace '^agent-v','')" --generate-notes
