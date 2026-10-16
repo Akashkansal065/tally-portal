@@ -67,8 +67,9 @@ async def begin(db: AsyncSession, company_id: int, key: str, sha: str, force: bo
             except IntegrityError:
                 await db.rollback()      # a concurrent request with the same key got in first: read its row
                 continue
+            receipt_id = receipt.receipt_id     # read before the purge: its rollback would expire the row
             await _purge_old(db, company_id, now)
-            return RUN, receipt.receipt_id
+            return RUN, receipt_id
         if row.payload_sha256 != sha:
             return MISMATCH, None
         age = now - (row.finished_at or row.started_at or row.created_at or now)
@@ -113,5 +114,6 @@ async def _purge_old(db: AsyncSession, company_id: int, now) -> None:
         await db.execute(delete(SyncInboundReceipt).where(
             SyncInboundReceipt.company_id == company_id, SyncInboundReceipt.created_at < now - RETENTION))
         await db.commit()
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not purge old inbound receipts for company {company_id}: {e}")
         await db.rollback()

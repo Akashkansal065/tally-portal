@@ -136,6 +136,8 @@ def master_keys(resp_xml: str, tag: str) -> List[Dict[str, str]]:
         closing = _tag(block, "CLOSINGBALANCE")
         if closing:
             key["closing_balance"] = closing      # Tally's own figure, for the books-parity check
+        elif re.search(r"<CLOSINGBALANCE\b", block):
+            key["closing_balance"] = "0"          # Tally writes the tag empty for a ledger that nets to nothing
         keys.append(key)
     return keys
 

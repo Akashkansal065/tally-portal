@@ -38,6 +38,9 @@ COUNT_MODELS = {
 EXACT = {"vouchers"}
 
 
+# audit_logs.action is 20 characters wide: MySQL refuses anything longer
+AUDIT_RESTORED = "RESTORE_NEW_COMPANY"
+
 class RestoreRefused(Exception):
     pass
 
@@ -129,7 +132,7 @@ async def restore_into_new_company(db: AsyncSession, backup: CompanyBackup, sour
             company.tally_guid, company.tally_fingerprint = source_guid, fingerprint
             bound = True
         company.is_active = True
-    db.add(AuditLog(company_id=source_company.company_id, user_id=user_id, action="BACKUP_RESTORED_TO_NEW_COMPANY",
+    db.add(AuditLog(company_id=source_company.company_id, user_id=user_id, action=AUDIT_RESTORED,
                     entity_type="CompanyBackup", entity_id=backup.backup_id,
                     new_value={"new_company_id": company.company_id, "verified": verified, "bound": bound,
                                "mismatches": mismatches[:10]}))

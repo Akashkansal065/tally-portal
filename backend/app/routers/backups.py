@@ -434,6 +434,9 @@ async def restore_into_new_company(backup_id: int, req: RestoreNewIn, admin: Use
         return await restore_new.restore_into_new_company(db, backup, company, admin.user_id, name)
     except restore_new.RestoreRefused as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="This backup's file is not on this server's disk (check BACKUP_STORAGE_DIR).")
 
 
 @router.post("/restores/{restore_id}/cancel")

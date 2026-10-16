@@ -22,6 +22,8 @@ from app.services.voucher_kinds import NON_POSTING
 
 logger = logging.getLogger("uvicorn.error")
 
+# Tally's own ledgers whose closing figure is worked out from the profit and loss, not from vouchers
+TALLY_COMPUTED_LEDGERS = {"profit & loss a/c"}
 TOLERANCE = Decimal("0.01")
 TOP_LEDGERS = 10
 
@@ -70,6 +72,8 @@ async def build_parity_report(db: AsyncSession, company_id: int, list_id: str,
         for item in ledgers:
             closing = _dec(item.get("closing_balance"))
             if closing is None:
+                continue
+            if (item.get("name") or "").strip().lower() in TALLY_COMPUTED_LEDGERS:
                 continue
             ledger = by_guid.get((item.get("guid") or "").strip()) or by_master.get(
                 int(item["master_id"]) if str(item.get("master_id") or "").strip().isdigit() else None)
