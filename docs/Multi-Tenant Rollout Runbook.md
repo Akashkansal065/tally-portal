@@ -543,3 +543,13 @@ an nginx on the same machine). From anyone else it is ignored, since a caller ca
 - **Read parity with care.** It assumes Tally's ledger closing balance and MyTally's computation cover the same period (all vouchers held). A company with several financial years open, or one that opened its books mid-year, can show steady drift on every ledger by the same opening-balance offset. Judge a single ledger's drift against its own vouchers before acting on it.
 - **Change probe (agent, WS-7) is unverified against a real TallyPrime.** It asks the Company collection for `AltMstId` and `AltVchId` (`<NATIVEMETHOD>Name, Guid, AltMstId, AltVchId</NATIVEMETHOD>`) and reads `<ALTMSTID>`/`<ALTVCHID>`. Before relying on it, on a TallyPrime run the request with ID `MyTallyChangeProbe` (see `TallyClient.probe_change_counters`) and confirm both counters come back as numbers and rise when you save a voucher and when you alter a master. If they do not come back, the probe returns "unknown" and the agent just runs its normal cycle every time: nothing breaks, nothing is saved. If they come back but do **not** rise on changes, the agent would skip real changes until the 15-minute safety pass: in that case set `PROBE_SAFETY_PASS_SECONDS` to 0 in `agent.py` (disables skipping) and rebuild.
 - **Agent rebuild** (tag `agent-v*`) ships both. No server setting is needed for the probe.
+
+## Phase 4 gzip uploads (WS-8)
+
+- **Backend:** no migration. Optional `SYNC_INBOUND_MAX_BYTES` in `backend/.env` (default 536870912, 512 MB): the most `/sync/inbound` accepts in one request, counted after gzip is undone. Above it the server answers 413 and the agent reports "PAYLOAD_TOO_LARGE".
+- **Order:** upgrade the backend first. An agent sends gzip only after the server's `/sync/last-alter-id` says `inbound.gzip: true`; an old backend never says it, so a new agent still sends plain XML to it.
+- **Reverse proxy (check on the production proxy; not verifiable from the repo):**
+  - `client_max_body_size` (nginx) or the equivalent must be at least the largest *compressed* upload (about 10% of the XML), and at least the largest plain upload for agents that have not upgraded. 100 MB is a sensible floor.
+  - `proxy_read_timeout` must outlast the longest import: the agent waits 300 s.
+  - Do **not** enable request decompression at the proxy: the backend does it, with the cap above. A proxy that strips or rewrites `Content-Encoding` on requests makes the backend read gzip bytes as XML and the import fails.
+- **Measuring:** the agent log now has a line per collection, `📏 'Vouchers 20260401–20260430': 4,182,901 bytes, sent gzip 412,330 bytes, 3.10s round trip`.

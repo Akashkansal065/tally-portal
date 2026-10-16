@@ -42,11 +42,11 @@ class FakeBackend:
         self.logins = 0
         self.login_response = (200, {"access_token": "token-1"}, {})
         self.api_responses = []     # queued (status, body, headers) for non-login calls; default 200 []
+        self.bodies = []            # the raw request body of every call, in order
 
     def handle(self, handler, method):
         length = int(handler.headers.get("Content-Length") or 0)
-        if length:
-            handler.rfile.read(length)
+        self.bodies.append(handler.rfile.read(length) if length else b"")
         self.requests.append((method, handler.path, dict(handler.headers)))
         if handler.path.startswith("/auth/login"):
             self.logins += 1

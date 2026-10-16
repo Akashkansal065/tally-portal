@@ -246,7 +246,8 @@ async def inbound_sync(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Force overwrite requires delete permission on Tally Sync."
             )
-    body = await request.body()
+    from app.core.inbound_body import read_inbound_body
+    body = await read_inbound_body(request)
     # Auto detect UTF-16 or UTF-8 to prevent UnicodeDecodeError on raw file uploads
     if body.startswith(b'\xff\xfe') or body.startswith(b'\xfe\xff'):
         xml_data = body.decode('utf-16')
@@ -1218,6 +1219,7 @@ async def get_last_alter_id(
     Returns the maximum tally_alter_id across all masters and vouchers to use for incremental inbound sync.
     """
     from sqlalchemy.sql import func
+    from app.core.inbound_body import inbound_limit
     from app.models.tally_core import (
         MstGroup, MstLedger, MstVoucherType, TrnVoucher, 
         MstStockGroup, MstStockCategory, MstUom, MstGodown, MstStockItem, CostCenter
@@ -1249,6 +1251,8 @@ async def get_last_alter_id(
         "last_voucher_alter_id": voucher_alter_id,
         "last_stock_item_alter_id": details.get(MstStockItem.__tablename__, 0),
         "counts": counts,
+        # What this server takes on /sync/inbound: an agent sends gzip only once it has read this
+        "inbound": {"gzip": True, "max_bytes": inbound_limit()},
         "details": details
     }
 

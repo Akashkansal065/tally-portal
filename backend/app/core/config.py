@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     BACKUP_MAX_BYTES: int = 2 * 1024 * 1024 * 1024
     BACKUP_RESTORE_ENABLED: bool = False
 
+    # The most /sync/inbound will take in one request, counted after gzip is undone: a bigger one is refused
+    # with 413 before it is held in memory. Tally exports of a large company run to tens of megabytes.
+    SYNC_INBOUND_MAX_BYTES: int = 512 * 1024 * 1024
+
     # Rate Limiting Settings
     RATE_LIMIT_ENABLED: bool = True
     LOGIN_RATE_LIMIT: str = "5/minute"

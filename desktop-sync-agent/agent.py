@@ -1119,6 +1119,11 @@ class DesktopSyncAgent:
             ok, res = self.cloud.push_inbound_xml(xml_data, self.active_company_name, force=force_all)
             self.sync_detail = ""
             dur = res.get("duration_seconds", 0.0)
+            # What each collection weighs and how long the server takes, so the cost of uploads can be judged
+            raw_b, sent_b = res.get("payload_bytes"), res.get("sent_bytes")
+            if raw_b is not None:
+                how = f"gzip {sent_b:,} bytes" if sent_b != raw_b else "plain"
+                logger.info(f"   📏 '{label}': {raw_b:,} bytes, sent {how}, {dur:.2f}s round trip")
             
             if ok:
                 v_count = res.get("imported_vouchers", 0)

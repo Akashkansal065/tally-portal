@@ -1,6 +1,7 @@
 import urllib.request
 import urllib.error
 import urllib.parse
+import gzip
 import hashlib
 import json
 import logging
@@ -35,6 +36,8 @@ HALT_MESSAGES = {
 DEVICE_TOKEN_PREFIX = "mta_"
 # X-Sync-Reason on an HTTP 409: the server is still importing this company's previous push
 SYNC_BUSY_REASON = "sync_in_progress"
+# Below this a gzip saves nothing worth the CPU
+GZIP_MIN_BYTES = 1024
 
 
 def halt_message(reason: Optional[str]) -> str:
@@ -98,6 +101,9 @@ class CloudClient:
         self.auth_halt_reason = auth_halt_reason or ""
         self.on_auth_halted = on_auth_halted
         self.identity_headers = device_identity_headers()
+        # What the server said it takes on /sync/inbound (from /sync/last-alter-id). Unknown until it says,
+        # and an older server never does: those get plain XML as before.
+        self.server_accepts_gzip = False
         # GUID of the Tally company this agent is tied to. Sent on every sync call so the server works on
         # that company, whichever company the account has active in the app.
         self.company_guid = ""
@@ -401,8 +407,13 @@ class CloudClient:
         if force:
             headers["x-force-sync"] = "true"
 
-        payload_bytes = xml_data.encode("utf-8")
-        payload_size_kb = len(payload_bytes) / 1024.0
+        raw_bytes = xml_data.encode("utf-8")
+        payload_bytes = raw_bytes
+        if self.server_accepts_gzip and len(raw_bytes) >= GZIP_MIN_BYTES:
+            payload_bytes = gzip.compress(raw_bytes, compresslevel=6)
+            headers["Content-Encoding"] = "gzip"
+        payload_size_kb = len(raw_bytes) / 1024.0
+        sent_bytes = len(payload_bytes)
 
         last_diag = {
             "error_type": "UNKNOWN",
@@ -432,6 +443,7 @@ class CloudClient:
                     try:
                         res_json = json.loads(raw_body)
                         res_json["duration_seconds"] = dur
+                        res_json["payload_bytes"], res_json["sent_bytes"] = len(raw_bytes), sent_bytes
                         return _inbound_result(res_json, resp.status, endpoint)
                     except json.JSONDecodeError:
                         last_diag = {
@@ -561,13 +573,19 @@ class CloudClient:
 
         return False, last_diag
 
+    def _note_server_capabilities(self, data: Any) -> None:
+        inbound = data.get("inbound") if isinstance(data, dict) else None
+        self.server_accepts_gzip = bool(isinstance(inbound, dict) and inbound.get("gzip") is True)
+
     def get_server_counts(self) -> Optional[Dict[str, int]]:
         """How many vouchers, ledgers and stock items the server holds for the company being synced.
         None when it could not be asked, or the server is too old to say."""
         try:
             req = urllib.request.Request(f"{self.backend_url}/sync/last-alter-id", headers=self._get_headers())
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                counts = json.loads(resp.read().decode("utf-8")).get("counts")
+                data = json.loads(resp.read().decode("utf-8"))
+                self._note_server_capabilities(data)
+                counts = data.get("counts")
                 return {k: int(v) for k, v in counts.items()} if isinstance(counts, dict) else None
         except Exception as e:
             logger.debug(f"Could not read the server's record counts: {e}")
@@ -584,6 +602,7 @@ class CloudClient:
                 req = urllib.request.Request(url, headers=self._get_headers())
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
+                    self._note_server_capabilities(data)
                     max_alt = int(data.get("last_alter_id", 0))
                     led_alt = int(data.get("last_ledger_alter_id", 0))
                     vch_alt = int(data.get("last_voucher_alter_id", 0))
