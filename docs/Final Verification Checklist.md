@@ -316,3 +316,25 @@ guards the length. A missing backup file now answers 409 instead of 500.
 Test data left in the local MySQL by these runs, safe to delete from the app: companies **7** "Bhrama Enterprises
 (restore test)" (inactive, from the run that failed on the audit row) and **8** "Bhrama Enterprises (restore test 2)";
 the cancelled voucher 402 in company 1; 14 stale `PROCESSING` rows in `sync_inbound_receipts` (purged after 7 days).
+
+## 5h. Windows build, port switch in a running agent, signing cost (2026-10-16)
+
+**Windows CI build** (manual run 38856909025 on `master`, 2m17s): all steps green on a real Windows runner: the agent
+tests, the PyInstaller build, "no Python source inside the exe", "the exe opens and stays open", and the Inno Setup
+installer. Signing steps were skipped (no certificate). Artifacts: `SnehDistribuorsSync.exe` (31 MB) and
+`MyTallyBridge-Setup-0.0.0-dev.exe` (32 MB), downloaded to `~/Downloads/mytally-agent-ci/`.
+Still to do by hand on the Windows VM: I1 to I4 in section 5e (install without a UAC prompt, no Run key or scheduled
+task from the installer, uninstall keeps user data, install over a running older version).
+
+**P1 in a real agent:** a real `DesktopSyncAgent` started with Tally's URL on the wrong port (`:9000`) and the linked
+company's GUID switched itself to `:9001`, saved the new URL to its config and reported connected. Not yet seen on
+Windows with `tally.ini` and `tasklist`.
+
+**Signing: do not buy yet, and not as a downloadable file.** Indicative 2026 prices (reseller pages, not quotes):
+OV about $215-$230/year, EV about $290-$700/year (DigiCert at the top), a hardware token $50-$380 extra, Microsoft's
+Azure Artifact Signing $9.99/month (5,000 signatures) but open only to organisations or individuals in a short list of
+countries that, in the sources found, did not clearly include India. Since mid-2023 certificate authorities must keep a
+code-signing key on a hardware token or in a cloud HSM, so most new certificates cannot be exported as the `.pfx`
+that the workflow's `WINDOWS_CODESIGN_PFX_BASE64` secret expects. Before buying, ask the seller for a certificate with
+**cloud signing usable from GitHub Actions** (for example SSL.com eSigner or DigiCert KeyLocker) and change the signing
+step to its tool. The unsigned build works; the only cost is the one-time SmartScreen warning.
