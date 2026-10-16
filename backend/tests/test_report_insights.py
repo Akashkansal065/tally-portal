@@ -339,3 +339,50 @@ def test_dead_stock_clearance_by_age_with_past_buyers(world):
 def select_count(model):
     from sqlalchemy import func, select
     return select(func.count()).select_from(model)
+
+
+def test_customer_item_history_shows_last_rate_and_discount(world):
+    h, b = world["h"], world["books"]
+    cid = world["alpha"].company_id
+    unit = h.add(T.MstUom(company_id=cid, name="Pieces", symbol="PCS"))
+    kettle = h.add(T.MstStockItem(company_id=cid, name="Kettle", unit_id=unit.unit_id))
+    fan = h.add(T.MstStockItem(company_id=cid, name="Fan", unit_id=unit.unit_id))
+    amar, jain = b.customer("Amar"), b.customer("Jain")
+
+    def invoice(customer, days_ago, lines, kind="Sales", cancelled=False):
+        total = sum(q * r for _, q, r, _ in lines)
+        v = (b.sale(customer, days_ago, total, cancelled) if kind == "Sales" else b.voucher(kind, TODAY - timedelta(days=days_ago), total))
+        if kind != "Sales":
+            h.add(T.TrnAccounting(voucher_id=v.voucher_id, ledger_id=customer.ledger_id, debit_amount=0, credit_amount=Decimal(total)))
+        for it, qty, rate, disc in lines:
+            h.add(T.TrnInventory(voucher_id=v.voucher_id, stock_item_id=it.stock_item_id, quantity=Decimal(qty),
+                                 rate=Decimal(rate), amount=Decimal(qty * rate), discount_percent=Decimal(disc),
+                                 is_inward=kind != "Sales"))
+        return v
+
+    invoice(amar, 100, [(kettle, 2, 500, 0), (fan, 1, 1200, 0)])
+    last = invoice(amar, 10, [(kettle, 3, 450, 5)])
+    invoice(amar, 5, [(kettle, 9, 1, 0)], cancelled=True)       # cancelled: ignored
+    invoice(amar, 3, [(fan, 1, 1200, 0)], kind="Credit Note")    # a return, shown beside the item
+    invoice(jain, 2, [(kettle, 50, 400, 10)])                    # another customer's price never leaks in
+    invoice(amar, 400, [(fan, 7, 900, 0)])                       # before the default 365-day window
+
+    staff = login(world["client"], "staff@example.com")
+    data = world["client"].get(f"/reports/customer-items/{amar.ledger_id}", headers=bearer(staff)).json()
+    assert data["ledger_name"] == "Amar" and data["total_amount"] == 3550.0
+    k, f = data["items"]                                         # latest purchase first
+    assert (k["name"], k["times_bought"], k["quantity"], k["amount"]) == ("Kettle", 2, 5.0, 2350.0)
+    assert (k["last_rate"], k["last_discount_percent"], k["last_voucher_id"]) == (450.0, 5.0, last.voucher_id)
+    assert (k["first_bought"], k["days_since_bought"], k["average_rate"]) == ((TODAY - timedelta(days=100)).isoformat(), 10, 470.0)
+    assert (f["name"], f["quantity"], f["returned_quantity"], f["returned_amount"]) == ("Fan", 1.0, 1.0, 1200.0)
+
+    by_name = world["client"].get(f"/reports/customer-items/{amar.ledger_id}?sort_by=name&from_date=2020-01-01",
+                                  headers=bearer(staff)).json()["items"]
+    assert [(i["name"], i["quantity"]) for i in by_name] == [("Fan", 8.0), ("Kettle", 5.0)]
+    assert world["client"].get(f"/reports/customer-items/{amar.ledger_id}?sort_by=bogus", headers=bearer(staff)).status_code == 400
+
+
+def test_customer_item_history_stays_inside_the_company(world):
+    other = world["beta_books"].customer("Beta Party")
+    staff = login(world["client"], "staff@example.com")
+    assert world["client"].get(f"/reports/customer-items/{other.ledger_id}", headers=bearer(staff)).status_code == 404

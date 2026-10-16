@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import clear_all_cache
@@ -298,6 +298,101 @@ async def reorder_alerts(
         })
     items.sort(key=lambda i: (i["days_left"], -i["per_day"]))
     return {"as_of": today.isoformat(), "criteria": {"cover_days": cover_days, "lookback_days": lookback_days}, "items": items}
+
+
+# ─── What a customer buys ────────────────────────────────────────────────────
+
+ITEM_HISTORY_SORTS = ("last_bought", "amount", "quantity", "times_bought", "name")
+
+
+@router.get("/customer-items/{ledger_id}")
+async def customer_item_history(
+    ledger_id: int,
+    from_date: Optional[date] = Query(None, description="Default: 365 days before to_date"),
+    to_date: Optional[date] = Query(None, description="Default: today"),
+    sort_by: str = Query("last_bought", description="last_bought, amount, quantity, times_bought or name"),
+    user: User = Depends(require_permission("reports", "read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every item a party bought in the period: how often, how much, and the rate and discount on the most
+    recent invoice, so staff can quote the price the customer last paid. Returns through credit notes are
+    shown beside each item and not taken off what was bought."""
+    if sort_by not in ITEM_HISTORY_SORTS:
+        raise HTTPException(status_code=400, detail=f"sort_by must be one of: {', '.join(ITEM_HISTORY_SORTS)}")
+    ledger = (await db.execute(
+        select(MstLedger.ledger_id, MstLedger.name)
+        .where(MstLedger.ledger_id == ledger_id, MstLedger.company_id == user.company_id)
+    )).first()
+    if not ledger:
+        raise HTTPException(status_code=404, detail="Ledger not found")
+    to_date = to_date or get_ist_date()
+    from_date = from_date or to_date - timedelta(days=365)
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from_date is after to_date")
+
+    # The party is whoever has an accounting line on the voucher: the party ledger field isn't always filled
+    party_vouchers = select(TrnAccounting.voucher_id).where(TrnAccounting.ledger_id == ledger_id)
+    is_return = or_(MstVoucherType.name == "Credit Note", MstVoucherType.parent_type == "Credit Note")
+    rows = (await db.execute(
+        select(TrnInventory.stock_item_id, TrnInventory.quantity, TrnInventory.rate, TrnInventory.amount,
+               TrnInventory.discount_percent, TrnVoucher.voucher_id, TrnVoucher.voucher_number,
+               TrnVoucher.voucher_date, is_return.label("is_return"),
+               MstStockItem.name, MstStockGroup.name.label("group_name"), MstUom.symbol)
+        .join(TrnVoucher, TrnVoucher.voucher_id == TrnInventory.voucher_id)
+        .join(MstVoucherType, MstVoucherType.voucher_type_id == TrnVoucher.voucher_type_id)
+        .join(MstStockItem, MstStockItem.stock_item_id == TrnInventory.stock_item_id)
+        .outerjoin(MstStockGroup, MstStockGroup.stock_group_id == MstStockItem.stock_group_id)
+        .outerjoin(MstUom, MstUom.unit_id == MstStockItem.unit_id)
+        .where(TrnVoucher.company_id == user.company_id, TrnVoucher.voucher_id.in_(party_vouchers),
+               or_(sales_voucher_type(), is_return), live_voucher(),
+               TrnVoucher.voucher_date >= from_date, TrnVoucher.voucher_date <= to_date)
+        # Oldest first, so the last line seen for an item is its latest sale
+        .order_by(TrnVoucher.voucher_date, TrnVoucher.voucher_id, TrnInventory.stock_entry_id)
+    )).all()
+
+    items: Dict[int, dict] = {}
+    for r in rows:
+        item = items.setdefault(r.stock_item_id, {
+            "stock_item_id": r.stock_item_id, "name": r.name, "group": r.group_name, "unit": r.symbol or "PCS",
+            "times_bought": 0, "quantity": 0.0, "amount": 0.0, "returned_quantity": 0.0, "returned_amount": 0.0,
+            "first_bought": None, "last_bought": None, "last_rate": None, "last_discount_percent": None,
+            "last_voucher_id": None, "last_voucher_number": None, "_vouchers": set(),
+        })
+        qty, amount = abs(float(r.quantity or 0)), abs(float(r.amount or 0))
+        if r.is_return:
+            item["returned_quantity"] += qty
+            item["returned_amount"] += amount
+            continue
+        item["_vouchers"].add(r.voucher_id)
+        item["quantity"] += qty
+        item["amount"] += amount
+        item["first_bought"] = item["first_bought"] or r.voucher_date.isoformat()
+        item.update(last_bought=r.voucher_date.isoformat(), last_rate=float(r.rate or 0),
+                    last_discount_percent=float(r.discount_percent or 0),
+                    last_voucher_id=r.voucher_id, last_voucher_number=r.voucher_number)
+
+    result = []
+    for item in items.values():
+        item["times_bought"] = len(item.pop("_vouchers"))
+        for key in ("quantity", "returned_quantity"):
+            item[key] = round(item[key], 3)
+        for key in ("amount", "returned_amount"):
+            item[key] = round(item[key], 2)
+        item["average_rate"] = round(item["amount"] / item["quantity"], 2) if item["quantity"] else None
+        item["days_since_bought"] = (to_date - date.fromisoformat(item["last_bought"])).days if item["last_bought"] else None
+        result.append(item)
+
+    if sort_by == "name":
+        result.sort(key=lambda i: (i["name"] or "").lower())
+    else:
+        # Items only ever returned have nothing bought: they go last
+        result.sort(key=lambda i: (i[sort_by] is not None, i[sort_by] or 0), reverse=True)
+    return {
+        "ledger_id": ledger.ledger_id, "ledger_name": ledger.name,
+        "from_date": from_date.isoformat(), "to_date": to_date.isoformat(),
+        "total_amount": round(sum(i["amount"] for i in result), 2),
+        "items": result,
+    }
 
 
 # ─── Cities and territory ────────────────────────────────────────────────────
