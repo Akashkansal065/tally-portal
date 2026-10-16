@@ -1162,5 +1162,314 @@ export const consoleBillingApi = {
     const res = await consoleFetch<{ events: PlatformWebhookEventItem[] } | PlatformWebhookEventItem[]>('/billing/webhooks')
     return Array.isArray(res) ? res : (res.events || [])
   },
+
+  // ── Catalog Management ──
+  async getCatalog(): Promise<AdminCatalogPlan[]> {
+    return consoleFetch<AdminCatalogPlan[]>('/billing/catalog')
+  },
+
+  async createPlan(payload: {
+    code: string
+    name: string
+    tagline?: string
+    badge?: string
+    display?: Record<string, unknown>
+    features?: string[]
+    trial_days?: number
+    allow_extra_users?: boolean
+    allow_extra_companies?: boolean
+    is_public?: boolean
+    is_active?: boolean
+    account_id?: number | null
+    sort_order?: number
+  }): Promise<{ success: boolean; id: number; code: string; name: string }> {
+    return consoleFetch('/billing/plans', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async updatePlan(id: number, payload: Partial<{
+    name: string
+    tagline: string | null
+    badge: string | null
+    display: Record<string, unknown>
+    features: string[]
+    trial_days: number
+    allow_extra_users: boolean
+    allow_extra_companies: boolean
+    is_public: boolean
+    sort_order: number
+  }>): Promise<{ success: boolean; id: number; code: string; name: string }> {
+    return consoleFetch(`/billing/plans/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async activatePlan(id: number): Promise<{ success: boolean; id: number; is_active: boolean }> {
+    return consoleFetch(`/billing/plans/${id}/activate`, { method: 'POST' })
+  },
+
+  async deactivatePlan(id: number): Promise<{ success: boolean; id: number; is_active: boolean }> {
+    return consoleFetch(`/billing/plans/${id}/deactivate`, { method: 'POST' })
+  },
+
+  async createPackage(planId: number, payload: {
+    max_companies: number
+    max_users: number
+    max_devices: number
+    label?: string
+    code?: string
+    sort_order?: number
+    is_active?: boolean
+  }): Promise<{ success: boolean; id: number; code: string; label: string }> {
+    return consoleFetch(`/billing/plans/${planId}/packages`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async updatePackage(id: number, payload: Partial<{
+    label: string
+    max_companies: number
+    max_users: number
+    max_devices: number
+    sort_order: number
+    is_active: boolean
+  }>): Promise<{ success: boolean; id: number; code: string; label: string }> {
+    return consoleFetch(`/billing/packages/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async duplicatePackage(id: number): Promise<{ success: boolean; id: number; code: string; label: string }> {
+    return consoleFetch(`/billing/packages/${id}/duplicate`, { method: 'POST' })
+  },
+
+  async activatePackage(id: number): Promise<{ success: boolean; id: number; is_active: boolean }> {
+    return consoleFetch(`/billing/packages/${id}/activate`, { method: 'POST' })
+  },
+
+  async deactivatePackage(id: number): Promise<{ success: boolean; id: number; is_active: boolean }> {
+    return consoleFetch(`/billing/packages/${id}/deactivate`, { method: 'POST' })
+  },
+
+  async addPrice(packageId: number, payload: {
+    interval: string
+    interval_count: number
+    amount_paise: number
+    compare_at_paise?: number | null
+    autopay_allowed?: boolean
+    replace?: boolean
+  }): Promise<{ success: boolean; id: number }> {
+    return consoleFetch(`/billing/packages/${packageId}/prices`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async updatePrice(id: number, payload: Partial<{
+    amount_paise: number
+    compare_at_paise: number | null
+    autopay_allowed: boolean
+  }>): Promise<{ success: boolean; id: number }> {
+    return consoleFetch(`/billing/prices/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async deactivatePrice(id: number): Promise<{ success: boolean; id: number; is_active: boolean }> {
+    return consoleFetch(`/billing/prices/${id}/deactivate`, { method: 'POST' })
+  },
+
+  async getAddons(): Promise<AdminAddonItem[]> {
+    return consoleFetch<AdminAddonItem[]>('/billing/addons')
+  },
+
+  async updateAddon(id: number, payload: {
+    yearly_paise?: number | null
+    monthly_paise?: number | null
+    is_active?: boolean
+    description?: string | null
+  }): Promise<{ success: boolean; id: number }> {
+    return consoleFetch(`/billing/addons/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async getTrialSetting(): Promise<AdminTrialSetting> {
+    return consoleFetch<AdminTrialSetting>('/billing/settings/trial')
+  },
+
+  async setTrialSetting(payload: { package_id: number; trial_days: number }): Promise<{ success: boolean }> {
+    return consoleFetch('/billing/settings/trial', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  // ── Coupon Management ──
+  async getCoupons(): Promise<AdminCouponItem[]> {
+    const res = await consoleFetch<{ coupons: AdminCouponItem[] } | AdminCouponItem[]>('/billing/coupons')
+    return Array.isArray(res) ? res : (res.coupons || [])
+  },
+
+  async getCoupon(id: number): Promise<AdminCouponDetail> {
+    return consoleFetch(`/billing/coupons/${id}`)
+  },
+
+  async createCoupon(payload: AdminCouponPayload & { code: string; kind: 'percent' | 'flat'; value: number }): Promise<{ success: boolean; id: number; code: string }> {
+    return consoleFetch('/billing/coupons', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async updateCoupon(id: number, payload: AdminCouponPayload): Promise<{ success: boolean; id: number; code: string }> {
+    return consoleFetch(`/billing/coupons/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    })
+  },
+
+  async activateCoupon(id: number): Promise<{ success: boolean; id: number; is_active: boolean }> {
+    return consoleFetch(`/billing/coupons/${id}/activate`, { method: 'POST' })
+  },
+
+  async deactivateCoupon(id: number): Promise<{ success: boolean; id: number; is_active: boolean }> {
+    return consoleFetch(`/billing/coupons/${id}/deactivate`, { method: 'POST' })
+  },
+}
+
+export interface AdminCatalogPrice {
+  id: number
+  interval: 'month' | 'year'
+  interval_count: number
+  amount_paise: number
+  amount_rupees: number
+  compare_at_paise: number | null
+  compare_at_rupees: number | null
+  per_month_paise: number
+  per_month_rupees: number
+  autopay_allowed: boolean
+  is_active: boolean
+  is_ordered: boolean
+}
+
+export interface AdminCatalogPackage {
+  id: number
+  code: string
+  label: string
+  max_companies: number | null
+  max_users: number | null
+  max_devices: number | null
+  is_active: boolean
+  sort_order: number
+  in_use: boolean
+  active_subscribers: number
+  paid_orders: number
+  prices: AdminCatalogPrice[]
+}
+
+export interface AdminCatalogPlan {
+  id: number
+  code: string
+  name: string
+  tagline: string | null
+  badge: string | null
+  display: Record<string, unknown>
+  features: string[]
+  trial_days: number
+  allow_extra_users: boolean
+  allow_extra_companies: boolean
+  is_public: boolean
+  is_active: boolean
+  account_id: number | null
+  sort_order: number
+  packages: AdminCatalogPackage[]
+}
+
+export interface AdminTrialSetting {
+  package_id: number
+  package_label?: string
+  plan_name?: string
+  trial_days: number
+}
+
+export interface AdminAddonItem {
+  id: number
+  code: string
+  name: string
+  kind: 'seat_user' | 'seat_company' | 'credit_pack' | string
+  yearly_paise: number | null
+  monthly_paise: number | null
+  yearly_rupees: number | null
+  monthly_rupees: number | null
+  is_active: boolean
+  description?: string | null
+}
+
+/** Coupon fields the operator can set. Dates are ISO strings; the server stores them in UTC. */
+export interface AdminCouponPayload {
+  description?: string | null
+  kind?: 'percent' | 'flat'
+  value?: number
+  max_discount_paise?: number | null
+  valid_from?: string | null
+  valid_until?: string | null
+  max_redemptions?: number | null
+  per_account_limit?: number
+  /** Plan or package codes, or 'addon'; null = every plan */
+  plan_codes?: string[] | null
+  first_purchase_only?: boolean
+  /** Set for a private coupon only that account can use */
+  account_id?: number | null
+  is_active?: boolean
+}
+
+export interface AdminCouponItem {
+  id: number
+  code: string
+  description?: string | null
+  kind: 'percent' | 'flat'
+  value: number
+  value_rupees?: number | null
+  max_discount_paise?: number | null
+  max_discount_rupees?: number | null
+  is_active: boolean
+  status: 'active' | 'scheduled' | 'expired' | 'used_up' | 'off'
+  /** Naive UTC from the server, e.g. 2030-01-01T00:00:00 */
+  valid_from?: string | null
+  valid_until?: string | null
+  max_redemptions?: number | null
+  per_account_limit?: number | null
+  plan_codes: string[]
+  first_purchase_only: boolean
+  account_id?: number | null
+  /** total = paid + reserved by orders waiting for payment; this is what counts against the limit */
+  uses: { paid: number; pending: number; total: number }
+  created_at: string | null
+}
+
+export interface AdminCouponRedemption {
+  id: number
+  account_id: number
+  account_name: string
+  order_id: number
+  order_reference: string | null
+  order_status: string | null
+  discount_paise: number
+  discount_rupees: number
+  created_at: string | null
+}
+
+export interface AdminCouponDetail extends AdminCouponItem {
+  total_discount_given_paise: number
+  total_discount_given_rupees: number
+  redemptions: AdminCouponRedemption[]
 }
 

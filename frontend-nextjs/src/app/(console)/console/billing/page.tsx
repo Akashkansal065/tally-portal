@@ -28,6 +28,8 @@ import {
   Loader2,
   X,
   IndianRupee,
+  Layers,
+  Tag,
 } from 'lucide-react'
 import { useConsoleAuth } from '@/console/context/ConsoleAuthContext'
 import {
@@ -39,12 +41,14 @@ import {
   PlatformWebhookEventItem,
 } from '@/console/api'
 import { cn } from '@/lib/utils'
+import { CatalogTab } from '@/console/billing/CatalogTab'
+import { CouponsTab } from '@/console/billing/CouponsTab'
 
 export default function PlatformBillingPage() {
   const { permissions } = useConsoleAuth()
   const canManage = permissions.has('billing.manage') || permissions.has('all')
 
-  const [activeTab, setActiveTab] = useState<'accounts' | 'offline' | 'leads' | 'webhooks'>('accounts')
+  const [activeTab, setActiveTab] = useState<'accounts' | 'catalog' | 'coupons' | 'offline' | 'leads' | 'webhooks'>('accounts')
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
   const [feedbackError, setFeedbackError] = useState<string | null>(null)
@@ -378,11 +382,11 @@ export default function PlatformBillingPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-[#dfeee8] gap-6 text-xs font-medium">
+      <div className="flex border-b border-[#dfeee8] gap-6 text-xs font-medium overflow-x-auto">
         <button
           onClick={() => setActiveTab('accounts')}
           className={cn(
-            'pb-3 flex items-center gap-2 border-b-2 transition -mb-px',
+            'pb-3 flex items-center gap-2 border-b-2 transition -mb-px whitespace-nowrap',
             activeTab === 'accounts'
               ? 'border-[#00d09c] text-slate-900 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-700 font-medium'
@@ -393,9 +397,35 @@ export default function PlatformBillingPage() {
         </button>
 
         <button
+          onClick={() => setActiveTab('catalog')}
+          className={cn(
+            'pb-3 flex items-center gap-2 border-b-2 transition -mb-px whitespace-nowrap',
+            activeTab === 'catalog'
+              ? 'border-[#00d09c] text-slate-900 font-bold'
+              : 'border-transparent text-slate-500 hover:text-slate-700 font-medium'
+          )}
+        >
+          <Layers className="w-4 h-4" />
+          Catalog & Plans
+        </button>
+
+        <button
+          onClick={() => setActiveTab('coupons')}
+          className={cn(
+            'pb-3 flex items-center gap-2 border-b-2 transition -mb-px whitespace-nowrap',
+            activeTab === 'coupons'
+              ? 'border-[#00d09c] text-slate-900 font-bold'
+              : 'border-transparent text-slate-500 hover:text-slate-700 font-medium'
+          )}
+        >
+          <Tag className="w-4 h-4" />
+          Coupons
+        </button>
+
+        <button
           onClick={() => setActiveTab('offline')}
           className={cn(
-            'pb-3 flex items-center gap-2 border-b-2 transition -mb-px',
+            'pb-3 flex items-center gap-2 border-b-2 transition -mb-px whitespace-nowrap',
             activeTab === 'offline'
               ? 'border-[#00d09c] text-slate-900 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-700 font-medium'
@@ -607,6 +637,12 @@ export default function PlatformBillingPage() {
           </div>
         </div>
       )}
+
+      {/* Tab: Catalog & Plans */}
+      {activeTab === 'catalog' && <CatalogTab />}
+
+      {/* Tab: Coupons */}
+      {activeTab === 'coupons' && <CouponsTab />}
 
       {/* Tab: Offline Payments */}
       {activeTab === 'offline' && (

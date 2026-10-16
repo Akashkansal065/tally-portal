@@ -43,8 +43,20 @@ async def start_trial(
     """
     Start a trial for a newly registered account. Defaults to Gold tier for 7 days.
     """
-    # Find trial plan (prefer gold, fallback to silver or first active public plan)
-    trial_plan = await get_plan_by_code(db, "gold")
+    # Read configured trial setting from AppSetting
+    from app.services.billing.catalog_admin import get_trial_setting, trial_package_usable
+    trial_cfg = await get_trial_setting(db)
+    trial_pkg_id = trial_cfg.get("package_id")
+    days = trial_cfg.get("trial_days") or trial_days
+
+    trial_plan = None
+    if trial_pkg_id:
+        trial_plan = (await db.execute(select(BillingPlan).where(BillingPlan.id == trial_pkg_id))).scalars().first()
+        # The configured package may have been retired since it was chosen: fall back to the defaults
+        if not await trial_package_usable(db, trial_plan):
+            trial_plan = None
+    if not trial_plan:
+        trial_plan = await get_plan_by_code(db, "gold")
     if not trial_plan:
         trial_plan = await get_plan_by_code(db, "silver")
     if not trial_plan:
@@ -54,7 +66,6 @@ async def start_trial(
         )).scalars().first()
 
     plan_id = trial_plan.id if trial_plan else None
-    days = trial_plan.trial_days if (trial_plan and trial_plan.trial_days > 0) else trial_days
 
     now = datetime.now(timezone.utc)
     ends_at = now + timedelta(days=days)

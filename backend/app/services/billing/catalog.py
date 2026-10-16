@@ -12,8 +12,9 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.billing import BillingPlan, BillingPlanPrice, BillingAddon
+from app.models.billing import BillingPlan, BillingPlanPrice, BillingAddon, BillingPlanGroup
 from app.services.billing.features import FEATURE_REGISTRY
+from app.services.billing.catalog_admin import migrate_plans_to_groups
 
 logger = logging.getLogger("app.services.billing.catalog")
 
@@ -234,6 +235,7 @@ async def seed_catalog(db: AsyncSession) -> None:
             logger.info(f"Seeded billing add-on '{addon_data['code']}'")
 
     await db.commit()
+    await migrate_plans_to_groups(db)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.permissions import get_current_user, is_platform_admin
-from app.models.billing import AccountSubscription, BillingPlan
+from app.models.billing import AccountSubscription, BillingPlan, BillingPlanGroup
 from app.models.portal_core import User
 from app.services.billing.features import FEATURE_REGISTRY
 from app.services.billing.subscriptions import ensure_legacy_subscription
@@ -183,11 +183,26 @@ async def get_entitlements(
         if "max_devices" in overrides:
             max_devices = overrides["max_devices"]
 
-        # Features
+        # Features & Plan name from Group when group_id is set
         plan_features: set[str] = set()
-        if plan and plan.feature_keys:
+        plan_name = plan.name if plan else None
+        plan_code = plan.code if plan else None
+        feature_source = None
+        if plan:
+            if getattr(plan, "group_id", None):
+                group = (await db.execute(
+                    select(BillingPlanGroup).where(BillingPlanGroup.id == plan.group_id)
+                )).scalars().first()
+                if group:
+                    feature_source = group.feature_keys
+                    if group.name:
+                        plan_name = group.name
+            if feature_source is None and plan.feature_keys:
+                feature_source = plan.feature_keys
+
+        if feature_source:
             try:
-                plan_features = set(json.loads(plan.feature_keys))
+                plan_features = set(json.loads(feature_source))
             except Exception:
                 plan_features = set()
 
@@ -199,8 +214,8 @@ async def get_entitlements(
         ent = Entitlements(
             account_id=account_id,
             status=sub_status,
-            plan_code=plan.code if plan else None,
-            plan_name=plan.name if plan else None,
+            plan_code=plan_code,
+            plan_name=plan_name,
             max_users=max_users,
             max_companies=max_companies,
             max_devices=max_devices,

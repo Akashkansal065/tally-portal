@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import {
   Check,
@@ -29,10 +30,18 @@ import {
   Database
 } from 'lucide-react'
 import { PlanCheckoutModal } from '@/components/pricing/PlanCheckoutModal'
-import { BillingPlan, BillingAddon, loadPublicCatalog, salesTelUrl, salesWhatsAppUrl } from '@/lib/billing'
+import {
+  BillingPlan,
+  BillingPackage,
+  PackagePrice,
+  CatalogTerm,
+  BillingAddon,
+  DurationKey,
+  loadPublicCatalog,
+  salesTelUrl,
+  salesWhatsAppUrl
+} from '@/lib/billing'
 import { useSalesContact } from '@/hooks/useSalesContact'
-
-type DurationKey = '1_year' | '2_year' | '3_year'
 
 const FAQS = [
   {
@@ -61,16 +70,25 @@ const FAQS = [
   }
 ]
 
-export default function PricingPage() {
-  const [durationKey, setDurationKey] = useState<DurationKey>('3_year')
+function PricingContent() {
+  const searchParams = useSearchParams()
+  const targetPlan = searchParams.get('plan')
+
+  const [catalogTerms, setCatalogTerms] = useState<CatalogTerm[]>([])
+  const [selectedTerm, setSelectedTerm] = useState<CatalogTerm | null>(null)
+  const [selectedPackageByPlan, setSelectedPackageByPlan] = useState<Record<string, number>>({})
+
   const [extraUsers, setExtraUsers] = useState(0)
   const [extraCompanies, setExtraCompanies] = useState(0)
   const [selectedPlanForModal, setSelectedPlanForModal] = useState<BillingPlan | null>(null)
+  const [selectedPackageForModal, setSelectedPackageForModal] = useState<BillingPackage | null>(null)
+  const [selectedPriceIdForModal, setSelectedPriceIdForModal] = useState<number | null>(null)
+  const [selectedTermLabelForModal, setSelectedTermLabelForModal] = useState<string | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0)
   const [isComparisonOpen, setIsComparisonOpen] = useState(false)
 
-  // Catalog from API (replaces hardcoded PLANS / ADDONS_DATA)
+  // Catalog from API
   const [catalogPlans, setCatalogPlans] = useState<BillingPlan[]>([])
   const [catalogAddons, setCatalogAddons] = useState<BillingAddon[]>([])
   const [catalogLoaded, setCatalogLoaded] = useState(false)
@@ -82,27 +100,49 @@ export default function PricingPage() {
         if (data.success) {
           setCatalogPlans(data.plans || [])
           setCatalogAddons(data.addons || [])
+          const terms = data.terms && data.terms.length > 0 ? data.terms : [
+            { interval: 'year' as const, count: 1, label: '1 Year' },
+            { interval: 'year' as const, count: 2, label: '2 Years' },
+            { interval: 'year' as const, count: 3, label: '3 Years' },
+          ]
+          setCatalogTerms(terms)
+          setSelectedTerm(terms[terms.length - 1])
         }
         setCatalogLoaded(true)
       })
       .catch(() => setCatalogLoaded(true))
   }, [])
 
-  // Plans and prices come only from the catalog API: nothing is priced from this file
   const activePlans = catalogPlans
 
-  const years = durationKey === '1_year' ? 1 : durationKey === '2_year' ? 2 : 3
+  const durationKey: DurationKey | string = selectedTerm
+    ? selectedTerm.interval === 'year'
+      ? `${selectedTerm.count}_year`
+      : selectedTerm.count === 1 ? 'monthly' : `${selectedTerm.count}_month`
+    : '3_year'
+
+  const termMonths = selectedTerm
+    ? (selectedTerm.interval === 'year' ? selectedTerm.count * 12 : selectedTerm.count)
+    : 36
+  const termYears = termMonths / 12
 
   // Add-on unit prices from the catalog
   const userAddon = catalogAddons.find((a: BillingAddon) => a.id === 'extra_user')
   const companyAddon = catalogAddons.find((a: BillingAddon) => a.id === 'extra_company')
   const unitUserCost: number = userAddon?.price_per_year ?? 0
   const unitCompanyCost: number = companyAddon?.price_per_year ?? 0
-  const extraUsersCost = extraUsers * unitUserCost * years
-  const extraCompaniesCost = extraCompanies * unitCompanyCost * years
+  const extraUsersCost = Math.round(extraUsers * unitUserCost * termYears)
+  const extraCompaniesCost = Math.round(extraCompanies * unitCompanyCost * termYears)
 
-  const handleOpenCheckout = (plan: BillingPlan) => {
+  const handleOpenCheckout = (
+    plan: BillingPlan,
+    pkg?: BillingPackage,
+    price?: PackagePrice
+  ) => {
     setSelectedPlanForModal(plan)
+    setSelectedPackageForModal(pkg || plan.packages?.[0] || null)
+    setSelectedPriceIdForModal(price?.price_id || null)
+    setSelectedTermLabelForModal(selectedTerm?.label || null)
     setIsModalOpen(true)
   }
 
@@ -175,53 +215,35 @@ export default function PricingPage() {
           </span>
         </div>
 
-        {/* Duration Pills Selector */}
+        {/* Dynamic Duration Pills Selector */}
         <div className="pt-6">
-          <div className="inline-flex p-1.5 rounded-2xl bg-muted/70 border border-border shadow-inner gap-1">
-            <button
-              id="btn-duration-1yr"
-              type="button"
-              onClick={() => setDurationKey('1_year')}
-              className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                durationKey === '1_year'
-                  ? 'bg-card text-foreground shadow-sm border border-border/80'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              1 Year
-            </button>
-            <button
-              id="btn-duration-2yr"
-              type="button"
-              onClick={() => setDurationKey('2_year')}
-              className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
-                durationKey === '2_year'
-                  ? 'bg-card text-foreground shadow-sm border border-border/80'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              2 Years
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-500/15 text-emerald-600 font-extrabold">
-                Save 17%
-              </span>
-            </button>
-            <button
-              id="btn-duration-3yr"
-              type="button"
-              onClick={() => setDurationKey('3_year')}
-              className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
-                durationKey === '3_year'
-                  ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/25'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              3 Years
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
-                durationKey === '3_year' ? 'bg-white/20 text-white' : 'bg-emerald-500/15 text-emerald-600'
-              }`}>
-                Save 27% • Best Value
-              </span>
-            </button>
+          <div className="inline-flex flex-wrap items-center justify-center p-1.5 rounded-2xl bg-muted/70 border border-border shadow-inner gap-1">
+            {catalogTerms.map((term, idx) => {
+              const isSelected = selectedTerm?.interval === term.interval && selectedTerm?.count === term.count
+              const isLongest = idx === catalogTerms.length - 1 && catalogTerms.length > 1
+              return (
+                <button
+                  key={`${term.interval}_${term.count}`}
+                  id={`btn-duration-${term.interval}-${term.count}`}
+                  type="button"
+                  onClick={() => setSelectedTerm(term)}
+                  className={`px-5 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+                    isSelected
+                      ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/25'
+                      : 'bg-card text-foreground/80 hover:text-foreground border border-border/60'
+                  }`}
+                >
+                  <span>{term.label}</span>
+                  {isLongest && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                      isSelected ? 'bg-white/20 text-white' : 'bg-emerald-500/15 text-emerald-600'
+                    }`}>
+                      Best Value
+                    </span>
+                  )}
+                </button>
+              )
+            })}
           </div>
         </div>
       </section>
@@ -237,13 +259,36 @@ export default function PricingPage() {
         )}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8 items-stretch">
           {activePlans.map((plan) => {
-            const pricing = plan.pricing[durationKey]
+            const isTarget = Boolean(targetPlan && (plan.id === targetPlan || plan.code === targetPlan))
+            const packages = plan.packages || []
+            const selectedPkgId = selectedPackageByPlan[plan.id] ?? packages[0]?.id
+            const selectedPkg = packages.find(p => p.id === selectedPkgId) || packages[0]
+
+            const pkgPrices = selectedPkg?.prices || []
+            const activePrice = selectedTerm
+              ? pkgPrices.find(p => p.interval === selectedTerm.interval && (p.count === selectedTerm.count || p.interval_count === selectedTerm.count))
+              : pkgPrices[0]
+
+            // The old per-plan price map, only for a plan that has no packages; never another term's price
+            const legacyPricing = packages.length === 0 ? plan.pricing?.[durationKey] : undefined
+            const hasPriceForTerm = Boolean(activePrice) || (packages.length === 0 && Boolean(legacyPricing))
+
+            const totalPrice = activePrice ? activePrice.amount : (legacyPricing?.total ?? 0)
+            const perMonthPrice = activePrice
+              ? (activePrice.per_month ?? (selectedTerm?.interval === 'year' ? Math.round(activePrice.amount / (selectedTerm.count * 12)) : Math.round(activePrice.amount / (selectedTerm?.count || 1))))
+              : (legacyPricing?.per_month ?? 0)
+            const compareAtPrice = activePrice?.compare_at ?? null
+            const savings = compareAtPrice && compareAtPrice > totalPrice ? compareAtPrice - totalPrice : (legacyPricing?.savings ?? 0)
+
+            const companiesLabel = selectedPkg?.limits?.companies_label || plan.limits?.companies_label
+            const usersLabel = selectedPkg?.limits?.users_label || plan.limits?.users_label
+
             return (
               <div
                 key={plan.id}
-                className={`relative flex flex-col rounded-3xl border bg-card p-6 sm:p-8 transition-all hover:shadow-xl ${plan.border} ${
+                className={`relative flex flex-col rounded-3xl border bg-card p-6 sm:p-8 transition-all hover:shadow-xl ${plan.border || 'border-border'} ${
                   plan.is_popular ? 'ring-2 ring-emerald-500 dark:ring-emerald-400 shadow-lg' : ''
-                }`}
+                } ${isTarget ? 'ring-2 ring-blue-500 shadow-xl' : ''}`}
               >
                 {/* Popular Banner */}
                 {plan.is_popular && (
@@ -253,7 +298,7 @@ export default function PricingPage() {
                 )}
 
                 {/* Plan Header */}
-                <div className="space-y-2 mb-6">
+                <div className="space-y-2 mb-4">
                   <div className="flex items-center justify-between">
                     <h3 className="text-xl font-black text-foreground">{plan.name}</h3>
                     {plan.badge && (
@@ -267,30 +312,80 @@ export default function PricingPage() {
                   </p>
                 </div>
 
-                {/* Pricing Block */}
-                <div className="py-4 border-y border-border/60 my-2 space-y-1">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-3xl sm:text-4xl font-black text-foreground tracking-tight">
-                      ₹{pricing.total.toLocaleString()}
-                    </span>
-                    <span className="text-xs text-muted-foreground font-semibold">
-                      / {durationKey === '1_year' ? '1 year' : durationKey === '2_year' ? '2 years' : '3 years'}
-                    </span>
+                {/* Package Dropdown / Label */}
+                {packages.length > 1 && (
+                  <div className="mb-4">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
+                      Package
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={selectedPkg?.id}
+                        onChange={(e) => setSelectedPackageByPlan(prev => ({ ...prev, [plan.id]: Number(e.target.value) }))}
+                        className="w-full text-xs font-bold rounded-xl border border-border bg-muted/60 px-3 py-2.5 text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer appearance-none pr-8"
+                      >
+                        {packages.map((pkg) => (
+                          <option key={pkg.id} value={pkg.id}>
+                            {pkg.label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between text-xs pt-1">
-                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                      ₹{pricing.per_month}/month
-                    </span>
-                    {Boolean(pricing.savings && pricing.savings > 0) && (
-                      <span className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 font-bold">
-                        Save ₹{(pricing.savings ?? 0).toLocaleString()}
-                      </span>
+                )}
+                {packages.length === 1 && (
+                  <div className="mb-3 text-xs font-semibold text-muted-foreground">
+                    Package: <span className="font-bold text-foreground">{packages[0].label}</span>
+                  </div>
+                )}
+
+                {/* Pricing Block */}
+                {!hasPriceForTerm ? (
+                  <div className="py-6 border-y border-border/60 my-2 text-center space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground">
+                      Not available for {selectedTerm?.label || 'this duration'}
+                    </p>
+                    {pkgPrices.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nearest = catalogTerms.find(t =>
+                            pkgPrices.some(p => p.interval === t.interval && (p.count === t.count || p.interval_count === t.count))
+                          )
+                          if (nearest) setSelectedTerm(nearest)
+                        }}
+                        className="text-xs font-bold text-emerald-600 hover:text-emerald-500 underline cursor-pointer"
+                      >
+                        Switch to available duration
+                      </button>
                     )}
                   </div>
-                  <p className="text-[10px] text-muted-foreground/80 pt-0.5">
-                    + 18% GST • Inclusive of all cloud hosting
-                  </p>
-                </div>
+                ) : (
+                  <div className="py-4 border-y border-border/60 my-2 space-y-1">
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-3xl sm:text-4xl font-black text-foreground tracking-tight">
+                        ₹{totalPrice.toLocaleString()}
+                      </span>
+                      <span className="text-xs text-muted-foreground font-semibold">
+                        / {selectedTerm?.label || (durationKey === '1_year' ? '1 year' : durationKey === '2_year' ? '2 years' : '3 years')}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs pt-1">
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                        ₹{perMonthPrice}/month
+                      </span>
+                      {Boolean(savings && savings > 0) && (
+                        <span className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 font-bold">
+                          Save ₹{savings.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground/80 pt-0.5">
+                      + 18% GST • Inclusive of all cloud hosting
+                    </p>
+                  </div>
+                )}
 
                 {/* Limits Specs */}
                 <div className="grid grid-cols-2 gap-2 my-4 p-3 rounded-2xl bg-muted/40 border border-border/60 text-xs">
@@ -298,14 +393,14 @@ export default function PricingPage() {
                     <Building2 className="h-4 w-4 text-emerald-500 shrink-0" />
                     <div>
                       <span className="text-[10px] text-muted-foreground block">Companies</span>
-                      <strong className="font-bold text-foreground">{plan.limits.companies_label}</strong>
+                      <strong className="font-bold text-foreground">{companiesLabel}</strong>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <Users className="h-4 w-4 text-blue-500 shrink-0" />
                     <div>
                       <span className="text-[10px] text-muted-foreground block">Users</span>
-                      <strong className="font-bold text-foreground">{plan.limits.users_label}</strong>
+                      <strong className="font-bold text-foreground">{usersLabel}</strong>
                     </div>
                   </div>
                 </div>
@@ -342,8 +437,9 @@ export default function PricingPage() {
                   <button
                     id={`btn-choose-${plan.id}`}
                     type="button"
-                    onClick={() => handleOpenCheckout(plan)}
-                    className={`w-full py-3.5 rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer ${
+                    disabled={!hasPriceForTerm}
+                    onClick={() => handleOpenCheckout(plan, selectedPkg, activePrice)}
+                    className={`w-full py-3.5 rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                       plan.is_popular
                         ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:opacity-95 shadow-emerald-500/25'
                         : 'bg-primary text-primary-foreground hover:opacity-90'
@@ -352,7 +448,6 @@ export default function PricingPage() {
                     {plan.id === 'diamond' ? 'Get Enterprise' : plan.id === 'gold' ? 'Upgrade to Gold' : 'Get Starter'}
                     <ArrowRight className="h-4 w-4" />
                   </button>
-
                 </div>
 
               </div>
@@ -371,7 +466,7 @@ export default function PricingPage() {
               </div>
               <h3 className="text-xl font-black">Need Extra Users or Companies?</h3>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Scale your team or entities without switching tiers. Add-ons are billed for the plan duration ({durationKey === '1_year' ? '1 year' : durationKey === '2_year' ? '2 years' : '3 years'}).
+                Scale your team or entities without switching tiers. Add-ons are billed for the plan duration ({selectedTerm?.label || '3 years'}).
               </p>
             </div>
             <div className="text-right shrink-0">
@@ -412,7 +507,7 @@ export default function PricingPage() {
                 </div>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Total user cost: <strong>₹{extraUsersCost.toLocaleString()}</strong> for {years} year{years > 1 ? 's' : ''}.
+                Total user cost: <strong>₹{extraUsersCost.toLocaleString()}</strong> for {selectedTerm?.label || '3 years'}.
               </p>
             </div>
 
@@ -444,7 +539,7 @@ export default function PricingPage() {
                 </div>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Total company cost: <strong>₹{extraCompaniesCost.toLocaleString()}</strong> for {years} year{years > 1 ? 's' : ''}.
+                Total company cost: <strong>₹{extraCompaniesCost.toLocaleString()}</strong> for {selectedTerm?.label || '3 years'}.
               </p>
             </div>
 
@@ -683,11 +778,22 @@ export default function PricingPage() {
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         plan={selectedPlanForModal}
+        packageItem={selectedPackageForModal}
+        priceId={selectedPriceIdForModal}
+        termLabel={selectedTermLabelForModal}
         durationKey={durationKey}
         extraUsers={extraUsers}
         extraCompanies={extraCompanies}
       />
 
     </div>
+  )
+}
+
+export default function PricingPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen p-8 text-center text-sm text-muted-foreground">Loading pricing…</div>}>
+      <PricingContent />
+    </Suspense>
   )
 }

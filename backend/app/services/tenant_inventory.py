@@ -106,11 +106,12 @@ async def collect_inventory(db: AsyncSession) -> Dict[str, Any]:
             .group_by(Company.account_id, Company.tally_guid).having(func.count() > 1))).all()
     ]
 
-    # Rows still waiting for an owner, per table that has the column
+    # Rows still waiting for an owner, per table that has the column. In the billing catalog an empty
+    # account_id is not missing: it means the plan or coupon is offered to every account.
     unowned = {}
     for name, table in sorted(tables.items()):
         for column in ("account_id", "company_id"):
-            if column in table.c and table.c[column].nullable and name not in ("accounts", "billing_plans"):
+            if column in table.c and table.c[column].nullable and name not in ("accounts", "billing_plans", "billing_plan_groups", "billing_coupons"):
                 missing = await _count(db, select(func.count()).select_from(table).where(table.c[column].is_(None)))
                 total = await _count(db, select(func.count()).select_from(table))
                 if total:

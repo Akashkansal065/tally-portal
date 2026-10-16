@@ -45,6 +45,10 @@ class NormalisedEvent:
     status: str
     raw: Dict[str, Any]
     gateway_subscription_id: Optional[str] = None
+    gateway_refund_id: Optional[str] = None
+    gateway_dispute_id: Optional[str] = None
+    error_code: Optional[str] = None
+    error_description: Optional[str] = None
 
 
 class BillingGateway(Protocol):

@@ -119,7 +119,8 @@ async def create_order(
     # 2. A coupon with a use limit is locked until this order is saved with its reservation, so two orders
     # made at once cannot both take its last use (the quote counts reservations as uses)
     if coupon_code:
-        await db.execute(select(BillingCoupon.id).where(BillingCoupon.code == coupon_code).with_for_update())
+        coupon_norm = coupon_code.strip().upper()
+        await db.execute(select(BillingCoupon.id).where(BillingCoupon.code == coupon_norm).with_for_update())
 
     # 3. Server-side quote. It also says what the order is: new, renewal, upgrade, downgrade or addon.
     quote = await calculate_quote(
@@ -146,7 +147,8 @@ async def create_order(
     if autopay:
         price = (await db.execute(
             select(BillingPlanPrice).where(BillingPlanPrice.id == quote.price_id))).scalars().first()
-        if not price or not price.autopay_allowed:
+        # Autopay is for 1-month terms only; longer terms are paid up front
+        if not price or not price.autopay_allowed or price.interval != "month" or price.interval_count != 1:
             raise ValueError("Recurring autopay is not permitted for the selected plan price.")
 
     buyer = await _buyer_for(db, account_id, buyer_snapshot)
@@ -188,19 +190,48 @@ async def create_order(
 
     # 4. Create gateway order
     gw = get_gateway(gateway_code)
-    gw_res = await gw.create_order(order)
-    order.gateway_order_id = gw_res.gateway_order_id
-    if gw_res.client_payload:
-        # Kept so a repeated request can open the same checkout (Cashfree's payment session)
-        quote_dict["checkout_payload"] = gw_res.client_payload
+    if autopay and gateway_code == "razorpay" and hasattr(gw, "ensure_plan") and hasattr(gw, "create_subscription"):
+        plan_name = plan.name if plan else (quote.plan_name or quote.plan_code or "Plan")
+        price = (await db.execute(select(BillingPlanPrice).where(BillingPlanPrice.id == quote.price_id))).scalars().first()
+        if not price:
+            raise ValueError("Invalid price for recurring subscription.")
+        plan_id_rzp = await gw.ensure_plan(price, plan_name)
+        total_count = 120  # monthly charges for up to 10 years, until cancelled
+        sub_res = await gw.create_subscription(
+            plan_id=plan_id_rzp,
+            total_count=total_count,
+            notes={
+                "account_id": str(account_id),
+                "order_ref": order.order_ref,
+                "purpose": order.purpose,
+            },
+        )
+        sub_id = sub_res["id"]
+        order.gateway_order_id = sub_id
+        quote_dict["gateway_subscription_id"] = sub_id
+        quote_dict["checkout_payload"] = {"subscription_id": sub_id}
         order.quote = json.dumps(quote_dict)
-    await db.commit()
+        await db.commit()
 
-    logger.info(f"Created {order.purpose} order {order.order_ref} (#{order.id}) via {gateway_code} "
-                f"(total={order.total_paise} paise)")
-    cfg = gw.checkout_config(order)
-    cfg.update(gw_res.client_payload or {})
-    return order, cfg
+        logger.info(f"Created recurring {order.purpose} subscription order {order.order_ref} (#{order.id}) "
+                    f"sub_id={sub_id} via {gateway_code} (total={order.total_paise} paise)")
+        cfg = gw.checkout_config(order)
+        cfg.update({"subscription_id": sub_id})
+        return order, cfg
+    else:
+        gw_res = await gw.create_order(order)
+        order.gateway_order_id = gw_res.gateway_order_id
+        if gw_res.client_payload:
+            # Kept so a repeated request can open the same checkout (Cashfree's payment session)
+            quote_dict["checkout_payload"] = gw_res.client_payload
+            order.quote = json.dumps(quote_dict)
+        await db.commit()
+
+        logger.info(f"Created {order.purpose} order {order.order_ref} (#{order.id}) via {gateway_code} "
+                    f"(total={order.total_paise} paise)")
+        cfg = gw.checkout_config(order)
+        cfg.update(gw_res.client_payload or {})
+        return order, cfg
 
 
 async def confirm_order(
@@ -315,6 +346,11 @@ def _apply_to_subscription(sub: Optional[AccountSubscription], order: BillingOrd
     if is_autopay:
         sub.autopay = True
         sub.cancel_at_period_end = False
+        sub_id = quote_data.get("gateway_subscription_id") or (
+            order.gateway_order_id if (order.gateway_order_id and order.gateway_order_id.startswith("sub_")) else None
+        )
+        if sub_id:
+            sub.gateway_subscription_id = sub_id
     return sub, start, end
 
 

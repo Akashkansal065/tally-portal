@@ -54,11 +54,14 @@ from app.models.billing import (
     BillingOrder,
     BillingPayment,
     BillingPlan,
+    BillingPlanGroup,
     BillingPlanPrice,
+    BillingRefund,
     BillingSubscriptionEvent,
     BillingWebhookEvent,
 )
 from app.models.portal_core import Account, Company, User
+from app.services.billing.catalog_admin import generate_package_label, migrate_plans_to_groups
 from app.services.billing.catalog import (
     get_active_addons,
     get_prices_for_plan,
@@ -287,20 +290,172 @@ async def get_plans_catalog(
     user: Optional[User] = Depends(get_optional_current_user),
 ):
     """
-    Public endpoint: return all pricing tiers, prices, add-ons, feature
-    comparison table, and gateway metadata.
+    Public endpoint: return all plan groups, packages, prices, dynamic terms,
+    add-ons, feature comparison table, and gateway metadata.
     """
+    unlinked = (await db.execute(
+        select(BillingPlan.id).where(BillingPlan.group_id.is_(None)).limit(1)
+    )).scalar()
+    if unlinked:
+        await migrate_plans_to_groups(db)
+        await db.commit()
+
     account_id = user.account_id if user else None
-    plans = await get_public_plans(db, account_id=account_id)
     addons = await get_active_addons(db)
 
+    stmt = (
+        select(BillingPlanGroup)
+        .where(
+            BillingPlanGroup.is_active == True,
+            or_(
+                (BillingPlanGroup.is_public == True) & (BillingPlanGroup.account_id.is_(None)),
+                BillingPlanGroup.account_id == account_id if account_id else False,
+            ),
+        )
+        .order_by(BillingPlanGroup.sort_order)
+    )
+    groups = (await db.execute(stmt)).scalars().all()
+
     plans_out = []
-    for plan in plans:
-        prices = await get_prices_for_plan(db, plan.id)
-        plans_out.append(_plan_to_dict(plan, prices))
+    seen_terms: set[tuple[str, int]] = set()
+
+    for g in groups:
+        packages = (await db.execute(
+            select(BillingPlan)
+            .where(
+                BillingPlan.group_id == g.id,
+                BillingPlan.is_active == True,
+            )
+            .order_by(BillingPlan.sort_order, BillingPlan.id)
+        )).scalars().all()
+
+        packages_out = []
+        for pkg in packages:
+            prices = (await db.execute(
+                select(BillingPlanPrice)
+                .where(
+                    BillingPlanPrice.plan_id == pkg.id,
+                    BillingPlanPrice.is_active == True,
+                )
+                .order_by(BillingPlanPrice.interval, BillingPlanPrice.interval_count)
+            )).scalars().all()
+
+            if not prices:
+                continue
+
+            prices_out = []
+            for p in prices:
+                seen_terms.add((p.interval, p.interval_count))
+                months = p.interval_count * 12 if p.interval == "year" else p.interval_count
+                per_month_paise = round(p.amount_paise / (months if months > 0 else 1))
+                prices_out.append({
+                    "price_id": p.id,
+                    "interval": p.interval,
+                    "count": p.interval_count,
+                    "interval_count": p.interval_count,
+                    "amount_paise": p.amount_paise,
+                    "amount": round(p.amount_paise / 100, 2),
+                    "compare_at_paise": p.compare_at_paise,
+                    "compare_at": round(p.compare_at_paise / 100, 2) if p.compare_at_paise else None,
+                    "per_month_paise": per_month_paise,
+                    "per_month": round(per_month_paise / 100, 2),
+                    "autopay_allowed": p.autopay_allowed,
+                })
+
+            packages_out.append({
+                "id": pkg.id,
+                "code": pkg.code,
+                "label": pkg.label or generate_package_label(pkg.max_companies, pkg.max_users),
+                "max_companies": pkg.max_companies,
+                "max_users": pkg.max_users,
+                "max_devices": pkg.max_devices,
+                "limits": {
+                    "companies": pkg.max_companies,
+                    "companies_label": "Unlimited Companies" if pkg.max_companies is None else f"Up to {pkg.max_companies} {'Company' if pkg.max_companies == 1 else 'Companies'}",
+                    "users": pkg.max_users,
+                    "users_label": "Unlimited Users" if pkg.max_users is None else f"{pkg.max_users} {'User (Admin)' if pkg.max_users == 1 else 'Users'} Included",
+                    "devices_per_user": pkg.max_devices,
+                },
+                "prices": prices_out,
+            })
+
+        if not packages_out:
+            continue
+
+        display = json.loads(g.display) if g.display else {}
+        try:
+            feature_keys = json.loads(g.feature_keys) if g.feature_keys else []
+        except Exception:
+            feature_keys = []
+
+        highlights = display.get("highlights") or [
+            get_feature(k).label
+            for k in feature_keys
+            if get_feature(k) is not None
+        ][:5]
+
+        first_pkg = packages_out[0]
+        legacy_pricing = {}
+        for pr in first_pkg["prices"]:
+            p_int, p_cnt = pr["interval"], pr["interval_count"]
+            # "monthly", "N_month" or "N_year": the duration keys the quote understands
+            key = "monthly" if p_int == "month" and p_cnt == 1 else f"{p_cnt}_{p_int}"
+            total_rupees = pr["amount"]
+            savings = round((pr["compare_at_paise"] - pr["amount_paise"]) / 100, 2) if pr.get("compare_at_paise") else 0
+            discount_pct = round((savings / (pr["compare_at_paise"] / 100)) * 100) if pr.get("compare_at_paise") else 0
+            legacy_pricing[key] = {
+                "price_id": pr["price_id"],
+                "total": total_rupees,
+                "per_month": pr["per_month"],
+                "discount_pct": discount_pct,
+                "savings": savings,
+                "autopay_allowed": pr["autopay_allowed"],
+            }
+
+        plans_out.append({
+            "id": g.code,
+            "code": g.code,
+            "name": g.name,
+            "tagline": g.tagline,
+            "badge": g.badge,
+            "display": display,
+            "is_popular": display.get("is_popular", False),
+            "color": display.get("color", "from-gray-600 to-gray-800"),
+            "accent": display.get("accent", "gray"),
+            "border": display.get("border", "border-border"),
+            "allow_extra_users": g.allow_extra_users,
+            "allow_extra_companies": g.allow_extra_companies,
+            "feature_keys": feature_keys,
+            "highlights": highlights,
+            "features": [
+                {"text": get_feature(k).label if get_feature(k) else k, "bold": False}
+                for k in feature_keys
+            ],
+            "packages": packages_out,
+            "plan_db_id": first_pkg["id"],
+            "limits": first_pkg["limits"],
+            "pricing": legacy_pricing,
+        })
+
+    def term_sort_key(t: tuple[str, int]) -> int:
+        interval, count = t
+        return count if interval == "month" else count * 12
+
+    terms_out = []
+    for interval, count in sorted(seen_terms, key=term_sort_key):
+        if interval == "month":
+            label = "Monthly" if count == 1 else f"{count} months"
+        else:
+            label = "1 year" if count == 1 else f"{count} years"
+        terms_out.append({
+            "interval": interval,
+            "count": count,
+            "label": label,
+        })
 
     return {
         "success": True,
+        "terms": terms_out,
         "plans": plans_out,
         "addons": [_addon_to_dict(a) for a in addons],
         "comparison": _build_comparison_table(),
@@ -361,12 +516,19 @@ async def get_current_subscription(
         select(AccountSubscription).where(AccountSubscription.account_id == user.account_id)
     )).scalars().first()
 
+    pkg = None
+    if sub and sub.plan_id:
+        pkg = (await db.execute(
+            select(BillingPlan).where(BillingPlan.id == sub.plan_id)
+        )).scalars().first()
+
     credits = await get_all_credit_balances(db, user.account_id)
 
     return {
         "success": True,
         "account_id": user.account_id,
         "plan": ent.plan_name,
+        "package": pkg.label if pkg else None,
         "tier": ent.plan_code.lower() if ent.plan_code else None,
         "status": ent.status,
         "valid_until": valid_until,
@@ -636,6 +798,16 @@ async def cancel_autopay_subscription(
             "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
         }
 
+    # Cancel mandate at the gateway if gateway subscription id is active
+    if sub.gateway and sub.gateway_subscription_id:
+        try:
+            gw = get_gateway(sub.gateway)
+            if hasattr(gw, "cancel_subscription"):
+                await gw.cancel_subscription(sub.gateway_subscription_id, cancel_at_cycle_end=True)
+                logger.info(f"Cancelled mandate {sub.gateway_subscription_id} at gateway {sub.gateway}")
+        except Exception as e:
+            logger.warning(f"Could not cancel mandate {sub.gateway_subscription_id} at {sub.gateway}: {e}")
+
     sub.cancel_at_period_end = True
     sub.autopay = False
 
@@ -674,19 +846,34 @@ async def cancel_autopay_subscription(
 _WEBHOOK_EVENTS = {
     "razorpay": {
         "paid": ("payment.captured", "order.paid", "subscription.charged", "subscription.completed"),
+        "autopay_authenticated": ("subscription.authenticated", "subscription.activated", "subscription.resumed"),
         "autopay_cancelled": ("subscription.cancelled", "subscription.paused"),
         "autopay_failed": ("subscription.halted", "subscription.payment_failed"),
+        "payment_failed": ("payment.failed",),
+        "refund": ("refund.processed", "refund.created", "refund.failed"),
+        "dispute": (
+            "payment.dispute.created",
+            "payment.dispute.won",
+            "payment.dispute.lost",
+            "payment.dispute.closed",
+            "payment.dispute.under_review",
+            "payment.dispute.action_required",
+        ),
     },
     "cashfree": {
         "paid": ("PAYMENT_SUCCESS", "SUBSCRIPTION_CHARGED", "SUBSCRIPTION_PAYMENT_SUCCESS"),
-        "autopay_cancelled": ("SUBSCRIPTION_CANCELLED",),
+        "autopay_authenticated": ("SUBSCRIPTION_AUTHENTICATED", "SUBSCRIPTION_ACTIVATED"),
+        "autopay_cancelled": ("SUBSCRIPTION_CANCELLED", "SUBSCRIPTION_PAUSED"),
         "autopay_failed": ("SUBSCRIPTION_PAYMENT_DECLINED", "SUBSCRIPTION_PAYMENT_FAILED"),
+        "payment_failed": ("PAYMENT_FAILED", "PAYMENT_USER_DROPPED"),
+        "refund": ("REFUND_PROCESSED", "REFUND_SUCCESS"),
+        "dispute": ("DISPUTE_CREATED", "DISPUTE_RESOLVED"),
     },
 }
 
 
 def _webhook_kind(gateway: str, event) -> str:
-    for kind, names in _WEBHOOK_EVENTS[gateway].items():
+    for kind, names in _WEBHOOK_EVENTS.get(gateway, {}).items():
         if any(name in event.event_type for name in names):
             return kind
     return "paid" if event.status == "captured" else "other"
@@ -795,6 +982,25 @@ async def _act_on_webhook(db: AsyncSession, gateway: str, event, payload: dict) 
         return None
 
     sub = await _subscription_for(db, gateway, event.gateway_subscription_id)
+
+    if kind == "autopay_authenticated" and sub:
+        sub.autopay = True
+        sub.cancel_at_period_end = False
+        db.add(BillingSubscriptionEvent(
+            account_id=sub.account_id,
+            event_type="autopay_authenticated",
+            from_state=sub.status,
+            to_state=sub.status,
+            detail=json.dumps({
+                "event_id": event.event_id,
+                "subscription_id": event.gateway_subscription_id,
+                "payment_id": event.gateway_payment_id,
+            }),
+        ))
+        await db.commit()
+        invalidate_entitlements_cache(sub.account_id)
+        return None
+
     if kind == "autopay_cancelled" and sub:
         sub.cancel_at_period_end = True
         sub.autopay = False
@@ -807,7 +1013,9 @@ async def _act_on_webhook(db: AsyncSession, gateway: str, event, payload: dict) 
         ))
         await db.commit()
         invalidate_entitlements_cache(sub.account_id)
-    elif kind == "autopay_failed" and sub and sub.status == "active":
+        return None
+
+    if kind == "autopay_failed" and sub and sub.status == "active":
         # The term that was paid for still runs to its end; only then does grace start
         period_end = as_utc(sub.current_period_end)
         if not period_end or period_end <= utc_now():
@@ -822,6 +1030,102 @@ async def _act_on_webhook(db: AsyncSession, gateway: str, event, payload: dict) 
         ))
         await db.commit()
         invalidate_entitlements_cache(sub.account_id)
+        return None
+
+    if kind == "payment_failed":
+        order = None
+        if event.gateway_order_id:
+            order = (await db.execute(
+                select(BillingOrder).where(
+                    BillingOrder.gateway == gateway,
+                    or_(BillingOrder.gateway_order_id == event.gateway_order_id,
+                        BillingOrder.order_ref == event.gateway_order_id),
+                )
+            )).scalars().first()
+        target_account_id = order.account_id if order else (sub.account_id if sub else None)
+        if target_account_id:
+            logger.warning(f"Payment failed for account {target_account_id}: {event.error_code} - {event.error_description}")
+            db.add(BillingSubscriptionEvent(
+                account_id=target_account_id,
+                event_type="payment_failed",
+                order_id=order.id if order else None,
+                detail=json.dumps({
+                    "event_id": event.event_id,
+                    "error_code": event.error_code,
+                    "error_description": event.error_description,
+                    "gateway_payment_id": event.gateway_payment_id,
+                    "gateway_subscription_id": event.gateway_subscription_id,
+                }),
+            ))
+            await db.commit()
+        return None
+
+    if kind == "refund" and event.gateway_payment_id:
+        pmt = (await db.execute(
+            select(BillingPayment).where(
+                BillingPayment.gateway == gateway,
+                BillingPayment.gateway_payment_id == event.gateway_payment_id,
+            )
+        )).scalars().first()
+        if pmt:
+            refund_amt = int(event.amount_paise or 0)
+            existing_refund = None
+            if event.gateway_refund_id:
+                existing_refund = (await db.execute(
+                    select(BillingRefund).where(BillingRefund.gateway_refund_id == event.gateway_refund_id)
+                )).scalars().first()
+            if not existing_refund and event.gateway_refund_id:
+                db.add(BillingRefund(
+                    payment_id=pmt.id,
+                    gateway_refund_id=event.gateway_refund_id,
+                    amount_paise=refund_amt,
+                    status=event.status or "processed",
+                    reason="Processed by gateway webhook",
+                ))
+            order = (await db.execute(
+                select(BillingOrder).where(BillingOrder.id == pmt.order_id)
+            )).scalars().first()
+            if order:
+                db.add(BillingSubscriptionEvent(
+                    account_id=order.account_id,
+                    event_type="payment_refunded",
+                    order_id=order.id,
+                    detail=json.dumps({
+                        "event_id": event.event_id,
+                        "refund_id": event.gateway_refund_id,
+                        "amount_paise": refund_amt,
+                    }),
+                ))
+            await db.commit()
+        return None
+
+    if kind == "dispute":
+        logger.warning(f"Gateway dispute event: {event.event_type} dispute_id={event.gateway_dispute_id} payment_id={event.gateway_payment_id}")
+        if event.gateway_payment_id:
+            pmt = (await db.execute(
+                select(BillingPayment).where(
+                    BillingPayment.gateway == gateway,
+                    BillingPayment.gateway_payment_id == event.gateway_payment_id,
+                )
+            )).scalars().first()
+            if pmt:
+                order = (await db.execute(
+                    select(BillingOrder).where(BillingOrder.id == pmt.order_id)
+                )).scalars().first()
+                if order:
+                    db.add(BillingSubscriptionEvent(
+                        account_id=order.account_id,
+                        event_type=f"dispute_{event.event_type.replace('.', '_')}",
+                        order_id=order.id,
+                        detail=json.dumps({
+                            "event_id": event.event_id,
+                            "dispute_id": event.gateway_dispute_id,
+                            "payment_id": event.gateway_payment_id,
+                        }),
+                    ))
+                    await db.commit()
+        return None
+
     return None
 
 

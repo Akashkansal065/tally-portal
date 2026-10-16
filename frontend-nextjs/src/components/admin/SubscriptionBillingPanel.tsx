@@ -26,7 +26,19 @@ import {
 import { API_BASE, authHeaders, formatDate } from '@/lib/utils'
 import { useAuth } from '@/context/AuthContext'
 import { PlanCheckoutModal } from '@/components/pricing/PlanCheckoutModal'
-import { fetchInvoices, cancelAutopaySubscription, BillingInvoiceSummary, salesTelUrl, salesWhatsAppUrl, SubscriptionDetails, BillingPlan } from '@/lib/billing'
+import {
+  fetchInvoices,
+  fetchPlansCatalog,
+  cancelAutopaySubscription,
+  BillingInvoiceSummary,
+  BillingPackage,
+  CatalogTerm,
+  PackagePrice,
+  salesTelUrl,
+  salesWhatsAppUrl,
+  SubscriptionDetails,
+  BillingPlan,
+} from '@/lib/billing'
 import { useSalesContact } from '@/hooks/useSalesContact'
 import { toast } from 'sonner'
 import Link from 'next/link'
@@ -38,26 +50,43 @@ export function SubscriptionBillingPanel() {
   const [subscription, setSubscription] = useState<SubscriptionDetails | null>(null)
   const [plans, setPlans] = useState<BillingPlan[]>([])
   const [invoices, setInvoices] = useState<BillingInvoiceSummary[]>([])
-  const [durationKey, setDurationKey] = useState<'1_year' | '2_year' | '3_year'>('3_year')
+  // Terms are whatever the catalog prices; the longest is picked first
+  const [terms, setTerms] = useState<CatalogTerm[]>([])
+  const [selectedTerm, setSelectedTerm] = useState<CatalogTerm | null>(null)
+  // The package chosen on each plan's card (plan code -> package id)
+  const [selectedPackageByPlan, setSelectedPackageByPlan] = useState<Record<string, number>>({})
   const [selectedPlanForModal, setSelectedPlanForModal] = useState<BillingPlan | null>(null)
+  const [selectedPackageForModal, setSelectedPackageForModal] = useState<BillingPackage | null>(null)
+  const [selectedPriceForModal, setSelectedPriceForModal] = useState<PackagePrice | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
+
+  const applyCatalog = (catalogPlans: BillingPlan[], catalogTerms: CatalogTerm[]) => {
+    setPlans(catalogPlans)
+    setTerms(catalogTerms)
+    // Keep the term already chosen if it is still sold; otherwise the longest one
+    setSelectedTerm((current) =>
+      (current && catalogTerms.find((t) => t.interval === current.interval && t.count === current.count))
+      || catalogTerms[catalogTerms.length - 1]
+      || null
+    )
+  }
 
   const fetchSubscriptionData = async (_options?: unknown) => {
     try {
       setLoading(true)
-      const [subRes, plansRes] = await Promise.all([
+      const [subRes, plansData] = await Promise.all([
         fetch(`${API_BASE}/billing/current-subscription`, {
           headers: token ? authHeaders(token) : {}
         }),
-        fetch(`${API_BASE}/billing/plans`)
+        // Signed in, so the catalog also carries any plan made for this account
+        fetchPlansCatalog(token || undefined),
       ])
       const subData = await subRes.json()
-      const plansData = await plansRes.json()
 
       if (!subData.success || !plansData.success) throw new Error('Billing data unavailable')
       setSubscription(subData)
-      setPlans(plansData.plans)
+      applyCatalog(plansData.plans, plansData.terms || [])
       setLoadFailed(false)
 
       if (token) {
@@ -80,15 +109,14 @@ export function SubscriptionBillingPanel() {
       fetch(`${API_BASE}/billing/current-subscription`, {
         headers: token ? authHeaders(token) : {}
       }),
-      fetch(`${API_BASE}/billing/plans`)
+      fetchPlansCatalog(token || undefined),
     ])
-      .then(async ([subRes, plansRes]) => {
+      .then(async ([subRes, plansData]) => {
         const subData = await subRes.json()
-        const plansData = await plansRes.json()
         if (!active) return
         if (!subData.success || !plansData.success) throw new Error('Billing data unavailable')
         setSubscription(subData)
-        setPlans(plansData.plans)
+        applyCatalog(plansData.plans, plansData.terms || [])
         setLoadFailed(false)
 
         if (token) {
@@ -117,10 +145,29 @@ export function SubscriptionBillingPanel() {
 
   const [cancellingAutopay, setCancellingAutopay] = useState(false)
 
-  const handleOpenCheckout = (plan: BillingPlan) => {
+  const handleOpenCheckout = (plan: BillingPlan, pkg: BillingPackage | null, price: PackagePrice | null) => {
     setSelectedPlanForModal(plan)
+    setSelectedPackageForModal(pkg)
+    setSelectedPriceForModal(price)
     setIsModalOpen(true)
   }
+
+  // The account's own package, at the chosen term (or the first term it is sold for); else the first plan
+  const openCurrentPlanCheckout = () => {
+    const plan = plans.find((p) => (p.packages || []).some((x) => x.code === subscription?.tier)) || plans[0]
+    if (!plan) return
+    const pkg = (plan.packages || []).find((x) => x.code === subscription?.tier) || plan.packages?.[0] || null
+    const price = pkg?.prices.find(
+      (pr) => selectedTerm && pr.interval === selectedTerm.interval && (pr.count ?? pr.interval_count) === selectedTerm.count
+    ) || pkg?.prices[0] || null
+    handleOpenCheckout(plan, pkg, price)
+  }
+
+  const durationKey = !selectedTerm
+    ? '1_year'
+    : selectedTerm.interval === 'year'
+    ? `${selectedTerm.count}_year`
+    : selectedTerm.count === 1 ? 'monthly' : `${selectedTerm.count}_month`
 
   const handleCancelAutopay = async () => {
     if (!token) return
@@ -190,8 +237,13 @@ export function SubscriptionBillingPanel() {
             </div>
 
             <div>
-              <h2 className="text-2xl font-black text-foreground">
-                {subscription.plan ? `${subscription.plan} plan` : 'Your current access'}
+              <h2 className="text-2xl font-black text-foreground flex items-center gap-2">
+                <span>{subscription.plan ? `${subscription.plan} plan` : 'Your current access'}</span>
+                {subscription.package && (
+                  <span className="text-sm font-semibold text-muted-foreground px-2.5 py-0.5 rounded-lg bg-muted border border-border">
+                    {subscription.package}
+                  </span>
+                )}
               </h2>
               <p className="text-xs text-muted-foreground mt-1 max-w-xl">
                 {subscription.plan
@@ -222,15 +274,12 @@ export function SubscriptionBillingPanel() {
                 <Clock className="h-3.5 w-3.5" /> {cancellingAutopay ? 'Cancelling...' : 'Cancel Autopay'}
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenCheckout(plans.find(p => p.id === subscription.tier) || plans.find(p => p.is_popular) || plans[0])
-              }}
+            <Link
+              href={subscription.tier ? `/pricing?plan=${subscription.tier}` : '/pricing'}
               className="px-5 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-black text-xs shadow-md shadow-emerald-500/20 hover:opacity-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Zap className="h-4 w-4" /> Talk to Sales
-            </button>
+              <Zap className="h-4 w-4" /> Change Package
+            </Link>
             <Link
               href="/pricing"
               target="_blank"
@@ -276,7 +325,7 @@ export function SubscriptionBillingPanel() {
             <button
               type="button"
               onClick={() => {
-                handleOpenCheckout(plans.find(p => p.id === subscription.tier) || plans[0])
+                openCurrentPlanCheckout()
               }}
               className="text-emerald-600 font-bold hover:underline cursor-pointer flex items-center gap-1"
             >
@@ -310,7 +359,7 @@ export function SubscriptionBillingPanel() {
             <button
               type="button"
               onClick={() => {
-                handleOpenCheckout(plans.find(p => p.id === subscription.tier) || plans[0])
+                openCurrentPlanCheckout()
               }}
               className="text-blue-600 font-bold hover:underline cursor-pointer flex items-center gap-1"
             >
@@ -340,7 +389,7 @@ export function SubscriptionBillingPanel() {
             <button
               type="button"
               onClick={() => {
-                handleOpenCheckout(plans.find(p => p.id === subscription.tier) || plans[0])
+                openCurrentPlanCheckout()
               }}
               className="text-amber-600 dark:text-amber-400 font-bold hover:underline cursor-pointer flex items-center gap-1"
             >
@@ -366,7 +415,7 @@ export function SubscriptionBillingPanel() {
             <button
               type="button"
               onClick={() => {
-                handleOpenCheckout(plans.find(p => p.id === subscription.tier) || plans[0])
+                openCurrentPlanCheckout()
               }}
               className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline cursor-pointer flex items-center gap-1"
             >
@@ -386,42 +435,40 @@ export function SubscriptionBillingPanel() {
             </p>
           </div>
 
-          {/* Duration Selector */}
-          <div className="inline-flex p-1 rounded-xl bg-muted border border-border self-start sm:self-auto gap-1">
-            <button
-              type="button"
-              onClick={() => setDurationKey('1_year')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                durationKey === '1_year' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
-              }`}
-            >
-              1 Year
-            </button>
-            <button
-              type="button"
-              onClick={() => setDurationKey('2_year')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                durationKey === '2_year' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
-              }`}
-            >
-              2 Years (-17%)
-            </button>
-            <button
-              type="button"
-              onClick={() => setDurationKey('3_year')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                durationKey === '3_year' ? 'bg-emerald-500 text-white shadow-sm' : 'text-muted-foreground'
-              }`}
-            >
-              3 Years (-27%)
-            </button>
-          </div>
+          {/* Term selector: the terms the catalog sells */}
+          {terms.length > 1 && (
+            <div className="inline-flex flex-wrap p-1 rounded-xl bg-muted border border-border self-start sm:self-auto gap-1">
+              {terms.map((t) => {
+                const active = selectedTerm?.interval === t.interval && selectedTerm?.count === t.count
+                return (
+                  <button
+                    key={`${t.interval}-${t.count}`}
+                    type="button"
+                    onClick={() => setSelectedTerm(t)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      active ? 'bg-emerald-500 text-white shadow-sm' : 'text-muted-foreground'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {plans.map((p) => {
-            const pricing = p.pricing[durationKey] || p.pricing['1_year']
-            const isCurrent = subscription.tier === p.id
+            const packages = p.packages || []
+            // The account's own package is on this plan when its code is one of the plan's packages
+            const currentPkg = packages.find((pkg) => pkg.code === subscription.tier)
+            const isCurrent = Boolean(currentPkg)
+            const chosenId = selectedPackageByPlan[p.id] ?? currentPkg?.id ?? packages[0]?.id
+            const pkg = packages.find((x) => x.id === chosenId) || packages[0] || null
+            const price = pkg?.prices.find(
+              (pr) => selectedTerm && pr.interval === selectedTerm.interval
+                && (pr.count ?? pr.interval_count) === selectedTerm.count
+            ) || null
 
             return (
               <div
@@ -450,24 +497,49 @@ export function SubscriptionBillingPanel() {
                   </p>
                 </div>
 
+                {packages.length > 1 && (
+                  <select
+                    value={pkg?.id ?? ''}
+                    onChange={(e) => setSelectedPackageByPlan((prev) => ({ ...prev, [p.id]: Number(e.target.value) }))}
+                    className="w-full text-xs font-semibold px-3 py-2 rounded-xl border border-border bg-background outline-none"
+                    aria-label={`${p.name} package`}
+                  >
+                    {packages.map((x) => (
+                      <option key={x.id} value={x.id}>
+                        {x.label}{x.id === currentPkg?.id ? ' (current)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
                 <div className="border-y border-border/60 py-3 space-y-0.5">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-2xl font-black">₹{pricing.total.toLocaleString()}</span>
-                    <span className="text-[11px] text-muted-foreground">/ {durationKey === '1_year' ? 'yr' : durationKey === '2_year' ? '2 yrs' : '3 yrs'}</span>
-                  </div>
-                  <span className="text-xs font-bold text-emerald-600 block">
-                    ₹{pricing.per_month}/month
-                  </span>
+                  {price ? (
+                    <>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-2xl font-black">₹{price.amount.toLocaleString('en-IN')}</span>
+                        <span className="text-[11px] text-muted-foreground">/ {selectedTerm?.label}</span>
+                      </div>
+                      {price.per_month != null && (
+                        <span className="text-xs font-bold text-emerald-600 block">
+                          ₹{price.per_month.toLocaleString('en-IN')}/month
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted-foreground block py-1.5">
+                      Not sold for {selectedTerm?.label || 'this term'}
+                    </span>
+                  )}
                 </div>
 
                 <div className="space-y-1.5 text-xs text-muted-foreground">
                   <div className="flex items-center gap-1.5 font-bold text-foreground">
                     <Building2 className="h-3.5 w-3.5 text-emerald-500" />
-                    <span>{p.limits.companies_label}</span>
+                    <span>{pkg?.limits?.companies_label || p.limits.companies_label}</span>
                   </div>
                   <div className="flex items-center gap-1.5 font-bold text-foreground">
                     <Users className="h-3.5 w-3.5 text-blue-500" />
-                    <span>{p.limits.users_label}</span>
+                    <span>{pkg?.limits?.users_label || p.limits.users_label}</span>
                   </div>
                   {(p.highlights || []).slice(0, 3).map((h: string, idx: number) => (
                     <div key={idx} className="flex items-center gap-1.5 text-[11px]">
@@ -479,14 +551,15 @@ export function SubscriptionBillingPanel() {
 
                 <button
                   type="button"
-                  onClick={() => handleOpenCheckout(p)}
-                  className={`w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                  onClick={() => handleOpenCheckout(p, pkg, price)}
+                  disabled={!price}
+                  className={`w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                     isCurrent
                       ? 'bg-muted hover:bg-muted/80 text-foreground border border-border'
                       : 'bg-emerald-500 hover:bg-emerald-600 text-white'
                   }`}
                 >
-                  {isCurrent ? 'Renew with Sales' : `Choose ${p.name}`}
+                  {isCurrent && pkg?.id === currentPkg?.id ? 'Renew' : `Choose ${p.name}`}
                   <ArrowRight className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -571,6 +644,9 @@ export function SubscriptionBillingPanel() {
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         plan={selectedPlanForModal}
+        packageItem={selectedPackageForModal}
+        priceId={selectedPriceForModal?.price_id ?? null}
+        termLabel={selectedTerm?.label ?? null}
         durationKey={durationKey}
         onSuccess={() => {
           fetchSubscriptionData()

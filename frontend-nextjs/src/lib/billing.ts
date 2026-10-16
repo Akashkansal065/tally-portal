@@ -7,12 +7,32 @@ import { API_BASE, authHeaders } from '@/lib/utils'
 
 export type DurationKey = '1_year' | '2_year' | '3_year' | 'monthly'
 
+export interface CatalogTerm {
+  interval: 'month' | 'year'
+  count: number
+  label: string
+}
+
 export interface PlanPrice {
   price_id: number
   total: number
   per_month?: number
   discount_pct?: number
   savings?: number
+  autopay_allowed?: boolean
+}
+
+export interface PackagePrice {
+  price_id: number
+  interval: 'month' | 'year'
+  count: number
+  interval_count?: number
+  amount_paise: number
+  amount: number
+  compare_at_paise?: number | null
+  compare_at?: number | null
+  per_month_paise?: number
+  per_month?: number
   autopay_allowed?: boolean
 }
 
@@ -24,22 +44,38 @@ export interface PlanLimits {
   devices_per_user: number | null
 }
 
+export interface BillingPackage {
+  id: number
+  code: string
+  label: string
+  max_companies: number | null
+  max_users: number | null
+  max_devices: number | null
+  limits?: PlanLimits
+  prices: PackagePrice[]
+}
+
 export interface BillingPlan {
-  id: string               // e.g. "silver", "gold", "diamond"
-  plan_db_id: number       // database primary key
+  id: string               // plan code, e.g. "silver", "gold", "diamond"
+  code?: string
+  plan_db_id?: number       // database primary key of first package
   name: string
   tagline: string | null
   badge: string | null
-  is_popular: boolean
-  color: string
-  accent: string
+  is_popular?: boolean
+  color?: string
+  accent?: string
   border?: string
+  display?: Record<string, unknown>
   pricing: Record<string, PlanPrice>
   limits: PlanLimits
   feature_keys: string[]
   highlights?: string[]
   features?: Array<{ text: string; bold?: boolean }>
   missing?: string[]
+  allow_extra_users?: boolean
+  allow_extra_companies?: boolean
+  packages?: BillingPackage[]
 }
 
 export interface BillingAddon {
@@ -66,6 +102,7 @@ export interface FeatureComparisonCategory {
 
 export interface BillingCatalog {
   success: boolean
+  terms?: CatalogTerm[]
   plans: BillingPlan[]
   addons: BillingAddon[]
   comparison: FeatureComparisonCategory[]
@@ -73,6 +110,8 @@ export interface BillingCatalog {
   currency_symbol: string
   gst_percentage: number
   checkout_enabled: boolean
+  autopay_enabled?: boolean
+  gateways?: PaymentGateway[]
   /** The sales number as configured on the server (BILLING_SALES_PHONE); null when none is set */
   sales_phone: string | null
   sales_whatsapp: string | null
@@ -144,6 +183,7 @@ export interface SubscriptionDetails {
   success: boolean
   account_id: number | null
   plan: string | null
+  package?: string | null
   tier: string | null
   status: 'legacy' | 'trialing' | 'active' | 'grace' | 'locked' | 'cancelled'
   valid_until: string | null
@@ -289,6 +329,7 @@ export interface CreateOrderRequest {
   client_request_key?: string
   buyer_state_code?: string
   buyer_snapshot?: Record<string, unknown>
+  autopay?: boolean
 }
 
 export interface CheckoutConfig {
@@ -296,6 +337,7 @@ export interface CheckoutConfig {
   amount?: number
   currency?: string
   order_id?: string
+  subscription_id?: string
   env?: string
   payment_session_id?: string
   client_payload?: {

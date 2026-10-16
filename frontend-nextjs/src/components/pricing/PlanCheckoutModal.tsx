@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   X,
   MessageCircle,
@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import {
+  BillingPackage,
   BillingPlan,
   DurationKey,
   QuoteResponse,
@@ -49,11 +50,36 @@ declare global {
   }
 }
 
+// "Monthly", "3 Months", "1 Year", "2 Years"
+function termName(interval: string | undefined, count: number | undefined): string {
+  const n = count || 1
+  if (interval === 'month') return n === 1 ? 'Monthly' : `${n} Months`
+  return n === 1 ? '1 Year' : `${n} Years`
+}
+
+// The term a duration key names: "monthly", "N_month" or "N_year"
+function termOfKey(key: string): [string, number] {
+  if (key === 'monthly') return ['month', 1]
+  const [count, unit] = key.split('_')
+  return [unit === 'month' ? 'month' : 'year', Number(count) || 1]
+}
+
+// A short, stable fingerprint of what is being bought, so the same purchase sent twice (a double click, a retry
+// after the gateway window was closed) reaches the server with the same request key and gets the same order
+function fingerprint(text: string): string {
+  let hash = 5381
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0
+  return hash.toString(36)
+}
+
 interface PlanCheckoutModalProps {
   isOpen: boolean
   onClose: () => void
   plan: BillingPlan | null
-  durationKey: DurationKey
+  packageItem?: BillingPackage | null
+  priceId?: number | null
+  termLabel?: string | null
+  durationKey?: DurationKey | string
   extraUsers?: number
   extraCompanies?: number
   onSuccess?: () => void
@@ -63,7 +89,10 @@ export function PlanCheckoutModal({
   isOpen,
   onClose,
   plan,
-  durationKey,
+  packageItem,
+  priceId,
+  termLabel,
+  durationKey = '1_year',
   extraUsers = 0,
   extraCompanies = 0,
   onSuccess,
@@ -79,6 +108,7 @@ export function PlanCheckoutModal({
   const [gateways, setGateways] = useState<PaymentGateway[]>([])
   const [selectedGateway, setSelectedGateway] = useState<string>('razorpay')
   const [checkoutEnabled, setCheckoutEnabled] = useState<boolean>(false)
+  const [autopayEnabled, setAutopayEnabled] = useState<boolean>(false)
 
   // Customer Contact Details
   const [customerName, setCustomerName] = useState(user?.username || '')
@@ -91,6 +121,13 @@ export function PlanCheckoutModal({
   const [showGstForm, setShowGstForm] = useState(false)
   const [couponCode, setCouponCode] = useState('')
   const [appliedCoupon, setAppliedCoupon] = useState<string | null>(null)
+  // Why the server refused the coupon; shown under the coupon box
+  const [couponError, setCouponError] = useState<string | null>(null)
+  // Why no quote could be had at all (no coupon involved); shown in the price box with a retry
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [quoteAttempt, setQuoteAttempt] = useState(0)
+  // The coupon the person just pressed Apply for, so its outcome is announced once
+  const couponJustApplied = useRef<string | null>(null)
 
   // Success State
   const [orderFulfilled, setOrderFulfilled] = useState<{
@@ -98,18 +135,13 @@ export function PlanCheckoutModal({
     planName: string
   } | null>(null)
 
-  const durationLabel =
-    durationKey === '1_year'
-      ? '1 Year'
-      : durationKey === '2_year'
-      ? '2 Years'
-      : durationKey === '3_year'
-      ? '3 Years'
-      : 'Monthly'
+  // One per opening of the modal; with the purchase's fingerprint it makes the order's request key
+  const checkoutSession = useRef<string | null>(null)
 
   // Reset modal state when closed
   useEffect(() => {
     if (!isOpen) {
+      checkoutSession.current = null
       const timer = setTimeout(() => {
         setOrderFulfilled(null)
         setQuote(null)
@@ -154,6 +186,11 @@ export function PlanCheckoutModal({
     }
   }, [isOpen, token, activeMode])
 
+  // The buyer's state counts only once a whole GSTIN is typed: its first two digits are the state code.
+  // Re-quoting on every keystroke, with letters as a "state", is what this avoids.
+  const gstinClean = gstin.trim().toUpperCase()
+  const buyerStateCode = /^[0-9]{2}[A-Z0-9]{13}$/.test(gstinClean) ? gstinClean.slice(0, 2) : undefined
+
   // Fetch pure server quote whenever plan, duration, extras or coupon change
   useEffect(() => {
     if (!isOpen || !plan) return
@@ -163,56 +200,80 @@ export function PlanCheckoutModal({
       if (active) setQuoteLoading(true)
     })
 
+    const effectiveExtraUsers = plan?.allow_extra_users !== false ? extraUsers : 0
+    const effectiveExtraCompanies = plan?.allow_extra_companies !== false ? extraCompanies : 0
+
     calculateQuote(
       {
-        plan_id: plan.id,
+        plan_id: packageItem?.id || plan.id,
+        price_id: priceId || undefined,
         duration_key: durationKey,
-        extra_users: extraUsers,
-        extra_companies: extraCompanies,
+        extra_users: effectiveExtraUsers,
+        extra_companies: effectiveExtraCompanies,
         coupon_code: appliedCoupon || undefined,
-        buyer_state_code: gstin && gstin.length >= 2 ? gstin.slice(0, 2) : undefined,
+        buyer_state_code: buyerStateCode,
       },
       token || undefined
     )
       .then((q) => {
-        if (active) {
-          setQuote(q)
-          setQuoteLoading(false)
+        if (!active) return
+        setQuote(q)
+        setQuoteError(null)
+        setQuoteLoading(false)
+        if (couponJustApplied.current && couponJustApplied.current === appliedCoupon) {
+          toast.success(`Coupon ${appliedCoupon} applied.`)
+          couponJustApplied.current = null
         }
       })
-      .catch((err) => {
-        if (active) {
-          console.error('Failed to calculate server quote:', err)
-          setQuoteLoading(false)
+      .catch((err: Error) => {
+        if (!active) return
+        setQuoteLoading(false)
+        const message = err?.message || 'The price could not be worked out.'
+        if (appliedCoupon) {
+          // The coupon is what failed: say why, take it off, and price the order without it.
+          // The last good quote stays on screen meanwhile.
+          setCouponError(message)
+          if (couponJustApplied.current === appliedCoupon) toast.error(message)
+          couponJustApplied.current = null
+          setAppliedCoupon(null)
+        } else {
+          setQuote(null)
+          setQuoteError(message)
         }
       })
 
     return () => {
       active = false
     }
-  }, [isOpen, plan?.id, durationKey, extraUsers, extraCompanies, appliedCoupon, gstin, token])
+  }, [isOpen, plan?.id, packageItem?.id, priceId, durationKey, extraUsers, extraCompanies, appliedCoupon, buyerStateCode, token, quoteAttempt])
 
   if (!isOpen || !plan) return null
 
+  const resolvedTermLabel =
+    termLabel || (quote ? termName(quote.interval, quote.interval_count) : termName(...termOfKey(String(durationKey))))
+
   // Every amount comes from the server's quote. Until it arrives nothing is shown as a price and nothing can be paid.
-  const years =
-    durationKey === '1_year' ? 1 : durationKey === '2_year' ? 2 : durationKey === '3_year' ? 3 : 1
-  const money = (amount: number) => (quote ? `₹${amount.toLocaleString()}` : '…')
+  // ₹2,499 for whole rupees, ₹249.90 when there are paise
+  const rupees = (amount: number) =>
+    `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: Number.isInteger(amount) ? 0 : 2, maximumFractionDigits: 2 })}`
+  const money = (amount: number) => (quote ? rupees(amount) : '…')
   const displayBase = quote?.base_plan ?? 0
   const displayExtraUsers = quote?.extra_users ?? 0
   const displayExtraCompanies = quote?.extra_companies ?? 0
   const displayGst = quote ? (quote.igst_applied ? quote.igst : quote.cgst + quote.sgst) : 0
   const displayTotal = quote?.total ?? 0
-  const displayPerMonth = Math.round(displayTotal / (years * 12))
+  const displayPerMonth = quote?.months ? Math.round(displayTotal / quote.months) : 0
   // Seats already paid for in a running term are carried on by the server, so its count can be higher
-  const seatUsers = quote?.extra_users_count ?? extraUsers
-  const seatCompanies = quote?.extra_companies_count ?? extraCompanies
+  const seatUsers = quote?.extra_users_count ?? (plan?.allow_extra_users !== false ? extraUsers : 0)
+  const seatCompanies = quote?.extra_companies_count ?? (plan?.allow_extra_companies !== false ? extraCompanies : 0)
 
   const handleApplyCoupon = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!couponCode.trim()) return
-    setAppliedCoupon(couponCode.trim().toUpperCase())
-    toast.info(`Applying coupon ${couponCode.trim().toUpperCase()}...`)
+    const code = couponCode.trim().toUpperCase()
+    if (!code || code === appliedCoupon) return
+    setCouponError(null)
+    couponJustApplied.current = code
+    setAppliedCoupon(code)
   }
 
   const handleOnlinePayment = async () => {
@@ -238,17 +299,26 @@ export function PlanCheckoutModal({
         ).catch(() => {})
       }
 
-      // 2. Create order on server
+      // 2. Create order on server. The same purchase from this opening of the modal always carries the same
+      // request key, so a second click returns the order the first one made instead of making another.
+      const purchase = {
+        plan_id: packageItem?.id || plan.id,
+        price_id: priceId || undefined,
+        duration_key: durationKey,
+        extra_users: plan?.allow_extra_users !== false ? extraUsers : 0,
+        extra_companies: plan?.allow_extra_companies !== false ? extraCompanies : 0,
+        coupon_code: appliedCoupon || undefined,
+        gateway: selectedGateway,
+        buyer_state_code: gstin.trim().length >= 2 ? gstin.trim().slice(0, 2) : undefined,
+        autopay: autopayEnabled,
+      }
+      if (!checkoutSession.current) {
+        checkoutSession.current = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+      }
       const orderRes = await createBillingOrder(
         {
-          plan_id: plan.id,
-          duration_key: durationKey,
-          extra_users: extraUsers,
-          extra_companies: extraCompanies,
-          coupon_code: appliedCoupon || undefined,
-          gateway: selectedGateway,
-          buyer_state_code: gstin.trim().length >= 2 ? gstin.trim().slice(0, 2) : undefined,
-          client_request_key: `REQ_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          ...purchase,
+          client_request_key: `REQ_${checkoutSession.current}_${fingerprint(JSON.stringify(purchase))}`,
         },
         token
       )
@@ -262,13 +332,10 @@ export function PlanCheckoutModal({
           throw new Error('Could not load Razorpay payment SDK. Please try again.')
         }
 
-        const options = {
+        const options: Record<string, unknown> = {
           key: checkout_config.key,
-          amount: checkout_config.amount,
-          currency: checkout_config.currency || 'INR',
           name: 'MyTally Cloud',
-          description: `Subscription ${order_ref} - ${plan.name} (${durationLabel})`,
-          order_id: checkout_config.order_id,
+          description: `Subscription ${order_ref} - ${plan.name} (${packageItem ? packageItem.label + ' · ' : ''}${resolvedTermLabel})`,
           prefill: {
             name: customerName,
             email: customerEmail,
@@ -277,7 +344,12 @@ export function PlanCheckoutModal({
           theme: {
             color: '#10b981',
           },
-          handler: async (response: { razorpay_payment_id?: string; razorpay_order_id?: string; razorpay_signature?: string }) => {
+          handler: async (response: {
+            razorpay_payment_id?: string
+            razorpay_order_id?: string
+            razorpay_subscription_id?: string
+            razorpay_signature?: string
+          }) => {
             try {
               toast.info('Verifying payment with bank...')
               const confirmRes = await confirmBillingOrder(
@@ -285,6 +357,7 @@ export function PlanCheckoutModal({
                 {
                   razorpay_payment_id: response.razorpay_payment_id,
                   razorpay_order_id: response.razorpay_order_id,
+                  razorpay_subscription_id: response.razorpay_subscription_id,
                   razorpay_signature: response.razorpay_signature,
                 },
                 token
@@ -308,6 +381,14 @@ export function PlanCheckoutModal({
               setLoading(false)
             },
           },
+        }
+
+        if (checkout_config.subscription_id) {
+          options.subscription_id = checkout_config.subscription_id
+        } else {
+          options.order_id = checkout_config.order_id
+          options.amount = checkout_config.amount
+          options.currency = checkout_config.currency || 'INR'
         }
 
         const rzp = new window.Razorpay(options)
@@ -369,13 +450,13 @@ export function PlanCheckoutModal({
     try {
       setLoading(true)
       const data = await submitSalesInquiry({
-        plan_id: plan.id,
+        plan_id: packageItem?.id ? String(packageItem.id) : plan.id,
         duration_key: durationKey,
         customer_name: customerName || 'Valued Customer',
         customer_phone: customerPhone || 'Not specified',
         customer_email: customerEmail,
         company_name: companyName,
-        message: `Extra Users: ${extraUsers}, Extra Companies: ${extraCompanies}. Quoted Total: ${money(displayTotal)}`,
+        message: `Plan: ${plan.name} (${packageItem ? packageItem.label + ' · ' : ''}${resolvedTermLabel}). Extra Users: ${plan?.allow_extra_users !== false ? extraUsers : 0}, Extra Companies: ${plan?.allow_extra_companies !== false ? extraCompanies : 0}. Quoted Total: ${money(displayTotal)}`,
       })
       if (data.whatsapp_url) {
         window.open(data.whatsapp_url, '_blank')
@@ -388,7 +469,7 @@ export function PlanCheckoutModal({
     } catch {
       if (salesContact) {
         window.open(salesWhatsAppUrl(salesContact,
-          `Hi MyTally Team! I want to upgrade to the ${plan.name} Plan (${durationLabel}) for ${companyName || 'my firm'}. Grand Total: ${money(displayTotal)}. Please contact me.`), '_blank')
+          `Hi MyTally Team! I want to upgrade to ${plan.name} (${packageItem ? packageItem.label + ' · ' : ''}${resolvedTermLabel}) for ${companyName || 'my firm'}. Grand Total: ${money(displayTotal)}. Please contact me.`), '_blank')
         onClose()
       } else {
         toast.error('Unable to submit request. Please try again in a moment.')
@@ -407,13 +488,13 @@ export function PlanCheckoutModal({
     setLoading(true)
     try {
       await submitSalesInquiry({
-        plan_id: plan.id,
+        plan_id: packageItem?.id ? String(packageItem.id) : plan.id,
         duration_key: durationKey,
         customer_name: customerName || 'Prospective Customer',
         customer_phone: customerPhone,
         customer_email: customerEmail,
         company_name: companyName,
-        message: `Requested direct phone callback for plan upgrade (${plan.name} - ${durationLabel}). Extra Users: ${extraUsers}, Extra Companies: ${extraCompanies}.`,
+        message: `Requested direct phone callback for plan upgrade (${plan.name} - ${packageItem ? packageItem.label + ' · ' : ''}${resolvedTermLabel}). Extra Users: ${plan?.allow_extra_users !== false ? extraUsers : 0}, Extra Companies: ${plan?.allow_extra_companies !== false ? extraCompanies : 0}.`,
       })
       toast.success('Callback requested! Our onboarding specialist will call you shortly.')
       onClose()
@@ -445,7 +526,7 @@ export function PlanCheckoutModal({
               <div className="flex items-center gap-2">
                 <h3 className="text-lg font-black">{plan.name} Plan</h3>
                 <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
-                  {durationLabel}
+                  {packageItem ? `${packageItem.label} · ` : ''}{resolvedTermLabel}
                 </span>
                 {plan.badge && (
                   <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-primary text-primary-foreground">
@@ -454,7 +535,7 @@ export function PlanCheckoutModal({
                 )}
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {plan.limits.companies_label} • {plan.limits.users_label}
+                {packageItem?.limits?.companies_label || plan.limits.companies_label} • {packageItem?.limits?.users_label || plan.limits.users_label}
               </p>
             </div>
           </div>
@@ -534,8 +615,20 @@ export function PlanCheckoutModal({
                   <Loader2 className="h-3 w-3 animate-spin text-emerald-500" /> Updating quote…
                 </div>
               )}
+              {quoteError && !quote && (
+                <div className="flex items-center justify-between gap-2 rounded-xl bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  <span>{quoteError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setQuoteAttempt((n) => n + 1)}
+                    className="shrink-0 font-bold underline cursor-pointer"
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
               <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Base Plan ({plan.name} × {durationLabel})</span>
+                <span className="text-muted-foreground">Base Plan ({plan.name} {packageItem ? `· ${packageItem.label}` : ''} × {resolvedTermLabel})</span>
                 <span className="font-bold">{money(displayBase)}</span>
               </div>
               {seatUsers > 0 && (
@@ -557,7 +650,7 @@ export function PlanCheckoutModal({
               {quote?.discount ? (
                 <div className="flex items-center justify-between text-xs text-emerald-600 font-bold">
                   <span>Coupon Discount ({quote.coupon_code})</span>
-                  <span>-₹{quote.discount.toLocaleString()}</span>
+                  <span>-{rupees(quote.discount)}</span>
                 </div>
               ) : null}
               <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -610,6 +703,27 @@ export function PlanCheckoutModal({
                   </div>
                 )}
 
+                {/* Autopay Recurring Toggle */}
+                {selectedGateway === 'razorpay' && (
+                  <label className="flex items-start gap-3 p-3.5 rounded-2xl border border-border bg-card/60 hover:bg-muted/30 cursor-pointer transition-all">
+                    <input
+                      type="checkbox"
+                      checked={autopayEnabled}
+                      onChange={(e) => setAutopayEnabled(e.target.checked)}
+                      className="rounded border-border text-emerald-600 focus:ring-emerald-500 h-4 w-4 mt-0.5"
+                    />
+                    <div>
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <span className="text-xs font-bold text-foreground">Enable Autopay (UPI & Card Mandate)</span>
+                        <span className="bg-emerald-500/15 text-emerald-600 text-[10px] font-extrabold px-1.5 py-0.2 rounded-md">Automated Renewal</span>
+                      </div>
+                      <span className="text-[11px] text-muted-foreground block leading-relaxed">
+                        Authorize seamless recurring renewal per billing cycle. You can pause or cancel anytime from Settings with zero penalties.
+                      </span>
+                    </div>
+                  </label>
+                )}
+
                 {/* GST Details Accordion */}
                 <div className="border border-border/70 rounded-2xl p-3.5 bg-muted/20">
                   <button
@@ -656,7 +770,10 @@ export function PlanCheckoutModal({
                   <input
                     type="text"
                     value={couponCode}
-                    onChange={(e) => setCouponCode(e.target.value)}
+                    onChange={(e) => {
+                      setCouponCode(e.target.value)
+                      setCouponError(null)
+                    }}
                     placeholder="Enter Coupon / Promo Code"
                     className="flex-1 px-3 py-2 text-xs rounded-xl bg-card border border-border uppercase"
                   />
@@ -667,6 +784,22 @@ export function PlanCheckoutModal({
                     Apply
                   </button>
                 </form>
+                {couponError && <p className="-mt-2 text-[11px] text-destructive">{couponError}</p>}
+                {appliedCoupon && !couponError && quote?.coupon_code && (
+                  <div className="-mt-2 flex items-center justify-between text-[11px] text-emerald-600">
+                    <span>Coupon {quote.coupon_code} applied</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAppliedCoupon(null)
+                        setCouponCode('')
+                      }}
+                      className="font-bold underline cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                )}
 
                 {/* Checkout Trigger Button */}
                 <button
@@ -702,7 +835,7 @@ export function PlanCheckoutModal({
                 </div>
                 <div className="p-3 bg-muted/40 rounded-xl text-xs text-left font-mono border border-border">
                   <p className="text-muted-foreground text-[10px] mb-1 font-sans">Pre-composed message:</p>
-                  &ldquo;Hi MyTally Team! I want to upgrade to the {plan.name} Plan ({durationLabel}) for {companyName || 'my firm'}. Total {money(displayTotal)}.&rdquo;
+                  &ldquo;Hi MyTally Team! I want to upgrade to the {plan.name} Plan ({resolvedTermLabel}) for {companyName || 'my firm'}. Total {money(displayTotal)}.&rdquo;
                 </div>
                 <button
                   type="button"

@@ -36,6 +36,7 @@ def startup_index_specs() -> list:
     from app.models import portal_core as portal
     from app.routers import attendance as attendance_models
     from app.routers import orders as orders_models, visits as visits_models, expenses as expenses_models
+    from app.models import billing as billing_models
     index_specs = [
         (portal.UserSession.__table__, ["ix_user_sessions_token", "ix_user_sessions_active", "ix_user_sessions_device"]),
         (portal.SyncTrafficLog.__table__, ["ix_sync_traffic_company_status", "ix_sync_traffic_company_created"]),
@@ -53,6 +54,7 @@ def startup_index_specs() -> list:
         (orders_models.TempOrder.__table__, ["ix_temp_orders_company"]),
         (visits_models.SalesVisit.__table__, ["ix_sales_visits_company"]),
         (expenses_models.Expense.__table__, ["ix_expenses_company"]),
+        (billing_models.BillingPlanPrice.__table__, ["ix_plan_prices_plan_interval_active"]),
     ]
 
     # Single-column indexes (index=True) declared on tables that already existed, so never built. Named by
@@ -127,6 +129,11 @@ async def lifespan(app: FastAPI):
         handed_out = await ensure_currencies_per_company(conn)
         if handed_out:
             print(f"{handed_out} shared currencies given to each company as its own.")
+
+    # A package may now hold a retired price beside the active one for the same term (does nothing once done)
+    from app.services.billing.catalog_admin import drop_unique_price_term_index
+    async with engine.begin() as conn:
+        await drop_unique_price_term_index(conn)
 
     # Seed global default roles, modules, and permissions.
     def sync_seed(connection):

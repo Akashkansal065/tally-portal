@@ -28,9 +28,11 @@ from app.models.billing import (
     BillingPayment,
     BillingPlan,
     BillingPlanPrice,
+    BillingRefund,
     BillingSubscriptionEvent,
     BillingWebhookEvent,
 )
+from app.services.billing.gateways.razorpay import RazorpayBillingGateway
 from app.routers import auth, billing
 from app.services.billing.credits import (
     consume_credits,
@@ -474,3 +476,279 @@ def test_credits_ledger_operations(harness):
             assert all_bals["whatsapp"] == 0
 
     run(_test())
+
+
+def test_razorpay_subscription_authenticated_webhook(harness, monkeypatch):
+    """subscription.authenticated activates autopay mandate and logs audit event."""
+    account, _, _ = make_account(harness, "SubAuthTest")
+    client = harness.app(billing.router)
+
+    monkeypatch.setattr(settings, "BILLING_RAZORPAY_WEBHOOK_SECRET", "rzp_wh_test_secret")
+
+    now = datetime.now(timezone.utc)
+    gold_plan = fetch_scalar(harness, select(BillingPlan).where(BillingPlan.code == "gold"))
+
+    sub = harness.add(
+        AccountSubscription(
+            account_id=account.account_id,
+            plan_id=gold_plan.id,
+            status="active",
+            current_period_start=now,
+            current_period_end=now + timedelta(days=30),
+            autopay=False,
+            gateway="razorpay",
+            gateway_subscription_id="sub_mandate_auth_999",
+        )
+    )
+
+    payload = {
+        "event": "subscription.authenticated",
+        "event_id": "evt_auth_mandate_001",
+        "payload": {
+            "subscription": {
+                "entity": {
+                    "id": "sub_mandate_auth_999",
+                    "status": "active",
+                }
+            },
+            "payment": {
+                "entity": {
+                    "id": "pay_token_auth_001",
+                    "subscription_id": "sub_mandate_auth_999",
+                    "amount": 0,
+                    "status": "authorized",
+                }
+            }
+        }
+    }
+    body = json.dumps(payload).encode("utf-8")
+    sig = rzp_signature(body, "rzp_wh_test_secret")
+
+    res = client.post(
+        "/billing/webhooks/razorpay",
+        data=body,
+        headers={"Content-Type": "application/json", "X-Razorpay-Signature": sig},
+    )
+    assert res.status_code == 200, res.text
+
+    refreshed_sub = fetch_scalar(
+        harness, select(AccountSubscription).where(AccountSubscription.account_id == account.account_id)
+    )
+    assert refreshed_sub.autopay is True
+
+    event = fetch_scalar(
+        harness,
+        select(BillingSubscriptionEvent).where(
+            BillingSubscriptionEvent.account_id == account.account_id,
+            BillingSubscriptionEvent.event_type == "autopay_authenticated",
+        ),
+    )
+    assert event is not None
+
+
+def test_razorpay_refund_processed_webhook(harness, monkeypatch):
+    """refund.processed tracks partial and full refunds on the payment entity."""
+    account, _, _ = make_account(harness, "RefundTest")
+    client = harness.app(billing.router)
+
+    monkeypatch.setattr(settings, "BILLING_RAZORPAY_WEBHOOK_SECRET", "rzp_wh_test_secret")
+
+    gold_plan = fetch_scalar(harness, select(BillingPlan).where(BillingPlan.code == "gold"))
+    order = harness.add(
+        BillingOrder(
+            account_id=account.account_id,
+            plan_id=gold_plan.id,
+            order_ref="MT_ORD_REFUND_01",
+            purpose="new",
+            status="paid",
+            total_paise=100000,
+            gateway="razorpay",
+            gateway_order_id="order_rzp_ref_01",
+        )
+    )
+    payment = harness.add(
+        BillingPayment(
+            order_id=order.id,
+            gateway="razorpay",
+            gateway_payment_id="pay_rzp_to_refund_01",
+            amount_paise=100000,
+            status="captured",
+        )
+    )
+
+    # 1. Partial refund of ₹400 (40000 paise)
+    payload_partial = {
+        "event": "refund.processed",
+        "event_id": "evt_ref_part_01",
+        "payload": {
+            "refund": {
+                "entity": {
+                    "id": "rfnd_001",
+                    "payment_id": "pay_rzp_to_refund_01",
+                    "amount": 40000,
+                    "status": "processed",
+                }
+            }
+        }
+    }
+    body_p = json.dumps(payload_partial).encode("utf-8")
+    res_p = client.post(
+        "/billing/webhooks/razorpay",
+        data=body_p,
+        headers={"Content-Type": "application/json", "X-Razorpay-Signature": rzp_signature(body_p, "rzp_wh_test_secret")},
+    )
+    assert res_p.status_code == 200, res_p.text
+
+    ref1 = fetch_scalar(
+        harness, select(BillingRefund).where(BillingRefund.gateway_refund_id == "rfnd_001")
+    )
+    assert ref1 is not None
+    assert ref1.amount_paise == 40000
+    assert ref1.status == "processed"
+
+    # 2. Full refund of remaining ₹600 (60000 paise)
+    payload_full = {
+        "event": "refund.processed",
+        "event_id": "evt_ref_full_02",
+        "payload": {
+            "refund": {
+                "entity": {
+                    "id": "rfnd_002",
+                    "payment_id": "pay_rzp_to_refund_01",
+                    "amount": 60000,
+                    "status": "processed",
+                }
+            }
+        }
+    }
+    body_f = json.dumps(payload_full).encode("utf-8")
+    res_f = client.post(
+        "/billing/webhooks/razorpay",
+        data=body_f,
+        headers={"Content-Type": "application/json", "X-Razorpay-Signature": rzp_signature(body_f, "rzp_wh_test_secret")},
+    )
+    assert res_f.status_code == 200, res_f.text
+
+    ref2 = fetch_scalar(
+        harness, select(BillingRefund).where(BillingRefund.gateway_refund_id == "rfnd_002")
+    )
+    assert ref2 is not None
+    assert ref2.amount_paise == 60000
+    assert ref2.status == "processed"
+
+    # Verify event was logged
+    event = fetch_scalar(
+        harness,
+        select(BillingSubscriptionEvent).where(
+            BillingSubscriptionEvent.account_id == account.account_id,
+            BillingSubscriptionEvent.event_type == "payment_refunded",
+        ),
+    )
+    assert event is not None
+
+
+def test_razorpay_payment_failed_webhook(harness, monkeypatch):
+    """payment.failed records failure event with error codes for dunning analysis."""
+    account, _, _ = make_account(harness, "PaymentFailTest")
+    client = harness.app(billing.router)
+
+    monkeypatch.setattr(settings, "BILLING_RAZORPAY_WEBHOOK_SECRET", "rzp_wh_test_secret")
+
+    now = datetime.now(timezone.utc)
+    silver_plan = fetch_scalar(harness, select(BillingPlan).where(BillingPlan.code == "silver"))
+    harness.add(
+        AccountSubscription(
+            account_id=account.account_id,
+            plan_id=silver_plan.id,
+            status="active",
+            current_period_start=now - timedelta(days=20),
+            current_period_end=now + timedelta(days=10),
+            autopay=True,
+            gateway="razorpay",
+            gateway_subscription_id="sub_fail_test_77",
+        )
+    )
+
+    payload = {
+        "event": "payment.failed",
+        "event_id": "evt_fail_999",
+        "payload": {
+            "payment": {
+                "entity": {
+                    "id": "pay_fail_777",
+                    "subscription_id": "sub_fail_test_77",
+                    "amount": 35282,
+                    "status": "failed",
+                    "error_code": "BAD_REQUEST_ERROR",
+                    "error_description": "Payment was declined by issuing bank.",
+                }
+            }
+        }
+    }
+    body = json.dumps(payload).encode("utf-8")
+    res = client.post(
+        "/billing/webhooks/razorpay",
+        data=body,
+        headers={"Content-Type": "application/json", "X-Razorpay-Signature": rzp_signature(body, "rzp_wh_test_secret")},
+    )
+    assert res.status_code == 200, res.text
+
+    event = fetch_scalar(
+        harness,
+        select(BillingSubscriptionEvent).where(
+            BillingSubscriptionEvent.account_id == account.account_id,
+            BillingSubscriptionEvent.event_type == "payment_failed",
+        ),
+    )
+    assert event is not None
+    details = json.loads(event.detail)
+    assert details["error_code"] == "BAD_REQUEST_ERROR"
+    assert "declined by issuing bank" in details["error_description"]
+
+
+def test_create_order_with_autopay_mandate(harness, monkeypatch):
+    """Creating order with autopay=True links subscription_id in checkout_config."""
+    account, _, owner = make_account(harness, "AutopayOrderTest")
+    client = harness.app(auth.router, billing.router)
+    token = bearer(login(client, owner.email))
+
+    monkeypatch.setattr(settings, "BILLING_CHECKOUT_ENABLED", True)
+    monkeypatch.setattr(settings, "BILLING_AUTOPAY_ENABLED", True)
+    monkeypatch.setattr(settings, "BILLING_RAZORPAY_KEY_ID", "rzp_test_key_01")
+    monkeypatch.setattr(settings, "BILLING_RAZORPAY_KEY_SECRET", "rzp_test_sec_01")
+
+    async def mock_ensure_plan(self, price, plan_name):
+        return "plan_mock_monthly_01"
+
+    async def mock_create_subscription(self, plan_id, total_count=120, **kwargs):
+        return {"id": "sub_rzp_mock_created_88", "status": "created"}
+
+    monkeypatch.setattr(RazorpayBillingGateway, "ensure_plan", mock_ensure_plan)
+    monkeypatch.setattr(RazorpayBillingGateway, "create_subscription", mock_create_subscription)
+
+    res = client.post(
+        "/billing/orders",
+        headers=token,
+        json={
+            "plan_id": "silver",
+            "duration_key": "monthly",
+            "gateway": "razorpay",
+            "client_request_key": "AUTOPAY_ORD_001",
+            "autopay": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["success"] is True
+    assert data["order_ref"].startswith("MT_")
+    assert data["checkout_config"]["subscription_id"] == "sub_rzp_mock_created_88"
+    assert data["checkout_config"]["key"] == "rzp_test_key_01"
+
+    # Verify order in DB
+    order = fetch_scalar(
+        harness, select(BillingOrder).where(BillingOrder.order_ref == data["order_ref"])
+    )
+    quote_data = json.loads(order.quote)
+    assert quote_data["autopay"] is True
+    assert order.gateway_order_id == "sub_rzp_mock_created_88"
+

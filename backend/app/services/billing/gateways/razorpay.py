@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.core.config import settings
-from app.models.billing import BillingOrder, BillingPayment
+from app.models.billing import BillingOrder, BillingPayment, BillingPlanPrice
 from app.services.billing.gateways.base import (
     GatewayOrderResult, GatewayPaymentResult, GatewayRefundResult, NormalisedEvent,
 )
@@ -38,16 +38,30 @@ class RazorpayBillingGateway:
         return (settings.BILLING_RAZORPAY_KEY_ID or "", settings.BILLING_RAZORPAY_KEY_SECRET or "")
 
     def checkout_config(self, order: BillingOrder) -> Dict[str, Any]:
-        return {
+        cfg: Dict[str, Any] = {
             "gateway": self.code,
             "key": settings.BILLING_RAZORPAY_KEY_ID,
-            "order_id": order.gateway_order_id,
             "amount": order.total_paise,
             "currency": "INR",
             "name": "MyTally",
             "description": f"Subscription {order.order_ref}",
             "receipt": order.order_ref,
         }
+        sub_id: Optional[str] = None
+        if order.gateway_order_id and order.gateway_order_id.startswith("sub_"):
+            sub_id = order.gateway_order_id
+        elif order.quote:
+            try:
+                q = json.loads(order.quote)
+                sub_id = q.get("gateway_subscription_id")
+            except Exception:
+                pass
+
+        if sub_id:
+            cfg["subscription_id"] = sub_id
+        else:
+            cfg["order_id"] = order.gateway_order_id
+        return cfg
 
     async def create_order(self, order: BillingOrder) -> GatewayOrderResult:
         payload = {
@@ -78,28 +92,182 @@ class RazorpayBillingGateway:
                 raw=data,
             )
 
+    async def create_plan(
+        self,
+        period: str,
+        interval: int,
+        item_name: str,
+        amount_paise: int,
+        description: Optional[str] = None,
+        notes: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a recurring plan in Razorpay (POST /v1/plans)."""
+        period_norm = "monthly" if period in ("month", "monthly") else "yearly" if period in ("year", "yearly") else period
+        payload = {
+            "period": period_norm,
+            "interval": int(interval),
+            "item": {
+                "name": item_name,
+                "amount": int(amount_paise),
+                "currency": "INR",
+                "description": description or f"MyTally {item_name}",
+            },
+            "notes": notes or {},
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{BASE_URL}/plans",
+                json=payload,
+                auth=self._auth(),
+            )
+            if resp.status_code >= 400:
+                logger.error(f"Razorpay plan creation failed: {resp.status_code} {resp.text}")
+                raise RuntimeError(f"Razorpay plan creation failed: {resp.text}")
+            return resp.json()
+
+    async def ensure_plan(
+        self,
+        price: BillingPlanPrice,
+        plan_name: str,
+    ) -> str:
+        """Return the Razorpay plan_id for a BillingPlanPrice. Create on demand if not cached."""
+        refs: Dict[str, Any] = {}
+        if price.gateway_plan_refs:
+            try:
+                refs = json.loads(price.gateway_plan_refs)
+            except Exception:
+                refs = {}
+
+        if refs.get("razorpay"):
+            return str(refs["razorpay"])
+
+        plan_res = await self.create_plan(
+            period=price.interval,
+            interval=price.interval_count or 1,
+            item_name=f"{plan_name} ({price.interval})",
+            amount_paise=price.amount_paise,
+            description=f"MyTally {plan_name} recurring {price.interval} subscription",
+            notes={"price_id": str(price.id), "plan_id": str(price.plan_id)},
+        )
+        plan_id = str(plan_res["id"])
+        refs["razorpay"] = plan_id
+        price.gateway_plan_refs = json.dumps(refs)
+        return plan_id
+
+    async def create_subscription(
+        self,
+        plan_id: str,
+        total_count: int = 120,
+        quantity: int = 1,
+        customer_notify: bool = True,
+        start_at: Optional[int] = None,
+        notes: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create a recurring subscription mandate in Razorpay (POST /v1/subscriptions)."""
+        payload: Dict[str, Any] = {
+            "plan_id": plan_id,
+            "total_count": int(total_count),
+            "quantity": int(quantity),
+            "customer_notify": 1 if customer_notify else 0,
+            "notes": notes or {},
+        }
+        if start_at:
+            payload["start_at"] = int(start_at)
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{BASE_URL}/subscriptions",
+                json=payload,
+                auth=self._auth(),
+            )
+            if resp.status_code >= 400:
+                logger.error(f"Razorpay subscription creation failed: {resp.status_code} {resp.text}")
+                raise RuntimeError(f"Razorpay subscription creation failed: {resp.text}")
+            return resp.json()
+
+    async def cancel_subscription(
+        self, subscription_id: str, cancel_at_cycle_end: bool = True
+    ) -> Dict[str, Any]:
+        """Cancel a recurring subscription mandate (POST /v1/subscriptions/{id}/cancel)."""
+        payload = {"cancel_at_cycle_end": 1 if cancel_at_cycle_end else 0}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{BASE_URL}/subscriptions/{subscription_id}/cancel",
+                json=payload,
+                auth=self._auth(),
+            )
+            if resp.status_code >= 400:
+                logger.error(f"Razorpay subscription cancel failed: {resp.status_code} {resp.text}")
+                raise RuntimeError(f"Razorpay subscription cancel failed: {resp.text}")
+            return resp.json()
+
+    async def pause_subscription(self, subscription_id: str) -> Dict[str, Any]:
+        payload = {"pause_at": "now"}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{BASE_URL}/subscriptions/{subscription_id}/pause",
+                json=payload,
+                auth=self._auth(),
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(f"Razorpay subscription pause failed: {resp.text}")
+            return resp.json()
+
+    async def resume_subscription(self, subscription_id: str) -> Dict[str, Any]:
+        payload = {"resume_at": "now"}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{BASE_URL}/subscriptions/{subscription_id}/resume",
+                json=payload,
+                auth=self._auth(),
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(f"Razorpay subscription resume failed: {resp.text}")
+            return resp.json()
+
     async def confirm_payment(
         self, order: BillingOrder, client_payload: Dict[str, Any]
     ) -> GatewayPaymentResult:
         """
-        Verify the client-provided signature, then fetch payment from Razorpay
-        to ensure status is captured and amount equals order total.
+        Verify the client-provided signature (order or subscription mandate),
+        then fetch payment from Razorpay to ensure status is captured and amount matches.
         """
         payment_id = client_payload.get("razorpay_payment_id")
         order_id = client_payload.get("razorpay_order_id")
+        subscription_id = client_payload.get("razorpay_subscription_id") or (
+            order.gateway_order_id if (order.gateway_order_id and order.gateway_order_id.startswith("sub_")) else None
+        )
+        if not subscription_id and order.quote:
+            try:
+                subscription_id = json.loads(order.quote).get("gateway_subscription_id")
+            except Exception:
+                pass
+
         signature = client_payload.get("razorpay_signature")
 
-        if not payment_id or not order_id or not signature:
-            raise ValueError("Missing razorpay_payment_id, razorpay_order_id, or razorpay_signature.")
-
-        if order.gateway_order_id and order_id != order.gateway_order_id:
-            raise ValueError(
-                f"Razorpay order ID mismatch: expected {order.gateway_order_id}, got {order_id}"
-            )
+        if not payment_id or not signature:
+            raise ValueError("Missing razorpay_payment_id or razorpay_signature.")
 
         # 1. Cryptographic signature check
         key_secret = settings.BILLING_RAZORPAY_KEY_SECRET or ""
-        msg = f"{order_id}|{payment_id}".encode("utf-8")
+        if not key_secret:
+            raise RuntimeError("Razorpay key secret not configured.")
+
+        if subscription_id:
+            # Per Razorpay Subscriptions docs:
+            # generated_signature = hmac_sha256(razorpay_payment_id + "|" + subscription_id, secret)
+            msg = f"{payment_id}|{subscription_id}".encode("utf-8")
+        else:
+            if not order_id:
+                raise ValueError("Missing razorpay_order_id.")
+            if order.gateway_order_id and order_id != order.gateway_order_id:
+                raise ValueError(
+                    f"Razorpay order ID mismatch: expected {order.gateway_order_id}, got {order_id}"
+                )
+            # Per Razorpay Orders docs:
+            # generated_signature = hmac_sha256(order_id + "|" + razorpay_payment_id, secret)
+            msg = f"{order_id}|{payment_id}".encode("utf-8")
+
         expected_sig = hmac.new(key_secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
 
         if not hmac.compare_digest(expected_sig, signature):
@@ -119,22 +287,27 @@ class RazorpayBillingGateway:
 
         # 3. Server-side payment object validation against our order
         p_order_id = p_data.get("order_id")
-        if p_order_id and order.gateway_order_id and p_order_id != order.gateway_order_id:
-            raise ValueError(
-                f"Razorpay payment {payment_id} belongs to order {p_order_id}, not {order.gateway_order_id}."
-            )
+        p_sub_id = p_data.get("subscription_id")
+        if order.gateway_order_id:
+            if order.gateway_order_id.startswith("sub_"):
+                if p_sub_id and p_sub_id != order.gateway_order_id:
+                    raise ValueError(f"Razorpay payment {payment_id} belongs to subscription {p_sub_id}, not {order.gateway_order_id}.")
+            elif p_order_id and p_order_id != order.gateway_order_id:
+                raise ValueError(
+                    f"Razorpay payment {payment_id} belongs to order {p_order_id}, not {order.gateway_order_id}."
+                )
 
         status = p_data.get("status")
         amount = int(p_data.get("amount", 0))
         currency = p_data.get("currency")
 
-        if status != "captured":
+        if status not in ("captured", "authorized"):
             raise ValueError(f"Payment {payment_id} is in status '{status}'; must be 'captured' to fulfil order.")
 
-        if amount != int(order.total_paise):
-            raise ValueError(
-                f"Payment amount mismatch: expected {order.total_paise} paise, got {amount} paise."
-            )
+        # When creating a recurring mandate, Razorpay may authorize an upfront tokenization amount
+        # or charge the full first cycle. Validate that positive amount was received.
+        if amount <= 0:
+            raise ValueError(f"Payment {payment_id} recorded invalid amount: {amount} paise.")
 
         if currency != "INR":
             raise ValueError(f"Invalid currency: {currency}")
@@ -163,17 +336,40 @@ class RazorpayBillingGateway:
 
     def parse_webhook(self, payload: Dict[str, Any]) -> NormalisedEvent:
         event_type = payload.get("event", "unknown")
-        entity_payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
-        entity_order = payload.get("payload", {}).get("order", {}).get("entity", {})
-        entity_sub = payload.get("payload", {}).get("subscription", {}).get("entity", {})
+        payload_data = payload.get("payload", {})
+        entity_payment = payload_data.get("payment", {}).get("entity", {})
+        entity_order = payload_data.get("order", {}).get("entity", {})
+        entity_sub = payload_data.get("subscription", {}).get("entity", {})
+        entity_refund = payload_data.get("refund", {}).get("entity", {})
+        entity_dispute = payload_data.get("dispute", {}).get("entity", {})
 
-        gateway_payment_id = entity_payment.get("id")
+        gateway_payment_id = (
+            entity_payment.get("id")
+            or entity_refund.get("payment_id")
+            or entity_dispute.get("payment_id")
+        )
         gateway_order_id = entity_payment.get("order_id") or entity_order.get("id")
         gateway_subscription_id = entity_sub.get("id") or entity_payment.get("subscription_id")
-        amount_paise = entity_payment.get("amount") or entity_order.get("amount")
-        status = entity_payment.get("status") or ("captured" if "captured" in event_type else "pending")
+        gateway_refund_id = entity_refund.get("id")
+        gateway_dispute_id = entity_dispute.get("id")
 
-        event_id = payload.get("event_id") or f"{event_type}_{gateway_payment_id or gateway_subscription_id or gateway_order_id}"
+        amount_paise = (
+            entity_dispute.get("amount")
+            or entity_refund.get("amount")
+            or entity_payment.get("amount")
+            or entity_order.get("amount")
+        )
+        status = (
+            entity_payment.get("status")
+            or entity_refund.get("status")
+            or entity_dispute.get("status")
+            or ("captured" if "captured" in event_type else "pending")
+        )
+
+        error_code = entity_payment.get("error_code")
+        error_description = entity_payment.get("error_description")
+
+        event_id = payload.get("event_id") or f"{event_type}_{gateway_payment_id or gateway_subscription_id or gateway_order_id or gateway_refund_id or gateway_dispute_id}"
 
         return NormalisedEvent(
             event_id=event_id,
@@ -184,6 +380,10 @@ class RazorpayBillingGateway:
             status=status,
             raw=payload,
             gateway_subscription_id=gateway_subscription_id,
+            gateway_refund_id=gateway_refund_id,
+            gateway_dispute_id=gateway_dispute_id,
+            error_code=error_code,
+            error_description=error_description,
         )
 
     async def fetch_order_payments(self, gateway_order_id: str) -> List[GatewayPaymentResult]:

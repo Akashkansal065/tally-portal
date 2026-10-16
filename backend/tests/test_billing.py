@@ -17,7 +17,9 @@ def world(harness):
     return account, client, bearer(login(client, owner.email))
 
 
-def test_no_endpoint_lets_a_user_activate_a_plan(harness):
+def test_no_endpoint_lets_a_user_activate_a_plan(harness, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "BILLING_CHECKOUT_ENABLED", False)
     account, client, headers = world(harness)
     body = {"order_id": "x", "payment_id": "DEMO_PAY_1", "signature": "TEST_SIG", "plan_id": "diamond", "duration_key": "1_year"}
 

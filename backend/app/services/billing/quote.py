@@ -22,14 +22,14 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Union
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import (
     AccountBillingProfile,
     AccountSubscription,
     BillingAddon, BillingCoupon, BillingCouponRedemption,
-    BillingOrder, BillingPlan, BillingPlanPrice,
+    BillingOrder, BillingPlan, BillingPlanGroup, BillingPlanPrice,
 )
 from app.services.billing.invoices import seller_state_code as configured_seller_state
 from app.services.billing.terms import as_utc, utc_now
@@ -166,10 +166,11 @@ async def calculate_quote(
     # A paid term that is still running. A trial, grace, a lapsed or a grandfathered account has none.
     paid_term = bool(sub and sub.status == "active" and sub_end and sub_end > now)
 
-    is_standalone_addon = str(plan_id).lower() in ("addon", "addons")
+    is_standalone_addon = plan_id is not None and str(plan_id).lower() in ("addon", "addons")
 
     plan: Optional[BillingPlan] = None
     price: Optional[BillingPlanPrice] = None
+    group: Optional[BillingPlanGroup] = None
 
     user_addon = (await db.execute(
         select(BillingAddon).where(BillingAddon.code == "extra_user", BillingAddon.is_active == True)  # noqa: E712
@@ -204,32 +205,60 @@ async def calculate_quote(
         interval, interval_count, years, months = "addon", 0, 0, 0
         purpose = "addon"
     else:
-        # ── Load plan ──────────────────────────────────────────────────────────
-        if isinstance(plan_id, int):
-            plan = (await db.execute(select(BillingPlan).where(BillingPlan.id == plan_id))).scalars().first()
-        elif isinstance(plan_id, str):
-            if plan_id.isdigit():
-                plan = (await db.execute(select(BillingPlan).where(BillingPlan.id == int(plan_id)))).scalars().first()
-            if not plan:
-                plan = (await db.execute(select(BillingPlan).where(BillingPlan.code == plan_id.lower()))).scalars().first()
-
-        if not plan or not plan.is_active:
-            raise ValueError(f"Plan '{plan_id}' not found or inactive.")
-        # A plan made for one account can be bought by that account only; other private plans by nobody
-        if not plan.is_public and (plan.account_id is None or plan.account_id != account_id):
-            raise ValueError(f"Plan '{plan_id}' not found or inactive.")
-
-        # ── Load price ─────────────────────────────────────────────────────────
+        # ── Load price & plan ──────────────────────────────────────────────────
         if price_id is not None:
             price = (await db.execute(select(BillingPlanPrice).where(BillingPlanPrice.id == price_id))).scalars().first()
-            if not price or not price.is_active or price.plan_id != plan.id:
-                raise ValueError(f"Price id={price_id} not valid for plan '{plan.code}'.")
+            if not price or not price.is_active:
+                raise ValueError(f"Price id={price_id} not found or inactive.")
+            plan = (await db.execute(select(BillingPlan).where(BillingPlan.id == price.plan_id))).scalars().first()
+            if not plan or not plan.is_active:
+                raise ValueError(f"Plan for price id={price_id} not found or inactive.")
         else:
+            if plan_id is None:
+                raise ValueError("Either plan_id or price_id must be provided.")
+            if isinstance(plan_id, int):
+                plan = (await db.execute(select(BillingPlan).where(BillingPlan.id == plan_id))).scalars().first()
+            elif isinstance(plan_id, str):
+                if plan_id.isdigit():
+                    plan = (await db.execute(select(BillingPlan).where(BillingPlan.id == int(plan_id)))).scalars().first()
+                if not plan:
+                    plan = (await db.execute(select(BillingPlan).where(BillingPlan.code == plan_id.lower()))).scalars().first()
+                if not plan:
+                    # A plan's code (not a package's): its first active package
+                    plan = (await db.execute(
+                        select(BillingPlan)
+                        .join(BillingPlanGroup, BillingPlan.group_id == BillingPlanGroup.id)
+                        .where(BillingPlanGroup.code == plan_id.lower(), BillingPlan.is_active == True)  # noqa: E712
+                        .order_by(BillingPlan.sort_order, BillingPlan.id)
+                    )).scalars().first()
+
+            if not plan or not plan.is_active:
+                raise ValueError(f"Plan '{plan_id}' not found or inactive.")
+
+        # A plan made for one account can be bought by that account only; other private plans by nobody.
+        # The package and the plan it sits in must both be on sale.
+        if plan.group_id:
+            group = (await db.execute(
+                select(BillingPlanGroup).where(BillingPlanGroup.id == plan.group_id)
+            )).scalars().first()
+        is_public = group.is_public if group else plan.is_public
+        owner_id = group.account_id if group else plan.account_id
+        if group and not group.is_active:
+            raise ValueError(f"Plan '{plan.code}' not found or inactive.")
+        if not is_public and (owner_id is None or owner_id != account_id):
+            raise ValueError(f"Plan '{plan.code}' not found or inactive.")
+        if plan.account_id is not None and plan.account_id != account_id:
+            raise ValueError(f"Plan '{plan.code}' not found or inactive.")
+
+        # The price for the term asked for, when no price was named
+        if price is None:
+            # "monthly", "N_month" or "N_year" (default 1 year)
             interval, interval_count = "year", 1
             if duration_key == "monthly":
                 interval = "month"
-            elif duration_key and "_year" in duration_key:
-                first = duration_key.split("_")[0]
+            elif duration_key and duration_key.endswith(("_year", "_month")):
+                first, unit = duration_key.split("_", 1)
+                interval = "month" if unit == "month" else "year"
                 interval_count = int(first) if first.isdigit() else 1
             price = (await db.execute(
                 select(BillingPlanPrice).where(
@@ -242,27 +271,60 @@ async def calculate_quote(
             if not price:
                 raise ValueError(f"No price found for plan '{plan.code}' with duration '{duration_key or '1_year'}'.")
 
+        # Check plan group extra-seat switches
+        if group:
+            if extra_users > 0 and not group.allow_extra_users:
+                raise ValueError(f"Plan '{group.name}' does not allow adding extra user seats.")
+            if extra_companies > 0 and not group.allow_extra_companies:
+                raise ValueError(f"Plan '{group.name}' does not allow adding extra company seats.")
+
         interval, interval_count = price.interval, price.interval_count
         if interval == "year":
             years, months = interval_count, interval_count * 12
         else:
             years, months = 1, interval_count
 
-        # ── What this order is ─────────────────────────────────────────────────
+        # ── What this order is ────────────────────────────────────────────────
+        # The same package again is a renewal, whatever the term or the price now is: it is added to the
+        # end of the running term. A different package is an upgrade or a downgrade by price per month.
         purpose = "new"
         if paid_term and sub.plan_id:
             if sub.plan_id == plan.id:
                 purpose = "renewal"
             else:
-                old_plan = (await db.execute(select(BillingPlan).where(BillingPlan.id == sub.plan_id))).scalars().first()
-                purpose = "downgrade" if old_plan and plan.sort_order < old_plan.sort_order else "upgrade"
+                old_per_month = Decimal(0)
+                if sub.price_id:
+                    old_price = (await db.execute(
+                        select(BillingPlanPrice).where(BillingPlanPrice.id == sub.price_id)
+                    )).scalars().first()
+                    if old_price:
+                        old_m = old_price.interval_count * 12 if old_price.interval == "year" else old_price.interval_count
+                        old_per_month = Decimal(old_price.amount_paise) / Decimal(old_m if old_m > 0 else 1)
+                if old_per_month == 0 and sub.plan_id:
+                    old_plan = (await db.execute(
+                        select(BillingPlan).where(BillingPlan.id == sub.plan_id)
+                    )).scalars().first()
+                    if old_plan:
+                        p_def = (await db.execute(
+                            select(BillingPlanPrice).where(
+                                BillingPlanPrice.plan_id == old_plan.id,
+                                BillingPlanPrice.interval == "year",
+                                BillingPlanPrice.interval_count == 1,
+                            )
+                        )).scalars().first()
+                        if p_def:
+                            old_per_month = Decimal(p_def.amount_paise) / Decimal(12)
+                new_per_month = Decimal(price.amount_paise) / Decimal(months if months > 0 else 1)
+                purpose = "upgrade" if new_per_month >= old_per_month else "downgrade"
+
             # Seats already paid for run to the end of the current term, so an order made during it
             # carries them on. They can be dropped once the term has ended.
             extra_users = max(extra_users, sub.extra_users or 0)
             extra_companies = max(extra_companies, sub.extra_companies or 0)
 
         base_plan_paise = price.amount_paise
-        plan_code, plan_name = plan.code, plan.name
+        plan_code = plan.code
+        plan_name = group.name if (group and group.name) else plan.name
         monthly = interval == "month"
         term_units = interval_count if monthly else years
         extra_users_paise = _round_paise(addon_unit(user_addon, monthly) * extra_users * term_units)
@@ -276,14 +338,19 @@ async def calculate_quote(
     resolved_coupon: Optional[BillingCoupon] = None
 
     if coupon_code:
+        coupon_norm = coupon_code.strip().upper()
         coupon: Optional[BillingCoupon] = (await db.execute(
             select(BillingCoupon).where(
-                BillingCoupon.code == coupon_code,
+                BillingCoupon.code == coupon_norm,
                 BillingCoupon.is_active == True,  # noqa: E712
             )
         )).scalars().first()
 
         if not coupon:
+            raise ValueError(f"Coupon '{coupon_code}' is not valid.")
+
+        # Account restriction
+        if coupon.account_id is not None and (not account_id or coupon.account_id != account_id):
             raise ValueError(f"Coupon '{coupon_code}' is not valid.")
 
         now_naive = now.replace(tzinfo=None)
@@ -293,13 +360,24 @@ async def calculate_quote(
         if coupon.valid_until and now_naive > coupon.valid_until:
             raise ValueError(f"Coupon '{coupon_code}' has expired.")
 
-        # Plan restriction
+        # Plan restriction: match package code, plan group code, or 'addon'
         if coupon.plan_codes:
-            allowed = json.loads(coupon.plan_codes)
-            if plan and plan.code not in allowed:
-                raise ValueError(f"Coupon '{coupon_code}' is not valid for the {plan.name} plan.")
-            elif not plan and "addon" not in allowed:
-                raise ValueError(f"Coupon '{coupon_code}' is not valid for add-ons.")
+            allowed = [c.lower() for c in json.loads(coupon.plan_codes)]
+            matched = False
+            if plan:
+                if plan.code.lower() in allowed:
+                    matched = True
+                elif group and group.code.lower() in allowed:
+                    matched = True
+            elif "addon" in allowed:
+                matched = True
+
+            if not matched:
+                raise ValueError(
+                    f"Coupon '{coupon_code}' is not valid for the {plan.name} plan."
+                    if plan
+                    else f"Coupon '{coupon_code}' is not valid for add-ons."
+                )
 
         # First purchase only check
         if coupon.first_purchase_only and account_id:
@@ -314,20 +392,20 @@ async def calculate_quote(
 
         # Redemption limits
         if coupon.max_redemptions is not None:
-            total_redemptions = (await db.execute(
-                select(BillingCouponRedemption).where(BillingCouponRedemption.coupon_id == coupon.id)
-            )).scalars().all()
-            if len(total_redemptions) >= coupon.max_redemptions:
+            total_uses = (await db.execute(
+                select(func.count(BillingCouponRedemption.id)).where(BillingCouponRedemption.coupon_id == coupon.id)
+            )).scalar() or 0
+            if total_uses >= coupon.max_redemptions:
                 raise ValueError(f"Coupon '{coupon_code}' has reached its maximum redemptions.")
 
         if account_id and coupon.per_account_limit:
-            account_redemptions = (await db.execute(
-                select(BillingCouponRedemption).where(
+            account_uses = (await db.execute(
+                select(func.count(BillingCouponRedemption.id)).where(
                     BillingCouponRedemption.coupon_id == coupon.id,
                     BillingCouponRedemption.account_id == account_id,
                 )
-            )).scalars().all()
-            if len(account_redemptions) >= coupon.per_account_limit:
+            )).scalar() or 0
+            if account_uses >= coupon.per_account_limit:
                 raise ValueError(f"Coupon '{coupon_code}' has already been used by this account.")
 
         # Compute discount

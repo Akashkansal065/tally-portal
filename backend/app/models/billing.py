@@ -9,7 +9,7 @@ Register this module in:
 """
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, ForeignKey, Integer,
+    Boolean, Column, DateTime, ForeignKey, Index, Integer,
     String, Text, BigInteger, UniqueConstraint,
 )
 from sqlalchemy.sql import func
@@ -23,9 +23,41 @@ _DB = settings.PORTAL_DATABASE_NAME  # all billing tables live in the portal sch
 # ─────────────────────────────────────────────────────────────────────────────
 # CATALOG
 # ─────────────────────────────────────────────────────────────────────────────
+# CATALOG: PLAN GROUPS, PACKAGES (PLANS) & PRICES
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BillingPlanGroup(Base):
+    """The customer-facing plan tier (Silver, Gold, Diamond), containing one or more packages."""
+    __tablename__ = "billing_plan_groups"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_billing_plan_groups_code"),
+        {"schema": _DB},
+    )
+
+    id                      = Column(Integer, primary_key=True, autoincrement=True)
+    code                    = Column(String(60), nullable=False)
+    name                    = Column(String(120), nullable=False)
+    tagline                 = Column(String(255), nullable=True)
+    badge                   = Column(String(80), nullable=True)
+    display                 = Column(Text, nullable=True)   # JSON: color, accent, is_popular
+    feature_keys            = Column(Text, nullable=True)   # JSON array of feature key strings
+    trial_days              = Column(Integer, nullable=False, default=0)
+    allow_extra_users       = Column(Boolean, nullable=False, default=True)
+    allow_extra_companies   = Column(Boolean, nullable=False, default=True)
+    is_public               = Column(Boolean, nullable=False, default=True)
+    is_active               = Column(Boolean, nullable=False, default=True)
+    account_id              = Column(
+        Integer,
+        ForeignKey(f"{_DB}.accounts.account_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    sort_order              = Column(Integer, nullable=False, default=0)
+    created_at              = Column(DateTime, server_default=func.now())
+    updated_at              = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
 
 class BillingPlan(Base):
-    """A subscription tier (Silver, Gold, Diamond, legacy, custom)."""
+    """A package (combination of companies, users, devices) within a plan tier."""
     __tablename__ = "billing_plans"
     __table_args__ = (
         UniqueConstraint("code", name="uq_billing_plans_code"),
@@ -33,8 +65,15 @@ class BillingPlan(Base):
     )
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
+    group_id    = Column(
+        Integer,
+        ForeignKey(f"{_DB}.billing_plan_groups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     code        = Column(String(60), nullable=False)
     name        = Column(String(120), nullable=False)
+    label       = Column(String(120), nullable=True)   # e.g. "1 company + 3 users"
     tagline     = Column(String(255), nullable=True)
     badge       = Column(String(80), nullable=True)
 
@@ -42,7 +81,7 @@ class BillingPlan(Base):
     max_companies   = Column(Integer, nullable=True)
     max_devices     = Column(Integer, nullable=True)
 
-    # JSON array of feature key strings
+    # JSON array of feature key strings (read from group when group_id is set)
     feature_keys    = Column(Text, nullable=True)
     # JSON: gradient colour, accent, is_popular etc.
     display         = Column(Text, nullable=True)
@@ -67,7 +106,7 @@ class BillingPlanPrice(Base):
     """A price point for a plan (interval + interval_count pair)."""
     __tablename__ = "billing_plan_prices"
     __table_args__ = (
-        UniqueConstraint("plan_id", "interval", "interval_count", name="uq_plan_prices_plan_interval"),
+        Index("ix_plan_prices_plan_interval_active", "plan_id", "interval", "interval_count", "is_active"),
         {"schema": _DB},
     )
 
@@ -143,9 +182,17 @@ class BillingCoupon(Base):
     plan_codes          = Column(Text, nullable=True)   # JSON array; NULL = all plans
     first_purchase_only = Column(Boolean, nullable=False, default=False)
     partner_id          = Column(Integer, nullable=True)
+    # NULL = available to all accounts; non-null = private coupon restricted to one account
+    account_id          = Column(
+        Integer,
+        ForeignKey(f"{_DB}.accounts.account_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    created_by_admin_id = Column(Integer, nullable=True)
 
     is_active           = Column(Boolean, nullable=False, default=True)
     created_at          = Column(DateTime, server_default=func.now())
+    updated_at          = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class BillingCouponRedemption(Base):
