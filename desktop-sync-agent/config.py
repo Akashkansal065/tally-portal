@@ -87,6 +87,14 @@ class AgentConfig:
     # A full voucher sync that is under way, per company GUID: the date ranges it was cut into and how many
     # are done, so a restart or a failed range carries on from there instead of starting again.
     full_sync_cursors: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Company GUID -> [masters, vouchers]: the most the server's watermarks may count for that company after an
+    # AlterID regression (a restore or repair made Tally's counters fall below what the server holds). The server
+    # derives its watermark from the highest AlterID it stores, which stays high until stale rows are gone, so the
+    # agent keeps its own ceiling and moves it up with Tally's counters. Dropped once the server is at or below it.
+    alter_ceilings: Dict[str, List[int]] = field(default_factory=dict)
+    # Company GUIDs owed a full sync that overwrites what the server holds (set when an AlterID regression is found,
+    # cleared when that sync has finished clean): without force the server keeps a record whose stored AlterID is higher.
+    forced_full_syncs: List[str] = field(default_factory=list)
     # Set when the server signed this PC out on purpose or blocked it (see cloud_client.AUTO_RELOGIN_REASONS).
     # Kept across restarts so autostart doesn't silently sign back in; cleared when credentials are re-entered.
     auth_halt_reason: str = ""

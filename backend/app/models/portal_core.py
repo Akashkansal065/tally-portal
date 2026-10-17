@@ -25,7 +25,27 @@ class SyncQueue(Base):
     last_response = Column(Text, nullable=True)
     last_attempt_at = Column(DateTime, nullable=True)
     snapshot_data = Column(JSON, nullable=True) # Pre-alter snapshot for rollback if sync fails
+    # 'needs_review': the item must not be sent until a person looks at it (a name-addressed delete or rename whose
+    # target is not the object MyTally means, a ledger whose group is gone). error_message says why. Null otherwise.
+    failure_kind = Column(String(20), nullable=True)
+    verified_guid = Column(String(64), nullable=True)   # the GUID Tally showed for the name when it was checked
     created_at = Column(DateTime, server_default=func.now())
+
+
+class SyncEvent(Base):
+    """An audit trail of the decisions the sync makes about a company (an AlterID regression, a held delete)."""
+    __tablename__ = "sync_events"
+    __table_args__ = (
+        Index("ix_sync_events_company", "company_id", "created_at"),
+        {"schema": settings.PORTAL_DATABASE_NAME},
+    )
+
+    event_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    company_id = Column(Integer, ForeignKey(f"{settings.PORTAL_DATABASE_NAME}.companies.company_id", ondelete="CASCADE"), nullable=False)
+    kind = Column(String(40), nullable=False)   # alterid_regression | needs_review | ...
+    detail = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
 
 class SyncTrafficLog(Base):
     __tablename__ = "sync_traffic_logs"

@@ -690,6 +690,38 @@ class TallyClient:
             return None
         return parse_change_counters(resp_xml, company_name or "", company_guid)
 
+    MASTER_TYPES = {"Ledger": "LEDGER", "Group": "GROUP", "StockItem": "STOCKITEM", "StockGroup": "STOCKGROUP"}
+
+    def verify_master(self, company_name: Optional[str], obj_type: str, name: str) -> Optional[List[Dict[str, str]]]:
+        """Every master of this type that Tally holds under this name, as NAME / GUID / MASTERID (Tally keeps names
+        unique, so more than one is a surprise the caller must stop on). None when Tally did not answer, which is
+        not the same as an empty list (nothing has that name). The name travels as a declared static variable that
+        the filter reads (##MTV_NAME), never inside the formula text, so a quote or a bracket in a name cannot
+        change what is asked. UNVERIFIED against a real TallyPrime, hence the caller also checks each name it gets
+        back: a Tally that ignored the filter returns many objects and the count check stops the send.
+        See docs/Multi-Tenant Rollout Runbook.md."""
+        tag = self.MASTER_TYPES.get(obj_type)
+        if tag is None or not name:
+            return None
+        sv_cmp = f"<SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
+        request = f"""<ENVELOPE>
+  <HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>MyTallyVerifyMaster</ID></HEADER>
+  <BODY><DESC>
+    <STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>{sv_cmp}<MTV_NAME>{escape_xml(name)}</MTV_NAME></STATICVARIABLES>
+    <TDL><TDLMESSAGE>
+      <VARIABLE NAME="MTV_NAME"><TYPE>String</TYPE><PERSISTED>No</PERSISTED></VARIABLE>
+      <SYSTEM TYPE="Formulae" NAME="MyTallyByName">$Name = ##MTV_NAME</SYSTEM>
+      <COLLECTION NAME="MyTallyVerifyMaster" ISMODIFY="No"><TYPE>{obj_type}</TYPE>
+        <FETCH>NAME,GUID,MASTERID,ALTERID</FETCH><FILTERS>MyTallyByName</FILTERS>
+      </COLLECTION>
+    </TDLMESSAGE></TDL>
+  </DESC></BODY>
+</ENVELOPE>"""
+        resp_xml = self._export(request, "VerifyMaster", timeout=20, retries=1)
+        if resp_xml is None:
+            return None
+        return master_keys(resp_xml, tag)
+
     def export_voucher_keys(self, company_name: Optional[str]) -> Optional[List[Dict[str, str]]]:
         """MASTERID, GUID, ALTERID and DATE of every voucher in the company, from an export that fetches nothing
         else. None when Tally did not answer."""

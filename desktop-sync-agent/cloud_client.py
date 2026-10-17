@@ -200,6 +200,19 @@ class CloudClient:
         status, _, _ = self._call("POST", "/sync/state", reports)
         return status == 200
 
+    def report_needs_review(self, sync_id: int, message: str, guid_seen: Optional[str] = None) -> bool:
+        """Tell the server a queued item was not sent because Tally's object is not the one MyTally means: the
+        server sets it aside for a person. False when the server did not take it (the agent holds the item back
+        anyway, and says so again next cycle)."""
+        status, _, _ = self._call("POST", "/sync/needs-review", {"sync_id": int(sync_id), "message": message[:500], "guid_seen": guid_seen})
+        return status == 200
+
+    def report_sync_event(self, kind: str, detail: Optional[Dict[str, Any]] = None) -> bool:
+        """Leave a row in the server's sync_events trail (an AlterID regression, for one). Best effort: a server
+        from before this exists answers 404, and the sync never depends on the answer."""
+        status, _, _ = self._call("POST", "/sync/events", {"kind": kind, "detail": detail or {}})
+        return status == 200
+
     def unlink_company(self, tally_guid: str) -> bool:
         status, _, _ = self._call("POST", "/agent/companies/unlink", {"tally_guid": tally_guid})
         return status == 200

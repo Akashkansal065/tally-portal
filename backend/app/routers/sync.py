@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from sqlalchemy import update, delete, text
+from sqlalchemy import update, delete, text, or_
 from sqlalchemy.sql import func
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
@@ -25,7 +25,7 @@ from app.core.agent_auth import agent_device
 from app.core.config import settings
 from app.core.tally_target import current_tally_url, note_request_company
 from app.routers.auth import get_current_user
-from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, DeletedRecordAudit
+from app.models.portal_core import Company, User, SyncQueue, SyncTrafficLog, DeletedRecordAudit, SyncEvent
 from app.models.tally_core import MstLedger, MstGroup, TrnVoucher, TrnAccounting, MstStockItem, MstVoucherType
 from app.services.tally_xml_importer import import_tally_xml
 from app.services.tally_schema_validator import TallySchemaValidator
@@ -848,6 +848,41 @@ async def build_voucher_xml_payload(voucher_id: int, action: str, db: AsyncSessi
         logger.error(f"Error in build_voucher_xml_payload for voucher {voucher_id}: {e}", exc_info=True)
         return ""
 
+NEEDS_REVIEW = "needs_review"
+
+
+def build_address(object_type: str, item: SyncQueue, current_name: Optional[str], row_guid: Optional[str]) -> Optional[dict]:
+    """How the Desktop Sync Agent must confirm what a name points at before it sends a master delete or rename.
+    Tally finds these objects by NAME, and a name can have moved on: a ledger renamed in Tally and another one
+    created under the old name would be deleted, or altered, in the first one's place. The agent reads the master
+    by name in Tally and sends only when exactly one object answers and its GUID is expect_guid. Nothing else
+    needs it (a create names nothing that exists, and an alter that renames nothing keeps its own name)."""
+    action = (item.action or "").lower()
+    snapshot = item.snapshot_data or {}
+    tally_name = snapshot.get("tally_name")
+    renames = action == "alter" and bool(tally_name) and bool(current_name) and tally_name != current_name
+    if action != "delete" and not renames:
+        return None
+    name = tally_name or current_name
+    if not name:
+        return None
+    return {"mode": "name_verified", "object_type": object_type, "name": name,
+            "expect_guid": snapshot.get("tally_guid") or row_guid or None}
+
+
+async def hold_for_review(db: AsyncSession, item: SyncQueue, message: str, verified_guid: Optional[str] = None) -> None:
+    """Set a queue item aside: it is not sent, and not offered to the agent again, until a person has looked at it
+    (a newer change to the same record replaces it). error_message says why."""
+    item.failure_kind, item.status, item.error_message = NEEDS_REVIEW, "NEEDS_REVIEW", message[:500]
+    if verified_guid:
+        item.verified_guid = verified_guid[:64]
+    db.add(SyncEvent(company_id=item.company_id, kind=NEEDS_REVIEW,
+                     detail={"sync_id": item.sync_id, "record_type": item.record_type, "record_id": item.record_id,
+                             "action": item.action, "message": message[:500]}))
+    await db.commit()
+    logger.warning(f"⚠️ [NEEDS REVIEW] {item.record_type} #{item.record_id} ({item.action}) was not sent to Tally: {message}")
+
+
 @router.get("/outbound-queue", dependencies=[Depends(bind_sync_company)])
 async def get_outbound_queue(
     user: User = Depends(require_permission("sync", "read")),
@@ -864,7 +899,9 @@ async def get_outbound_queue(
 
     stmt = select(SyncQueue).where(
         SyncQueue.company_id == user.company_id,
-        SyncQueue.is_processed == False
+        SyncQueue.is_processed == False,
+        # A held item waits for a person (see hold_for_review) and is not offered to the agent again
+        or_(SyncQueue.failure_kind.is_(None), SyncQueue.failure_kind != NEEDS_REVIEW),
     ).order_by(SyncQueue.created_at.asc())
     
     res = await db.execute(stmt)
@@ -874,6 +911,8 @@ async def get_outbound_queue(
     
     for item in queue_items:
         xml_envelope = ""
+        address = None       # how the agent must confirm the object a name points at before it sends (build_address)
+        held = False         # the item was set aside for review above: not sent, and not retired as "entity gone"
         # 1. Map Ledger
         if item.record_type == "Ledger":
             l_stmt = select(MstLedger).where(MstLedger.ledger_id == item.record_id)
@@ -885,18 +924,23 @@ async def get_outbound_queue(
                 g_stmt = select(MstGroup).where(MstGroup.group_id == ledger.group_id)
                 g_res = await db.execute(g_stmt)
                 group = g_res.scalars().first()
-                group_name = group.name if group else "Sundry Debtors"
+                if (item.action or "").lower() != "delete" and not group:
+                    # No guess: a ledger filed under a group nobody chose corrupts the balance sheet without an error
+                    await hold_for_review(db, item, "Group not found for ledger")
+                    held = True
+                else:
+                    c_stmt = select(Company).where(Company.company_id == ledger.company_id)
+                    c_res = await db.execute(c_stmt)
+                    comp_obj = c_res.scalars().first()
+                    comp_name = comp_obj.name if comp_obj else ""
 
-                c_stmt = select(Company).where(Company.company_id == ledger.company_id)
-                c_res = await db.execute(c_stmt)
-                comp_obj = c_res.scalars().first()
-                comp_name = comp_obj.name if comp_obj else ""
-                
-                xml_envelope = build_ledger_xml_envelope(ledger, group_name, comp_name, item.action or 'Create', tally_name)
+                    xml_envelope = build_ledger_xml_envelope(ledger, group.name if group else "", comp_name, item.action or 'Create', tally_name)
+                    address = build_address("Ledger", item, ledger.name, ledger.tally_guid)
             elif item.action == "Delete" and tally_name:
                 c_res = await db.execute(select(Company).where(Company.company_id == item.company_id))
                 comp_obj = c_res.scalars().first()
                 xml_envelope = build_ledger_delete_envelope(tally_name, comp_obj.name if comp_obj else "")
+                address = build_address("Ledger", item, None, None)
                 
         # 2. Map Voucher Creation / Alteration / Deletion
         elif item.record_type == "Voucher":
@@ -931,20 +975,24 @@ async def get_outbound_queue(
             ).where(MstStockItem.stock_item_id == item.record_id)
             item_res = await db.execute(item_stmt)
             st_item = item_res.scalars().first()
+            # The name Tally knows the item by: differs from st_item.name after a rename
+            item_tally_name = (item.snapshot_data or {}).get("tally_name")
             if st_item:
                 c_stmt = select(Company).where(Company.company_id == st_item.company_id)
                 c_res = await db.execute(c_stmt)
                 comp_obj = c_res.scalars().first()
                 comp_name = comp_obj.name if comp_obj else ""
+                address = build_address("StockItem", item, st_item.name, st_item.tally_guid)
 
                 if item.action == "Delete":
+                    delete_name = item_tally_name or st_item.name
                     xml_envelope = f"""<ENVELOPE>
   <HEADER><VERSION>1</VERSION><TALLYREQUEST>Import</TALLYREQUEST><TYPE>Data</TYPE><ID>All Masters</ID></HEADER>
   <BODY>
     <DESC>
       <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{x(st_item.name)}" Action="Delete"><NAME>{x(st_item.name)}</NAME></STOCKITEM>
+        <STOCKITEM NAME="{x(delete_name)}" Action="Delete"><NAME>{x(delete_name)}</NAME></STOCKITEM>
       </TALLYMESSAGE>
     </DESC>
   </BODY>
@@ -959,7 +1007,7 @@ async def get_outbound_queue(
     <DESC>
       <STATICVARIABLES><SVMSTIMPORTFORMAT>XML</SVMSTIMPORTFORMAT><SVCURRENTCOMPANY>{x(comp_name)}</SVCURRENTCOMPANY></STATICVARIABLES>
       <TALLYMESSAGE xmlns:UDF="TallyUDF">
-        <STOCKITEM NAME="{x(st_item.name)}" Action="{x(item.action or 'Create')}">
+        <STOCKITEM NAME="{x(item_tally_name or st_item.name)}" Action="{x(item.action or 'Create')}">
           <NAME>{x(st_item.name)}</NAME>
           {parent_tag}
           <BASEUNITS>{x(uom_symbol)}</BASEUNITS>
@@ -996,6 +1044,7 @@ async def get_outbound_queue(
         </GROUP>"""
 
             if group_inner_xml:
+                address = build_address("Group", item, grp.name if grp else None, grp.tally_guid if grp else None)
                 c_stmt = select(Company).where(Company.company_id == item.company_id)
                 c_res = await db.execute(c_stmt)
                 comp_obj = c_res.scalars().first()
@@ -1056,14 +1105,17 @@ async def get_outbound_queue(
             xml_envelope = await queued_company_xml(db, item)
 
         if xml_envelope:
-            outbound_payloads.append({
+            payload = {
                 "sync_id": item.sync_id,
                 "record_type": item.record_type,
                 "record_id": item.record_id,
                 "action": item.action,
                 "xml_payload": xml_envelope
-            })
-        else:
+            }
+            if address:
+                payload["address"] = address
+            outbound_payloads.append(payload)
+        elif not held:
             # Auto-retire records where the entity no longer exists in MySQL
             await db.execute(update(SyncQueue).where(SyncQueue.sync_id == item.sync_id).values(is_processed=True))
             await db.commit()
@@ -1082,6 +1134,52 @@ async def get_outbound_queue(
                 logger.debug(f"--- PAYLOAD FOR {p['record_type']} #{p['record_id']} ({p['action']}) ---\n{p['xml_payload']}")
 
     return outbound_payloads
+
+class NeedsReviewReport(BaseModel):
+    sync_id: int
+    message: str = Field(max_length=500)
+    guid_seen: Optional[str] = Field(default=None, max_length=64)
+
+
+@router.post("/needs-review", dependencies=[Depends(bind_sync_company)])
+async def report_needs_review(
+    report: NeedsReviewReport,
+    user: User = Depends(require_permission("sync", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The agent read the object a queued delete or rename names and found it is not the one MyTally means, so it
+    sent nothing. The item is set aside for a person (hold_for_review)."""
+    item = (await db.execute(select(SyncQueue).where(
+        SyncQueue.sync_id == report.sync_id, SyncQueue.company_id == user.company_id,
+        SyncQueue.is_processed == False))).scalars().first()   # noqa: E712
+    if item is None:
+        return {"held": False}
+    await hold_for_review(db, item, report.message, report.guid_seen)
+    return {"held": True}
+
+
+class SyncEventReport(BaseModel):
+    kind: str = Field(max_length=40)
+    detail: Optional[Dict[str, Any]] = None
+
+
+# What the agent may leave in the trail itself; the server writes the rest (needs_review)
+AGENT_EVENT_KINDS = {"alterid_regression"}
+
+
+@router.post("/events", dependencies=[Depends(bind_sync_company)])
+async def report_sync_event(
+    report: SyncEventReport,
+    user: User = Depends(require_permission("sync", "update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """A decision the agent took for this company, kept as an audit trail (an AlterID regression)."""
+    if report.kind not in AGENT_EVENT_KINDS:
+        raise HTTPException(status_code=422, detail="Unknown event kind.")
+    db.add(SyncEvent(company_id=user.company_id, kind=report.kind, detail=report.detail))
+    await db.commit()
+    return {"recorded": True}
+
 
 @router.post("/acknowledge", dependencies=[Depends(bind_sync_company)])
 async def acknowledge_sync(

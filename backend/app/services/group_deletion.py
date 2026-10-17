@@ -25,7 +25,7 @@ from app.core.tally_target import current_tally_url
 from app.core.logging_config import get_logger
 from app.core.permissions import get_effective_permission
 from app.models.portal_core import Company, DeletedRecordAudit, SyncQueue, User
-from app.models.tally_core import MstGroup, MstLedger
+from app.models.tally_core import MstGroup, MstLedger, MstStockItem
 from app.services.tally_xml import x
 from app.services.tally_xml_importer import sanitize_xml, tally_parent_name
 
@@ -60,6 +60,29 @@ class TallyUnreachable(Exception):
     pass
 
 
+# Masters Tally is told about by NAME: a delete or rename is only sent after the agent has found the object of that
+# name in Tally and seen that its GUID is the one recorded here (routers/sync.py, build_address).
+NAME_ADDRESSED_MASTERS = {
+    "Ledger": (MstLedger, "ledger_id"),
+    "Group": (MstGroup, "group_id"),
+    "StockItem": (MstStockItem, "stock_item_id"),
+}
+
+
+async def with_tally_guid(db: AsyncSession, company_id: int, record_type: str, record_id: int, action: str,
+                          snapshot: Optional[dict]) -> Optional[dict]:
+    """The snapshot of a queued delete or rename with the GUID Tally holds for the record, read now while the row
+    exists: once it is deleted the name is all the queue has, and the GUID is what tells the object it means from
+    another one that took the name since."""
+    spec = NAME_ADDRESSED_MASTERS.get(record_type)
+    if spec is None or (action or "").lower() not in ("delete", "alter") or (snapshot or {}).get("tally_guid"):
+        return snapshot
+    model, key = spec
+    guid = (await db.execute(select(model.tally_guid).where(
+        getattr(model, key) == record_id, model.company_id == company_id))).scalar()
+    return {**(snapshot or {}), "tally_guid": guid} if guid else snapshot
+
+
 async def queue_sync_event(db: AsyncSession, company_id: int, record_type: str, record_id: int, action: str,
                            snapshot: Optional[dict] = None) -> SyncQueue:
     """
@@ -67,6 +90,7 @@ async def queue_sync_event(db: AsyncSession, company_id: int, record_type: str, 
     name Tally still knows the record by is carried over from them (see portal_core): after two renames
     Tally still knows the record by the first name.
     """
+    snapshot = await with_tally_guid(db, company_id, record_type, record_id, action, snapshot)
     item = SyncQueue(company_id=company_id, record_type=record_type, record_id=record_id, action=action,
                      snapshot_data=snapshot)
     db.add(item)

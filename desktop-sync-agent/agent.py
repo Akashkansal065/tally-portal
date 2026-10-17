@@ -387,7 +387,9 @@ class DesktopSyncAgent:
     def _on_restore(self, running: bool) -> None:
         self.restoring = running
         if not running:
-            self.immediate_sync_requested = True   # send what the restore changed to the server straight away
+            # A restore can put Tally's AlterIDs back below what the server holds, and an incremental pull
+            # (ALTERID > watermark) would then miss everything keyed afterwards: ask for a full sync
+            self.trigger_immediate_sync(force_full=True)
 
     def refresh_connections(self, force: bool = False) -> None:
         """Ask Tally and the server whether they answer. They were measured once at start, so a server that was
@@ -801,6 +803,14 @@ class DesktopSyncAgent:
                 logger.error(f"⛔ Not sending {rec_type} #{rec_id} ({action}) to Tally: {refusal}")
                 continue
 
+            hold = self._unverified_master_action(task, xml_payload)
+            if hold:
+                kind, message, guid_seen = hold
+                logger.error(f"⛔ Not sending {rec_type} #{rec_id} ({action}) to Tally: {message}")
+                if kind == "review" and sync_id is not None:
+                    self.cloud.report_needs_review(sync_id, message, guid_seen)
+                continue
+
             if str(rec_type or "") == "VoucherReconcile":
                 # Not a payload for Tally as it stands: the voucher is read back first, see reconcile_writeback.py
                 self._write_back_reconcile(sync_id, rec_id, xml_payload)
@@ -878,6 +888,41 @@ class DesktopSyncAgent:
             self.cloud.report_voucher_identities(voucher_identities)
 
         return len(successful_ids)
+
+    # A master delete in an envelope: Tally finds the object by the NAME attribute and nothing else
+    _NAME_DELETE = re.compile(r'<(LEDGER|GROUP|STOCKITEM)\b[^>]*\bACTION="Delete"', re.I)
+
+    def _unverified_master_action(self, task: Dict[str, Any], xml_payload: str) -> Optional[Tuple[str, str, Optional[str]]]:
+        """Before a master delete or rename that Tally would find by NAME: read the master by that name in Tally and
+        let it through only when exactly one object answers and its GUID is the one MyTally stored. None when the
+        task may be sent. Otherwise (kind, why, GUID seen): kind "review" for an item a person must look at, "retry"
+        when Tally did not answer and the next cycle can try again. A delete that names no address at all (an older
+        server) is held too: nothing name-addressed leaves this agent unchecked."""
+        address = task.get("address") or {}
+        if not address:
+            if self._NAME_DELETE.search(xml_payload) and str(task.get("record_type") or "") != "VoucherReconcile":
+                return ("review", "The server did not say which Tally object this delete means (no GUID to check against), "
+                                  "so it was not sent.", None)
+            return None
+        if address.get("mode") != "name_verified":
+            return None                                # addressed by master id or REMOTEID: not a name
+        obj_type, name, expect = address.get("object_type") or task.get("record_type"), address.get("name"), address.get("expect_guid")
+        if not name or not expect:
+            return ("review", f"MyTally holds no Tally GUID for {obj_type} '{name}', so the object a name points at cannot be "
+                              "confirmed; it was not sent.", None)
+        seen = self.tally.verify_master(self.active_company_name, obj_type, name)
+        if seen is None:
+            return ("retry", f"Tally did not answer the check of {obj_type} '{name}'; it will be tried again.", None)
+        same_name = [m for m in seen if (m.get("name") or "").strip().casefold() == str(name).strip().casefold()]
+        if len(seen) != 1 or len(same_name) != 1:
+            guids = ", ".join(m.get("guid") or "?" for m in seen) or "none"
+            return ("review", f"Tally has {len(seen)} {obj_type} object(s) answering to '{name}' (GUIDs: {guids}), not exactly one; "
+                              "it was not sent.", None)
+        found = (same_name[0].get("guid") or "").strip()
+        if found != str(expect).strip():
+            return ("review", f"'{name}' in Tally is a different {obj_type} (GUID {found or 'unknown'}) from the one MyTally means "
+                              f"(GUID {expect}); it was renamed or recreated in Tally. It was not sent.", found or None)
+        return None
 
     def _write_back_reconcile(self, sync_id: int, voucher_id: Any, marker_xml: str) -> None:
         """Carry out one queued reconciliation write-back and report how it ended. Never guesses: a voucher that
@@ -989,6 +1034,8 @@ class DesktopSyncAgent:
                 floors[company_key] = floors.pop(self.active_company_name)   # kept by name before GUIDs were used
                 self.config.inbound_retry_floors = floors
             retry_floor = floors.get(company_key)
+            if is_incremental and not force_all and company_key in (self.config.forced_full_syncs or []):
+                is_incremental, force_all = False, True   # an AlterID regression's full sync that has not finished yet
 
             # Vouchers of a full sync are pulled in date ranges when the Tally client can do it. A full sync
             # that is under way (or one that failed at the start, which leaves a retry point of 0) carries on
@@ -1000,11 +1047,34 @@ class DesktopSyncAgent:
                 is_incremental = False
             vouchers_in_ranges = can_range and (not is_incremental or company_key in (self.config.full_sync_cursors or {}))
 
+            # An idle company costs one small request: TallyPrime's change counters say whether anything moved.
+            # They are also compared with what the server holds: a counter below the server's watermark means
+            # Tally's AlterIDs went backwards (a restore or repair), and ALTERID > watermark would miss new records.
+            probe = None
+            if (is_incremental and not force_all and hasattr(self.tally, "probe_change_counters")
+                    and not (self.config.full_sync_cursors or {}).get(company_key)):
+                probe = self.tally.probe_change_counters(self.active_company_name, self.active_company_guid)
+
             min_alter = 0
             min_voucher_alter = 0
             if is_incremental:
                 # Masters and vouchers have separate change counters in Tally, hence separate watermarks
-                master_watermark, voucher_watermark = self.cloud.get_last_alter_id()
+                master_watermark, voucher_watermark = self._effective_watermarks(company_key, *self.cloud.get_last_alter_id())
+                regression = self._alterid_regression(company_key, probe, master_watermark, voucher_watermark)
+                if regression:
+                    # Start over for this company: pushed with force (the server keeps a record whose stored AlterID
+                    # is higher otherwise), as a full sync that resumes through full_sync_cursors
+                    is_incremental, force_all, probe = False, True, None
+                    self._drop_full_sync_cursor(company_key)
+                    floors.pop(company_key, None)
+                    self.config.inbound_retry_floors = floors
+                    retry_floor = None
+                    self.config.forced_full_syncs = sorted({*(self.config.forced_full_syncs or []), company_key})
+                    # Tally's own counters are the most the server's watermarks may count until it catches up
+                    self.config.alter_ceilings = {**(self.config.alter_ceilings or {}), company_key: [regression[0], regression[1]]}
+                    save_config(self.config, self.config_path)
+                    vouchers_in_ranges = can_range
+            if is_incremental:
                 self._watermarks[company_key] = (master_watermark, voucher_watermark)
                 server_watermark = max(master_watermark, voucher_watermark)
                 # After a failed cycle, re-pull from where that cycle started: the server's watermark is
@@ -1019,15 +1089,10 @@ class DesktopSyncAgent:
             else:
                 prefix = f"📥 [INITIAL INBOUND SYNC] Pulling full baseline data from Tally..."
 
-            # An idle company costs one small request: TallyPrime's change counters say whether anything moved.
-            # Any doubt (no answer, a failed earlier cycle, a full sync owed, the safety pass due) runs the lot.
-            probe = None
             sides = ("masters", "vouchers")
-            if (is_incremental and not force_all and retry_floor is None and hasattr(self.tally, "probe_change_counters")
-                    and not (self.config.full_sync_cursors or {}).get(company_key)):
-                probe = self.tally.probe_change_counters(self.active_company_name, self.active_company_guid)
+            if probe is not None and retry_floor is None:
                 seen = self._probe_seen.get(company_key)
-                if probe is not None and seen is not None and time.time() - seen[2] < PROBE_SAFETY_PASS_SECONDS:
+                if seen is not None and time.time() - seen[2] < PROBE_SAFETY_PASS_SECONDS:
                     sides = tuple(s for s, now, before in (("masters", probe[0], seen[0]), ("vouchers", probe[1], seen[1]))
                                   if now != before)
                     if not sides:
@@ -1063,6 +1128,7 @@ class DesktopSyncAgent:
                 self._update_inbound_retry_floor(company_key, min(min_alter, min_voucher_alter) if is_incremental else min_alter, failed=bool(export_failures))
                 self._last_company_ok = not export_failures
                 if self._last_company_ok:
+                    self._finish_forced_full_sync(company_key)
                     self._note_probe(company_key, probe, sides, is_incremental)
                 else:
                     self._probe_seen.pop(company_key, None)
@@ -1129,6 +1195,7 @@ class DesktopSyncAgent:
                 self.last_sync_status += f" · {progress}"
             self.last_inbound_time = time.time()
             if self._last_company_ok:
+                self._finish_forced_full_sync(company_key)
                 self._note_probe(company_key, probe, sides, is_incremental)
                 self._maybe_report_active_keys(company_key, after_full_sync=not is_incremental)
             else:
@@ -1137,11 +1204,55 @@ class DesktopSyncAgent:
             self.is_syncing = False
         return self._last_company_ok
 
+    def _finish_forced_full_sync(self, company_key: str) -> None:
+        """A clean pass with no full sync left under way ends the forced full sync an AlterID regression owed."""
+        if company_key in (self.config.forced_full_syncs or []) and not (self.config.full_sync_cursors or {}).get(company_key):
+            self.config.forced_full_syncs = [k for k in self.config.forced_full_syncs if k != company_key]
+            save_config(self.config, self.config_path)
+
+    def _effective_watermarks(self, company_key: str, masters: int, vouchers: int) -> Tuple[int, int]:
+        """The server's watermarks, held down by this company's ceiling after an AlterID regression. The ceiling is
+        dropped once the server is at or below it (the stale rows are gone and the two agree again)."""
+        ceilings = self.config.alter_ceilings or {}
+        ceiling = ceilings.get(company_key)
+        if not ceiling:
+            return masters, vouchers
+        if masters <= ceiling[0] and vouchers <= ceiling[1]:
+            self.config.alter_ceilings = {k: v for k, v in ceilings.items() if k != company_key}
+            save_config(self.config, self.config_path)
+            return masters, vouchers
+        return min(masters, ceiling[0]), min(vouchers, ceiling[1])
+
+    def _alterid_regression(self, company_key: str, probe: Optional[Tuple[int, int]],
+                            master_watermark: int, voucher_watermark: int) -> Optional[Tuple[int, int]]:
+        """Tally's AlterIDs only rise within one copy of the data. A change counter below the server's watermark
+        means they went backwards (a restore of an older backup, a repair), and every record keyed since carries an
+        AlterID the incremental pull (ALTERID > watermark) would never ask for. Returns the counters read when that
+        is so, after reporting it, else None. No reading from Tally means no verdict."""
+        if probe is None or (probe[0] >= master_watermark and probe[1] >= voucher_watermark):
+            return None
+        detail = {"alt_mst_id": probe[0], "alt_vch_id": probe[1],
+                  "master_watermark": master_watermark, "voucher_watermark": voucher_watermark}
+        logger.warning(f"   ⚠️ [ALTERID REGRESSION] Tally's counters (masters {probe[0]}, vouchers {probe[1]}) are below what the "
+                       f"server holds (masters {master_watermark}, vouchers {voucher_watermark}): Tally was probably restored or "
+                       "repaired. Starting a full sync for this company.")
+        try:
+            report = getattr(self.cloud, "report_sync_event", None)
+            if report:
+                report("alterid_regression", {"company_guid": self.active_company_guid, **detail})
+        except Exception as e:
+            logger.debug(f"Could not report the AlterID regression: {e}")
+        return probe
+
     def _note_probe(self, company_key: str, probe: Optional[Tuple[int, int]], sides: Tuple[str, ...],
                     is_incremental: bool) -> None:
         """Remember the change counters read before this pass's exports (a change made during them is then
         seen next cycle). The safety clock restarts only when both sides ran."""
         if probe is not None:
+            if (self.config.alter_ceilings or {}).get(company_key):
+                # A clean pass covered everything up to these counters: the ceiling moves up with them
+                self.config.alter_ceilings = {**self.config.alter_ceilings, company_key: [probe[0], probe[1]]}
+                save_config(self.config, self.config_path)
             kept = self._probe_seen.get(company_key)
             ran_everything = sides == ("masters", "vouchers")
             self._probe_seen[company_key] = (probe[0], probe[1], time.time() if ran_everything or kept is None else kept[2])
