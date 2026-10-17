@@ -3007,7 +3007,12 @@ async def try_push_ledger_realtime(ledger_id: int, sync_item_id: int, action: st
 
         company_id = ledger.company_id if ledger else (sync_item.company_id if sync_item else 1)
         ledger_name = ledger.name if ledger else tally_name
-        group_name = ledger.group.name if (ledger and ledger.group) else "Sundry Debtors"
+        group_name = ledger.group.name if (ledger and ledger.group) else ""
+        if ledger and not ledger.group and action != "Delete":
+            # No guess: a ledger filed under a group nobody chose corrupts the balance sheet without an error
+            if sync_item is not None:
+                await hold_for_review(db, sync_item, "Group not found for ledger")
+            return (False, "NEEDS_REVIEW", "Group not found for ledger")
         
         c_stmt = select(Company).where(Company.company_id == company_id)
         c_res = await db.execute(c_stmt)
@@ -4138,7 +4143,10 @@ async def run_once_sync_background(user_id: int):
                         g_stmt = select(MstGroup).where(MstGroup.group_id == ledger.group_id)
                         g_res = await db.execute(g_stmt)
                         group = g_res.scalars().first()
-                        group_name = group.name if group else "Sundry Debtors"
+                        if not group and (item.action or "").lower() != "delete":
+                            await hold_for_review(db, item, "Group not found for ledger")
+                            continue
+                        group_name = group.name if group else ""
 
                         c_stmt = select(Company).where(Company.company_id == ledger.company_id)
                         c_res = await db.execute(c_stmt)

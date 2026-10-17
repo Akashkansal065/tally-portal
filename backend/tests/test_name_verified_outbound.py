@@ -163,3 +163,18 @@ def test_an_alterid_regression_event_is_recorded_and_other_kinds_are_not_accepte
     assert world.client.post("/sync/events", headers=world.h, json={"kind": "whatever"}).status_code == 422
     (event,) = [e[0] for e in world.harness.query(select(P.SyncEvent))]
     assert (event.kind, event.detail, event.company_id) == ("alterid_regression", {"alt_vch_id": 100}, world.cid)
+
+
+def test_the_realtime_push_does_not_guess_a_group_either(world, monkeypatch):
+    monkeypatch.setattr(sync, "current_tally_url", lambda: "http://tally.invalid")
+    posted = []
+    monkeypatch.setattr(sync, "_post_to_tally_sync", lambda *a, **k: posted.append(a) or "")
+    ledger = world.ledger(group_id=9999)
+    row = world.queue("Ledger", ledger.ledger_id, "Create")
+
+    async def go():
+        async with world.harness.Session() as db:
+            return await sync.try_push_ledger_realtime(ledger.ledger_id, row.sync_id, "Create", db)
+    ok, status, message = run(go())
+    assert (ok, status, message) == (False, "NEEDS_REVIEW", "Group not found for ledger")
+    assert posted == [] and world.row(row.sync_id).failure_kind == "needs_review"
