@@ -29,7 +29,7 @@ Manual steps and real-TallyPrime checks that go with each change. Add to this wi
   full sync every cycle.
 * A finished restore (backup restore through the agent) now requests a full sync of every linked company.
 
-### Check on a real TallyPrime (not done: needs one)
+### Check on a real TallyPrime (read-only checks done 2026-10-17 on 'Bhrama Enterprises'; restore test still open)
 
 1. `AltVchId` equals the highest voucher AlterID, and drops after restoring an older backup (P0.2). The probe has
    always been marked UNVERIFIED; this change relies on it more.
@@ -38,3 +38,13 @@ Manual steps and real-TallyPrime checks that go with each change. Add to this wi
    name with quotes, `&`, `<`. If it ignores the filter the reply holds many objects and every delete is held
    (safe, but nothing is deleted until this is fixed).
 3. Delete a ledger in MyTally whose name was reused in Tally: expect `needs_review`, nothing deleted in Tally.
+
+### Results of the read-only checks (2026-10-17, TallyPrime at 192.168.71.133:9001, company 'Bhrama Enterprises')
+
+* `verify_master` works: the `##MTV_NAME` filter is honoured. A real ledger returns exactly one object with its GUID, the
+  name matches case-insensitively, a missing name returns an empty list, and a name with quotes, `&` and `<` is safe.
+* The probe returned AltMstId 848 and AltVchId 585 while the highest voucher AlterID was 318 (44 vouchers). So
+  `AltVchId` is **not** equal to the highest voucher AlterID: it is a company-wide counter at or above it. The
+  regression rule (`AltVchId < server watermark`) stays safe in that direction, but a regression is only caught once the
+  counter falls below the highest stored AlterID, not merely below the last counter value seen.
+* Still open: restore an older backup and confirm the counters drop (needs a test company), and the P0.1 period check.
